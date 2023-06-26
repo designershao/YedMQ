@@ -119,6 +119,125 @@ fn client_identifier(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
 
+fn username(input: &[u8]) -> IResult<&[u8], String> {
+    parse_utf8(input)
+}
+
+fn password(input: &[u8]) -> IResult<&[u8], String> {
+    parse_utf8(input)
+}
+
+fn will_topic(input: &[u8]) -> IResult<&[u8], String> {
+    parse_utf8(input)
+}
+fn will_message(input: &[u8]) -> IResult<&[u8], String> {
+    parse_utf8(input)
+}
+
+fn payload(username_flag: bool, password_flag: bool, will_flag: bool) -> impl Fn(&[u8]) -> IResult<&[u8], Payload> {
+    move |v:&[u8]| {
+        if will_flag {
+            if username_flag {
+                if password_flag {
+                    map(tuple((client_identifier, will_topic, will_message,username, password)),|r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: Some(r.1),
+                            will_message: Some(r.2),
+                            username: Some(r.3),
+                            password: Some(r.4),
+                        }
+                    })(v)
+                } else {
+                    map(tuple((client_identifier, will_topic, will_message,username)),|r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: Some(r.1),
+                            will_message: Some(r.2),
+                            username: Some(r.3),
+                            password: None,
+                        }
+                    })(v)
+                }
+            } else {
+                if password_flag {
+                    map(tuple((client_identifier, will_topic, will_message,password)),|r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: Some(r.1),
+                            will_message: Some(r.2),
+                            username: None,
+                            password: Some(r.3),
+                        }
+                    })(v)
+
+                } else {
+                    map(tuple((client_identifier, will_topic, will_message)),|r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: Some(r.1),
+                            will_message: Some(r.2),
+                            username: None,
+                            password: None,
+                        }
+                    })(v)
+
+                }
+            }
+        } else {
+            if username_flag {
+                if password_flag {
+                    map(tuple((client_identifier, username, password)), |r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: None,
+                            will_message: None,
+                            username: Some(r.1),
+                            password: Some(r.2),
+                        }
+                    })(v)
+
+                } else {
+                    map(tuple((client_identifier, username)), |r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: None,
+                            will_message: None,
+                            username: Some(r.1),
+                            password: None,
+                        }
+                    })(v)
+
+                }
+            } else {
+                if password_flag {
+                    map(tuple((client_identifier, password)), |r|{
+                        Payload{
+                            client_identifier: r.0,
+                            will_topic: None,
+                            will_message: None,
+                            username: None,
+                            password: Some(r.1),
+                        }
+                    })(v)
+
+                } else {
+                    map(client_identifier, |r|{
+                        Payload{
+                            client_identifier: r,
+                            will_topic: None,
+                            will_message: None,
+                            username: None,
+                            password: None,
+                        }
+                    })(v)
+
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::protocol::v3::connect::protocol_level;
