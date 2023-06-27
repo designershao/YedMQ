@@ -23,6 +23,7 @@ pub struct VariableHeader {
     pub keep_alive: u16,
 }
 
+
 pub struct Payload {
     pub client_identifier: String,
     pub will_topic: Option<String>,
@@ -97,7 +98,7 @@ fn keep_alive(input: &[u8]) -> IResult<&[u8], u16> {
 }
 
 // MQTT Variable Header
-pub fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
+fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
     map(tuple((protocol_name, protocol_level, connect_flags, keep_alive)), |r| {
         let (protocol_name, protocol_level, connect_flags, keep_alive) = r;
         VariableHeader {
@@ -119,17 +120,22 @@ fn client_identifier(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
 
+// MQTT Connect Payload Username
 fn username(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
 
+// MQTT Connect Payload Password
 fn password(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
 
+// MQTT Connect Payload Will Topic
 fn will_topic(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
+
+// MQTT Connect Payload Will Message
 fn will_message(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
@@ -236,6 +242,44 @@ fn payload(username_flag: bool, password_flag: bool, will_flag: bool) -> impl Fn
             }
         }
     }
+}
+
+pub fn variable_header_and_payload(input: &[u8]) -> IResult<&[u8], (VariableHeader, Payload)> {
+    flat_map(variable_header, |variable_header|{
+        map(
+            payload(variable_header.username_flag, variable_header.password_flag, variable_header.will_flag),
+            move |payload| {
+                (VariableHeader{
+                    protocol_name: variable_header.protocol_name.clone(),
+                    protocol_level: variable_header.protocol_level,
+                    username_flag: variable_header.username_flag,
+                    password_flag: variable_header.password_flag,
+                    will_retain: variable_header.will_retain,
+                    will_qos: variable_header.will_qos,
+                    will_flag: variable_header.will_flag,
+                    clean_session: variable_header.clean_session,
+                    keep_alive: variable_header.keep_alive,
+                }, payload)
+            })
+    })(input)
+}
+
+pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
+    flat_map(fixed_header::parse_fix_header, |fixed_header| {
+        map(
+            map_res(
+            nom::bytes::streaming::take(fixed_header.remaining_length),
+            variable_header_and_payload
+            ),
+            move |(_, (variable_header,payload))| {
+                let cloned_fixed_header = fixed_header.clone();
+                ConnectPacket {
+                    fix_header: cloned_fixed_header,
+                    variable_header,
+                    payload,
+                }
+            })
+        })(input)
 }
 
 #[cfg(test)]

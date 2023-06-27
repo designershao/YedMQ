@@ -3,7 +3,7 @@ use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
 use nom::{IResult, Err, Needed, error::{Error, ErrorKind}, bytes, character};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum PacketType {
     CONNECT,
     CONNACK,
@@ -21,13 +21,13 @@ pub enum PacketType {
     DISCONNECT,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FixHeader {
     pub packet_type: PacketType,
     pub qos: Option<i32>,
     pub retain: Option<bool>,
     pub dup: Option<i32>,
-    pub remaining_length: i32,
+    pub remaining_length: usize,
 }
 
 
@@ -35,7 +35,7 @@ pub fn has_next(i:u8) -> bool {
     i & 128 != 0
 }
 
-pub fn remaining_length(input: &[u8]) -> IResult<&[u8], i32> {
+pub fn remaining_length(input: &[u8]) -> IResult<&[u8], usize> {
     let r = take_while_m_n(0, 3, has_next)(input);
     match r {
         Err(e) => Err(e),
@@ -52,7 +52,7 @@ pub fn remaining_length(input: &[u8]) -> IResult<&[u8], i32> {
                     for u in vv.iter() {
                         v += ((*u & 127) as i32) * multiplier;
                     }
-                    return Ok((ii, v));
+                    return Ok((ii, v as usize));
                 }
             }
         }
@@ -91,7 +91,7 @@ pub fn parse_fix_header(input: &[u8]) -> IResult<&[u8], FixHeader> {
                 qos,
                 retain,
                 dup,
-                remaining_length
+                remaining_length: remaining_length.try_into().unwrap()
                 }))
             }
         }
