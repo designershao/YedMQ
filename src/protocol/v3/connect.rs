@@ -1,9 +1,8 @@
 use byteorder::{BigEndian, ByteOrder};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
-use crate::protocol::v3::fixed_header;
 use crate::protocol::v3::common::parse_utf8;
 use nom::bits::{streaming::take};
-use super::fixed_header::FixHeader;
+use super::fixed_header::{FixHeader, self};
 
 pub struct ConnectPacket {
     pub fix_header: FixHeader,
