@@ -59,7 +59,7 @@ pub fn remaining_length(input: &[u8]) -> IResult<&[u8], usize> {
     }
 }
 
-pub fn parse_fix_header(input: &[u8]) -> IResult<&[u8], FixHeader> {
+pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
     let r = bits::<&[u8],(i32,i32,i32,i32),Error<(&[u8], usize)>,_,_>(tuple((take(4usize), take(1usize),take(2usize),take(1usize))))(input);
     match r {
         Err(e) => Err(e) ,
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn test_fix_header() {
         let input = &[0xE0, 0x00]; // Disconnect Message bytes
-        let out = parse_fix_header(input).unwrap();
+        let out = parse(input).unwrap();
         let header = out.1;
         assert_eq!(header.packet_type, PacketType::DISCONNECT);
     }

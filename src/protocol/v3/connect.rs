@@ -140,6 +140,7 @@ fn will_message(input: &[u8]) -> IResult<&[u8], String> {
     parse_utf8(input)
 }
 
+// MQTT Connect Payload
 fn payload(username_flag: bool, password_flag: bool, will_flag: bool) -> impl Fn(&[u8]) -> IResult<&[u8], Payload> {
     move |v:&[u8]| {
         if will_flag {
@@ -265,7 +266,7 @@ pub fn variable_header_and_payload(input: &[u8]) -> IResult<&[u8], (VariableHead
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
-    flat_map(fixed_header::parse_fix_header, |fixed_header| {
+    flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
             nom::bytes::streaming::take(fixed_header.remaining_length),
@@ -286,7 +287,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
 mod tests {
     use crate::protocol::v3::connect::protocol_level;
 
-    use super::{connect_flags, protocol_name};
+    use super::{connect_flags, protocol_name, payload};
 
 
     #[test]
@@ -308,6 +309,17 @@ mod tests {
         assert_eq!(protocol_name.1, "MQTT".to_string());
         let protocol_level = protocol_level(protocol_name.0).unwrap();
         assert_eq!(protocol_level.1, 0x4);
+    }
+
+    #[test]
+    fn test_payload() {
+        let input = &[0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54];
+        let payload = payload(true, true, true)(input).unwrap();
+        assert_eq!(payload.1.client_identifier, "MQTT".to_string());
+        assert_eq!(payload.1.will_topic.unwrap(), "MQTT".to_string());
+        assert_eq!(payload.1.will_message.unwrap(), "MQTT".to_string());
+        assert_eq!(payload.1.username.unwrap(), "MQTT".to_string());
+        assert_eq!(payload.1.password.unwrap(), "MQTT".to_string());
     }
 
 }
