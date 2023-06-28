@@ -286,7 +286,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
 mod tests {
     use crate::protocol::v3::connect::protocol_level;
 
-    use super::{connect_flags, protocol_name, payload};
+    use super::{connect_flags, protocol_name, payload, parse};
 
 
     #[test]
@@ -319,6 +319,22 @@ mod tests {
         assert_eq!(payload.1.will_message.unwrap(), "MQTT".to_string());
         assert_eq!(payload.1.username.unwrap(), "MQTT".to_string());
         assert_eq!(payload.1.password.unwrap(), "MQTT".to_string());
+    }
+
+    #[test]
+    fn test_parse() {
+        let input = &[0x10, 0x28,0x00,0x04,0x4D,0x51,0x54,0x54,0x04,0xEE,0x00,0x00,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54];
+        let out = parse(input).unwrap();
+        assert_eq!(out.1.variable_header.clean_session, true);
+        assert_eq!(out.1.variable_header.password_flag, true);
+        assert_eq!(out.1.variable_header.username_flag, true);
+        assert_eq!(out.1.variable_header.will_qos, 1);
+        assert_eq!(out.1.variable_header.protocol_level, 0x04);
+        assert_eq!(out.1.payload.client_identifier, "MQTT".to_string());
+        assert_eq!(out.1.payload.will_topic.unwrap(), "MQTT".to_string());
+        assert_eq!(out.1.payload.will_message.unwrap(), "MQTT".to_string());
+        assert_eq!(out.1.payload.username.unwrap(), "MQTT".to_string());
+        assert_eq!(out.1.payload.password.unwrap(), "MQTT".to_string());
     }
 
 }

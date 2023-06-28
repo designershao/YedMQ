@@ -63,4 +63,12 @@ mod tests {
         assert_eq!(output.1.session_present, true);
         assert_eq!(output.1.connect_return_code, 1);
     }
+
+    #[test]
+    fn test_parse() {
+        let input = &[0x20,0x02,0x01,0x01];
+        let out = parse(input).unwrap();
+        assert_eq!(out.1.variable_header.connect_return_code, 0x01);
+        assert_eq!(out.1.variable_header.session_present, true);
+    }
 }
