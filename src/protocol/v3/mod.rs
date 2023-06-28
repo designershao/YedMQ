@@ -5,3 +5,4 @@ pub mod connack;
 pub mod publish;
 pub mod puback;
 pub mod pubrec;
+pub mod pubrel;
