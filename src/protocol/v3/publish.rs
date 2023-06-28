@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
-use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
+use super::{fixed_header::{FixHeader, self}, common::{parse_utf8, parse_utf8_complete}};
 
 pub struct PublishPacket {
     pub fix_header: FixHeader,
@@ -22,7 +22,7 @@ fn variable_header(qos_1_or_2:bool) -> impl Fn(&[u8]) -> IResult<&[u8], Variable
     move |i| {
         if qos_1_or_2 {
             map(
-            tuple((parse_utf8, be_u16)),
+            tuple((parse_utf8_complete, nom::number::complete::be_u16)),
             |(topic_name, packet_identifier)| {
                 VariableHeader {
                     topic_name,
@@ -31,7 +31,7 @@ fn variable_header(qos_1_or_2:bool) -> impl Fn(&[u8]) -> IResult<&[u8], Variable
             })(i)
         } else {
             map(
-            parse_utf8,
+            parse_utf8_complete,
             |topic_name| {
                 VariableHeader {
                     topic_name,
@@ -74,6 +74,16 @@ mod tests {
         let output = variable_header(false)(input).unwrap();
         assert_eq!(output.1.topic_name, "a/b".to_string());
         assert_eq!(output.1.packet_identifier, None);
+    }
+
+    #[test]
+    fn test_parse() {
+        let input = &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01];
+        let out = parse(input).unwrap();
+        assert_eq!(out.1.payload.payload, vec!(0x01));
+        assert_eq!(out.1.variable_header.topic_name, "a/b".to_string());
+        assert_eq!(out.1.fix_header.qos, Some(1));
+
     }
 
 }
