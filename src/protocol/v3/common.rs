@@ -8,6 +8,13 @@ pub fn parse_utf8(input: &[u8]) -> IResult<&[u8], String> {
     })(input)
 }
 
+pub fn parse_utf8_complete(input: &[u8]) -> IResult<&[u8], String> {
+    flat_map(nom::bytes::complete::take(2usize),|w|{
+        let length = BigEndian::read_u16(w);
+        nom::bytes::complete::take(length).map(|w|{String::from_utf8_lossy(w).into()})
+    })(input)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

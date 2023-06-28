@@ -7,3 +7,4 @@ pub mod puback;
 pub mod pubrec;
 pub mod pubrel;
 pub mod pubcomp;
+pub mod subscribe;
