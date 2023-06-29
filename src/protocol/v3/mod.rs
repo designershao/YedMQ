@@ -10,3 +10,5 @@ pub mod pubcomp;
 pub mod subscribe;
 pub mod unsubscribe;
 pub mod suback;
+pub mod pingreq;
+pub mod pingresp;
