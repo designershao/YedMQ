@@ -9,3 +9,4 @@ pub mod pubrel;
 pub mod pubcomp;
 pub mod subscribe;
 pub mod unsubscribe;
+pub mod suback;
