@@ -12,3 +12,4 @@ pub mod unsubscribe;
 pub mod suback;
 pub mod pingreq;
 pub mod pingresp;
+pub mod disconnect;
