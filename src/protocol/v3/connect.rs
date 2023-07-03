@@ -3,6 +3,7 @@ use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_
 use crate::protocol::v3::common::parse_utf8;
 use nom::bits::{streaming::take};
 use super::fixed_header::{FixHeader, self};
+use ::bytes::{BytesMut, BufMut};
 
 pub struct ConnectPacket {
     pub fix_header: FixHeader,
@@ -282,11 +283,132 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
         })(input)
 }
 
+impl VariableHeader {
+    pub fn get_length(&self) -> usize {
+        10
+    }
+
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(10);
+
+        buf.put_u8(0);
+        buf.put_u8(4);
+        buf.put_u8(0x4D);
+        buf.put_u8(0x51);
+        buf.put_u8(0x54);
+        buf.put_u8(0x54);
+        buf.put_u8(0x04);
+
+        let mut connect_flags:u8 = 0;
+
+        if self.username_flag {
+            connect_flags += 1 << 7;
+        }
+        if self.password_flag {
+            connect_flags += 1 << 6;
+        }
+
+        if self.will_retain {
+            connect_flags += 1 << 5;
+        }
+
+        connect_flags += self.will_qos << 3;
+
+        if self.will_flag {
+            connect_flags += 1 << 2;
+        }
+
+        if self.clean_session {
+            connect_flags += 1 << 1;
+        }
+
+        buf.put_u8(connect_flags);
+
+        buf.put_u16(self.keep_alive);
+
+        buf
+
+    }
+}
+
+impl Payload {
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(self.get_length());
+        buf.put_u16(self.client_identifier.len() as u16);
+        buf.put(self.client_identifier.as_bytes());
+
+       if self.will_topic.is_some() {
+        buf.put_u16(self.will_topic.as_ref().unwrap().len() as u16);
+        buf.put(self.will_topic.as_ref().unwrap().as_bytes());
+       }
+
+       if self.will_message.is_some() {
+        buf.put_u16(self.will_message.as_ref().unwrap().len() as u16);
+        buf.put(self.will_message.as_ref().unwrap().as_bytes());
+       }
+
+       if self.username.is_some() {
+        buf.put_u16(self.username.as_ref().unwrap().len() as u16);
+        buf.put(self.username.as_ref().unwrap().as_bytes());
+       }
+
+       if self.password.is_some() {
+        buf.put_u16(self.password.as_ref().unwrap().len() as u16);
+        buf.put(self.password.as_ref().unwrap().as_bytes());
+       }
+
+       buf
+        
+    }
+
+    pub fn get_length(&self) -> usize {
+
+       let mut len = 0; 
+
+       len = len + self.client_identifier.len() + 2;
+
+       if self.will_topic.is_some() {
+        len = len + self.will_topic.as_ref().unwrap().len() + 2;
+       }
+
+       if self.will_message.is_some() {
+        len = len + self.will_message.as_ref().unwrap().len() + 2;
+       }
+
+       if self.username.is_some() {
+        len = len + self.username.as_ref().unwrap().len() + 2;
+       }
+
+       if self.password.is_some() {
+        len = len + self.password.as_ref().unwrap().len() + 2;
+       }
+
+       return len;
+
+    }
+}
+
+impl ConnectPacket {
+    pub fn to_bytes(&self) -> BytesMut {
+        let fix_header_bytes = self.fix_header.to_bytes();
+        let variable_bytes = self.variable_header.to_bytes();
+        let payload_bytes = self.payload.to_bytes();
+
+        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_bytes.len() + payload_bytes.len());
+        buf.put(fix_header_bytes);
+        buf.put(variable_bytes);
+        buf.put(payload_bytes);
+        buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::protocol::v3::connect::protocol_level;
+    use nom::AsBytes;
 
-    use super::{connect_flags, protocol_name, payload, parse};
+    use crate::protocol::v3::{connect::protocol_level, fixed_header::{FixHeader, self}};
+
+    use super::{connect_flags, protocol_name, payload, parse, ConnectPacket};
 
 
     #[test]
@@ -330,11 +452,56 @@ mod tests {
         assert_eq!(out.1.variable_header.username_flag, true);
         assert_eq!(out.1.variable_header.will_qos, 1);
         assert_eq!(out.1.variable_header.protocol_level, 0x04);
+        assert_eq!(out.1.variable_header.keep_alive, 0x00);
         assert_eq!(out.1.payload.client_identifier, "MQTT".to_string());
         assert_eq!(out.1.payload.will_topic.unwrap(), "MQTT".to_string());
         assert_eq!(out.1.payload.will_message.unwrap(), "MQTT".to_string());
         assert_eq!(out.1.payload.username.unwrap(), "MQTT".to_string());
         assert_eq!(out.1.payload.password.unwrap(), "MQTT".to_string());
+    }
+
+    #[test]
+    fn test_to_bytes() {
+
+        let variable_header = super::VariableHeader {
+                protocol_name: "MQTT".to_string(),
+                protocol_level: 0x04,
+                username_flag: true,
+                password_flag: true,
+                will_retain: true,
+                will_qos: 1,
+                will_flag: true,
+                clean_session: true,
+                keep_alive: 0,
+            };
+        let payload = super::Payload {
+            client_identifier: "MQTT".to_string(),
+            will_topic: Some("MQTT".to_string()),
+            will_message: Some("MQTT".to_string()),
+            username: Some("MQTT".to_string()),
+            password: Some("MQTT".to_string()),
+        };
+
+        let fix_header = FixHeader{
+                packet_type: fixed_header::PacketType::CONNECT,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: variable_header.get_length() + payload.get_length(),
+            };
+
+        let connect_packet = ConnectPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        let connect_packet_bytes = connect_packet.to_bytes();
+
+        let input = &[0x10, 0x28,0x00,0x04,0x4D,0x51,0x54,0x54,0x04,0xEE,0x00,0x00,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54];
+
+        assert_eq!(connect_packet_bytes.as_bytes(), input);
+
     }
 
 }

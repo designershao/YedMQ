@@ -100,7 +100,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
 }
 
 impl FixHeader {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
         let packet_type_u8:u8 = match self.packet_type {
             PacketType::CONNECT => 1,
@@ -139,7 +139,7 @@ impl FixHeader {
 
         buf.put_u8(self.remaining_length.try_into().unwrap());
 
-        buf.to_vec()
+        buf
 
     }
 }
@@ -148,6 +148,8 @@ impl FixHeader {
 
 #[cfg(test)]
 mod tests {
+    use nom::AsBytes;
+
     use super::*;
 
     #[test]
@@ -187,7 +189,7 @@ mod tests {
         };
 
         let bytes = fix_header.to_bytes();
-        let i =  vec![0xE0, 0x00];
-        assert_eq!(bytes, i);
+        let i =  &[0xE0, 0x00];
+        assert_eq!(bytes.as_bytes(), i);
     }
 }
