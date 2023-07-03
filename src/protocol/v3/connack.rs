@@ -1,6 +1,8 @@
 use byteorder::{BigEndian, ByteOrder};
+use bytes::BufMut;
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
+use ::bytes::{BytesMut};
 use super::fixed_header::{FixHeader, self};
 
 pub struct ConnAckPacket {
@@ -52,8 +54,38 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnAckPacket> {
     })(input)
 }
 
+impl VariableHeader {
+
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(2);
+        if self.session_present {
+            buf.put_u8(1);
+        } else {
+            buf.put_u8(0)
+        }
+        buf.put_u8(self.connect_return_code);
+        buf
+    }
+}
+
+impl ConnAckPacket {
+    pub fn to_bytes(&self) -> BytesMut {
+        let fix_header_bytes = self.fix_header.to_bytes();
+        let variable_header_bytes = self.variable_header.to_bytes();
+
+        let mut buf = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len());
+        buf.put(fix_header_bytes);
+        buf.put(variable_header_bytes);
+        buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use nom::AsBytes;
+
+    use crate::protocol::v3::fixed_header::PacketType;
+
     use super::*;
 
     #[test]
@@ -70,5 +102,29 @@ mod tests {
         let out = parse(input).unwrap();
         assert_eq!(out.1.variable_header.connect_return_code, 0x01);
         assert_eq!(out.1.variable_header.session_present, true);
+    }
+
+    #[test]
+    fn test_to_bytes() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::CONNACK,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
+        let variable_header = VariableHeader {
+            session_present: true,
+            connect_return_code: 1,
+        };
+        let connack_packet = ConnAckPacket{
+            fix_header,
+            variable_header,
+        };
+        let connack_packet_bytes = connack_packet.to_bytes();
+
+        let input = &[0x20,0x02,0x01,0x01];
+
+        assert_eq!(connack_packet_bytes.as_bytes(), input);
     }
 }
