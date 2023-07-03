@@ -2,6 +2,7 @@ use nom::bits::{bits, streaming::take};
 use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
 use nom::{IResult, Err, Needed, error::{Error, ErrorKind}, bytes, character};
+use ::bytes::{BytesMut, BufMut};
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum PacketType {
@@ -98,6 +99,53 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
     }
 }
 
+impl FixHeader {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut buf = BytesMut::with_capacity(2);
+        let packet_type_u8:u8 = match self.packet_type {
+            PacketType::CONNECT => 1,
+            PacketType::CONNACK => 2,
+            PacketType::PUBLISH => 3,
+            PacketType::PUBACK => 4,
+            PacketType::PUBREC => 5,
+            PacketType::PUBREL => 6,
+            PacketType::PUBCOMP => 7,
+            PacketType::SUBSCRIBE => 8,
+            PacketType::SUBACK => 9,
+            PacketType::UNSUBSCRIBE => 10,
+            PacketType::UNSUBACK => 11,
+            PacketType::PINGREQ => 12,
+            PacketType::PINGRESP => 13,
+            PacketType::DISCONNECT => 14,
+        };
+
+        if self.packet_type == PacketType::PUBLISH {
+            let mut r:u8 = packet_type_u8 << 4;
+            if self.dup.is_some() {
+                r += 1 << 3;
+            }
+
+            if self.qos.is_some() {
+                r += (self.qos.unwrap() as u8) << 1
+            }
+
+            if self.retain.is_some() {
+                r += 1;
+            }
+            buf.put_u8(r);
+        } else {
+            buf.put_u8(packet_type_u8 << 4);
+        }
+
+        buf.put_u8(self.remaining_length.try_into().unwrap());
+
+        buf.to_vec()
+
+    }
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +174,20 @@ mod tests {
         let out = parse(input).unwrap();
         let header = out.1;
         assert_eq!(header.packet_type, PacketType::DISCONNECT);
+    }
+
+    #[test]
+    fn test_to_bytes() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::DISCONNECT, 
+            dup: None,
+            qos: None,
+            retain: None,
+            remaining_length: 0,
+        };
+
+        let bytes = fix_header.to_bytes();
+        let i =  vec![0xE0, 0x00];
+        assert_eq!(bytes, i);
     }
 }
