@@ -1,4 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
+use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, cut, eof}, sequence::tuple, bits, error::Error, multi::many0};
 use crate::protocol::v3::common::parse_utf8;
 use nom::bits::{streaming::take};
@@ -14,12 +15,52 @@ pub struct VariableHeader {
     pub packet_identifier: u16,
 }
 
+impl VariableHeader {
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(2); 
+        buf.put_u16(self.packet_identifier);
+        buf
+    }
+}
+
+
 pub struct TopicFilter {
     topic_name: String,
 }
 
+impl TopicFilter {
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(self.get_length() + 2);
+        buf.put_u16(self.topic_name.len().try_into().unwrap());
+        buf.put(self.topic_name.as_bytes());
+        buf
+    }
+
+    pub fn get_length(&self) -> usize {
+        self.topic_name.len() + 2
+    }
+}
+
 pub struct Payload {
     pub topic_filters: Vec<TopicFilter>,
+}
+
+impl Payload {
+    pub fn to_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(self.get_length());
+        for topic_filter in self.topic_filters.iter() {
+            buf.put(topic_filter.to_bytes());
+        }
+        buf
+    }
+
+    pub fn get_length(&self) -> usize {
+        let mut total_length = 0;
+        for topic_filter in self.topic_filters.iter() {
+            total_length += topic_filter.get_length();
+        }
+        total_length
+    }
 }
 
 // MQTT Subscribe Topic Filter
@@ -73,8 +114,36 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnsubscribePacket> {
     })(input)
 }
 
+
+impl UnsubscribePacket {
+
+    pub fn to_bytes(&self) -> BytesMut {
+        let fix_header_bytes = self.get_fix_header_bytes();
+        let variable_header_bytes = self.variable_header.to_bytes();
+        let payload_bytes = self.payload.to_bytes();
+
+        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len() + payload_bytes.len());
+        buf.put(fix_header_bytes);
+        buf.put(variable_header_bytes);
+        buf.put(payload_bytes);
+        
+        buf
+    }
+
+    fn get_fix_header_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_u8((10 << 4) + (1 << 1));
+        buf.put_u8(self.fix_header.remaining_length.try_into().unwrap());
+        buf
+    }
+
+}
+
+
 #[cfg(test)]
 mod tests{
+    use nom::AsBytes;
+
     use crate::protocol::v3::fixed_header::PacketType;
 
     use super::*;
@@ -94,5 +163,36 @@ mod tests{
         assert_eq!(fixed_header.1.packet_type, PacketType::UNSUBSCRIBE);
         let out = parse(input).unwrap();
         assert_eq!(out.1.payload.topic_filters[0].topic_name, "a/b".to_string());
+    }
+
+    #[test]
+    fn test_to_bytes() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::UNSUBSCRIBE,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 7,
+        };
+
+        let variable_header = VariableHeader {
+            packet_identifier: 0x10,
+        };
+
+        let payload = Payload {
+            topic_filters: vec![
+                TopicFilter {
+                    topic_name: "a/b".to_string(),
+                }
+            ]
+        };
+
+        let unsubscribe_packet = UnsubscribePacket {
+            fix_header,
+            variable_header,
+            payload,
+        };
+
+        assert_eq!(unsubscribe_packet.to_bytes().as_bytes(), &[0xA2,0x07,0x00,0x10,0x00,0x03,0x61,0x2F,0x62]);
     }
 }
