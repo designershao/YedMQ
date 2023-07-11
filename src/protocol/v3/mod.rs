@@ -13,3 +13,4 @@ pub mod suback;
 pub mod pingreq;
 pub mod pingresp;
 pub mod disconnect;
+pub mod unsuback;
