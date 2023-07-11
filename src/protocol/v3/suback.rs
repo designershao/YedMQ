@@ -77,7 +77,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], SubackPacket> {
 mod tests {
     use nom::AsBytes;
 
-    use crate::protocol::v3::fixed_header::PacketType;
+    use crate::protocol::PacketType;
 
     use super::*;
 

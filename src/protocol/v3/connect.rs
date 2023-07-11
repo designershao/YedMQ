@@ -406,7 +406,7 @@ impl ConnectPacket {
 mod tests {
     use nom::AsBytes;
 
-    use crate::protocol::v3::{connect::protocol_level, fixed_header::{FixHeader, self}};
+    use crate::protocol::{v3::{connect::protocol_level, fixed_header::{FixHeader, self}}, PacketType};
 
     use super::{connect_flags, protocol_name, payload, parse, ConnectPacket};
 
@@ -483,7 +483,7 @@ mod tests {
         };
 
         let fix_header = FixHeader{
-                packet_type: fixed_header::PacketType::CONNECT,
+                packet_type: PacketType::CONNECT,
                 qos: None,
                 retain: None,
                 dup: None,

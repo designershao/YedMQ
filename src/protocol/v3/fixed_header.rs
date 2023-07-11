@@ -3,24 +3,7 @@ use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
 use nom::{IResult, Err, Needed, error::{Error, ErrorKind}, bytes, character};
 use ::bytes::{BytesMut, BufMut};
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum PacketType {
-    CONNECT,
-    CONNACK,
-    PUBLISH,
-    PUBACK,
-    PUBREC,
-    PUBREL,
-    PUBCOMP,
-    SUBSCRIBE,
-    SUBACK,
-    UNSUBSCRIBE,
-    UNSUBACK,
-    PINGREQ,
-    PINGRESP,
-    DISCONNECT,
-}
+use crate::protocol::PacketType;
 
 #[derive(Debug, Clone)]
 pub struct FixHeader {

@@ -115,7 +115,7 @@ mod tests {
     
     use nom::AsBytes;
 
-    use crate::protocol::v3::fixed_header::PacketType;
+    use crate::protocol::PacketType;
 
     use super::*;
 
