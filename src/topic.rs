@@ -116,7 +116,7 @@ impl TopicManager {
             if topic_plus_wildcard_option.is_some() {
                 let mut topic_plus_left = topic_partterns.clone();
                 let topic_plus_patterns_rest = topic_plus_left.drain(1..).collect();
-                let topic_node_clone = topic_node.clone();
+                let topic_node_clone = topic_plus_wildcard_option.unwrap().clone();
                 let plus_wildcard_subscriptions = Self::recursion_get_subscriptions(topic_node_clone, topic_plus_patterns_rest);
                 result.extend(plus_wildcard_subscriptions);
             }
@@ -136,6 +136,7 @@ impl TopicManager {
 
 }
 
+#[derive(Debug)]
 struct TopicNode {
 
     pub topic_parttern: String,
@@ -164,7 +165,6 @@ impl TopicNode {
     }
 
     pub fn add_subscription(&mut self, subscribtion:Subscription) {
-        print!("{:?}", subscribtion);
         self.subscriptions.write().unwrap().push(Arc::new(subscribtion));
     }
 
@@ -298,6 +298,34 @@ mod tests {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
         topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_unsubscribe_topic() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        topic_manager.unsubscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string());
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_sharp_wildcard_subscriptions() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/#".to_string(), 0);
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_plus_wildcard_subscriptions() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/+/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
     }
