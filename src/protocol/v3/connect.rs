@@ -1,6 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
-use crate::protocol::v3::common::parse_utf8;
+use crate::protocol::{v3::common::parse_utf8, MqttPacket};
 use nom::bits::{streaming::take};
 use super::fixed_header::{FixHeader, self};
 use ::bytes::{BytesMut, BufMut};
@@ -388,8 +388,9 @@ impl Payload {
     }
 }
 
-impl ConnectPacket {
-    pub fn to_bytes(&self) -> BytesMut {
+impl MqttPacket for ConnectPacket {
+
+    fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_bytes = self.variable_header.to_bytes();
         let payload_bytes = self.payload.to_bytes();
@@ -400,13 +401,17 @@ impl ConnectPacket {
         buf.put(payload_bytes);
         buf
     }
+    
+    fn get_packet_type(&self) -> crate::protocol::PacketType {
+        crate::protocol::PacketType::CONNECT
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use nom::AsBytes;
 
-    use crate::protocol::{v3::{connect::protocol_level, fixed_header::{FixHeader, self}}, PacketType};
+    use crate::protocol::{v3::{connect::protocol_level, fixed_header::{FixHeader, self}}, PacketType, MqttPacket};
 
     use super::{connect_flags, protocol_name, payload, parse, ConnectPacket};
 

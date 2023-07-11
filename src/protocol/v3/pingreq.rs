@@ -1,6 +1,8 @@
 use bytes::BytesMut;
 use nom::{IResult, combinator::map};
 
+use crate::protocol::MqttPacket;
+
 use super::fixed_header::{FixHeader, self};
 
 
@@ -18,9 +20,13 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PingreqPacket> {
     })(input)
 }
 
-impl PingreqPacket {
-    pub fn to_bytes(&self) -> BytesMut {
+impl MqttPacket for PingreqPacket {
+    fn to_bytes(&self) -> BytesMut {
         self.fix_header.to_bytes()
+    }
+
+    fn get_packet_type(&self) -> crate::protocol::PacketType {
+        crate::protocol::PacketType::PINGREQ
     }
 }
 

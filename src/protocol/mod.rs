@@ -1,6 +1,8 @@
+use bytes::BytesMut;
+
 pub mod v3;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PacketType {
     CONNECT,
     CONNACK,
@@ -16,4 +18,15 @@ pub enum PacketType {
     PINGREQ,
     PINGRESP,
     DISCONNECT,
+}
+
+pub trait MqttPacket {
+
+    fn to_bytes(&self) -> BytesMut;
+
+    /*
+     * Returns the packet type
+     */
+    fn get_packet_type(&self) -> PacketType;
+
 }

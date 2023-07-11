@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, cut, eof}, sequence::tuple, bits, error::Error, multi::many0};
-use crate::protocol::v3::common::parse_utf8;
+use crate::protocol::{v3::common::parse_utf8, MqttPacket, PacketType};
 use nom::bits::{streaming::take};
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
@@ -117,7 +117,18 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnsubscribePacket> {
 
 impl UnsubscribePacket {
 
-    pub fn to_bytes(&self) -> BytesMut {
+    fn get_fix_header_bytes(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(2);
+        buf.put_u8((10 << 4) + (1 << 1));
+        buf.put_u8(self.fix_header.remaining_length.try_into().unwrap());
+        buf
+    }
+
+}
+
+impl MqttPacket for UnsubscribePacket {
+
+    fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.get_fix_header_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
         let payload_bytes = self.payload.to_bytes();
@@ -130,13 +141,9 @@ impl UnsubscribePacket {
         buf
     }
 
-    fn get_fix_header_bytes(&self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(2);
-        buf.put_u8((10 << 4) + (1 << 1));
-        buf.put_u8(self.fix_header.remaining_length.try_into().unwrap());
-        buf
+    fn get_packet_type(&self) -> crate::protocol::PacketType {
+        PacketType::UNSUBSCRIBE
     }
-
 }
 
 

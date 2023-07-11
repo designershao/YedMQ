@@ -2,6 +2,8 @@
 use bytes::BytesMut;
 use nom::{IResult, combinator::map};
 
+use crate::protocol::MqttPacket;
+
 use super::fixed_header::{FixHeader, self};
 
 
@@ -19,9 +21,13 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], DisconnectPacket> {
     })(input)
 }
 
-impl DisconnectPacket {
-    pub fn to_bytes(&self) -> BytesMut {
+impl MqttPacket for DisconnectPacket {
+    fn to_bytes(&self) -> BytesMut {
         self.fix_header.to_bytes()
+    }
+
+    fn get_packet_type(&self) -> crate::protocol::PacketType {
+        crate::protocol::PacketType::DISCONNECT
     }
 }
 

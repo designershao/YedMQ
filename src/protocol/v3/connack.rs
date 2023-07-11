@@ -3,6 +3,8 @@ use bytes::BufMut;
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
 use ::bytes::{BytesMut};
+use crate::protocol::MqttPacket;
+
 use super::fixed_header::{FixHeader, self};
 
 pub struct ConnAckPacket {
@@ -68,8 +70,8 @@ impl VariableHeader {
     }
 }
 
-impl ConnAckPacket {
-    pub fn to_bytes(&self) -> BytesMut {
+impl MqttPacket for ConnAckPacket {
+    fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
 
@@ -77,6 +79,10 @@ impl ConnAckPacket {
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf
+    }
+
+    fn get_packet_type(&self) -> crate::protocol::PacketType {
+        crate::protocol::PacketType::CONNACK
     }
 }
 
