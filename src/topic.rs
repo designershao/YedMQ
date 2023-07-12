@@ -108,7 +108,7 @@ impl TopicManager {
             // Get # wildcard subscriptions
             let topic_sharp_wildcard_option = topic_node.write().unwrap().get_leaf("#".to_string());
             if topic_sharp_wildcard_option.is_some() {
-                let sharp_wildcard_subscriptions = topic_sharp_wildcard_option.unwrap().write().unwrap().get_subscriptions();
+                let sharp_wildcard_subscriptions = topic_sharp_wildcard_option.unwrap().read().unwrap().get_subscriptions();
                 result.extend(sharp_wildcard_subscriptions);
             }
             // Get + wildcard subscriptions
@@ -166,6 +166,9 @@ impl TopicNode {
 
     pub fn add_subscription(&mut self, subscribtion:Subscription) {
         self.subscriptions.write().unwrap().push(Arc::new(subscribtion));
+        self.subscriptions.write().unwrap().sort_by(|sub_a, sub_b| {
+            sub_a.client_identifier.cmp(&sub_b.client_identifier)
+        });
     }
 
     pub fn remove_subscription(&mut self, client_identifier:String) {
@@ -177,6 +180,9 @@ impl TopicNode {
         match find_result  {
             Ok(index) => {
                 self.subscriptions.write().unwrap().remove(index);
+                self.subscriptions.write().unwrap().sort_by(|sub_a, sub_b| {
+                    sub_a.client_identifier.cmp(&sub_b.client_identifier)
+                });
             },
             Err(_) => {}
         }
@@ -214,6 +220,9 @@ impl TopicNode {
                 }));
                 let topic_node_cloned = leaf.clone();
                 self.leaves.write().unwrap().push(leaf);
+                self.leaves.write().unwrap().sort_by(|topic_node_a,topic_node_b| {
+                    topic_node_a.read().unwrap().topic_parttern.cmp(&topic_node_b.read().unwrap().topic_parttern)
+                });
                 topic_node_cloned
             }
         }
@@ -328,6 +337,35 @@ mod tests {
         topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/+/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_subscription() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/b/#".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_mix_wildcard_subscription() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
+        let clients = clients.unwrap();
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients.clone()[0].client_identifier, "clientB");
+        assert_eq!(clients.clone()[1].client_identifier, "clientD");
+
     }
 
 }
