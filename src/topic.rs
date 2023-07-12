@@ -18,6 +18,7 @@ impl fmt::Display for Error {
     }
 }
 
+
 fn test_topic(topic: &String) -> bool {
     let i = topic.split("/");
     let mut index = 0;
@@ -271,7 +272,7 @@ struct Subscription {
 mod tests {
 
     use super::*;
-    use std::{thread};
+    use std::{thread, borrow::BorrowMut, cell::RefCell};
 
     #[test]
     fn test_add_subscription_and_get_subscriptions() {
@@ -406,8 +407,48 @@ mod tests {
         assert_eq!(result, Err(Error::InvalidTopicFilter("a/#/c".to_string())));
         let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "sport+".to_string(), 0);
         assert_eq!(result, Err(Error::InvalidTopicFilter("sport+".to_string())));
-        let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "sport/tennis#".to_string(), 0);
-        assert_eq!(result, Err(Error::InvalidTopicFilter("sport/tennis#".to_string())));
+        let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "sport+".to_string(), 0);
+        assert_eq!(result, Err(Error::InvalidTopicFilter("sport+".to_string())));
+    }
+
+    #[test]
+    fn test_topic_subscription_multiple_thread() {
+        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+        topic_manager.write().unwrap().create_tenant("hello".to_string());
+        let mut topic_manager_t_1 = topic_manager.clone();
+        let mut topic_manager_t_2 = topic_manager.clone();
+        let mut topic_manager_t_3 = topic_manager.clone();
+        let thread_1 = thread::spawn(move || {
+            print!("1");
+            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+            print!("2");
+            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
+            print!("3");
+            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
+            print!("4");
+        });
+        let thread_3 = thread::spawn(move || {
+            print!("5");
+            topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
+            print!("6");
+            topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
+            print!("7");
+        });
+        let thread_2 = thread::spawn(move || {
+            print!("8");
+            topic_manager_t_3.write().unwrap().subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
+            print!("9");
+        });
+
+        thread_1.join();
+        thread_2.join();
+        thread_3.join();
+
+        let clients = topic_manager.write().unwrap().get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
+        let clients = clients.unwrap();
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients.clone()[0].client_identifier, "clientB");
+        assert_eq!(clients.clone()[1].client_identifier, "clientD");
     }
 
 }
