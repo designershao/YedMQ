@@ -1,10 +1,11 @@
 use core::fmt;
 use std::{string, sync::{Arc, Mutex, RwLock}, collections::HashMap};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error {
     TopicNotFound(String),
-    TenantNotFound(String)
+    TenantNotFound(String),
+    InvalidTopicFilter(String),
 }
 
 impl fmt::Display for Error {
@@ -12,8 +13,30 @@ impl fmt::Display for Error {
         match self {
             Error::TopicNotFound(topic) => write!(f, "topic {topic} not found"), 
             Error::TenantNotFound(tenant) => write!(f, "tenant {tenant} not found"),
+            Error::InvalidTopicFilter(topic) => write!(f, "invalid topic filter {topic}"),
         }
     }
+}
+
+fn test_topic(topic: &String) -> bool {
+    let i = topic.split("/");
+    let mut index = 0;
+    let length = i.clone().count();
+    for s in i {
+        index += 1;
+        if s.len() > 1 {
+            if s.contains('#') || s.contains('+') {
+                return false
+            }
+        } else {
+            if s.contains('#') {
+                if index != length {
+                    return false
+                }
+            }
+        }
+    }
+    true
 }
 
 
@@ -24,6 +47,8 @@ struct TopicManager {
 }
 
 impl TopicManager {
+    // generate mqtt topic test regex
+
 
     pub fn new() -> Self {
         Self {
@@ -36,6 +61,11 @@ impl TopicManager {
     }
 
     pub fn subscription(&mut self, tenant_id:String, client_identifier:String, topic_filter: String, qos: u8) -> Result<(), Error> {
+
+        if !test_topic(&topic_filter) {
+            return Err(Error::InvalidTopicFilter(topic_filter));
+        }
+
         let topic_patterns:Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
@@ -366,6 +396,18 @@ mod tests {
         assert_eq!(clients.clone()[0].client_identifier, "clientB");
         assert_eq!(clients.clone()[1].client_identifier, "clientD");
 
+    }
+
+    #[test]
+    fn test_invalid_topic_filter() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/#/c".to_string(), 0);
+        assert_eq!(result, Err(Error::InvalidTopicFilter("a/#/c".to_string())));
+        let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "sport+".to_string(), 0);
+        assert_eq!(result, Err(Error::InvalidTopicFilter("sport+".to_string())));
+        let result = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "sport/tennis#".to_string(), 0);
+        assert_eq!(result, Err(Error::InvalidTopicFilter("sport/tennis#".to_string())));
     }
 
 }
