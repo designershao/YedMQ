@@ -29,3 +29,6 @@ entry_func = "CheckUserPermission"
 |hook|description|
 |-----|-----------|
 |OnClientAuth| Called when client connect to the broker and send the ConnectPacket |
+
+## Plugin Init Flow
+![PluginInitFlow](./design_diagrams.drawio.png)
