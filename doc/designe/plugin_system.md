@@ -30,5 +30,5 @@ entry_func = "CheckUserPermission"
 |-----|-----------|
 |OnClientAuth| Called when client connect to the broker and send the ConnectPacket |
 
-## Plugin Init Flow
-![PluginInitFlow](./design_diagrams.drawio.png)
+## Plugin Manager Init Flow
+![PluginInitFlow](./plugin_manager_init_diagrams.png)
