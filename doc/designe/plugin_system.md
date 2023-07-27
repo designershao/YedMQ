@@ -94,11 +94,21 @@ local conn = pool:get_conn()
 Get mysql connection from connection pool
 
 #### SQL Query
+
+simple query
 ```lua
-cur, error = conn:execute([[SELECT username FROM test ]])
+cur, error = conn:execute([[SELECT username,age FROM test ]])
 row = cur:fetch_next()
 print(row.username)
 ```
+
+named parameters query
+```lua
+cur, error = conn:execute_with_params([[SELECT username, age FROM test WHERE age > :age]],{age = 10})
+row = cur:fetch_next()
+print(row.username)
+```
+
 Using sql query database
 
 
