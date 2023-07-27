@@ -14,8 +14,12 @@ M.author = "Samoye"
 M.name = "TestPlugin"
 M.description = "Just A Test Plugin"
 
-M.setup = function()
+M.auth = function(client_id, username, password, ip)
+    return true
+end
 
+M.setup = function()
+    samoye.hook.register("OnConnectAuth", "auth")
 end
 
 return M
@@ -31,6 +35,9 @@ return M
 ### Plugin Setup Function
 When plugin loaded succeed, the system would call the setup() function, the plugin could use setup function to init the plugin.
 
+## Plugin Safety
+The plugin can`t require any other c api modules.The plugin instance runtime is seperated.
+
 ## Plugin Folder Struct
 
 ```
@@ -45,11 +52,54 @@ plugin_a/
 ```
 
 ## Plugin Load Flow
+![plugin_load_flow](./plugin_load_flow.png)
 
-## Plugin API Design
+## Plugin API Design (Draft)
+
+### samoye.hook
+#### Register System Hook Function
+```
+samoye.hook.register(hookName:String, functionName:String)
+```
+
+Register hook function with function name which returnd from init.lua.
+
+System Hook Table
+
+| Hook  | Parameters  | description  | 
+|---|---|---|
+| OnConnectAuth |(clientId:String, username:String, password:String, ip:String) | called when new client connect to broker | 
+| OnPublishAclCheck | (ctx:Context, pubTopic:String, qos: Int) | called when client publish message |
+| OnSubscribeAclCheck | (ctx:Context, subTopics: String[], qos: Int) | called when client subscribe topics |
+| OnPublish | (ctx:Context, publishPacket:Packet) | called when broker received publish packet |
 
 ### samoye.api.net
+#### Http Get Request
 
-### samoye.api.db
+#### Http Put Request
+
+#### Http Post Request
+
+### samoye.api.db.mysql
+#### Connection Pool
+```lua
+local pool = samoye.api.db.mysql.pool:new(url)
+```
+Create the mysql connection pool
+
+#### Get Connection From Pool
+```lua
+local conn = pool:get_conn()
+```
+Get mysql connection from connection pool
+
+#### SQL Query
+```lua
+cur, error = conn:execute([[SELECT username FROM test ]])
+row = cur:fetch_next()
+print(row.username)
+```
+Using sql query database
+
 
 ## Plugin Example
