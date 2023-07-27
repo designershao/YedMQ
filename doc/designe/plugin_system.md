@@ -74,11 +74,29 @@ System Hook Table
 | OnPublish | (ctx:Context, publishPacket:Packet) | called when broker received publish packet |
 
 ### samoye.api.net
-#### Http Get Request
+#### Http
+```lua
+/* GET */
+let client = samoye.api.net.http.client:new()
+local res = client.get("https://www.test.com")
 
-#### Http Put Request
+/* POST  Body*/
+local res = client.post("http://test.com").body("test").send
 
-#### Http Post Request
+/* POST Form */
+local res = client.post("http://test.com").form({
+    ["username"] = "hellen"
+}).send
+
+/* PUT Body*/
+local res = client.put("http://test.com").body("test").send
+
+/* POST Form */
+local res = client.put("http://test.com").form({
+    ["username"] = "hellen"
+}).send
+
+```
 
 ### samoye.api.db.mysql
 #### Connection Pool
