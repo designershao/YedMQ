@@ -77,7 +77,7 @@ System Hook Table
 #### Http
 ```lua
 /* GET */
-let client = samoye.api.net.http.client:new()
+local client = samoye.api.net.http.client:new()
 local res = client.get("https://www.test.com")
 
 /* POST  Body*/
