@@ -9,14 +9,14 @@ Plugin export as a lua table.
 Examples:
 
 ```lua
+function auth(client_id, username, password)
+    return true
+end
+
 local M =  {}
 M.author = "Samoye"
 M.name = "TestPlugin"
 M.description = "Just A Test Plugin"
-
-M.auth = function(client_id, username, password, ip)
-    return true
-end
 
 M.setup = function()
     samoye.hook.register("OnConnectAuth", "auth")
