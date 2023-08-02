@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::{Arc, RwLock}};
 use mlua::Function;
 use super::hook::Hook;
 
-struct HookContext<'lua> {
+pub struct HookContext<'lua> {
     hook_map: HashMap<String, Vec<Arc<Hook<'lua>>>>
 }
 

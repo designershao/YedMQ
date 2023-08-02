@@ -7,22 +7,22 @@ use mlua::Result;
 #[derive(Debug, PartialEq)]
 pub struct OnPublishAclCheckHookFuncWrapper<'lua> {
     func: Function<'lua>,
-    belongs_to_plugin: String,
+    unique_name: String,
 }
 
 impl<'lua> Eq for OnPublishAclCheckHookFuncWrapper<'lua> {}
 
 impl<'lua> Hash for OnPublishAclCheckHookFuncWrapper<'lua> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.belongs_to_plugin.hash(state)
+        self.unique_name.hash(state)
     }
 }
 
 impl<'lua> OnPublishAclCheckHookFuncWrapper<'lua> {
-    pub fn new(func: Function<'lua>, belongs_to_plugin: String) -> Self {
+    pub fn new(func: Function<'lua>, unique_name: String) -> Self {
         Self {
             func,
-            belongs_to_plugin,
+            unique_name,
         }
     }
 
