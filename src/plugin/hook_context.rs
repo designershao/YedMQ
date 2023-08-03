@@ -8,6 +8,12 @@ pub struct HookContext<'lua> {
 }
 
 impl<'lua> HookContext<'lua> {
+    
+    pub fn new() -> Self {
+        Self {
+            hook_map: HashMap::new(),
+        }
+    }
 
     pub fn register_hook_function(&mut self, hook_name: &String, hook_func_wrapper: Hook<'lua>) {
         self.hook_map.entry(hook_name.clone()).or_default().push(Arc::new(hook_func_wrapper)); 

@@ -2,9 +2,11 @@ pub mod api;
 pub mod hook_context;
 pub mod hook;
 
-use std::{fmt, cell::RefCell, sync::{Arc, Mutex}, collections::HashMap, fs, path::PathBuf};
-use mlua::{Lua, Chunk, Table, Function};
+use std::{fmt, cell::RefCell, sync::{Arc, Mutex, RwLock}, collections::HashMap, fs, path::PathBuf};
+use mlua::{Lua, Chunk, Table, Function, Result};
 use nom::Err;
+
+use self::{hook_context::HookContext, hook::{Hook, on_connect_auth_hook::OnConnectAuthHookFuncWrapper}, api::hook::HookApi};
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -24,38 +26,51 @@ pub struct Plugin {
     pub name: String,
     pub description: String,
     pub author: String,
-    pub runtime: Arc<Mutex<Lua>>,
-    pub plugin_path: String
+    pub runtime: Lua,
+    init_lua_path: PathBuf,
 }
 
 impl Plugin {
 
-    pub fn new(plugin_path: &PathBuf) -> mlua::Result<Self> {
-        let mut dest_plugin_path = plugin_path.clone();
-        dest_plugin_path.push("lua");
-        dest_plugin_path.push("init.lua");
-        if let Ok(content) = fs::read(dest_plugin_path) {
-            let lua = Lua::new();
-            let out_table = lua.load(&String::from_utf8(content).unwrap()).eval::<Table>();
+    pub fn init(&'static mut self, hook_ctx: Arc<RwLock<HookContext<'static>>>) -> Result<()> {
+        if let Ok(content) = fs::read(self.init_lua_path.clone()) {
+            let hook_register_func = self.runtime.create_function(move |lua:&Lua, (hook_name, func_name):(String, String)| {
+                let hook_ctx_cloned = hook_ctx.clone();
+                let mut hook_api = HookApi::new(hook_ctx_cloned);
+                hook_api.register(lua, &hook_name, &func_name, &String::from("123"))
+            });
+            todo!("register hook reigster function to lua");
+            let out_table = self.runtime.load(&String::from_utf8(content).unwrap()).eval::<Table>();
             if let Ok(out_table) = out_table {
                 let author:String= out_table.get("author")?;
                 let plugin_name:String = out_table.get("name")?;
                 let plugin_description:String = out_table.get("description")?;
                 let setup_func:Function = out_table.get("setup")?;
                 setup_func.call(())?;
-                Ok(
-                Self {
-                    name: plugin_name,
-                    description: plugin_description,
-                    author: author,
-                    plugin_path: plugin_path.to_str().unwrap().to_string(),
-                    runtime: todo!(),
-                })
+                self.author = author;
+                self.name = plugin_name;
+                self.description = plugin_description;
+                Ok(())
             } else {
                 Err(mlua::Error::BindError)
             }
         } else {
             Err(mlua::Error::BindError)
+        }
+    }
+
+
+    pub fn new(plugin_path: &PathBuf) -> Plugin {
+        let mut dest_plugin_path = plugin_path.clone();
+        dest_plugin_path.push("lua");
+        dest_plugin_path.push("init.lua");
+        let lua = Lua::new();
+        Plugin {
+            name: String::from("test"),
+            description: String::from("test"),
+            author: String::from("test"),
+            init_lua_path: dest_plugin_path,
+            runtime: Lua::new(),
         }
     }
 }

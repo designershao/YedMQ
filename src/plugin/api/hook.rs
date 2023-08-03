@@ -5,7 +5,7 @@ use mlua::{chunk, AnyUserData, ExternalResult, UserData, UserDataMethods};
 
 use crate::plugin::{hook_context::HookContext, hook::{on_connect_auth_hook::OnConnectAuthHookFuncWrapper, Hook, on_publish_acl_check_hook::OnPublishAclCheckHookFuncWrapper, on_subscribe_acl_check_hook::{self, OnSubscribeAclCheckHookFuncWrapper}}};
 
-struct HookApi<'lua> {
+pub struct HookApi<'lua> {
     hook_context: Arc<RwLock<HookContext<'lua>>>
 }
 
@@ -31,6 +31,12 @@ impl fmt::Display for Error {
 }
 
 impl<'lua> HookApi<'lua> {
+    pub fn new(ctx:Arc<RwLock<HookContext<'lua>>>) -> Self {
+        Self {
+            hook_context: ctx.clone()
+        }
+    }
+
     pub fn register(&mut self, lua: &'lua Lua, hook_name: &String, func_name: &String, unique_name: &String) -> Result<()> {
         let global = lua.globals();
         let func:Function = global.get(func_name.clone())?;
