@@ -10,13 +10,13 @@ use self::{hook_context::HookContext, hook::{Hook, on_connect_auth_hook::OnConne
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
-    LoadWasmModuleError(String),
+    LoadPluginError(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::LoadWasmModuleError(msg) => write!(f, "{}", msg),
+            Error::LoadPluginError(msg) => write!(f, "{}", msg),
         }
     }
 }
@@ -34,12 +34,21 @@ impl Plugin {
 
     pub fn init(&'static mut self, hook_ctx: Arc<RwLock<HookContext<'static>>>) -> Result<()> {
         if let Ok(content) = fs::read(self.init_lua_path.clone()) {
+            let lua_path = self.init_lua_path.to_str().unwrap().to_string();
             let hook_register_func = self.runtime.create_function(move |lua:&Lua, (hook_name, func_name):(String, String)| {
                 let hook_ctx_cloned = hook_ctx.clone();
                 let mut hook_api = HookApi::new(hook_ctx_cloned);
-                hook_api.register(lua, &hook_name, &func_name, &String::from("123"))
-            });
-            todo!("register hook reigster function to lua");
+                hook_api.register(lua, &hook_name, &func_name, &lua_path)
+            })?;
+
+            let hook_func_table = self.runtime.create_table()?;
+            hook_func_table.set("register", hook_register_func)?;
+
+            let ns_table = self.runtime.create_table()?;
+            ns_table.set("hook", hook_func_table)?;
+
+            self.runtime.globals().set("samoye", ns_table)?;
+
             let out_table = self.runtime.load(&String::from_utf8(content).unwrap()).eval::<Table>();
             if let Ok(out_table) = out_table {
                 let author:String= out_table.get("author")?;
@@ -64,7 +73,6 @@ impl Plugin {
         let mut dest_plugin_path = plugin_path.clone();
         dest_plugin_path.push("lua");
         dest_plugin_path.push("init.lua");
-        let lua = Lua::new();
         Plugin {
             name: String::from("test"),
             description: String::from("test"),
