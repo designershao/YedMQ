@@ -9,17 +9,15 @@ Plugin export as a lua table.
 Examples:
 
 ```lua
-function auth(client_id, username, password)
-    return true
-end
 
 local M =  {}
 M.author = "Samoye"
 M.name = "TestPlugin"
 M.description = "Just A Test Plugin"
+M.version = "1.0.0"
 
-M.setup = function()
-    samoye.hook.register("OnConnectAuth", "auth")
+M.hook.onConnectAuth = function(clientId, username, password, ip)
+    return true
 end
 
 return M
@@ -31,6 +29,7 @@ return M
 | author | string  | plugin author name  | 
 | name   | string  | plugin name  |
 | description   | string  | plugin description |
+| version | string | plugin version |
 
 ### Plugin Setup Function
 When plugin loaded succeed, the system would call the setup() function, the plugin could use setup function to init the plugin.
@@ -43,10 +42,10 @@ The plugin can`t require any other c api modules.The plugin instance runtime is 
 ```
 plugin_a/
 ├─ doc/
-├─ lua/
+├─ src/
 │  ├─ common/
 │  │  ├─ utils.lua
-│  ├─ init.lua
+│  ├─ plugin.lua
 ├─ README.md
 
 ```
