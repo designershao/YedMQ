@@ -1,12 +1,7 @@
 pub mod api;
-pub mod hook_context;
-pub mod hook;
 
-use std::{fmt, cell::RefCell, sync::{Arc, Mutex, RwLock}, collections::HashMap, fs, path::PathBuf, rc::Rc};
-use mlua::{Lua, Chunk, Table, Function, Result, RegistryKey};
-use nom::Err;
-
-use self::{hook_context::HookContext, hook::{Hook, on_connect_auth_hook::OnConnectAuthHookFuncWrapper}, api::hook::HookApi};
+use std::{fmt,  collections::HashMap, fs, path::PathBuf, rc::Rc, sync::Arc};
+use mlua::{Lua, Table, Function, Result, RegistryKey};
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -26,6 +21,7 @@ pub struct Plugin {
     pub name: String,
     pub description: String,
     pub author: String,
+    pub version: String,
     runtime: Rc<Lua>,
     hook_table_key: RegistryKey,
     on_activate_func_key: Option<RegistryKey>,
@@ -37,7 +33,7 @@ impl Plugin {
     /// Called new connect packet is connected
     pub fn on_connect_auth(&self, client_id: &String, username:&String, password: &String, ip: &String) -> Result<bool> {
         let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
-        let on_connect_auth_func:Function = hook.get("onAuthConnect").unwrap();
+        let on_connect_auth_func:Function = hook.get("onConnectAuth").unwrap();
         on_connect_auth_func.call::<(String,String,String,String), bool>((client_id.to_string(), username.to_string(), password.to_string(), ip.to_string()))
     }
 
@@ -73,6 +69,7 @@ impl Plugin {
                 let author:String= plugin_module.get("author")?;
                 let plugin_name:String = plugin_module.get("name")?;
                 let plugin_description:String = plugin_module.get("description")?;
+                let plugin_version = plugin_module.get("version")?;
                 let hook_table:Table = plugin_module.get("hook")?;
                 let registry_key = lua.create_registry_value(hook_table)?;
 
@@ -100,7 +97,8 @@ impl Plugin {
                     runtime: lua.clone(),
                     hook_table_key: registry_key,
                     on_activate_func_key,
-                    on_deactivate_func_key
+                    on_deactivate_func_key,
+                    version: plugin_version
                 })
             } else {
                 Err(mlua::Error::BindError)
@@ -144,4 +142,32 @@ impl PluginManager {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{env, path::PathBuf};
+
+    use super::Plugin;
+
+
+    #[test]
+    fn plugin_load_test() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests").join("demo_plugin");
+        let plugin = Plugin::new(&plugin_path).unwrap();
+        assert_eq!(plugin.name, "demo_plugin");
+        assert_eq!(plugin.description, "demo plugin");
+        assert_eq!(plugin.author, "test");
+        assert_eq!(plugin.version, "1.0.0");
+    }
+
+    #[test]
+    fn plugin_on_connect_auth_test() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests").join("demo_plugin");
+        let plugin = Plugin::new(&plugin_path).unwrap();
+        let r = plugin.on_connect_auth(&String::from("client_id"), &String::from("test"), &String::from("test"), &String::from("127.0.0.1")).unwrap();
+        assert_eq!(r, true);
+    }
 }
