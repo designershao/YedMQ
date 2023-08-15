@@ -1,7 +1,7 @@
 pub mod api;
 
 use std::{fmt,  collections::HashMap, fs, path::PathBuf, rc::Rc, sync::Arc};
-use mlua::{Lua, Table, Function, Result, RegistryKey};
+use mlua::{Lua, Table, Function, Result, RegistryKey, UserData};
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -15,6 +15,19 @@ impl fmt::Display for Error {
         }
     }
 }
+
+pub struct SessionContext {
+    pub client_id: String,
+    pub username: String,
+}
+
+impl UserData for SessionContext {
+    fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+        fields.add_field_method_get("clientId", |_, this| Ok(this.client_id.clone()));
+        fields.add_field_method_get("username", |_,this| Ok(this.username.clone()));
+    }
+}
+
 
 // Represents broker plugin.
 pub struct Plugin {
@@ -30,14 +43,27 @@ pub struct Plugin {
 
 impl Plugin {
 
-    /// Called new connect packet is connected
+    // Called when client publish the publish packet
+    pub fn on_publish_acl_check(&self, session_ctx:SessionContext,topic:&String, qos:i32) -> Result<bool> {
+        let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
+        let on_publish_acl_check_func:Function = match hook.get("onPublishAclCheck") {
+            Ok(func) => func,
+            Err(e) => return Err(e)
+        };
+        on_publish_acl_check_func.call::<(SessionContext,String,i32), bool>((session_ctx, topic.to_string(), qos))
+    }
+
+    // Called new connect packet is connected
     pub fn on_connect_auth(&self, client_id: &String, username:&String, password: &String, ip: &String) -> Result<bool> {
         let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
-        let on_connect_auth_func:Function = hook.get("onConnectAuth").unwrap();
+        let on_connect_auth_func:Function = match hook.get("onConnectAuth") {
+            Ok(func) => func,
+            Err(e) => return Err(e)
+        };
         on_connect_auth_func.call::<(String,String,String,String), bool>((client_id.to_string(), username.to_string(), password.to_string(), ip.to_string()))
     }
 
-    /// Called when plugin is activated
+    // Called when plugin is activated
     pub fn on_activate(&self) {
         if self.on_activate_func_key.is_some() {
             let on_activate_func:Function = self.runtime.registry_value(&self.on_activate_func_key.as_ref().unwrap()).unwrap();
