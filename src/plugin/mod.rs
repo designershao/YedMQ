@@ -16,6 +16,7 @@ impl fmt::Display for Error {
     }
 }
 
+// Represents session context
 pub struct SessionContext {
     pub client_id: String,
     pub username: String,
