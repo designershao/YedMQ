@@ -4,11 +4,16 @@ use nom::AsBytes;
 use mlua::Error;
 
 // simple byte array module
-struct LuaByteArray {
+pub struct LuaByteArray {
     inner: BytesMut,
 }
 
 impl LuaByteArray {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        LuaByteArray {
+            inner: BytesMut::from(bytes.as_bytes())
+        }
+    }
 
     // register to the lua runtime as an inner module
     pub fn register_to_lua_runtime(lua: &mlua::Lua) {

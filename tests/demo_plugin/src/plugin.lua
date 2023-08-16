@@ -15,6 +15,14 @@ hooks.onConnectAuth = function(clientId, username, password, ip)
     end
 end
 
+hooks.onPublish = function(sessionCtx, topic, qos, content)
+    username = sessionCtx.username
+    password = sessionCtx.clientId
+    _G.onPublishPacketConentStr = content:readAsUtf8String()
+    _G.onPublishPacketQos = qos
+    _G.onPublishPacketTopic = topic
+end
+
 plugin.hook = hooks
 
 return plugin

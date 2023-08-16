@@ -3,6 +3,10 @@ pub mod api;
 use std::{fmt,  collections::HashMap, fs, path::PathBuf, rc::Rc, sync::Arc};
 use mlua::{Lua, Table, Function, Result, RegistryKey, UserData};
 
+use crate::protocol::v3::publish::PublishPacket;
+
+use self::api::byte_array::LuaByteArray;
+
 #[derive(Debug, PartialEq)]
 pub enum Error {
     LoadPluginError(String),
@@ -43,6 +47,23 @@ pub struct Plugin {
 }
 
 impl Plugin {
+    pub fn on_publish(&self, session_ctx:SessionContext,publish_packet: &PublishPacket) -> Result<()> {
+        let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
+        let on_publish_func:Function = match hook.get("onPublish") {
+            Ok(func) => func,
+            Err(e) => return Err(e)
+        };
+
+        let byte_array = api::byte_array::LuaByteArray::new(publish_packet.payload.payload.clone());
+
+        on_publish_func.call::<(SessionContext,String,i32, LuaByteArray), ()>((
+            session_ctx, 
+            publish_packet.variable_header.topic_name.clone(), 
+            publish_packet.fix_header.qos.unwrap(),
+            byte_array
+        ))
+    }
+
 
     // Called when client publish the publish packet
     pub fn on_publish_acl_check(&self, session_ctx:SessionContext,topic:&String, qos:i32) -> Result<bool> {
@@ -175,7 +196,11 @@ impl PluginManager {
 mod tests {
     use std::{env, path::PathBuf};
 
-    use super::Plugin;
+    use mlua::{Value, ToLua};
+
+    use crate::protocol::{v3::{publish::{PublishPacket, VariableHeader, Payload}, fixed_header::FixHeader}, PacketType};
+
+    use super::{Plugin, SessionContext};
 
 
     #[test]
@@ -196,5 +221,49 @@ mod tests {
         let plugin = Plugin::new(&plugin_path).unwrap();
         let r = plugin.on_connect_auth(&String::from("client_id"), &String::from("test"), &String::from("test"), &String::from("127.0.0.1")).unwrap();
         assert_eq!(r, true);
+    }
+
+    #[test]
+    fn plugin_on_publish_test() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests").join("demo_plugin");
+        let plugin = Plugin::new(&plugin_path).unwrap();
+        
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(1),
+            retain: Some(true),
+            dup: Some(1),
+            remaining_length: 8,
+        };
+        let variable_header = VariableHeader {
+            topic_name: "a/b".to_string(),
+            packet_identifier: Some(0x10),
+        };
+
+        let payload = Payload{
+            payload: vec!(0x68,0x65,0x6c,0x6c,0x6f)
+        };
+
+        let publish_packet = PublishPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        let session_ctx = SessionContext {
+            client_id: String::from("client_id"),
+            username: String::from("test")
+        };
+
+        let _ = plugin.on_publish(session_ctx, &publish_packet).unwrap();
+        let globals = plugin.runtime.globals();
+        let playload_str:String = globals.get::<String,String>("onPublishPacketConentStr".into()).unwrap();
+        let publish_qos:i32 = globals.get::<String,i32>("onPublishPacketQos".into()).unwrap();
+        let publish_topic:String = globals.get::<String,String>("onPublishPacketTopic".into()).unwrap();
+        assert_eq!(playload_str, "hello".to_string());
+        assert_eq!(publish_qos, 1);
+        assert_eq!(publish_topic, "a/b".to_string());
+
     }
 }
