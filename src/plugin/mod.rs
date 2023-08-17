@@ -43,7 +43,8 @@ pub struct Plugin {
     runtime: Rc<Lua>,
     hook_table_key: RegistryKey,
     on_activate_func_key: Option<RegistryKey>,
-    on_deactivate_func_key: Option<RegistryKey>
+    on_deactivate_func_key: Option<RegistryKey>,
+    register_hooks: Vec<String>
 }
 
 impl Plugin {
@@ -101,6 +102,19 @@ impl Plugin {
         }
     }
 
+    // Check the hooks table and get the register hooks
+    fn get_hook_func_names_from_table(table: &Table) -> Vec<String> {
+        let mut result = Vec::new();
+        let hooks = vec![String::from("onConnectAuth"), String::from("onPublishAclCheck"), String::from("onPublish")];
+
+        for hook in hooks {
+            let hook_name = hook.clone();
+            if table.contains_key::<String>(hook.into()).unwrap() {
+                result.push(hook_name);
+            }
+        }
+        result
+    }
 
     pub fn new(plugin_path: &PathBuf) -> Result<Plugin> {
 
@@ -119,6 +133,7 @@ impl Plugin {
                 let plugin_description:String = plugin_module.get("description")?;
                 let plugin_version = plugin_module.get("version")?;
                 let hook_table:Table = plugin_module.get("hook")?;
+                let register_hooks = Self::get_hook_func_names_from_table(&hook_table);
                 let registry_key = lua.create_registry_value(hook_table)?;
 
                 let on_activate:Result<Function> = plugin_module.get("onActivate");
@@ -138,6 +153,7 @@ impl Plugin {
                     Err(_) => None
                 };
 
+
                 Ok(Plugin {
                     name: plugin_name,
                     description: plugin_description,
@@ -146,7 +162,8 @@ impl Plugin {
                     hook_table_key: registry_key,
                     on_activate_func_key,
                     on_deactivate_func_key,
-                    version: plugin_version
+                    version: plugin_version,
+                    register_hooks
                 })
             } else {
                 Err(mlua::Error::BindError)
@@ -169,6 +186,27 @@ impl PluginManager {
             plugin_dict: PathBuf::from(path), 
             inner: HashMap::new()
         }
+    }
+
+    // get plugin with plugin name
+    pub fn get_plugin(&self, name: &String) -> Option<Arc<Plugin>> {
+        self.inner.get(name).cloned() 
+    }
+
+    // delete plugin with plugin name
+    pub fn delete_plugin(&mut self, name: &String) {
+        self.inner.remove(name);
+    }
+
+    // according the hookname get plugin list
+    pub fn get_plugins_with_hook(&self, name: &String) -> Vec<Arc<Plugin>> {
+        let  mut result = Vec::new();
+        for plugin in self.inner.values() {
+            if plugin.register_hooks.contains(name) {
+                result.push(plugin.clone());
+            } 
+        }
+        result
     }
 
     fn loop_directory(&mut self, plugin_dic_path: &str) {
