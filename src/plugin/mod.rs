@@ -1,23 +1,20 @@
 pub mod api;
 
-use std::{fmt,  collections::HashMap, fs, path::PathBuf, rc::Rc, sync::Arc};
-use mlua::{Lua, Table, Function, Result, RegistryKey, UserData};
-
+use std::{collections::HashMap, fs, path::PathBuf, rc::Rc, sync::Arc};
+use mlua::{Lua, Table, Function, RegistryKey, UserData};
 use crate::protocol::v3::publish::PublishPacket;
-
 use self::api::byte_array::LuaByteArray;
+use thiserror::Error;
+use anyhow::{Context, Result};
 
-#[derive(Debug, PartialEq)]
+
+#[derive(Debug, PartialEq, Error)]
 pub enum Error {
+    #[error("load plugin error")]
     LoadPluginError(String),
-}
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::LoadPluginError(msg) => write!(f, "{}", msg),
-        }
-    }
+    #[error("plugin runtime error")]
+    PluginRuntimeError(String),
 }
 
 // Represents session context
@@ -49,57 +46,51 @@ pub struct Plugin {
 
 impl Plugin {
     pub fn on_publish(&self, session_ctx:SessionContext,publish_packet: &PublishPacket) -> Result<()> {
-        let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
-        let on_publish_func:Function = match hook.get("onPublish") {
-            Ok(func) => func,
-            Err(e) => return Err(e)
-        };
-
+        let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key).with_context(|| format!("Plugin {} : Failed to register hook table", self.name))?;
+        let on_publish_func:Function = hook.get("onPublish").with_context(|| format!("Plugin {} : Failed to get hook onPublish", self.name))?;
         let byte_array = api::byte_array::LuaByteArray::new(publish_packet.payload.payload.clone());
-
         on_publish_func.call::<(SessionContext,String,i32, LuaByteArray), ()>((
             session_ctx, 
             publish_packet.variable_header.topic_name.clone(), 
             publish_packet.fix_header.qos.unwrap(),
             byte_array
-        ))
+        )).with_context(|| format!("Call hook onPublish failed"))?;
+        Ok(())
     }
 
 
     // Called when client publish the publish packet
     pub fn on_publish_acl_check(&self, session_ctx:SessionContext,topic:&String, qos:i32) -> Result<bool> {
         let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
-        let on_publish_acl_check_func:Function = match hook.get("onPublishAclCheck") {
-            Ok(func) => func,
-            Err(e) => return Err(e)
-        };
-        on_publish_acl_check_func.call::<(SessionContext,String,i32), bool>((session_ctx, topic.to_string(), qos))
+        let on_publish_acl_check_func:Function = hook.get("onPublishAclCheck").with_context(|| format!("Plugin {} : Failed to get hook onPublishAclCheck", self.name))?;
+        let result = on_publish_acl_check_func.call::<(SessionContext,String,i32), bool>((session_ctx, topic.to_string(), qos)).with_context(|| format!("Plugin {} : Call hook onPublishAclCheck failed", self.name))?;
+        Ok(result)
     }
 
     // Called new connect packet is connected
     pub fn on_connect_auth(&self, client_id: &String, username:&String, password: &String, ip: &String) -> Result<bool> {
         let hook:Table = self.runtime.registry_value::<Table>(&self.hook_table_key)?;
-        let on_connect_auth_func:Function = match hook.get("onConnectAuth") {
-            Ok(func) => func,
-            Err(e) => return Err(e)
-        };
-        on_connect_auth_func.call::<(String,String,String,String), bool>((client_id.to_string(), username.to_string(), password.to_string(), ip.to_string()))
+        let on_connect_auth_func:Function = hook.get("onConnectAuth").with_context(|| format!("Plugin {} : Failed to get hook onConnectAuth", self.name))?;
+        let result = on_connect_auth_func.call::<(String,String,String,String), bool>((client_id.to_string(), username.to_string(), password.to_string(), ip.to_string())).with_context(|| format!("Plugin {} : Call hook onConnectAuth failed", self.name))?;
+        Ok(result)
     }
 
     // Called when plugin is activated
-    pub fn on_activate(&self) {
+    pub fn on_activate(&self) -> Result<()> {
         if self.on_activate_func_key.is_some() {
             let on_activate_func:Function = self.runtime.registry_value(&self.on_activate_func_key.as_ref().unwrap()).unwrap();
-            on_activate_func.call::<(),()>(());
+            on_activate_func.call::<(),()>(()).with_context(|| format!("Plugin {} : Call hook onActivate failed", self.name))?;
         }
+        Ok(())
     }
 
     /// Called when plugin is deactivated
-    pub fn on_deactivate(&self) {
+    pub fn on_deactivate(&self) -> Result<()> {
         if self.on_deactivate_func_key.is_some() {
             let on_deactivate_func:Function = self.runtime.registry_value(&self.on_deactivate_func_key.as_ref().unwrap()).unwrap();
-            on_deactivate_func.call::<(),()>(());
+            on_deactivate_func.call::<(),()>(()).with_context(|| format!("Plugin {} : Call hook onDeactivate failed", self.name))?;
         }
+        Ok(())
     }
 
     // Check the hooks table and get the register hooks
@@ -124,53 +115,41 @@ impl Plugin {
         dest_plugin_path.push("src");
         dest_plugin_path.push("plugin.lua");
 
-        if let Ok(content) = fs::read(dest_plugin_path.clone()) {
-            let lua = lua.clone();
-            let plugin_module = lua.load(&String::from_utf8(content).unwrap()).eval::<Table>();
-            if let Ok(plugin_module) = plugin_module {
-                let author:String= plugin_module.get("author")?;
-                let plugin_name:String = plugin_module.get("name")?;
-                let plugin_description:String = plugin_module.get("description")?;
-                let plugin_version = plugin_module.get("version")?;
-                let hook_table:Table = plugin_module.get("hook")?;
-                let register_hooks = Self::get_hook_func_names_from_table(&hook_table);
-                let registry_key = lua.create_registry_value(hook_table)?;
+        let content = fs::read(dest_plugin_path.clone()).with_context(|| format!("Can`t read plugin file {}", dest_plugin_path.to_str().unwrap()))?;
+        let lua = lua.clone();
+        let plugin_module = lua.load(&String::from_utf8(content).unwrap()).eval::<Table>()?;
+        let author:String= plugin_module.get("author")?;
+        let plugin_name:String = plugin_module.get("name")?;
+        let plugin_description:String = plugin_module.get("description")?;
+        let plugin_version = plugin_module.get("version")?;
+        let hook_table:Table = plugin_module.get("hook")?;
+        let register_hooks = Self::get_hook_func_names_from_table(&hook_table);
+        let registry_key = lua.create_registry_value(hook_table).with_context(|| format!("Plugin {} : Failed to register hook table", plugin_name))?;
 
-                let on_activate:Result<Function> = plugin_module.get("onActivate");
+        let mut on_activate_func_key = None;
+        let mut on_deactivate_func_key = None;
 
-                let on_activate_func_key = match on_activate {
-                    Ok(on_activate_func) => {
-                        Some(lua.create_registry_value(on_activate_func)?)
-                    },
-                    Err(_) => None
-                };
-
-                let on_deactivate:Result<Function> = plugin_module.get("onDeactivate");
-                let on_deactivate_func_key = match on_deactivate {
-                    Ok(on_deactivate_func) => {
-                        Some(lua.create_registry_value(on_deactivate_func)?)
-                    },
-                    Err(_) => None
-                };
-
-
-                Ok(Plugin {
-                    name: plugin_name,
-                    description: plugin_description,
-                    author: author,
-                    runtime: lua.clone(),
-                    hook_table_key: registry_key,
-                    on_activate_func_key,
-                    on_deactivate_func_key,
-                    version: plugin_version,
-                    register_hooks
-                })
-            } else {
-                Err(mlua::Error::BindError)
-            }
-        } else {
-            Err(mlua::Error::BindError)
+        if plugin_module.contains_key("onActivate").unwrap() {
+            let on_activate_func:Function = plugin_module.get("onActivate").with_context(|| format!("Plugin {} : Failed to get hook onActivate", plugin_name))?;
+            on_activate_func_key = Some(lua.create_registry_value(on_activate_func)?)
         }
+
+        if plugin_module.contains_key("onDeactivate").unwrap() {
+            let on_deactivate_func:Function = plugin_module.get("onDeactivate").with_context(|| format!("Plugin {} : Failed to get hook onDeactivate", plugin_name))?;
+            on_deactivate_func_key = Some(lua.create_registry_value(on_deactivate_func)?)
+        }
+
+        Ok(Plugin {
+            name: plugin_name,
+            description: plugin_description,
+            author: author,
+            runtime: lua.clone(),
+            hook_table_key: registry_key,
+            on_activate_func_key,
+            on_deactivate_func_key,
+            version: plugin_version,
+            register_hooks
+        })
     }
 }
 
@@ -185,6 +164,16 @@ impl PluginManager {
         PluginManager { 
             plugin_dict: PathBuf::from(path), 
             inner: HashMap::new()
+        }
+    }
+
+    pub fn load_all_plugins(&mut self) -> core::result::Result<(), Error> {
+        // check plugin_dict existed
+        if self.plugin_dict.is_dir() {
+            self.loop_directory();
+            Ok(())
+        } else {
+            Err(Error::LoadPluginError(format!("{} is not a directory", self.plugin_dict.to_str().unwrap())))
         }
     }
 
@@ -209,9 +198,9 @@ impl PluginManager {
         result
     }
 
-    fn loop_directory(&mut self, plugin_dic_path: &str) {
+    fn loop_directory(&mut self) {
         // loop directory to find plugin
-        if let Ok(entries) = fs::read_dir(plugin_dic_path) {
+        if let Ok(entries) = fs::read_dir(self.plugin_dict.clone()) {
             for entry in entries {
                 if let Ok(entry) = entry {
                     if let Ok(entry_type) = entry.file_type() {
@@ -219,6 +208,7 @@ impl PluginManager {
                             let dest_plugin_path = entry.path();
                             let plugin = Plugin::new(&dest_plugin_path);
                             if let Ok(plugin) = plugin {
+                                plugin.on_activate(); // call on_activate hook when load plugin succeed
                                 self.inner.insert(plugin.name.clone(), Arc::new(plugin));
                             }
                         } 
