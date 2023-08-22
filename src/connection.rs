@@ -47,7 +47,7 @@ impl Connection {
     }
 
     // Write a single packet to the underlying stream.
-    pub async fn write_packet(&mut self, packet: MqttPacketV3) -> Result<(), std::io::Error>{
+    pub async fn write_packet(&mut self, packet: &MqttPacketV3) -> Result<(), std::io::Error>{
         self.stream.write(&packet.to_bytes()).await?;
         self.stream.flush().await
     }
