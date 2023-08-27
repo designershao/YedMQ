@@ -2,17 +2,38 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
-use crate::protocol::MqttPacket;
+use crate::protocol::{MqttPacket, PacketType};
 
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
 
 pub struct PubRelPacket {
-    fix_header: FixHeader,
-    variable_header: VariableHeader
+    pub fix_header: FixHeader,
+    pub variable_header: VariableHeader
+}
+
+impl PubRelPacket {
+    pub fn new(packet_identifier: u16) -> PubRelPacket {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBREL, 
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
+
+        let variable_header = VariableHeader{
+            packet_identifier
+        };
+
+        PubRelPacket {
+            fix_header,
+            variable_header
+        }
+    }
 }
 
 pub struct VariableHeader {
-    packet_identifier: u16,
+    pub packet_identifier: u16,
 }
 
 impl VariableHeader {

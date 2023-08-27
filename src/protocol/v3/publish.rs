@@ -6,12 +6,14 @@ use crate::protocol::MqttPacket;
 
 use super::{fixed_header::{FixHeader, self}, common::{parse_utf8, parse_utf8_complete}};
 
+#[derive(Debug, Clone)]
 pub struct PublishPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload,
 }
 
+#[derive(Debug, Clone)]
 pub struct VariableHeader {
     pub topic_name: String,
     pub packet_identifier: Option<u16>,
@@ -39,6 +41,7 @@ impl VariableHeader {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Payload {
     pub payload: Vec<u8>,
 }
