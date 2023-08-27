@@ -78,24 +78,25 @@ impl QosPacketItem {
     }
 
     fn next_state(&mut self) {
-        let next_state = match self.state {
+        let (next_state, resend_packet) = match self.state {
             QosItemState::WaitPubrel => {
-                QosItemState::Finish
+                (QosItemState::Finish, None)
             }
             QosItemState::WaitPubcomp => {
-                QosItemState::Finish
+                (QosItemState::Finish, None)
             }
             QosItemState::WaitPubrec => {
-                QosItemState::WaitPubcomp
+                (QosItemState::WaitPubcomp, Some(MqttPacketV3::Pubcomp(PubCompPacket::new(self.packet_identifier))))
             }
             QosItemState::WaitPuback => {
-                QosItemState::Finish
+                (QosItemState::Finish, None)
             }
             _ => {
-                QosItemState::Finish
+                (QosItemState::Finish, None)
             }
         };
         self.state = next_state;
+        self.resend_packet = resend_packet;
     }
 }
 
