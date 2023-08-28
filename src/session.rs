@@ -102,8 +102,8 @@ impl QosPacketItem {
 
 impl Session {
 
-    async fn process_qos_packet(&self, packet: &MqttPacketV3) -> Result<()> {
-        match packet {
+    async fn process_qos_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        let r = match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
                     if !self.qos_state_table.read().unwrap().contains_key(&publish_packet.variable_header.packet_identifier.unwrap()) {
@@ -134,7 +134,7 @@ impl Session {
                         );
                     }
                 }
-                Ok(())
+                Ok(publish_packet.variable_header.packet_identifier)
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
                 if self.packet_identifier_in_used(pubrel_packet.variable_header.packet_identifier) {
@@ -146,7 +146,7 @@ impl Session {
                     state.next_state();
                 }
                 // not seen the packet id , ignore
-                Ok(())
+                Ok(Some(pubrel_packet.variable_header.packet_identifier))
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
                 if self.packet_identifier_in_used(pubrec_packet.variable_header.packet_identifier) {
@@ -156,7 +156,7 @@ impl Session {
                     let state = state.get_mut(&pubrec_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
-                Ok(())
+                Ok(Some(pubrec_packet.variable_header.packet_identifier))
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
                 // received pubcomp packet from clients, all qos2 process finished, delete publish packet from cache
@@ -166,7 +166,7 @@ impl Session {
                     let state = state.get_mut(&pubcomp_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
-                Ok(())
+                Ok(Some(pubcomp_packet.variable_header.packet_identifier))
             }
             MqttPacketV3::Puback(puback_packet) => {
                 if self.packet_identifier_in_used(puback_packet.variable_header.packet_identifier) {
@@ -175,17 +175,29 @@ impl Session {
                     let state = state.get_mut(&puback_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
-                Ok(())
+                Ok(Some(puback_packet.variable_header.packet_identifier))
             }
             _ => {
-                Ok(())
+                Ok(None)
+            }
+        };
+        if let Ok(Some(packet_id)) = r {
+            if self.qos_state_table.read().unwrap().get(&packet_id).unwrap().state == QosItemState::Finish {
+                self.release_packet_identifier(&packet_id);
             }
         }
+        Ok(())
     }
 
     fn close(&self) {
         self.qos_resend_task_quit_sender.send(()); // notify qos2 rec resend task quit
         todo!("close session should close connection")
+    }
+
+    fn release_packet_identifier(&mut self, packet_id:&u16) {
+        self.qos_state_table.write().unwrap().remove(packet_id);
+        self.qos_tx_publish_packet_cache.write().unwrap().remove(packet_id);
+        self.qos_rx_publish_packet_cache.write().unwrap().remove(packet_id);
     }
 
     fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
