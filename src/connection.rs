@@ -2,6 +2,7 @@ use bytes::{BytesMut, Buf};
 use tokio::{net::TcpStream, io::{AsyncReadExt, AsyncWriteExt}};
 
 use crate::protocol::MqttPacketV3;
+use anyhow::Result;
 
 
 // Represents MQTT connection
@@ -22,6 +23,11 @@ impl Connection {
             stream,
             buffer: BytesMut::with_capacity(4096),
         } 
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        self.stream.shutdown().await?;
+        Ok(())
     }
 
     // Read a single packet from the underlying stream.

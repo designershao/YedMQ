@@ -11,7 +11,7 @@ const RESEND_DURATION_TIME: u64 = 10;
 pub struct Session {
     client_identifier: String,
     tenant_identifier: String,
-    connection: Option<RwLock<Connection>>,
+    connection: Option<Arc<RwLock<Connection>>>,
     subscription_topics: Arc<RwLock<Vec<String>>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
     qos_resend_task_quit_sender: Sender<()>,
@@ -102,6 +102,31 @@ impl QosPacketItem {
 }
 
 impl Session {
+    pub fn new(
+        client_identifier: String, 
+        tenant_identifier: String, 
+        subscription_topics: Arc<RwLock<Vec<String>>>, 
+        connection: Arc<RwLock<Connection>>) -> Arc<Session> {
+
+        let (quit_sender, quit_receiver) = tokio::sync::mpsc::channel(1);
+
+        let session = Arc::new(Session {
+            client_identifier,
+            tenant_identifier,
+            connection: Some(connection),
+            subscription_topics,
+            qos_state_table: Arc::new(RwLock::new(HashMap::new())),
+            qos_resend_task_quit_sender: quit_sender,
+            qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
+            qos_rx_publish_packet_cache: RwLock::new(HashMap::new())
+        });
+
+        let session_cloned = session.clone();
+        tokio::spawn(async move {
+            let _ = session_cloned.run_qos_resend_task(quit_receiver).await;
+        });
+        session
+    }
 
     async fn process_qos_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
         let r:Result<Option<u16>>= match packet {
@@ -201,9 +226,13 @@ impl Session {
         Ok(())
     }
 
-    fn close(&self) {
-        self.qos_resend_task_quit_sender.send(()); // notify qos2 rec resend task quit
-        todo!("close session should close connection")
+    // Close the connection voluntarily
+    pub async fn shutdown(&self) -> Result<()> {
+        self.qos_resend_task_quit_sender.send(()).await?; // notify qos2 rec resend task quit
+        let connection = self.connection.as_ref().unwrap().clone();
+        let mut connection = connection.write().await;
+        connection.shutdown().await?;
+        Ok(())
     }
 
     async fn release_packet_identifier(&mut self, packet_id:&u16) {
@@ -267,5 +296,7 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-
+    #[test]
+    fn test_state_table() {
+    }
 }
