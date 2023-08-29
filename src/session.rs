@@ -128,7 +128,7 @@ impl Session {
         session
     }
 
-    async fn process_qos_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+    async fn process_qos_packet(&self, packet: &MqttPacketV3) -> Result<()> {
         let r:Result<Option<u16>>= match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
@@ -235,7 +235,7 @@ impl Session {
         Ok(())
     }
 
-    async fn release_packet_identifier(&mut self, packet_id:&u16) {
+    async fn release_packet_identifier(&self, packet_id:&u16) {
         let mut qos_state_table = self.qos_state_table.write().await;
         let mut qos_tx_publish_packet_cache = self.qos_tx_publish_packet_cache.write().await;
         let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
