@@ -1,8 +1,9 @@
-use std::{sync::{RwLock, Arc, mpsc::Sender}, collections::{HashMap, VecDeque}, time::Duration};
+use std::{sync::{Arc}, collections::{HashMap, VecDeque}, time::Duration};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::PublishPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}}}};
 use anyhow::Result;
-use tokio::{sync::mpsc::Receiver, select};
+use tokio::{sync::mpsc::{Receiver, Sender}, select};
+use tokio::sync::{RwLock};
 
 const RESEND_DURATION_TIME: u64 = 10;
 
@@ -10,7 +11,7 @@ const RESEND_DURATION_TIME: u64 = 10;
 pub struct Session {
     client_identifier: String,
     tenant_identifier: String,
-    connection: Arc<RwLock<Connection>>,
+    connection: Option<RwLock<Connection>>,
     subscription_topics: Arc<RwLock<Vec<String>>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
     qos_resend_task_quit_sender: Sender<()>,
@@ -18,7 +19,7 @@ pub struct Session {
     qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum QosItemState {
     WaitPubrel,
     WaitPubcomp,
@@ -103,13 +104,14 @@ impl QosPacketItem {
 impl Session {
 
     async fn process_qos_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
-        let r = match packet {
+        let r:Result<Option<u16>>= match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
-                    if !self.qos_state_table.read().unwrap().contains_key(&publish_packet.variable_header.packet_identifier.unwrap()) {
+                    let mut qos_stable_table = self.qos_state_table.write().await;
+                    if !qos_stable_table.contains_key(&publish_packet.variable_header.packet_identifier.unwrap()) {
                         // first received cached the publish packet
                         if publish_packet.fix_header.qos.unwrap() == 2 {
-                            self.qos_state_table.write().unwrap().insert(
+                            qos_stable_table.insert(
                                 publish_packet.variable_header.packet_identifier.unwrap(), 
                                 QosPacketItem::new_qos_2_tx_state(
                                     publish_packet.clone(), 
@@ -119,7 +121,7 @@ impl Session {
                             );
                         }
                         if publish_packet.fix_header.qos.unwrap() == 1 {
-                            self.qos_state_table.write().unwrap().insert(
+                            qos_stable_table.insert(
                                 publish_packet.variable_header.packet_identifier.unwrap(), 
                                 QosPacketItem::new_qos_1_tx_state(
                                     publish_packet.clone(), 
@@ -128,7 +130,8 @@ impl Session {
                                 )
                             );
                         }
-                        self.qos_rx_publish_packet_cache.write().unwrap().insert(
+                        let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
+                        qos_rx_publish_packet_cache.insert(
                             publish_packet.variable_header.packet_identifier.unwrap(), 
                             publish_packet.clone()
                         );
@@ -137,11 +140,11 @@ impl Session {
                 Ok(publish_packet.variable_header.packet_identifier)
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
-                if self.packet_identifier_in_used(pubrel_packet.variable_header.packet_identifier) {
+                if self.packet_identifier_in_used(pubrel_packet.variable_header.packet_identifier).await {
+                    let mut state = self.qos_state_table.write().await;
                     let packet_identifier = pubrel_packet.variable_header.packet_identifier;
                     let pubcomp_packet = PubCompPacket::new(pubrel_packet.variable_header.packet_identifier);
                     self.write(&&MqttPacketV3::Pubcomp(pubcomp_packet)).await?;
-                    let mut state = self.qos_state_table.write().unwrap();
                     let state = state.get_mut(&packet_identifier).unwrap();
                     state.next_state();
                 }
@@ -149,10 +152,10 @@ impl Session {
                 Ok(Some(pubrel_packet.variable_header.packet_identifier))
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
-                if self.packet_identifier_in_used(pubrec_packet.variable_header.packet_identifier) {
+                if self.packet_identifier_in_used(pubrec_packet.variable_header.packet_identifier).await {
+                    let mut state = self.qos_state_table.write().await;
                     let pubrel_packet = PubRelPacket::new(pubrec_packet.variable_header.packet_identifier);
                     self.write(&&MqttPacketV3::Pubrel(pubrel_packet)).await?;
-                    let mut state = self.qos_state_table.write().unwrap();
                     let state = state.get_mut(&pubrec_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
@@ -160,18 +163,20 @@ impl Session {
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
                 // received pubcomp packet from clients, all qos2 process finished, delete publish packet from cache
-                if self.packet_identifier_in_used(pubcomp_packet.variable_header.packet_identifier) {
-                    self.qos_tx_publish_packet_cache.write().unwrap().remove(&pubcomp_packet.variable_header.packet_identifier);
-                    let mut state = self.qos_state_table.write().unwrap();
+                if self.packet_identifier_in_used(pubcomp_packet.variable_header.packet_identifier).await {
+                    let mut state = self.qos_state_table.write().await;
+                    let mut qos_tx_publish_packet_cache = self.qos_tx_publish_packet_cache.write().await;
+                    qos_tx_publish_packet_cache.remove(&pubcomp_packet.variable_header.packet_identifier);
                     let state = state.get_mut(&pubcomp_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
                 Ok(Some(pubcomp_packet.variable_header.packet_identifier))
             }
             MqttPacketV3::Puback(puback_packet) => {
-                if self.packet_identifier_in_used(puback_packet.variable_header.packet_identifier) {
-                    self.qos_tx_publish_packet_cache.write().unwrap().remove(&puback_packet.variable_header.packet_identifier);
-                    let mut state = self.qos_state_table.write().unwrap();
+                if self.packet_identifier_in_used(puback_packet.variable_header.packet_identifier).await {
+                    let mut state = self.qos_state_table.write().await;
+                    let mut qos_tx_publish_packet_cache = self.qos_tx_publish_packet_cache.write().await;
+                    qos_tx_publish_packet_cache.remove(&puback_packet.variable_header.packet_identifier);
                     let state = state.get_mut(&puback_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
@@ -181,11 +186,18 @@ impl Session {
                 Ok(None)
             }
         };
+
         if let Ok(Some(packet_id)) = r {
-            if self.qos_state_table.read().unwrap().get(&packet_id).unwrap().state == QosItemState::Finish {
-                self.release_packet_identifier(&packet_id);
+            let mut should_release_packet_identifier = false;
+            {
+                let qos_state_table = self.qos_state_table.read().await;
+                should_release_packet_identifier = qos_state_table.get(&packet_id).unwrap().state == QosItemState::Finish;
+            }
+            if  should_release_packet_identifier {
+                self.release_packet_identifier(&packet_id).await;
             }
         }
+
         Ok(())
     }
 
@@ -194,20 +206,18 @@ impl Session {
         todo!("close session should close connection")
     }
 
-    fn release_packet_identifier(&mut self, packet_id:&u16) {
-        self.qos_state_table.write().unwrap().remove(packet_id);
-        self.qos_tx_publish_packet_cache.write().unwrap().remove(packet_id);
-        self.qos_rx_publish_packet_cache.write().unwrap().remove(packet_id);
+    async fn release_packet_identifier(&mut self, packet_id:&u16) {
+        let mut qos_state_table = self.qos_state_table.write().await;
+        let mut qos_tx_publish_packet_cache = self.qos_tx_publish_packet_cache.write().await;
+        let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
+        qos_state_table.remove(packet_id);
+        qos_tx_publish_packet_cache.remove(packet_id);
+        qos_rx_publish_packet_cache.remove(packet_id);
     }
 
-    fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
-        let mut qos2_pub_rec_resend_queue = self.qos_state_table.read().unwrap();
+    async fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
+        let qos2_pub_rec_resend_queue = self.qos_state_table.read().await;
         qos2_pub_rec_resend_queue.contains_key(&packet_id)
-    }
-
-    fn remove_from_qos2_pub_rec_resend_queue(&self, packet_id: u16) {
-        let mut qos2_pub_rec_resend_queue = self.qos_state_table.write().unwrap();
-        qos2_pub_rec_resend_queue.remove(&packet_id);
     }
 
     // Qos2 PubRec resend task
@@ -218,7 +228,8 @@ impl Session {
         loop {
             select! {
                 _ = interval.tick() => {
-                    for (_, state) in self.qos_state_table.read().unwrap().iter() {
+                    let qos_state_table = self.qos_state_table.read().await;
+                    for (_, state) in qos_state_table.iter() {
                         if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
                             if let Some(packet) = &state.resend_packet {
                                 self.write(packet).await? 
@@ -236,7 +247,10 @@ impl Session {
 
     // Write a single packet to the underlying stream.
     pub async fn write(&self, packet: &MqttPacketV3) -> Result<()> {
-        self.connection.write().unwrap().write_packet(packet).await?;
+        if let Some(connection) = &self.connection {
+            let mut connection = connection.write().await;
+            connection.write_packet(packet).await?
+        }
         Ok(())
     }
 }
@@ -247,5 +261,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+
+}
+
+
+#[cfg(test)]
+mod tests {
 
 }
