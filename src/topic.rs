@@ -41,7 +41,7 @@ fn test_topic(topic: &String) -> bool {
 }
 
 
-struct TopicManager {
+pub struct TopicManager {
 
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicNode>>>>>,
 
@@ -120,7 +120,7 @@ impl TopicManager {
         }
     }
 
-    pub fn get_subscriptions(&mut self, tenant_id:String, msg_topic: String) -> Result<Vec<Arc<Subscription>>, Error> {
+    pub fn get_subscriptions(&self, tenant_id:String, msg_topic: String) -> Result<Vec<Arc<Subscription>>, Error> {
         let topic_patterns:Vec<String> = msg_topic.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
@@ -263,7 +263,7 @@ impl TopicNode {
 }
 
 #[derive(Debug)]
-struct Subscription {
+pub struct Subscription {
     pub client_identifier: String,
     pub qos: u8,
 }

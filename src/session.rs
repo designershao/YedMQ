@@ -128,7 +128,8 @@ impl Session {
         session
     }
 
-    async fn process_qos_packet(&self, packet: &MqttPacketV3) -> Result<()> {
+    // Do process qos packet
+    async fn do_process_qos_packet(&self, packet: &MqttPacketV3) -> Result<()> {
         let r:Result<Option<u16>>= match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
@@ -151,10 +152,11 @@ impl Session {
                                 QosPacketItem::new_qos_1_tx_state(
                                     publish_packet.clone(), 
                                     publish_packet.variable_header.packet_identifier.unwrap(), 
-                                    0
+                                    std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() + RESEND_DURATION_TIME
                                 )
                             );
                         }
+                        self.write(packet).await?;
                         let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
                         qos_rx_publish_packet_cache.insert(
                             publish_packet.variable_header.packet_identifier.unwrap(), 
@@ -275,13 +277,29 @@ impl Session {
     }
 
     // Write a single packet to the underlying stream.
-    pub async fn write(&self, packet: &MqttPacketV3) -> Result<()> {
+    async fn write(&self, packet: &MqttPacketV3) -> Result<()> {
         if let Some(connection) = &self.connection {
             let mut connection = connection.write().await;
             connection.write_packet(packet).await?
         }
         Ok(())
     }
+
+    pub async fn write_packet(&self, packet: &MqttPacketV3) -> Result<()> {
+        // if the packet is publish packet and the qos is 1 or 2, should run the qos process logic
+        // else send the packet directly
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            if let Some(qos) = publish_packet.fix_header.qos {
+                if qos > 0 {
+                    self.do_process_qos_packet(packet).await?;
+                }
+            }
+        } else {
+            self.write(packet).await?;
+        }
+        Ok(())
+    }
+
 }
 
 pub struct SessionManager {
@@ -290,6 +308,24 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    
+    pub fn register(&mut self, client_identifier: String, session:Session) -> Arc<Session> {
+        let session = Arc::new(session);
+        self.session_table.insert(client_identifier, session.clone());
+        return session;
+    }
+
+    pub fn get(&self, client_identifier: String) -> Option<Arc<Session>> {
+        if let Some(session) = self.session_table.get(&client_identifier){
+            Some(session.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn unregister(&mut self, client_identifier: String) {
+        self.session_table.remove(&client_identifier);
+    }
 
 }
 
