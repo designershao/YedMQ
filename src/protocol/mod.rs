@@ -34,6 +34,7 @@ trait MqttPacket {
 
 }
 
+#[derive(Debug)]
 pub enum MqttPacketV3 {
     Connect(v3::connect::ConnectPacket),
     Connack(v3::connack::ConnAckPacket),

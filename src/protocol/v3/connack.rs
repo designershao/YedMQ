@@ -7,11 +7,13 @@ use crate::protocol::MqttPacket;
 
 use super::fixed_header::{FixHeader, self};
 
+#[derive(Debug)]
 pub struct ConnAckPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
 }
 
+#[derive(Debug)]
 pub struct VariableHeader {
     pub session_present: bool,
     pub connect_return_code: u8,

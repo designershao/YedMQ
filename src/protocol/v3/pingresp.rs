@@ -5,7 +5,7 @@ use crate::protocol::MqttPacket;
 
 use super::fixed_header::{FixHeader, self};
 
-
+#[derive(Debug)]
 pub struct PingrespPacket {
     fix_header: FixHeader,
 }

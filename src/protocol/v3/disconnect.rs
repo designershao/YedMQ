@@ -7,6 +7,7 @@ use crate::protocol::MqttPacket;
 use super::fixed_header::{FixHeader, self};
 
 
+#[derive(Debug)]
 pub struct DisconnectPacket {
     fix_header: FixHeader,
 }

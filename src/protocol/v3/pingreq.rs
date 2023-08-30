@@ -6,6 +6,7 @@ use crate::protocol::MqttPacket;
 use super::fixed_header::{FixHeader, self};
 
 
+#[derive(Debug)]
 pub struct PingreqPacket {
     fix_header: FixHeader,
 }
