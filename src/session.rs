@@ -1,4 +1,4 @@
-use std::{sync::{Arc}, collections::{HashMap, VecDeque}, time::Duration};
+use std::{sync::Arc, collections::HashMap, time::Duration};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::PublishPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}}}};
 use anyhow::Result;
@@ -11,8 +11,8 @@ const RESEND_DURATION_TIME: u64 = 10;
 pub struct Session {
     client_identifier: String,
     tenant_identifier: String,
-    connection: Option<Arc<RwLock<Connection>>>,
-    subscription_topics: Arc<RwLock<Vec<String>>>,
+    connection: Option<Connection>,
+    subscription_topics: RwLock<Vec<String>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
     qos_resend_task_quit_sender: Sender<()>,
     qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
@@ -105,8 +105,7 @@ impl Session {
     pub fn new(
         client_identifier: String, 
         tenant_identifier: String, 
-        subscription_topics: Arc<RwLock<Vec<String>>>, 
-        connection: Arc<RwLock<Connection>>) -> Arc<Session> {
+        connection: Connection) -> Arc<Session> {
 
         let (quit_sender, quit_receiver) = tokio::sync::mpsc::channel(1);
 
@@ -114,7 +113,7 @@ impl Session {
             client_identifier,
             tenant_identifier,
             connection: Some(connection),
-            subscription_topics,
+            subscription_topics: RwLock::new(vec![]),
             qos_state_table: Arc::new(RwLock::new(HashMap::new())),
             qos_resend_task_quit_sender: quit_sender,
             qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
@@ -129,11 +128,12 @@ impl Session {
     }
 
     // Do process qos packet
-    async fn do_process_qos_packet(&self, packet: &MqttPacketV3) -> Result<()> {
+    async fn do_process_qos_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        let qos_state_table = self.qos_state_table.clone();
         let r:Result<Option<u16>>= match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
-                    let mut qos_stable_table = self.qos_state_table.write().await;
+                    let mut qos_stable_table = qos_state_table.write().await;
                     if !qos_stable_table.contains_key(&publish_packet.variable_header.packet_identifier.unwrap()) {
                         // first received cached the publish packet
                         if publish_packet.fix_header.qos.unwrap() == 2 {
@@ -168,7 +168,7 @@ impl Session {
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
                 if self.packet_identifier_in_used(pubrel_packet.variable_header.packet_identifier).await {
-                    let mut state = self.qos_state_table.write().await;
+                    let mut state = qos_state_table.write().await;
                     let packet_identifier = pubrel_packet.variable_header.packet_identifier;
                     let pubcomp_packet = PubCompPacket::new(pubrel_packet.variable_header.packet_identifier);
                     self.write(&&MqttPacketV3::Pubcomp(pubcomp_packet)).await?;
@@ -180,7 +180,7 @@ impl Session {
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
                 if self.packet_identifier_in_used(pubrec_packet.variable_header.packet_identifier).await {
-                    let mut state = self.qos_state_table.write().await;
+                    let mut state = qos_state_table.write().await;
                     let pubrel_packet = PubRelPacket::new(pubrec_packet.variable_header.packet_identifier);
                     self.write(&&MqttPacketV3::Pubrel(pubrel_packet)).await?;
                     let state = state.get_mut(&pubrec_packet.variable_header.packet_identifier).unwrap();
@@ -229,10 +229,9 @@ impl Session {
     }
 
     // Close the connection voluntarily
-    pub async fn shutdown(&self) -> Result<()> {
+    pub async fn shutdown(&mut self) -> Result<()> {
         self.qos_resend_task_quit_sender.send(()).await?; // notify qos2 rec resend task quit
-        let connection = self.connection.as_ref().unwrap().clone();
-        let mut connection = connection.write().await;
+        let connection = self.connection.as_mut().unwrap();
         connection.shutdown().await?;
         Ok(())
     }
@@ -254,12 +253,13 @@ impl Session {
     // Qos2 PubRec resend task
     // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
     // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
-    async fn run_qos_resend_task(&self, mut quit_receiver: Receiver<()>) -> Result<()> {
+    async fn run_qos_resend_task(&mut self, mut quit_receiver: Receiver<()>) -> Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
         loop {
             select! {
                 _ = interval.tick() => {
-                    let qos_state_table = self.qos_state_table.read().await;
+                    let qos_state_table = self.qos_state_table.clone();
+                    let qos_state_table = qos_state_table.read().await;
                     for (_, state) in qos_state_table.iter() {
                         if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
                             if let Some(packet) = &state.resend_packet {
@@ -277,15 +277,14 @@ impl Session {
     }
 
     // Write a single packet to the underlying stream.
-    async fn write(&self, packet: &MqttPacketV3) -> Result<()> {
-        if let Some(connection) = &self.connection {
-            let mut connection = connection.write().await;
+    async fn write(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        if let Some(connection) = &mut self.connection {
             connection.write_packet(packet).await?
         }
         Ok(())
     }
 
-    pub async fn write_packet(&self, packet: &MqttPacketV3) -> Result<()> {
+    pub async fn write_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
         // if the packet is publish packet and the qos is 1 or 2, should run the qos process logic
         // else send the packet directly
         if let MqttPacketV3::Publish(publish_packet) = packet {
