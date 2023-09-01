@@ -8,13 +8,13 @@ use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 #[derive(Debug)]
 pub struct SubscribePacket {
     fix_header: FixHeader,
-    variable_header: VariableHeader,
-    payload: Payload
+    pub variable_header: VariableHeader,
+    pub payload: Payload
 }
 
 #[derive(Debug)]
 pub struct VariableHeader {
-    packet_identifier: u16,
+    pub packet_identifier: u16,
 }
 
 impl VariableHeader {
@@ -27,8 +27,8 @@ impl VariableHeader {
 
 #[derive(Debug)]
 pub struct TopicFilter {
-    topic_name: String,
-    qos: u8,
+    pub topic_name: String,
+    pub qos: u8,
 }
 
 impl TopicFilter {
@@ -49,7 +49,7 @@ impl TopicFilter {
 
 #[derive(Debug)]
 pub struct Payload {
-    topic_filters: Vec<TopicFilter>,
+    pub topic_filters: Vec<TopicFilter>,
 }
 
 impl Payload {

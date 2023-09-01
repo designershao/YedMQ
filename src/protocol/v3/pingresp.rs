@@ -1,13 +1,29 @@
 use bytes::{BytesMut};
 use nom::{IResult, combinator::map};
 
-use crate::protocol::MqttPacket;
+use crate::protocol::{MqttPacket, PacketType};
 
 use super::fixed_header::{FixHeader, self};
 
 #[derive(Debug)]
 pub struct PingrespPacket {
     fix_header: FixHeader,
+}
+
+impl PingrespPacket {
+
+    pub fn new() -> PingrespPacket {
+        PingrespPacket {
+            fix_header: FixHeader {
+                packet_type: PacketType::PINGRESP,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: 0,
+            }
+        }
+    }
+
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], PingrespPacket> {

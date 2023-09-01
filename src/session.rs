@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::HashMap, time::Duration};
 
-use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::PublishPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}}}};
+use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::PublishPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
 use tokio::{sync::mpsc::{Receiver, Sender}, select};
 use tokio::sync::{RwLock};
@@ -15,8 +15,11 @@ pub struct Session {
     subscription_topics: RwLock<Vec<String>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
     qos_resend_task_quit_sender: Sender<()>,
+    logic_loop_quit_sender: Sender<()>,
     qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
-    qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>
+    qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
+    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    topic_tree: Arc<RwLock<TopicManager>>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -105,7 +108,10 @@ impl Session {
     pub fn new(
         client_identifier: String, 
         tenant_identifier: String, 
-        connection: Connection) -> Arc<Session> {
+        connection: Connection,
+        topic_tree: Arc<RwLock<TopicManager>>,
+        router_sender: tokio::sync::mpsc::Sender<RouterCmd>
+    ) -> Arc<Session> {
 
         let (quit_sender, quit_receiver) = tokio::sync::mpsc::channel(1);
 
@@ -117,14 +123,88 @@ impl Session {
             qos_state_table: Arc::new(RwLock::new(HashMap::new())),
             qos_resend_task_quit_sender: quit_sender,
             qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
-            qos_rx_publish_packet_cache: RwLock::new(HashMap::new())
+            qos_rx_publish_packet_cache: RwLock::new(HashMap::new()),
+            logic_loop_quit_sender: todo!(),
+            router_sender,
+            topic_tree
         });
 
-        let session_cloned = session.clone();
-        tokio::spawn(async move {
-            let _ = session_cloned.run_qos_resend_task(quit_receiver).await;
-        });
         session
+    }
+
+    // Session core logic loop
+    async fn run_logic_loop(&mut self, mut quit_receiver:Receiver<()>) -> Result<()> {
+        let mut resend_check_interval = tokio::time::interval(Duration::from_secs(10));
+
+        loop {
+            select! {
+                _ = resend_check_interval.tick() => {
+                }
+                packet = self.connection.as_mut().unwrap().read_packet() => {
+                    if let Ok(packet) = packet {
+                        self.do_process_packet(&packet).await?
+                    }
+                }
+                _ = quit_receiver.recv() => {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn do_process_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        match packet {
+            MqttPacketV3::Publish(publish_packet) => {
+
+            }
+            MqttPacketV3::Disconnect(disconnect_packet) => {
+                self.shutdown().await; //shutdown the connection
+            }
+            MqttPacketV3::Pingreq(_) => {
+                self.write_packet(&MqttPacketV3::Pingresp(PingrespPacket::new())).await;
+            }
+            MqttPacketV3::Puback(_) => {
+                self.do_process_qos_packet(packet).await;
+            }
+            MqttPacketV3::Pubrec(_) => {
+                self.do_process_qos_packet(packet).await;
+            }
+            MqttPacketV3::Pubrel(_) => {
+                self.do_process_qos_packet(packet).await;
+            }
+            MqttPacketV3::Subscribe(subscribe_packet) => {
+                let subscriptions = &subscribe_packet.payload.topic_filters;
+                let packet_identifier = &subscribe_packet.variable_header.packet_identifier;
+
+                let mut return_code = vec![];
+                {
+                    let mut topic_manager = self.topic_tree.write().await;
+
+                    for topic in subscriptions.iter() {
+                        topic_manager.subscription(
+                            self.tenant_identifier.clone(), 
+                            self.client_identifier.clone(), 
+                            topic.topic_name.clone(),
+                            topic.qos 
+                        );
+                        return_code.push(0x0); 
+                    }
+                }
+                self.write_packet(&MqttPacketV3::Suback(
+                    SubackPacket::new(*packet_identifier, return_code))).await;
+            }
+            MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
+                todo!("unsubscribe the topic")
+            }
+            MqttPacketV3::Pubcomp(_) => {
+                self.do_process_qos_packet(packet).await;
+            }
+            _ => {
+                // Do nothing
+            }
+        }
+        Ok(())
     }
 
     // Do process qos packet
@@ -302,28 +382,31 @@ impl Session {
 }
 
 pub struct SessionManager {
-    session_table: HashMap<String, Arc<Session>>,
+    session_table: RwLock<HashMap<String, Arc<RwLock<Session>>>>,
     tenant_id: String
 }
 
 impl SessionManager {
     
-    pub fn register(&mut self, client_identifier: String, session:Session) -> Arc<Session> {
-        let session = Arc::new(session);
-        self.session_table.insert(client_identifier, session.clone());
+    pub async fn register(&mut self, client_identifier: String, session:Session) -> Arc<RwLock<Session>> {
+        let session = Arc::new(RwLock::new(session));
+        let mut session_table = self.session_table.write().await;
+        session_table.insert(client_identifier, session.clone());
         return session;
     }
 
-    pub fn get(&self, client_identifier: String) -> Option<Arc<Session>> {
-        if let Some(session) = self.session_table.get(&client_identifier){
+    pub async fn get(&self, client_identifier: String) -> Option<Arc<RwLock<Session>>> {
+        let session_table = self.session_table.read().await;
+        if let Some(session) = session_table.get(&client_identifier){
             Some(session.clone())
         } else {
             None
         }
     }
 
-    pub fn unregister(&mut self, client_identifier: String) {
-        self.session_table.remove(&client_identifier);
+    pub async fn unregister(&mut self, client_identifier: String) {
+        let mut session_table = self.session_table.write().await;
+        session_table.remove(&client_identifier);
     }
 
 }
