@@ -177,22 +177,30 @@ impl Session {
                 let subscriptions = &subscribe_packet.payload.topic_filters;
                 let packet_identifier = &subscribe_packet.variable_header.packet_identifier;
 
-                let mut return_code = vec![];
+                let mut return_code:Vec<crate::protocol::v3::suback::ReturnCode> = vec![];
                 {
                     let mut topic_manager = self.topic_tree.write().await;
 
                     for topic in subscriptions.iter() {
-                        topic_manager.subscription(
+                        let _ = topic_manager.subscription(
                             self.tenant_identifier.clone(), 
                             self.client_identifier.clone(), 
                             topic.topic_name.clone(),
                             topic.qos 
                         );
-                        return_code.push(0x0); 
+                        if topic.qos == 0 {
+                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0); 
+                        }
+                        if topic.qos == 1 {
+                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1); 
+                        }
+                        if topic.qos == 2 {
+                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2); 
+                        }
                     }
                 }
                 self.write_packet(&MqttPacketV3::Suback(
-                    SubackPacket::new(*packet_identifier, return_code))).await;
+                    SubackPacket::new(*packet_identifier, return_code))).await?;
             }
             MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
                 todo!("unsubscribe the topic")
