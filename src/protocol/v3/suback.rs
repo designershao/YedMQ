@@ -15,7 +15,7 @@ pub struct SubackPacket {
 }
 
 impl SubackPacket {
-    pub fn new(packet_identifier: u16, return_code: Vec<u8>) -> SubackPacket {
+    pub fn new(packet_identifier: u16, return_code: Vec<ReturnCode>) -> SubackPacket {
         SubackPacket {
             fix_header: FixHeader {
                 packet_type: PacketType::SUBACK,
@@ -50,15 +50,21 @@ impl VariableHeader {
 
 #[derive(Debug)]
 pub struct Payload {
-    pub return_code: Vec<u8>,
+    pub return_code: Vec<ReturnCode>,
 }
 
 impl Payload {
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(1);
-        for byte in self.return_code.iter() {
-            buf.put_u8(*byte);
+        for code in self.return_code.iter() {
+            match code {
+                ReturnCode::MaxQos0 => buf.put_u8(0x00),
+                ReturnCode::MaxQos1 => buf.put_u8(0x01),
+                ReturnCode::MaxQos2 => buf.put_u8(0x02),
+                ReturnCode::Failure => buf.put_u8(0x80),
+                ReturnCode::Invalid => (),
+            }
         }
         buf
     }
@@ -84,22 +90,53 @@ impl MqttPacket for SubackPacket {
     }
 }
 
+fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
+    map(be_u16, |packet_identifier| {
+        VariableHeader{
+            packet_identifier
+        }
+    })(input)
+}
+
+#[derive(Debug,PartialEq)]
+pub enum ReturnCode {
+    MaxQos0,
+    MaxQos1,
+    MaxQos2,
+    Failure,
+    Invalid
+}
+
+fn payload(input: &[u8]) -> IResult<&[u8], Payload> {
+    map(many0(nom::number::complete::be_u8), |return_code| {
+        let r:Vec<ReturnCode> = return_code.iter().map(|byte| {
+            match byte {
+                0x00 => ReturnCode::MaxQos0,
+                0x01 => ReturnCode::MaxQos1,
+                0x02 => ReturnCode::MaxQos2,
+                0x80 => ReturnCode::Failure,
+                _ => ReturnCode::Invalid
+            } 
+        }).to_owned().collect();
+        Payload{
+            return_code: r
+        }
+    })(input)
+}
+
 pub fn parse(input: &[u8]) -> IResult<&[u8], SubackPacket> {
     flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
-            nom::bytes::streaming::take(fixed_header.remaining_length),
-            tuple((be_u16::<&[u8], Error<&[u8]>>,many0(be_u8)))),
-            move |(_, (packet_identifier, return_code))| {
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                tuple((variable_header,payload))
+            ),
+            move |(_, (variable_header, payload))| {
                 let cloned_fixed_header = fixed_header.clone();
                 SubackPacket {
                     fix_header: cloned_fixed_header,
-                    variable_header: VariableHeader {
-                        packet_identifier: packet_identifier
-                    },
-                    payload: Payload {
-                        return_code: return_code
-                    }
+                    variable_header,
+                    payload
                 }
             })
         })(input)
@@ -115,10 +152,10 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = &[0x90, 0x03, 0x00,0x01, 0x02];
+        let input = &[0x90, 0x04, 0x00, 0x01, 0x00, 0x01];
         let out = parse(input).unwrap();
         assert_eq!(out.1.variable_header.packet_identifier, 1);
-        assert_eq!(out.1.payload.return_code, vec![2]);
+        assert_eq!(out.1.payload.return_code, vec![ReturnCode::MaxQos0, ReturnCode::MaxQos1]);
     }
 
     #[test]
@@ -136,7 +173,7 @@ mod tests {
         };
 
         let payload = Payload{
-            return_code: vec![2]
+            return_code: vec![ReturnCode::MaxQos2]
         };
 
         let suback_packet = SubackPacket {
