@@ -4,6 +4,7 @@ use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::Publi
 use anyhow::Result;
 use tokio::{sync::mpsc::{Receiver, Sender}, select};
 use tokio::sync::{RwLock};
+use log::{warn};
 
 const RESEND_DURATION_TIME: u64 = 10;
 
@@ -182,20 +183,24 @@ impl Session {
                     let mut topic_manager = self.topic_tree.write().await;
 
                     for topic in subscriptions.iter() {
-                        let _ = topic_manager.subscription(
+                        let sub_result = topic_manager.subscription(
                             self.tenant_identifier.clone(), 
                             self.client_identifier.clone(), 
                             topic.topic_name.clone(),
                             topic.qos 
                         );
-                        if topic.qos == 0 {
-                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0); 
-                        }
-                        if topic.qos == 1 {
-                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1); 
-                        }
-                        if topic.qos == 2 {
-                            return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2); 
+                        if let Ok(_) = sub_result {
+                            if topic.qos == 0 {
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0); 
+                            }
+                            if topic.qos == 1 {
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1); 
+                            }
+                            if topic.qos == 2 {
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2); 
+                            }
+                        } else {
+                            return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                         }
                     }
                 }
