@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::HashMap, time::Duration};
 
-use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::PublishPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
+use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
 use tokio::{sync::mpsc::{Receiver, Sender}, select};
 use tokio::sync::{RwLock};
@@ -139,11 +139,23 @@ impl Session {
 
         loop {
             select! {
-                _ = resend_check_interval.tick() => {
+                    _ = resend_check_interval.tick() => {
+                    // Qos2 PubRec resend task
+                    // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
+                    // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
+                    let qos_state_table = self.qos_state_table.clone();
+                    let qos_state_table = qos_state_table.read().await;
+                    for (_, state) in qos_state_table.iter() {
+                        if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
+                            if let Some(packet) = &state.resend_packet {
+                                self.write(packet).await? 
+                            } 
+                        }
+                    }
                 }
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     if let Ok(packet) = packet {
-                        self.do_process_packet(&packet).await?
+                        self.do_process_rx_packet(&packet).await?
                     }
                 }
                 _ = quit_receiver.recv() => {
@@ -154,25 +166,26 @@ impl Session {
         Ok(())
     }
 
-    async fn do_process_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+    async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
         match packet {
             MqttPacketV3::Publish(publish_packet) => {
-
+                let cmd = RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet.clone()));
+                self.router_sender.send(cmd).await?;
             }
             MqttPacketV3::Disconnect(disconnect_packet) => {
-                self.shutdown().await; //shutdown the connection
+                self.shutdown().await?; //shutdown the connection
             }
             MqttPacketV3::Pingreq(_) => {
-                self.write_packet(&MqttPacketV3::Pingresp(PingrespPacket::new())).await;
+                self.write_packet(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
             }
             MqttPacketV3::Puback(_) => {
-                self.do_process_qos_packet(packet).await;
+                self.do_process_qos_packet(packet).await?;
             }
             MqttPacketV3::Pubrec(_) => {
-                self.do_process_qos_packet(packet).await;
+                self.do_process_qos_packet(packet).await?;
             }
             MqttPacketV3::Pubrel(_) => {
-                self.do_process_qos_packet(packet).await;
+                self.do_process_qos_packet(packet).await?;
             }
             MqttPacketV3::Subscribe(subscribe_packet) => {
                 let subscriptions = &subscribe_packet.payload.topic_filters;
@@ -341,32 +354,6 @@ impl Session {
     async fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
         let qos2_pub_rec_resend_queue = self.qos_state_table.read().await;
         qos2_pub_rec_resend_queue.contains_key(&packet_id)
-    }
-
-    // Qos2 PubRec resend task
-    // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
-    // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
-    async fn run_qos_resend_task(&mut self, mut quit_receiver: Receiver<()>) -> Result<()> {
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
-        loop {
-            select! {
-                _ = interval.tick() => {
-                    let qos_state_table = self.qos_state_table.clone();
-                    let qos_state_table = qos_state_table.read().await;
-                    for (_, state) in qos_state_table.iter() {
-                        if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
-                            if let Some(packet) = &state.resend_packet {
-                                self.write(packet).await? 
-                            } 
-                        }
-                    }
-                },
-                _ = quit_receiver.recv() => {
-                    break // when session close disable resend task
-                }
-            }
-        }
-        Ok(())
     }
 
     // Write a single packet to the underlying stream.
