@@ -15,11 +15,11 @@ pub struct Session {
     connection: Option<Connection>,
     subscription_topics: RwLock<Vec<String>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
-    qos_resend_task_quit_sender: Sender<()>,
     logic_loop_quit_sender: Sender<()>,
     qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
     qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
     router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
     topic_tree: Arc<RwLock<TopicManager>>,
 }
 
@@ -111,10 +111,9 @@ impl Session {
         tenant_identifier: String, 
         connection: Connection,
         topic_tree: Arc<RwLock<TopicManager>>,
-        router_sender: tokio::sync::mpsc::Sender<RouterCmd>
+        router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>
     ) -> Arc<Session> {
-
-        let (quit_sender, quit_receiver) = tokio::sync::mpsc::channel(1);
 
         let session = Arc::new(Session {
             client_identifier,
@@ -122,11 +121,11 @@ impl Session {
             connection: Some(connection),
             subscription_topics: RwLock::new(vec![]),
             qos_state_table: Arc::new(RwLock::new(HashMap::new())),
-            qos_resend_task_quit_sender: quit_sender,
             qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
             qos_rx_publish_packet_cache: RwLock::new(HashMap::new()),
             logic_loop_quit_sender: todo!(),
             router_sender,
+            router_receiver,
             topic_tree
         });
 
@@ -152,6 +151,15 @@ impl Session {
                             } 
                         }
                     }
+                }
+                cmd = self.router_receiver.recv() => {
+                    if let Some(cmd) = cmd {
+                        match cmd {
+                            RouterCmd::RoutePacket(_, packet) => {
+                                self.write_packet(&packet).await?;
+                            }
+                        }
+                    } 
                 }
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     if let Ok(packet) = packet {
@@ -336,7 +344,7 @@ impl Session {
 
     // Close the connection voluntarily
     pub async fn shutdown(&mut self) -> Result<()> {
-        self.qos_resend_task_quit_sender.send(()).await?; // notify qos2 rec resend task quit
+        self.logic_loop_quit_sender.send(()).await?;
         let connection = self.connection.as_mut().unwrap();
         connection.shutdown().await?;
         Ok(())
