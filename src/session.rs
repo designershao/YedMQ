@@ -1,4 +1,4 @@
-use std::{sync::Arc, collections::HashMap, time::Duration};
+use std::{sync::{Arc}, collections::HashMap, time::Duration};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
@@ -8,8 +8,15 @@ use log::{warn};
 
 const RESEND_DURATION_TIME: u64 = 10;
 
+pub struct WillMessage {
+    will_topic: String,
+    will_message: Vec<u8>,
+    will_qos: u8
+}
+
 // Represent mqtt session
 pub struct Session {
+    will_message: Option<WillMessage>,
     client_identifier: String,
     tenant_identifier: String,
     connection: Option<Connection>,
@@ -21,6 +28,7 @@ pub struct Session {
     router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
     topic_tree: Arc<RwLock<TopicManager>>,
+    keep_alive: u16,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -112,7 +120,9 @@ impl Session {
         connection: Connection,
         topic_tree: Arc<RwLock<TopicManager>>,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>
+        router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
+        will_message: Option<WillMessage>,
+        keep_alive: u16
     ) -> Arc<Session> {
 
         let session = Arc::new(Session {
@@ -126,7 +136,9 @@ impl Session {
             logic_loop_quit_sender: todo!(),
             router_sender,
             router_receiver,
-            topic_tree
+            topic_tree,
+            will_message,
+            keep_alive
         });
 
         session
@@ -134,11 +146,22 @@ impl Session {
 
     // Session core logic loop
     async fn run_logic_loop(&mut self, mut quit_receiver:Receiver<()>) -> Result<()> {
+
         let mut resend_check_interval = tokio::time::interval(Duration::from_secs(10));
+
+        let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(self.keep_alive.into()));
+
+        let mut keep_alive_timeout_flag = true;
 
         loop {
             select! {
-                    _ = resend_check_interval.tick() => {
+                _ = keep_alive_interval.tick() => {
+                    if keep_alive_timeout_flag {
+                        self.shutdown().await?;
+                        break;
+                    }
+                }
+                _ = resend_check_interval.tick() => {
                     // Qos2 PubRec resend task
                     // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
                     // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
@@ -162,6 +185,7 @@ impl Session {
                     } 
                 }
                 packet = self.connection.as_mut().unwrap().read_packet() => {
+                    keep_alive_timeout_flag = false;
                     if let Ok(packet) = packet {
                         self.do_process_rx_packet(&packet).await?
                     }
@@ -220,6 +244,8 @@ impl Session {
                             if topic.qos == 2 {
                                 return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2); 
                             }
+                            let mut subscription_topics = self.subscription_topics.write().await;
+                            subscription_topics.push(topic.topic_name.clone());
                         } else {
                             return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                         }
