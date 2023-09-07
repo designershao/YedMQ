@@ -44,7 +44,7 @@ impl Router {
                 let session = self.session_manager.get(client_identifier).await;
                 if let Some(session) = session {
                     let mut session = session.write().await;
-                    session.write_packet(&publish_packet).await?;
+                    session.process_route_packet(&publish_packet).await?;
                 }
             }
         }

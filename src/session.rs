@@ -25,8 +25,7 @@ pub struct Session {
     logic_loop_quit_sender: Sender<()>,
     qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
     qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
-    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-    router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
+    router_sender: tokio::sync::mpsc::Sender<RouterCmd>, // send command to router
     topic_tree: Arc<RwLock<TopicManager>>,
     keep_alive: u16,
 }
@@ -120,7 +119,6 @@ impl Session {
         connection: Connection,
         topic_tree: Arc<RwLock<TopicManager>>,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
         will_message: Option<WillMessage>,
         keep_alive: u16
     ) -> Arc<Session> {
@@ -135,13 +133,25 @@ impl Session {
             qos_rx_publish_packet_cache: RwLock::new(HashMap::new()),
             logic_loop_quit_sender: todo!(),
             router_sender,
-            router_receiver,
             topic_tree,
             will_message,
             keep_alive
         });
 
         session
+    }
+
+    pub async fn process_route_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        // if the packet is qos 1  or qos 2 publish packet, do qos process
+        // else write to clietn directly
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            if publish_packet.fix_header.qos > Some(0) {
+                self.do_process_qos_packet(packet).await?;
+            }
+        } else {
+            self.write_to_client(&packet).await?;
+        }
+        Ok(())
     }
 
     // Session core logic loop
@@ -170,19 +180,10 @@ impl Session {
                     for (_, state) in qos_state_table.iter() {
                         if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
                             if let Some(packet) = &state.resend_packet {
-                                self.write(packet).await? 
+                                self.write_to_client(packet).await? 
                             } 
                         }
                     }
-                }
-                cmd = self.router_receiver.recv() => {
-                    if let Some(cmd) = cmd {
-                        match cmd {
-                            RouterCmd::RoutePacket(_, packet) => {
-                                self.write_packet(&packet).await?;
-                            }
-                        }
-                    } 
                 }
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     keep_alive_timeout_flag = false;
@@ -208,7 +209,7 @@ impl Session {
                 self.shutdown().await?; //shutdown the connection
             }
             MqttPacketV3::Pingreq(_) => {
-                self.write_packet(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
+                self.write_to_client(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
             }
             MqttPacketV3::Puback(_) => {
                 self.do_process_qos_packet(packet).await?;
@@ -251,7 +252,7 @@ impl Session {
                         }
                     }
                 }
-                self.write_packet(&MqttPacketV3::Suback(
+                self.write_to_client(&MqttPacketV3::Suback(
                     SubackPacket::new(*packet_identifier, return_code))).await?;
             }
             MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
@@ -296,7 +297,7 @@ impl Session {
                                 )
                             );
                         }
-                        self.write(packet).await?;
+                        self.write_to_client(packet).await?;
                         let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
                         qos_rx_publish_packet_cache.insert(
                             publish_packet.variable_header.packet_identifier.unwrap(), 
@@ -311,7 +312,7 @@ impl Session {
                     let mut state = qos_state_table.write().await;
                     let packet_identifier = pubrel_packet.variable_header.packet_identifier;
                     let pubcomp_packet = PubCompPacket::new(pubrel_packet.variable_header.packet_identifier);
-                    self.write(&&MqttPacketV3::Pubcomp(pubcomp_packet)).await?;
+                    self.write_to_client(&&MqttPacketV3::Pubcomp(pubcomp_packet)).await?;
                     let state = state.get_mut(&packet_identifier).unwrap();
                     state.next_state();
                 }
@@ -322,7 +323,7 @@ impl Session {
                 if self.packet_identifier_in_used(pubrec_packet.variable_header.packet_identifier).await {
                     let mut state = qos_state_table.write().await;
                     let pubrel_packet = PubRelPacket::new(pubrec_packet.variable_header.packet_identifier);
-                    self.write(&&MqttPacketV3::Pubrel(pubrel_packet)).await?;
+                    self.write_to_client(&&MqttPacketV3::Pubrel(pubrel_packet)).await?;
                     let state = state.get_mut(&pubrec_packet.variable_header.packet_identifier).unwrap();
                     state.next_state();
                 } 
@@ -391,24 +392,9 @@ impl Session {
     }
 
     // Write a single packet to the underlying stream.
-    async fn write(&mut self, packet: &MqttPacketV3) -> Result<()> {
+    async fn write_to_client(&mut self, packet: &MqttPacketV3) -> Result<()> {
         if let Some(connection) = &mut self.connection {
             connection.write_packet(packet).await?
-        }
-        Ok(())
-    }
-
-    pub async fn write_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
-        // if the packet is publish packet and the qos is 1 or 2, should run the qos process logic
-        // else send the packet directly
-        if let MqttPacketV3::Publish(publish_packet) = packet {
-            if let Some(qos) = publish_packet.fix_header.qos {
-                if qos > 0 {
-                    self.do_process_qos_packet(packet).await?;
-                }
-            }
-        } else {
-            self.write(packet).await?;
         }
         Ok(())
     }
