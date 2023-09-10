@@ -1,6 +1,8 @@
 use core::fmt;
 use std::{string, sync::{Arc, Mutex, RwLock}, collections::HashMap};
 
+use crate::protocol::{MqttPacketV3, v3::publish::PublishPacket};
+
 #[derive(Debug, PartialEq)]
 pub enum Error {
     TopicNotFound(String),
@@ -165,6 +167,112 @@ impl TopicManager {
         }
     }
 
+    fn recursion_retain_publish_packet(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier:String, publish_packet:PublishPacket) -> Result<(), Error> {
+        if topic_partterns.len() > 0 {
+            let topic_pattern = &topic_partterns[0];
+            let topic_node_next = topic_node.write().unwrap().find_or_create_leaf(topic_pattern.to_string());
+            let topic_patterns_rest = topic_partterns.drain(1..).collect();
+            Self::recursion_retain_publish_packet(topic_node_next, topic_patterns_rest, client_identifier, publish_packet)
+        } else {
+            topic_node.write().unwrap().set_retain_publish_message(publish_packet);
+            Ok(())
+        }
+    }
+
+    fn recursion_clean_retain_publish_packet(topic_node:Arc<RwLock<TopicNode>>,mut topic_partterns:Vec<String>, client_identifier:String)  -> Result<(), Error> {
+        if topic_partterns.len() > 0 {
+            let topic_pattern = &topic_partterns[0];
+            let topic_node_next = topic_node.write().unwrap().get_leaf(topic_pattern.to_string());
+            if topic_node_next.is_none() {
+                Err(Error::TopicNotFound(topic_pattern.to_string()))
+            } else {
+                let topic_patterns_rest = topic_partterns.drain(1..).collect();
+                Self::recursion_clean_retain_publish_packet(topic_node_next.unwrap(), topic_patterns_rest, client_identifier)
+            }
+        } else {
+            topic_node.write().unwrap().clean_retain_publish_message();
+            Ok(())
+        }
+    }
+
+    // clean retain publish packet from the topic tree
+    pub fn clean_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String,topic_filter:&String) -> Result<(), Error> {
+        let topic_patterns:Vec<String> = topic_filter.split("/").map(String::from).collect();
+        let map = self.topic_tree.clone();
+        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
+        if tenant_topic_root_optional.is_none() {
+            Err(Error::TenantNotFound(tenant_id))
+        } else {
+            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+            Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns,client_identifier)
+        }
+    }
+
+    fn recursion_get_retain_packet(topic_node:Arc<RwLock<TopicNode>>, mut topic_patterns:Vec<String>, client_identifier:String) -> Vec<Arc<PublishPacket>> {
+        let mut result:Vec<Arc<PublishPacket>> = vec![];
+        if topic_patterns.len() > 0 {
+            let topic_pattern = &topic_patterns[0];
+            if topic_pattern == &"+".to_string() || topic_pattern == &"#".to_string() {
+                for sub in topic_node.write().unwrap().leaves.read().unwrap().iter() {
+                    let topic_patterns_rest = topic_patterns.clone().drain(1..).collect();
+                    result.append(&mut Self::recursion_get_retain_packet(sub.clone(), topic_patterns_rest, client_identifier.clone()));
+                }
+            } else {
+                let topic_node_next = topic_node.write().unwrap().get_leaf(topic_pattern.to_string());
+                if !topic_node_next.is_none() {
+                    let topic_patterns_rest = topic_patterns.drain(1..).collect();
+                    result.append(
+                        &mut Self::recursion_get_retain_packet(topic_node_next.unwrap(), topic_patterns_rest, client_identifier)
+                    );
+                }
+            }
+        } else {
+            let topic_node = topic_node.read().unwrap();
+            if let Some(p) = &topic_node.retain_publish_packet  {
+                result.append(&mut vec![p.clone()])
+            }  
+        }
+        result
+    }
+
+    pub fn get_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String, topic_filter: String) -> Result<Vec<Arc<PublishPacket>>, Error> {
+        let map = self.topic_tree.clone();
+        if !test_topic(&topic_filter) {
+            return Err(Error::InvalidTopicFilter(topic_filter));
+        }
+
+        let topic_patterns:Vec<String> = topic_filter.split("/").map(String::from).collect();
+        let map = self.topic_tree.clone();
+        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
+        if tenant_topic_root_optional.is_none() {
+            Err(Error::TenantNotFound(tenant_id))
+        } else {
+            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+            Ok(Self::recursion_get_retain_packet(tenant_topic_root, topic_patterns, client_identifier))
+        }
+    }
+
+    // register retain publish packet to the topic tree
+    pub fn register_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String, publish_packet:PublishPacket) -> Result<(), Error> {
+        let topic_filter = publish_packet.variable_header.topic_name.clone();
+        if !test_topic(&publish_packet.variable_header.topic_name) {
+            return Err(Error::InvalidTopicFilter(topic_filter));
+        }
+
+        let topic_patterns:Vec<String> = topic_filter.split("/").map(String::from).collect();
+        let map = self.topic_tree.clone();
+        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
+        if tenant_topic_root_optional.is_none() {
+            Err(Error::TenantNotFound(tenant_id))
+        } else {
+            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+            Self::recursion_retain_publish_packet(tenant_topic_root, topic_patterns,client_identifier,publish_packet)
+        }
+    }
+
 }
 
 #[derive(Debug)]
@@ -173,6 +281,8 @@ struct TopicNode {
     pub topic_parttern: String,
 
     subscriptions: RwLock<Vec<Arc<Subscription>>>,
+
+    retain_publish_packet: Option<Arc<PublishPacket>>,
 
     leaves: Arc<RwLock<Vec<Arc<RwLock<TopicNode>>>>>,
 }
@@ -183,6 +293,7 @@ impl TopicNode {
         TopicNode {
             topic_parttern: topic_pattern,
             subscriptions: RwLock::new(vec![]),
+            retain_publish_packet: None,
             leaves: Arc::new(RwLock::new(vec![])),
         }
     }
@@ -193,6 +304,14 @@ impl TopicNode {
             out.push(Arc::clone(subscribtion));
         }
         out
+    }
+
+    pub fn set_retain_publish_message(&mut self, publish_packet:PublishPacket) {
+        self.retain_publish_packet = Some(Arc::new(publish_packet));
+    }
+
+    pub fn clean_retain_publish_message(&mut self) {
+        self.retain_publish_packet = None;
     }
 
     pub fn add_subscription(&mut self, subscribtion:Subscription) {
@@ -248,6 +367,7 @@ impl TopicNode {
                     topic_parttern: topic_pattern,
                     subscriptions: RwLock::new(vec![]),
                     leaves: Arc::new(RwLock::new(vec![])),
+                    retain_publish_packet: None
                 }));
                 let topic_node_cloned = leaf.clone();
                 self.leaves.write().unwrap().push(leaf);
@@ -271,6 +391,8 @@ pub struct Subscription {
 #[cfg(test)]
 mod tests {
 
+    use crate::protocol::{v3::{fixed_header::FixHeader, publish::{VariableHeader, Payload}}, PacketType};
+
     use super::*;
     use std::{thread, borrow::BorrowMut, cell::RefCell};
 
@@ -280,6 +402,7 @@ mod tests {
             topic_parttern: "a".to_string(),
             subscriptions: RwLock::new(vec![]),
             leaves: Arc::new(RwLock::new(vec![])),
+            retain_publish_packet: None
         };
 
         topic_node.add_subscription(Subscription { client_identifier: "1".to_string(), qos: 0 });
@@ -296,6 +419,7 @@ mod tests {
             topic_parttern: "a".to_string(),
             subscriptions: RwLock::new(vec![]),
             leaves: Arc::new(RwLock::new(vec![])),
+            retain_publish_packet: None
         };
 
         let new_topic_node = topic_node.find_or_create_leaf("b".to_string());
@@ -310,6 +434,7 @@ mod tests {
             topic_parttern: "a".to_string(),
             subscriptions: RwLock::new(vec![]),
             leaves: Arc::new(RwLock::new(vec![])),
+            retain_publish_packet: None
         };
 
         let topic_node_arc = Arc::new(RwLock::new(topic_node));
@@ -449,6 +574,47 @@ mod tests {
         assert_eq!(clients.len(), 2);
         assert_eq!(clients.clone()[0].client_identifier, "clientB");
         assert_eq!(clients.clone()[1].client_identifier, "clientD");
+    }
+
+    #[test]
+    fn test_retain_message() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(1),
+            retain: Some(true),
+            dup: Some(1),
+            remaining_length: 8,
+        };
+        let variable_header = VariableHeader {
+            topic_name: "a/b".to_string(),
+            packet_identifier: Some(0x10),
+        };
+
+        let payload = Payload{
+            payload: vec!(0x01)
+        };
+
+        let publish_packet = PublishPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.register_retain_publish_packet("hello".to_string(), "clientA".to_string(),publish_packet).unwrap();
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/b".to_string());
+        assert_eq!(1, retain_packet.unwrap().len());
+
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/+".to_string());
+        assert_eq!(1, retain_packet.unwrap().len());
+
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/#".to_string());
+        assert_eq!(1, retain_packet.unwrap().len());
+
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a".to_string());
+        assert_eq!(0, retain_packet.unwrap().len());
+
     }
 
 }
