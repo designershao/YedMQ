@@ -28,7 +28,7 @@ impl VariableHeader {
 
 #[derive(Debug)]
 pub struct TopicFilter {
-    topic_name: String,
+    pub topic_name: String,
 }
 
 impl TopicFilter {

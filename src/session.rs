@@ -1,4 +1,4 @@
-use std::{sync::{Arc}, collections::HashMap, time::Duration};
+use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
@@ -224,6 +224,8 @@ impl Session {
                 let subscriptions = &subscribe_packet.payload.topic_filters;
                 let packet_identifier = &subscribe_packet.variable_header.packet_identifier;
 
+                let mut retain_messages:Vec<Arc<MqttPacketV3>> = vec![];
+
                 let mut return_code:Vec<crate::protocol::v3::suback::ReturnCode> = vec![];
                 {
                     let mut topic_manager = self.topic_tree.write().await;
@@ -247,16 +249,37 @@ impl Session {
                             }
                             let mut subscription_topics = self.subscription_topics.write().await;
                             subscription_topics.push(topic.topic_name.clone());
+                            let packets = topic_manager.get_retain_publish_packet(
+                                self.tenant_identifier.clone(), 
+                                self.client_identifier.clone(), 
+                                topic.topic_name.clone()
+                            );
+                            if let Ok(packets) = packets {
+                                for packet in packets {
+                                    retain_messages.push(packet);
+                                }
+                            }
                         } else {
                             return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                         }
                     }
                 }
+                for packet in retain_messages {
+                    self.write_to_client(&packet).await?; 
+                }
                 self.write_to_client(&MqttPacketV3::Suback(
                     SubackPacket::new(*packet_identifier, return_code))).await?;
             }
             MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
-                todo!("unsubscribe the topic")
+                let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
+                {
+                    let mut topic_manager = self.topic_tree.write().await;
+                    for topic in unsub_topic_filters {
+                        let _ = topic_manager.unsubscription(self.tenant_identifier.clone(), self.client_identifier.clone(), topic.topic_name.clone());
+                    }
+                }
+                let unsub_ack = MqttPacketV3::Unsuback(crate::protocol::v3::unsuback::UnSubackPacket::new(unsubscribe_packet.variable_header.packet_identifier));
+                self.write_to_client(&unsub_ack).await?
             }
             MqttPacketV3::Pubcomp(_) => {
                 self.do_process_qos_packet(packet).await;

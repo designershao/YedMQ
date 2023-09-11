@@ -23,7 +23,7 @@ impl Router {
                 cmd = self.router_receiver.recv() => {
                     match cmd {
                         Some(RouterCmd::RoutePacket(tenant_identifier, packet_)) => {
-                            self.route(&tenant_identifier, packet_).await;
+                            self.route(&tenant_identifier, &packet_).await;
                         },
                         None => todo!()
                     }
@@ -32,19 +32,24 @@ impl Router {
         }
     }
 
-    pub async fn route(&self, tenant_identifier: &String, packet: MqttPacketV3) -> Result<()> {
+    pub async fn route(&self, tenant_identifier: &String, packet: &MqttPacketV3) -> Result<()> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
+            let topic = publish_packet.variable_header.topic_name.clone();
+            if publish_packet.fix_header.retain == Some(true) {
+                // register retain publish packet
+                let mut topic_manager = self.topic_manager.write().await;
+                let _ = topic_manager.register_retain_publish_packet(tenant_identifier.clone(),packet);
+            }
             let topic_manager = self.topic_manager.read().await;
             let subscriptions = topic_manager.get_subscriptions(
                 tenant_identifier.clone(),
-                publish_packet.variable_header.topic_name.clone()).unwrap();
-            let publish_packet = MqttPacketV3::Publish(publish_packet);
+                topic).unwrap();
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
                 let session = self.session_manager.get(client_identifier).await;
                 if let Some(session) = session {
                     let mut session = session.write().await;
-                    session.process_route_packet(&publish_packet).await?;
+                    session.process_route_packet(&packet).await?;
                 }
             }
         }
