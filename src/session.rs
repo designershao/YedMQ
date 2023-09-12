@@ -2,7 +2,7 @@ use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
-use tokio::{sync::mpsc::{Receiver, Sender}, select};
+use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream};
 use tokio::sync::{RwLock};
 use log::{warn};
 
@@ -19,7 +19,7 @@ pub struct Session {
     will_message: Option<WillMessage>,
     client_identifier: String,
     tenant_identifier: String,
-    connection: Option<Connection>,
+    connection: Option<Connection<TcpStream>>,
     subscription_topics: RwLock<Vec<String>>,
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
     logic_loop_quit_sender: Sender<()>,
@@ -116,7 +116,7 @@ impl Session {
     pub fn new(
         client_identifier: String, 
         tenant_identifier: String, 
-        connection: Connection,
+        connection: Connection<TcpStream>,
         topic_tree: Arc<RwLock<TopicManager>>,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         will_message: Option<WillMessage>,
