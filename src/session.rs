@@ -1,6 +1,6 @@
 use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
 
-use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket}}, router::RouterCmd, topic::TopicManager};
+use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self, VariableHeader, Payload, PublishPacketBuilder}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
 use anyhow::Result;
 use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream};
 use tokio::sync::{RwLock};
@@ -389,6 +389,21 @@ impl Session {
             }
         }
 
+        Ok(())
+    }
+    
+    // Send will packet
+    async fn send_will_packet(&mut self) -> Result<()> {
+        if let Some(will_message) = &self.will_message {
+            let topic_name = will_message.will_topic.clone();
+
+            let publish_packet = PublishPacketBuilder::new(
+                topic_name,
+                will_message.will_message.clone(),
+            ).qos(will_message.will_qos).build();
+
+            self.write_to_client(&MqttPacketV3::Publish(publish_packet)).await?;
+        }
         Ok(())
     }
 
