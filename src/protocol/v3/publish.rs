@@ -2,7 +2,8 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
-use crate::protocol::MqttPacket;
+use crate::protocol::{MqttPacket, PacketType};
+use rand::{Rng, thread_rng};
 
 use super::{fixed_header::{FixHeader, self}, common::{parse_utf8, parse_utf8_complete}};
 
@@ -11,6 +12,106 @@ pub struct PublishPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload,
+}
+
+impl PublishPacket {
+    pub fn builder() -> PublishPacketBuilder {
+        PublishPacketBuilder::default()
+    }
+}
+
+#[derive(Default)]
+pub struct PublishPacketBuilder {
+    dup: bool,
+    retain: bool,
+    qos: u8,
+    topic_name: String,
+    payload: Vec<u8>,
+    packet_identifier: Option<u16>,
+}
+
+impl PublishPacketBuilder {
+    pub fn new(topic_name: String, payload: Vec<u8>) -> PublishPacketBuilder {
+        PublishPacketBuilder {
+            dup: false,
+            retain: false,
+            qos: 0,
+            topic_name,
+            payload,
+            packet_identifier: None,
+        }
+    }
+
+    pub fn dup(mut self, dup: bool) -> Self {
+       self.dup = dup;
+       self
+    }
+
+    pub fn retain(mut self, retain: bool) -> Self {
+       self.retain = retain;
+       self 
+    }
+
+    pub fn qos(mut self, qos: u8) -> Self {
+       self.qos = qos; 
+       self
+    }
+
+    pub fn topic_name(mut self, topic_name: String) -> Self {
+       self.topic_name = topic_name;
+       self 
+    }
+
+    pub fn payload(mut self, payload: Vec<u8>) -> Self {
+       self.payload = payload;
+       self
+    }
+
+    pub fn packet_identifier(mut self, packet_identifier: u16) -> Self {
+       self.packet_identifier = Some(packet_identifier);
+       self
+    }
+
+    fn generate_random_u16() -> u16 {
+        let mut rng = thread_rng();
+        rng.gen()
+    }
+
+    pub fn build(self) -> PublishPacket {
+        let mut fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(self.qos.into()),
+            retain: Some(self.retain),
+            dup: None,
+            remaining_length: 0,
+        };
+        if self.dup {
+            fix_header.dup = Some(1);
+        }
+
+        let mut variable_header = VariableHeader {
+            topic_name: self.topic_name,
+            packet_identifier: None,
+        };
+
+        if self.qos > 0 {
+            if self.packet_identifier.is_none() {
+                variable_header.packet_identifier = Some(Self::generate_random_u16());
+            } else {
+                variable_header.packet_identifier = self.packet_identifier
+            }
+        }
+
+        let payload = Payload {
+            payload: self.payload,
+        };
+
+        fix_header.remaining_length = variable_header.to_bytes().len() + payload.to_bytes().len();
+
+        PublishPacket { fix_header, variable_header,payload }
+
+    }
+
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +235,16 @@ mod tests {
         let output = variable_header(false)(input).unwrap();
         assert_eq!(output.1.topic_name, "a/b".to_string());
         assert_eq!(output.1.packet_identifier, None);
+    }
+
+    #[test]
+    fn test_publish_packet_builder() {
+        let publish_packet_builder = PublishPacketBuilder::new(
+            "a/b".to_string(),
+            vec![0x01]
+        );
+        let publish_packet = publish_packet_builder.packet_identifier(0x10).dup(true).qos(1).build();
+        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
     }
 
     #[test]
