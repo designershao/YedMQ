@@ -11,7 +11,8 @@ const RESEND_DURATION_TIME: u64 = 10;
 pub struct WillMessage {
     will_topic: String,
     will_message: Vec<u8>,
-    will_qos: u8
+    will_qos: u8,
+    will_retain: bool
 }
 
 // Represent mqtt session
@@ -167,6 +168,7 @@ impl Session {
             select! {
                 _ = keep_alive_interval.tick() => {
                     if keep_alive_timeout_flag {
+                        self.send_will_packet().await?; // keep alive timeout, send will message
                         self.shutdown().await?;
                         break;
                     }
@@ -400,7 +402,7 @@ impl Session {
             let publish_packet = PublishPacketBuilder::new(
                 topic_name,
                 will_message.will_message.clone(),
-            ).qos(will_message.will_qos).build();
+            ).retain(will_message.will_retain).qos(will_message.will_qos).build();
 
             self.write_to_client(&MqttPacketV3::Publish(publish_packet)).await?;
         }
