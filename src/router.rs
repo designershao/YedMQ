@@ -1,12 +1,19 @@
 use std::{collections::HashMap, sync::Arc, borrow::BorrowMut};
 
+use log::warn;
 use tokio::{sync::RwLock, select};
 
 use crate::{session::{Session, SessionManager}, protocol::MqttPacketV3, topic::TopicManager};
 use anyhow::Result;
 
+// Represent router command
 pub enum RouterCmd {
-    RoutePacket(String,MqttPacketV3),
+
+    // Route publish packet to the subscribtion session
+    // struct:
+    // tenant_identifier: String, packet: MqttPacketV3
+    RoutePacket(String,MqttPacketV3), 
+
 }
 
 pub struct Router {
@@ -23,7 +30,12 @@ impl Router {
                 cmd = self.router_receiver.recv() => {
                     match cmd {
                         Some(RouterCmd::RoutePacket(tenant_identifier, packet_)) => {
-                            self.route(&tenant_identifier, &packet_).await;
+                            match self.route(&tenant_identifier, &packet_).await {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    warn!("teanant {} route packet to session error: {}", tenant_identifier, e);
+                                }
+                            }
                         },
                         None => todo!()
                     }
@@ -46,11 +58,12 @@ impl Router {
                 topic).unwrap();
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
-                let session = self.session_manager.get(client_identifier).await;
-                if let Some(session) = session {
-                    let mut session = session.write().await;
-                    session.process_route_packet(&packet).await?;
-                }
+                match self.session_manager.send(client_identifier, crate::session::SessionCmd::Send(packet.clone())).await {
+                    Ok(_) => (),
+                    Err(e) => {
+                        warn!("teanant {} route packet to session error: {}", tenant_identifier, e);
+                    }
+                };
             }
         }
         

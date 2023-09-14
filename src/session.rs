@@ -1,12 +1,17 @@
 use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
 
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self, VariableHeader, Payload, PublishPacketBuilder}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
-use anyhow::Result;
+use anyhow::{Result, Context};
 use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream};
 use tokio::sync::{RwLock};
-use log::{warn};
+use log::{warn, info, error};
 
 const RESEND_DURATION_TIME: u64 = 10;
+
+pub enum SessionCmd {
+    Send(MqttPacketV3),
+    Disconnect
+}
 
 pub struct WillMessage {
     will_topic: String,
@@ -17,17 +22,46 @@ pub struct WillMessage {
 
 // Represent mqtt session
 pub struct Session {
+
+    // MQTT Will Message
     will_message: Option<WillMessage>,
+
+    // MQTT Client Identifier, unique in the tenant
     client_identifier: String,
+
+    // Tenant Identifier, unique in the system
     tenant_identifier: String,
+
     connection: Option<Connection<TcpStream>>,
+
+    // The session subscribed topics
     subscription_topics: RwLock<Vec<String>>,
+
+    // The QOS state table, it represent the QOS state of the packet identifier
     qos_state_table: Arc<RwLock<HashMap<u16, QosPacketItem>>>,
-    logic_loop_quit_sender: Sender<()>,
+
+    // Session cmd receiver
+    session_cmd_receiver: Receiver<SessionCmd>,
+
+    // TX packet identifier cache
     qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
+
+    // RX packet identifer cache
     qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
-    router_sender: tokio::sync::mpsc::Sender<RouterCmd>, // send command to router
+
+    // Main logic quit signal sender
+    main_logic_quit_signal_sender: tokio::sync::mpsc::Sender<()>,
+
+    // Main logic quit signal receiver
+    main_logic_quit_signal_receiver: tokio::sync::mpsc::Receiver<()>,
+
+    // Router cmd sender 
+    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+
+    // Topic tree
     topic_tree: Arc<RwLock<TopicManager>>,
+
+    // MQTT Keep alive
     keep_alive: u16,
 }
 
@@ -114,15 +148,19 @@ impl QosPacketItem {
 }
 
 impl Session {
+
     pub fn new(
         client_identifier: String, 
         tenant_identifier: String, 
         connection: Connection<TcpStream>,
         topic_tree: Arc<RwLock<TopicManager>>,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        session_cmd_receiver: Receiver<SessionCmd>,
         will_message: Option<WillMessage>,
         keep_alive: u16
     ) -> Arc<Session> {
+
+        let (main_logic_quit_signal_sender, main_logic_quit_signal_receiver) = tokio::sync::mpsc::channel::<()>(1);
 
         let session = Arc::new(Session {
             client_identifier,
@@ -132,8 +170,10 @@ impl Session {
             qos_state_table: Arc::new(RwLock::new(HashMap::new())),
             qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
             qos_rx_publish_packet_cache: RwLock::new(HashMap::new()),
-            logic_loop_quit_sender: todo!(),
             router_sender,
+            session_cmd_receiver,
+            main_logic_quit_signal_receiver,
+            main_logic_quit_signal_sender,
             topic_tree,
             will_message,
             keep_alive
@@ -142,21 +182,8 @@ impl Session {
         session
     }
 
-    pub async fn process_route_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
-        // if the packet is qos 1  or qos 2 publish packet, do qos process
-        // else write to clietn directly
-        if let MqttPacketV3::Publish(publish_packet) = packet {
-            if publish_packet.fix_header.qos > Some(0) {
-                self.do_process_qos_packet(packet).await?;
-            }
-        } else {
-            self.write_to_client(&packet).await?;
-        }
-        Ok(())
-    }
-
     // Session core logic loop
-    async fn run_logic_loop(&mut self, mut quit_receiver:Receiver<()>) -> Result<()> {
+    async fn run_logic_loop(&mut self) -> Result<()> {
 
         let mut resend_check_interval = tokio::time::interval(Duration::from_secs(10));
 
@@ -166,11 +193,42 @@ impl Session {
 
         loop {
             select! {
+                _ = self.main_logic_quit_signal_receiver.recv() => {
+                    info!("tenant {} session {} exit main logic", self.tenant_identifier, self.client_identifier);
+                    break; 
+                }
+                Some(cmd) = self.session_cmd_receiver.recv() => {
+                    match cmd {
+                        SessionCmd::Send(packet)=>{
+                            if let MqttPacketV3::Publish(publish_packet) = packet {
+                                if publish_packet.fix_header.qos > Some(0) {
+                                    if let Err(e) = self.do_process_qos_packet(&MqttPacketV3::Publish(publish_packet)).await {
+                                        error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
+                                        self.main_logic_quit_signal_sender.send(()).await?;
+                                    }
+                                }
+                            } else {
+                                if let Err(e) = self.write_to_client(&packet).await {
+                                    error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
+                                    self.main_logic_quit_signal_sender.send(()).await?;
+                                }
+                            }
+                        }
+                        SessionCmd::Disconnect => {
+                            if let Err(e) = self.shutdown().await {
+                                error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
+                                self.main_logic_quit_signal_sender.send(()).await?;
+                            }
+                        }, 
+                    }
+                }
                 _ = keep_alive_interval.tick() => {
                     if keep_alive_timeout_flag {
-                        self.send_will_packet().await?; // keep alive timeout, send will message
-                        self.shutdown().await?;
-                        break;
+                        self.send_will_packet().await?;
+                        if let Err(e) = self.shutdown().await {
+                            error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
+                        }
+                        self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
                     }
                 }
                 _ = resend_check_interval.tick() => {
@@ -180,9 +238,12 @@ impl Session {
                     let qos_state_table = self.qos_state_table.clone();
                     let qos_state_table = qos_state_table.read().await;
                     for (_, state) in qos_state_table.iter() {
-                        if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH)?.as_secs() {
+                        if state.resend_time < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
                             if let Some(packet) = &state.resend_packet {
-                                self.write_to_client(packet).await? 
+                                if let Err(e) = self.write_to_client(packet).await  {
+                                    error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
+                                    self.main_logic_quit_signal_sender.send(()).await?;
+                                }
                             } 
                         }
                     }
@@ -190,15 +251,22 @@ impl Session {
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     keep_alive_timeout_flag = false;
                     if let Ok(packet) = packet {
-                        self.do_process_rx_packet(&packet).await?
+                        let _ = self.do_process_rx_packet(&packet).await;
+                    } else {
+                        // read packet io error, send will packet and shutdown the session
+                        error!("tenant {} session {} read packet io error",self.tenant_identifier, self.client_identifier);
+                        self.send_will_packet().await?;
+
+                        if let Err(e) = self.shutdown().await {
+                            error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
+                        }
+
+                        self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
                     }
-                }
-                _ = quit_receiver.recv() => {
-                    break;
                 }
             }
         }
-        Ok(())
+        todo!("Close the connection and drop the connection");
     }
 
     async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
@@ -209,6 +277,7 @@ impl Session {
             }
             MqttPacketV3::Disconnect(disconnect_packet) => {
                 self.shutdown().await?; //shutdown the connection
+                self.main_logic_quit_signal_sender.send(()).await?; // notfiy exit the main logic loop
             }
             MqttPacketV3::Pingreq(_) => {
                 self.write_to_client(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
@@ -404,16 +473,16 @@ impl Session {
                 will_message.will_message.clone(),
             ).retain(will_message.will_retain).qos(will_message.will_qos).build();
 
-            self.write_to_client(&MqttPacketV3::Publish(publish_packet)).await?;
+            self.router_sender.send(RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet))).await?;
         }
         Ok(())
     }
 
     // Close the connection voluntarily
-    pub async fn shutdown(&mut self) -> Result<()> {
-        self.logic_loop_quit_sender.send(()).await?;
-        let connection = self.connection.as_mut().unwrap();
-        connection.shutdown().await?;
+    async fn shutdown(&mut self) -> Result<()> {
+        if let Some(connection) = self.connection.as_mut() {
+            connection.shutdown().await?;
+        }
         Ok(())
     }
 
@@ -441,27 +510,43 @@ impl Session {
 
 }
 
+struct SessionWrapper {
+    session: Arc<RwLock<Session>>,
+    session_sender: Sender<SessionCmd>
+}
+
 pub struct SessionManager {
-    session_table: RwLock<HashMap<String, Arc<RwLock<Session>>>>,
+    session_table: RwLock<HashMap<String, SessionWrapper>>,
     tenant_id: String
 }
 
 impl SessionManager {
     
-    pub async fn register(&mut self, client_identifier: String, session:Session) -> Arc<RwLock<Session>> {
+    pub async fn register(&mut self, client_identifier: String, mut session:Session) -> Arc<RwLock<Session>> {
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+        session.session_cmd_receiver = session_receiver;
         let session = Arc::new(RwLock::new(session));
         let mut session_table = self.session_table.write().await;
-        session_table.insert(client_identifier, session.clone());
+
+        session_table.insert(client_identifier, SessionWrapper { session: session.clone(), session_sender });
         return session;
     }
 
     pub async fn get(&self, client_identifier: String) -> Option<Arc<RwLock<Session>>> {
         let session_table = self.session_table.read().await;
-        if let Some(session) = session_table.get(&client_identifier){
-            Some(session.clone())
+        if let Some(session_wrapper) = session_table.get(&client_identifier){
+            Some(session_wrapper.session.clone())
         } else {
             None
         }
+    }
+
+    pub async fn send(&self, client_identifier: String, cmd: SessionCmd) -> Result<()> {
+        let session_table = self.session_table.read().await;
+        if let Some(session_wrapper) = session_table.get(&client_identifier) {
+            session_wrapper.session_sender.send(cmd).await.with_context(|| format!("failed to send cmd to session {}", client_identifier))?;
+        }
+        Ok(())
     }
 
     pub async fn unregister(&mut self, client_identifier: String) {
