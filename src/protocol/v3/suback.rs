@@ -7,7 +7,7 @@ use crate::protocol::{MqttPacket, PacketType};
 
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SubackPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -34,7 +34,7 @@ impl SubackPacket {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VariableHeader {
     pub packet_identifier: u16,
 }
@@ -48,7 +48,7 @@ impl VariableHeader {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Payload {
     pub return_code: Vec<ReturnCode>,
 }
@@ -98,7 +98,7 @@ fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
     })(input)
 }
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug,PartialEq, Clone)]
 pub enum ReturnCode {
     MaxQos0,
     MaxQos1,

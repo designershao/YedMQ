@@ -5,14 +5,14 @@ use nom::bits::{streaming::take};
 use super::fixed_header::{FixHeader, self};
 use ::bytes::{BytesMut, BufMut};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ConnectPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VariableHeader {
     pub protocol_name: String,
     pub protocol_level: u8,
@@ -26,7 +26,7 @@ pub struct VariableHeader {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Payload {
     pub client_identifier: String,
     pub will_topic: Option<String>,

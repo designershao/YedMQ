@@ -5,14 +5,14 @@ use crate::protocol::{v3::common::parse_utf8, MqttPacket};
 use nom::bits::{streaming::take};
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SubscribePacket {
     fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VariableHeader {
     pub packet_identifier: u16,
 }
@@ -25,7 +25,7 @@ impl VariableHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TopicFilter {
     pub topic_name: String,
     pub qos: u8,
@@ -47,7 +47,7 @@ impl TopicFilter {
 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Payload {
     pub topic_filters: Vec<TopicFilter>,
 }
