@@ -67,14 +67,20 @@ where
 
 #[cfg(test)]
 mod tests {
-    use bytes::{BufMut, BytesMut};
+    use bytes::{BufMut, BytesMut, Buf};
     use nom::AsBytes;
-    use tokio::io::{AsyncRead, AsyncWrite};
-    use crate::protocol::{v3::{fixed_header::FixHeader, publish::{VariableHeader, Payload, PublishPacket}}, PacketType, MqttPacketV3};
+    use tokio::{io::{AsyncRead, AsyncWrite}, sync::mpsc::Receiver};
+    use crate::protocol::{v3::{fixed_header::FixHeader, publish::{VariableHeader, Payload, PublishPacket, PublishPacketBuilder}}, PacketType, MqttPacketV3};
     use super::Connection;
 
     struct MockTcpStream {
-        inner_buf: BytesMut
+        inner_buf: BytesMut,
+    }
+
+    impl MockTcpStream {
+        fn write_bytes(&mut self, bytes: &[u8]) {
+            self.inner_buf.put(bytes);
+        }
     }
 
     impl AsyncRead for MockTcpStream {
@@ -83,32 +89,12 @@ mod tests {
             cx: &mut std::task::Context<'_>,
             buf: &mut tokio::io::ReadBuf<'_>,
         ) -> std::task::Poll<std::io::Result<()>> {
-            let fix_header = FixHeader {
-                packet_type: PacketType::PUBLISH,
-                qos: Some(1),
-                retain: Some(true),
-                dup: Some(1),
-                remaining_length: 8,
-            };
-            let variable_header = VariableHeader {
-                topic_name: "a/b".to_string(),
-                packet_identifier: Some(0x10),
-            };
-
-            let payload = Payload{
-                payload: vec!(0x01)
-            };
-
-            let publish_packet = PublishPacket {
-                fix_header,
-                variable_header,
-                payload
-            };
-
-            let packet = MqttPacketV3::Publish(publish_packet);
-            let bytes = packet.to_bytes();
-            buf.put(bytes);
-            std::task::Poll::Ready(Ok(()))
+            if !self.inner_buf.is_empty() {
+                buf.put(self.inner_buf.as_bytes());
+                std::task::Poll::Ready(Ok(()))
+            } else {
+                std::task::Poll::Pending
+            }
         }
     }
 
@@ -139,10 +125,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_read_packet_from_stream() {
         let mut connection = Connection::new(MockTcpStream { inner_buf: BytesMut::new() }); 
+
+        let publish_packet = PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).build();
+
+        let packet = MqttPacketV3::Publish(publish_packet);
+        connection.stream.write_bytes(packet.to_bytes().as_ref());
         let packet = connection.read_packet().await;
         if let Ok(packet) = packet {
             if let MqttPacketV3::Publish(publish_packet) = packet {
-                assert_eq!(publish_packet.variable_header.topic_name, "a/b"); 
+                assert_eq!(publish_packet.variable_header.topic_name, "a/b/c"); 
             } else {
                 assert!(false)
             }
@@ -154,28 +145,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_write_packet() {
         let mut connection = Connection::new(MockTcpStream { inner_buf: BytesMut::new() }); 
-
-        let fix_header = FixHeader {
-            packet_type: PacketType::PUBLISH,
-            qos: Some(1),
-            retain: Some(true),
-            dup: Some(1),
-            remaining_length: 8,
-        };
-        let variable_header = VariableHeader {
-            topic_name: "a/b".to_string(),
-            packet_identifier: Some(0x10),
-        };
-
-        let payload = Payload{
-            payload: vec!(0x01)
-        };
-
-        let publish_packet = PublishPacket {
-            fix_header,
-            variable_header,
-            payload
-        };
+        let publish_packet = PublishPacketBuilder::new("a/b".to_string(),vec![0x01]).dup(true).retain(true).qos(1).packet_identifier(0x10).build();
 
         let packet = MqttPacketV3::Publish(publish_packet);
 
