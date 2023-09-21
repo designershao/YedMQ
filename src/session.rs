@@ -1,8 +1,9 @@
 use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
 
+use crate::qos_context;
 use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self, VariableHeader, Payload, PublishPacketBuilder}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
 use anyhow::{Result, Context};
-use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream};
+use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream, io::{AsyncRead, AsyncWrite}};
 use tokio::sync::{RwLock};
 use log::{warn, info, error};
 
@@ -21,7 +22,7 @@ pub struct WillMessage {
 }
 
 // Represent mqtt session
-pub struct Session {
+pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
 
     // MQTT Will Message
     will_message: Option<WillMessage>,
@@ -32,7 +33,7 @@ pub struct Session {
     // Tenant Identifier, unique in the system
     tenant_identifier: String,
 
-    connection: Option<Connection<TcpStream>>,
+    connection: Option<Connection<T>>,
 
     // The session subscribed topics
     subscription_topics: RwLock<Vec<String>>,
@@ -77,6 +78,19 @@ enum QosItemState {
 enum QosType{
     Qos1,
     Qos2
+}
+
+struct QosContext {
+
+}
+
+struct QosContextItem {
+    qos_type: QosType,
+    packet_identifier: u16,
+}
+
+impl QosContext {
+
 }
 
 // Represent the qos packet status
@@ -147,22 +161,25 @@ impl QosPacketItem {
     }
 }
 
-impl Session {
+impl <T> Session<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin
+ {
 
     pub fn new(
         client_identifier: String, 
         tenant_identifier: String, 
-        connection: Connection<TcpStream>,
+        connection: Connection<T>,
         topic_tree: Arc<RwLock<TopicManager>>,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         session_cmd_receiver: Receiver<SessionCmd>,
         will_message: Option<WillMessage>,
         keep_alive: u16
-    ) -> Arc<Session> {
+    ) -> Session<T> {
 
         let (main_logic_quit_signal_sender, main_logic_quit_signal_receiver) = tokio::sync::mpsc::channel::<()>(1);
 
-        let session = Arc::new(Session {
+        Session {
             client_identifier,
             tenant_identifier,
             connection: Some(connection),
@@ -177,9 +194,7 @@ impl Session {
             topic_tree,
             will_message,
             keep_alive
-        });
-
-        session
+        }
     }
 
     // Session core logic loop
@@ -190,6 +205,8 @@ impl Session {
         let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(self.keep_alive.into()));
 
         let mut keep_alive_timeout_flag = true;
+
+        let mut _interval_first_tick = true;
 
         loop {
             select! {
@@ -224,11 +241,17 @@ impl Session {
                 }
                 _ = keep_alive_interval.tick() => {
                     if keep_alive_timeout_flag {
-                        self.send_will_packet().await?;
-                        if let Err(e) = self.shutdown().await {
-                            error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
+                        if !_interval_first_tick {
+                            self.send_will_packet().await?;
+                            if let Err(e) = self.shutdown().await {
+                                error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
+                            }
+                            self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
+                        } else {
+                            _interval_first_tick = false;
                         }
-                        self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
+                    } else {
+                        keep_alive_timeout_flag = true;
                     }
                 }
                 _ = resend_check_interval.tick() => {
@@ -266,7 +289,8 @@ impl Session {
                 }
             }
         }
-        todo!("Close the connection and drop the connection");
+        self.shutdown().await?;
+        Ok(())
     }
 
     async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
@@ -511,7 +535,7 @@ impl Session {
 }
 
 struct SessionWrapper {
-    session: Arc<RwLock<Session>>,
+    session: Arc<RwLock<Session<TcpStream>>>,
     session_sender: Sender<SessionCmd>
 }
 
@@ -522,7 +546,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     
-    pub async fn register(&mut self, client_identifier: String, mut session:Session) -> Arc<RwLock<Session>> {
+    pub async fn register(&mut self, client_identifier: String, mut session:Session<TcpStream>) -> Arc<RwLock<Session<TcpStream>>> {
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
         session.session_cmd_receiver = session_receiver;
         let session = Arc::new(RwLock::new(session));
@@ -532,7 +556,7 @@ impl SessionManager {
         return session;
     }
 
-    pub async fn get(&self, client_identifier: String) -> Option<Arc<RwLock<Session>>> {
+    pub async fn get(&self, client_identifier: String) -> Option<Arc<RwLock<Session<TcpStream>>>> {
         let session_table = self.session_table.read().await;
         if let Some(session_wrapper) = session_table.get(&client_identifier){
             Some(session_wrapper.session.clone())
@@ -559,7 +583,88 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_state_table() {
+    use std::{sync::{Arc}, time::Duration};
+
+    use nom::AsBytes;
+    use tokio::sync::RwLock;
+
+    use crate::{session::{Session, SessionManager, SessionCmd}, connection::Connection, topic::TopicManager, router::RouterCmd, protocol::{v3::{publish::PublishPacketBuilder, puback::{PubAckPacket, VariableHeader}, fixed_header::FixHeader}, MqttPacketV3, PacketType}};
+
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_keep_alive_timeout() {
+        let mock_io = tokio_test::io::Builder::new().wait(Duration::from_secs(11)).build();
+        let mut connection = Connection::new(mock_io); 
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+
+        let mut session = Session::new(
+            "client_a".to_string(),
+            "tenant_a".to_string(),
+            connection,
+            Arc::new(RwLock::new(TopicManager::new())),
+            router_sender,
+            session_receiver,
+            None,
+            10
+        );
+        let _ = session.run_logic_loop().await;
     }
+
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_1_process() {
+        // Read Qos1 publish packet should return puback packet
+        let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(1)
+            .packet_identifier(0x01)
+            .build();
+
+        let packet = MqttPacketV3::Publish(qos_1_publish_packet);
+        
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBACK, 
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
+
+        let variable_header = VariableHeader{
+            packet_identifier: 10
+        };
+
+        let puback_packet = PubAckPacket {
+            fix_header,
+            variable_header
+        };
+
+        let puback_packet = MqttPacketV3::Puback(puback_packet);
+
+        let mock_io = tokio_test::io::Builder::new()
+            .wait(Duration::from_secs(3))
+            .read(packet.to_bytes().as_bytes())
+            .write(&puback_packet.to_bytes().as_bytes())
+            .build();
+
+        let mut connection = Connection::new(mock_io); 
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+
+        let mut session = Session::new(
+            "client_a".to_string(),
+            "tenant_a".to_string(),
+            connection,
+            Arc::new(RwLock::new(TopicManager::new())),
+            router_sender,
+            session_receiver,
+            None,
+            10
+        );
+        let _ = session.run_logic_loop().await;
+
+    }
+
 }
