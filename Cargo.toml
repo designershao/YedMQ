@@ -12,6 +12,7 @@ bytes = "1"
 thiserror = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.29.1", features = ["full"] }
+tokio-test = "0.4.3"
 mlua = { version = "0.8.9", features = ["lua54", "vendored", "macros"]}
 log = "0.4"
 rand = "0.8"
