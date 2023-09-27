@@ -2,9 +2,9 @@ use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
-use crate::protocol::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket}};
+use crate::protocol::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket}};
 
-struct QosContext {
+pub struct QosContext {
     inner: RwLock<HashMap<u16, QosContextItem>>
 }
 
@@ -65,7 +65,7 @@ impl QosContext {
                     if qos == 1 {
                         let item = QosPacketItemBuilder::new(
                             packet_identifier,
-                            QosContextItemState::Finish
+                            QosContextItemState::WaitPuback
                         ).packet(packet).build();
                         self.inner.blocking_write().insert(packet_identifier, item);
                     }
@@ -200,10 +200,12 @@ impl QosContextItem {
         let (next_state, next_packet) = match self.state {
             QosContextItemState::WaitPubrel => 
                 (QosContextItemState::Finish, Some(MqttPacketV3::Pubcomp(PubCompPacket::new(self.packet_identifier)))),
-            QosContextItemState::WaitPubcomp => (QosContextItemState::Finish, None),
+            QosContextItemState::WaitPubcomp => 
+                (QosContextItemState::Finish, None),
             QosContextItemState::WaitPubrec => 
                 (QosContextItemState::WaitPubcomp, Some(MqttPacketV3::Pubrel(PubRelPacket::new(self.packet_identifier)))),
-            QosContextItemState::WaitPuback => (QosContextItemState::Finish, None),
+            QosContextItemState::WaitPuback => 
+                (QosContextItemState::Finish, Some(MqttPacketV3::Puback(PubAckPacket::new(self.packet_identifier)))),
             QosContextItemState::Finish => (QosContextItemState::Finish, None)
         };
         self.state = next_state;
@@ -245,7 +247,7 @@ mod tests {
         item.to_next();
 
         assert_eq!(QosContextItemState::Finish, item.state);
-        assert_eq!(true, item.current_packet().is_none());
+        assert_eq!(true, item.current_packet().is_some());
     }
 
     #[test]
@@ -300,9 +302,11 @@ mod tests {
         context.next_state(10);
 
         let p = context.get_current_packet(10);
-
-        assert_eq!(true, p.is_none());
-
+        if let Some(MqttPacketV3::Puback(packet)) = p {
+            assert_eq!(10, packet.variable_header.packet_identifier);
+        } else {
+            assert!(false);
+        }
     }
 
     #[test]

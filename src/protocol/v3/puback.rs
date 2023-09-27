@@ -2,7 +2,7 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
-use crate::protocol::MqttPacket;
+use crate::protocol::{MqttPacket, PacketType};
 
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
 
@@ -10,6 +10,27 @@ use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
 pub struct PubAckPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader
+}
+
+impl PubAckPacket {
+    pub fn new(packet_identifier: u16) -> PubAckPacket {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBACK, 
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
+
+        let variable_header = VariableHeader{
+            packet_identifier: packet_identifier
+        };
+
+        PubAckPacket {
+            fix_header,
+            variable_header
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
