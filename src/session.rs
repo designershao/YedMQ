@@ -127,7 +127,7 @@ where
                                 if publish_packet.fix_header.qos > Some(0) {
                                     let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
                                     let packet = MqttPacketV3::Publish(publish_packet);
-                                    self.process_qos_state(&packet);
+                                    self.new_tx_qos_state_ctx(&packet);
                                     if let Err(e) = self.write_to_client(&packet).await {
                                         error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
                                         self.main_logic_quit_signal_sender.send(()).await?;
@@ -203,6 +203,9 @@ where
             MqttPacketV3::Publish(publish_packet) => {
                 let cmd = RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet.clone()));
                 self.router_sender.send(cmd).await?;
+                self.new_rx_qos_state_ctx(packet);
+                let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).unwrap();
+                self.write_to_client(&packet).await?;
             }
             MqttPacketV3::Disconnect(disconnect_packet) => {
                 self.shutdown().await?; //shutdown the connection
@@ -303,17 +306,20 @@ where
         Ok(())
     }
 
+    fn new_tx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+        if let MqttPacketV3::Publish(_) = packet {
+           self.qos_context.register_with_tx_packet(packet);
+        }
+    }
+
+    fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+        if let MqttPacketV3::Publish(_) = packet {
+           self.qos_context.register_with_rx_packet(packet);
+        }
+    }
+
     fn process_qos_state(&mut self, packet: &MqttPacketV3) {
         match packet {
-            MqttPacketV3::Publish(publish_packet) => {
-                if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
-                    if let Some(packet_identifier) = publish_packet.variable_header.packet_identifier {
-                        if !self.packet_identifier_in_used(packet_identifier) {
-                            self.qos_context.register_with_packet(packet);
-                        }
-                    }
-                }
-            },
             MqttPacketV3::Puback(puback_packet) => {
                 let packet_identifier = puback_packet.variable_header.packet_identifier;
                 self.qos_context.next_state(packet_identifier);
