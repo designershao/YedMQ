@@ -28,7 +28,8 @@ impl QosContext {
                         packet_identifier,
                         QosContextItemState::WaitPubrel
                     ).packet(&MqttPacketV3::Pubrec(PubRecPacket::new(packet_identifier))).build();
-                    self.inner.blocking_write().insert(packet_identifier, item);
+                    let mut inner = self.inner.write().await;
+                    inner.insert(packet_identifier, item);
                 } 
                 if qos == 1 {
                     let item = QosPacketItemBuilder::new(
@@ -82,7 +83,7 @@ impl QosContext {
         let mut result_vec:Vec<MqttPacketV3> = vec![];
         let inner = self.inner.read().await;
         for item in inner.values() {
-            if item.last_modified < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() + self.expired_duration.as_secs() {
+            if item.last_modified > std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() + self.expired_duration.as_secs() {
                 if let Some(packet) = item.current_packet() {
                     result_vec.push(packet.clone());
                 }

@@ -189,6 +189,7 @@ where
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     keep_alive_timeout_flag = false;
                     if let Ok(packet) = packet {
+                        println!("tenant {} session {} read packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
                         let _ = self.do_process_rx_packet(&packet).await;
                     } else {
                         // read packet io error, send will packet and shutdown the session
@@ -307,6 +308,7 @@ where
                 self.write_to_client(&unsub_ack).await?
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
+                println!("1232313123");
                 self.qos_context.next_state(pubcomp_packet.variable_header.packet_identifier).await;
                 if let Some(p) = self.qos_context.get_current_packet(pubcomp_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
@@ -370,6 +372,7 @@ where
     // Write a single packet to the underlying stream.
     async fn write_to_client(&mut self, packet: &MqttPacketV3) -> Result<()> {
         if let Some(connection) = &mut self.connection {
+            println!("Send packet: {:?}", packet);
             connection.write_packet(packet).await?
         }
         Ok(())
@@ -431,7 +434,7 @@ mod tests {
     use nom::AsBytes;
     use tokio::sync::RwLock;
 
-    use crate::{session::{Session, SessionManager, SessionCmd}, connection::Connection, topic::TopicManager, router::RouterCmd, protocol::{v3::{publish::PublishPacketBuilder, puback::{PubAckPacket, VariableHeader}, fixed_header::FixHeader}, MqttPacketV3, PacketType}};
+    use crate::{session::{Session, SessionManager, SessionCmd}, connection::Connection, topic::TopicManager, router::RouterCmd, protocol::{v3::{publish::PublishPacketBuilder, puback::{PubAckPacket, VariableHeader}, fixed_header::FixHeader, pubrel::PubRelPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket}, MqttPacketV3, PacketType}};
 
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -512,4 +515,41 @@ mod tests {
 
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_2_process() {
+        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(2)
+            .packet_identifier(0x01)
+            .build();
+
+        let pubrec_packet = PubRecPacket::new(0x01);
+        let pubrel_packet = PubRelPacket::new(0x01);
+        let pubcomp_packet = PubCompPacket::new(0x01);
+
+        let mock_io = tokio_test::io::Builder::new()
+            .read(MqttPacketV3::Publish(publish_packet).to_bytes().as_bytes())
+            .write(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
+            .read(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
+            .write(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
+            .build();
+
+        let mut connection = Connection::new(mock_io); 
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+
+        let mut session = Session::new(
+            "client_a".to_string(),
+            "tenant_a".to_string(),
+            connection,
+            Arc::new(RwLock::new(TopicManager::new())),
+            router_sender,
+            session_receiver,
+            None,
+            6, 
+            Duration::from_secs(24) // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+        );
+        let _ = session.run_logic_loop().await;
+
+    }
 }
