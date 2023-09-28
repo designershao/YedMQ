@@ -1,13 +1,11 @@
-use std::{sync::{Arc}, collections::HashMap, time::Duration, ops::Deref};
+use std::{sync::{Arc}, collections::HashMap, time::Duration};
 
-use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, self, VariableHeader, Payload, PublishPacketBuilder}, pubcomp::PubCompPacket, pubrec::PubRecPacket, pubrel::{self, PubRelPacket}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
+use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, PublishPacketBuilder}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
 use crate::qos_context::QosContext;
 use anyhow::{Result, Context};
 use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream, io::{AsyncRead, AsyncWrite}};
 use tokio::sync::{RwLock};
 use log::{warn, info, error};
-
-const RESEND_DURATION_TIME: u64 = 10;
 
 pub enum SessionCmd {
     Send(MqttPacketV3),
@@ -141,7 +139,7 @@ where
                                         error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
                                         self.main_logic_quit_signal_sender.send(()).await?;
                                     }                                     
-                                    self.qos_context.next_state(packet_identifier);
+                                    self.qos_context.next_state(packet_identifier).await;
                                 }
                             } else {
                                 if let Err(e) = self.write_to_client(&packet).await {
@@ -222,7 +220,7 @@ where
                 let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).await.unwrap();
                 self.write_to_client(&packet).await?;
             }
-            MqttPacketV3::Disconnect(disconnect_packet) => {
+            MqttPacketV3::Disconnect(_) => {
                 self.shutdown().await?; //shutdown the connection
                 self.main_logic_quit_signal_sender.send(()).await?; // notfiy exit the main logic loop
             }
@@ -230,19 +228,19 @@ where
                 self.write_to_client(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
             }
             MqttPacketV3::Puback(puback_packet) => {
-                self.qos_context.next_state(puback_packet.variable_header.packet_identifier);
+                self.qos_context.next_state(puback_packet.variable_header.packet_identifier).await;
                 if let Some(p) = self.qos_context.get_current_packet(puback_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
-                self.qos_context.next_state(pubrec_packet.variable_header.packet_identifier);
+                self.qos_context.next_state(pubrec_packet.variable_header.packet_identifier).await;
                 if let Some(p) = self.qos_context.get_current_packet(pubrec_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
-                self.qos_context.next_state(pubrel_packet.variable_header.packet_identifier);
+                self.qos_context.next_state(pubrel_packet.variable_header.packet_identifier).await;
                 if let Some(p) = self.qos_context.get_current_packet(pubrel_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
@@ -309,7 +307,7 @@ where
                 self.write_to_client(&unsub_ack).await?
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
-                self.qos_context.next_state(pubcomp_packet.variable_header.packet_identifier);
+                self.qos_context.next_state(pubcomp_packet.variable_header.packet_identifier).await;
                 if let Some(p) = self.qos_context.get_current_packet(pubcomp_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
@@ -330,30 +328,6 @@ where
     async fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(_) = packet {
            self.qos_context.register_with_rx_packet(packet).await;
-        }
-    }
-
-    fn process_qos_state(&mut self, packet: &MqttPacketV3) {
-        match packet {
-            MqttPacketV3::Puback(puback_packet) => {
-                let packet_identifier = puback_packet.variable_header.packet_identifier;
-                self.qos_context.next_state(packet_identifier);
-            },
-            MqttPacketV3::Pubrec(pubrec_packet) => {
-                let packet_identifier = pubrec_packet.variable_header.packet_identifier;
-                self.qos_context.next_state(packet_identifier);
-            },
-            MqttPacketV3::Pubrel(pubrel_packet) => {
-                let packet_identifier = pubrel_packet.variable_header.packet_identifier;
-                self.qos_context.next_state(packet_identifier);
-            },
-            MqttPacketV3::Pubcomp(pubcomp_packet) => {
-                let packet_identifier = pubcomp_packet.variable_header.packet_identifier;
-                self.qos_context.next_state(packet_identifier);
-            },
-            _ => {
-                // DO NOTHING
-            }
         }
     }
 
