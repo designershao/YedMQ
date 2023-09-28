@@ -64,6 +64,12 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
 
     // MQTT Keep alive
     keep_alive: u16,
+
+    // Connection has shutdown
+    has_shutdown: bool,
+
+    // Resend qos packet check interval
+    resend_check_interval: Duration
 }
 
 
@@ -80,7 +86,8 @@ where
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         session_cmd_receiver: Receiver<SessionCmd>,
         will_message: Option<WillMessage>,
-        keep_alive: u16
+        keep_alive: u16,
+        resend_check_interval: Duration
     ) -> Session<T> {
 
         let (main_logic_quit_signal_sender, main_logic_quit_signal_receiver) = tokio::sync::mpsc::channel::<()>(1);
@@ -96,17 +103,19 @@ where
             session_cmd_receiver,
             main_logic_quit_signal_receiver,
             main_logic_quit_signal_sender,
-            qos_context: QosContext::new(),
+            qos_context: QosContext::new(Duration::from_secs(10)),
             topic_tree,
             will_message,
-            keep_alive
+            keep_alive,
+            has_shutdown: false,
+            resend_check_interval
         }
     }
 
     // Session core logic loop
     async fn run_logic_loop(&mut self) -> Result<()> {
 
-        let mut resend_check_interval = tokio::time::interval(Duration::from_secs(10));
+        let mut resend_check_interval = tokio::time::interval(self.resend_check_interval);
 
         let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(self.keep_alive.into()));
 
@@ -127,7 +136,7 @@ where
                                 if publish_packet.fix_header.qos > Some(0) {
                                     let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
                                     let packet = MqttPacketV3::Publish(publish_packet);
-                                    self.new_tx_qos_state_ctx(&packet);
+                                    self.new_tx_qos_state_ctx(&packet).await;
                                     if let Err(e) = self.write_to_client(&packet).await {
                                         error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
                                         self.main_logic_quit_signal_sender.send(()).await?;
@@ -159,6 +168,7 @@ where
                             self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
                         } else {
                             _interval_first_tick = false;
+                            keep_alive_timeout_flag = true;
                         }
                     } else {
                         keep_alive_timeout_flag = true;
@@ -168,11 +178,13 @@ where
                     // Qos2 PubRec resend task
                     // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
                     // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
-                    let packets = self.qos_context.get_all_expired_packets();
-                    for packet in packets {
-                        if let Err(e) = self.write_to_client(&packet).await  {
-                            error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
-                            self.main_logic_quit_signal_sender.send(()).await?;
+                    if !self.has_shutdown {
+                        let packets = self.qos_context.get_all_expired_packets().await;
+                        for packet in packets {
+                            if let Err(e) = self.write_to_client(&packet).await  {
+                                error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
+                                self.main_logic_quit_signal_sender.send(()).await?;
+                            }
                         }
                     }
                 }
@@ -194,7 +206,10 @@ where
                 }
             }
         }
-        self.shutdown().await?;
+        if !self.has_shutdown {
+            info!("tenant {} session {} shutdown", self.tenant_identifier, self.client_identifier);
+            self.shutdown().await?;
+        }
         Ok(())
     }
 
@@ -203,8 +218,8 @@ where
             MqttPacketV3::Publish(publish_packet) => {
                 let cmd = RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet.clone()));
                 self.router_sender.send(cmd).await?;
-                self.new_rx_qos_state_ctx(packet);
-                let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).unwrap();
+                self.new_rx_qos_state_ctx(packet).await;
+                let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).await.unwrap();
                 self.write_to_client(&packet).await?;
             }
             MqttPacketV3::Disconnect(disconnect_packet) => {
@@ -216,19 +231,19 @@ where
             }
             MqttPacketV3::Puback(puback_packet) => {
                 self.qos_context.next_state(puback_packet.variable_header.packet_identifier);
-                if let Some(p) = self.qos_context.get_current_packet(puback_packet.variable_header.packet_identifier) {
+                if let Some(p) = self.qos_context.get_current_packet(puback_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
                 self.qos_context.next_state(pubrec_packet.variable_header.packet_identifier);
-                if let Some(p) = self.qos_context.get_current_packet(pubrec_packet.variable_header.packet_identifier) {
+                if let Some(p) = self.qos_context.get_current_packet(pubrec_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
                 self.qos_context.next_state(pubrel_packet.variable_header.packet_identifier);
-                if let Some(p) = self.qos_context.get_current_packet(pubrel_packet.variable_header.packet_identifier) {
+                if let Some(p) = self.qos_context.get_current_packet(pubrel_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
@@ -295,7 +310,7 @@ where
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
                 self.qos_context.next_state(pubcomp_packet.variable_header.packet_identifier);
-                if let Some(p) = self.qos_context.get_current_packet(pubcomp_packet.variable_header.packet_identifier) {
+                if let Some(p) = self.qos_context.get_current_packet(pubcomp_packet.variable_header.packet_identifier).await {
                    self.write_to_client(&p).await?;
                 }
             }
@@ -306,15 +321,15 @@ where
         Ok(())
     }
 
-    fn new_tx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+    async fn new_tx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(_) = packet {
-           self.qos_context.register_with_tx_packet(packet);
+           self.qos_context.register_with_tx_packet(packet).await;
         }
     }
 
-    fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+    async fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(_) = packet {
-           self.qos_context.register_with_rx_packet(packet);
+           self.qos_context.register_with_rx_packet(packet).await;
         }
     }
 
@@ -361,6 +376,7 @@ where
     async fn shutdown(&mut self) -> Result<()> {
         if let Some(connection) = self.connection.as_mut() {
             connection.shutdown().await?;
+            self.has_shutdown = true;
         }
         Ok(())
     }
@@ -460,7 +476,8 @@ mod tests {
             router_sender,
             session_receiver,
             None,
-            10
+            6,
+            Duration::from_secs(10)
         );
         let _ = session.run_logic_loop().await;
     }
@@ -485,7 +502,7 @@ mod tests {
         };
 
         let variable_header = VariableHeader{
-            packet_identifier: 10
+            packet_identifier: 0x01
         };
 
         let puback_packet = PubAckPacket {
@@ -514,7 +531,8 @@ mod tests {
             router_sender,
             session_receiver,
             None,
-            10
+            6, 
+            Duration::from_secs(13) // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
         );
         let _ = session.run_logic_loop().await;
 

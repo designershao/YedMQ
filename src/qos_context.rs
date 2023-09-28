@@ -1,22 +1,24 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use tokio::sync::RwLock;
 
 use crate::protocol::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
 
 pub struct QosContext {
-    inner: RwLock<HashMap<u16, QosContextItem>>
+    inner: RwLock<HashMap<u16, QosContextItem>>,
+    expired_duration: Duration
 }
 
 impl QosContext {
 
-    pub fn new() -> QosContext {
+    pub fn new(expired_duration: Duration) -> QosContext {
         QosContext {
-            inner: RwLock::new(HashMap::new())
+            inner: RwLock::new(HashMap::new()),
+            expired_duration
         }
     }
 
-    pub fn register_with_rx_packet(&mut self, packet: &MqttPacketV3) {
+    pub async fn register_with_rx_packet(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
@@ -33,13 +35,14 @@ impl QosContext {
                         packet_identifier,
                         QosContextItemState::Finish
                     ).packet(&MqttPacketV3::Puback(PubAckPacket::new(packet_identifier))).build();
-                    self.inner.blocking_write().insert(packet_identifier, item);
+                    let mut inner = self.inner.write().await;
+                    inner.insert(packet_identifier, item);
                 }
-            }
+            } 
         }
     }
 
-    pub fn register_with_tx_packet(&mut self, packet: &MqttPacketV3) {
+    pub async fn register_with_tx_packet(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
@@ -49,14 +52,16 @@ impl QosContext {
                         packet_identifier,
                         QosContextItemState::WaitPubrec
                     ).packet(packet).build();
-                    self.inner.blocking_write().insert(packet_identifier, item);
+                    let mut inner = self.inner.write().await;
+                    inner.insert(packet_identifier, item);
                 } 
                 if qos == 1 {
                     let item = QosPacketItemBuilder::new(
                         packet_identifier,
                         QosContextItemState::WaitPuback
                     ).packet(packet).build();
-                    self.inner.blocking_write().insert(packet_identifier, item);
+                    let mut inner = self.inner.write().await;
+                    inner.insert(packet_identifier, item);
                 }
             }
         }
@@ -73,10 +78,11 @@ impl QosContext {
     }
 
     // Get all packet which should be resend to the client
-    pub fn get_all_expired_packets(&self) -> Vec<MqttPacketV3> {
+    pub async fn get_all_expired_packets(&self) -> Vec<MqttPacketV3> {
         let mut result_vec:Vec<MqttPacketV3> = vec![];
-        for item in self.inner.blocking_read().values() {
-            if item.last_modified < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+        let inner = self.inner.read().await;
+        for item in inner.values() {
+            if item.last_modified < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() + self.expired_duration.as_secs() {
                 if let Some(packet) = item.current_packet() {
                     result_vec.push(packet.clone());
                 }
@@ -85,8 +91,9 @@ impl QosContext {
         result_vec
     }
 
-    pub fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
-        let binding = self.inner.blocking_read();
+    pub async fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
+        let inner = self.inner.read().await;
+        let binding = inner;
         let ctx = binding.get(&packet_identifier);
         if let Some(ctx_item) = ctx {
             if let Some(packet) = ctx_item.current_packet() {
@@ -99,8 +106,8 @@ impl QosContext {
         }
     }
 
-    pub fn next_state(&mut self, packet_identifier: u16) {
-        let mut binding = self.inner.blocking_write();
+    pub async fn next_state(&mut self, packet_identifier: u16) {
+        let mut binding = self.inner.write().await;
         let ctx = binding.get_mut(&packet_identifier);
         if let Some(ctx_item) = ctx {
             ctx_item.to_next();
@@ -213,6 +220,8 @@ impl QosContextItem {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::protocol::{MqttPacketV3, v3::publish::PublishPacketBuilder};
 
     use super::{QosPacketItemBuilder, QosContextItemState, QosContext};
@@ -255,15 +264,15 @@ mod tests {
         assert_eq!(true, packet.is_none());
     }
 
-    #[test]
-    fn test_tx_qos_context_register() {
-        let mut context = QosContext::new();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_tx_qos_context_register() {
+        let mut context = QosContext::new(Duration::from_secs(10));
         let packet_builder = PublishPacketBuilder::new("a/b".to_string(), vec![0x01]);
         let packet = packet_builder.qos(1).packet_identifier(10).build();
         
-        context.register_with_tx_packet(&MqttPacketV3::Publish(packet));
+        context.register_with_tx_packet(&MqttPacketV3::Publish(packet)).await;
 
-        let p = context.get_current_packet(10);
+        let p = context.get_current_packet(10).await;
 
         assert_eq!(true, p.is_some());
 
@@ -279,16 +288,16 @@ mod tests {
 
     }
 
-    #[test]
-    fn test_tx_qos_context_qos1_next_state() {
-        let mut context = QosContext::new();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_tx_qos_context_qos1_next_state() {
+        let mut context = QosContext::new(Duration::from_secs(10));
         let packet_builder = PublishPacketBuilder::new("a/b".to_string(), vec![0x01]);
         let packet = packet_builder.qos(1).packet_identifier(10).build();
         
-        context.register_with_tx_packet(&MqttPacketV3::Publish(packet));
-        context.next_state(10);
+        context.register_with_tx_packet(&MqttPacketV3::Publish(packet)).await;
+        context.next_state(10).await;
 
-        let p = context.get_current_packet(10);
+        let p = context.get_current_packet(10).await;
         if let Some(MqttPacketV3::Puback(packet)) = p {
             assert_eq!(10, packet.variable_header.packet_identifier);
         } else {
@@ -296,16 +305,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_tx_qos_context_qos2_next_state() {
-        let mut context = QosContext::new();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_tx_qos_context_qos2_next_state() {
+        let mut context = QosContext::new(Duration::from_secs(10));
         let packet_builder = PublishPacketBuilder::new("a/b".to_string(), vec![0x01]);
         let packet = packet_builder.qos(2).packet_identifier(10).build();
         
-        context.register_with_tx_packet(&MqttPacketV3::Publish(packet));
-        context.next_state(10);
+        context.register_with_tx_packet(&MqttPacketV3::Publish(packet)).await;
+        context.next_state(10).await;
 
-        let p = context.get_current_packet(10);
+        let p = context.get_current_packet(10).await;
 
         if let Some(MqttPacketV3::Pubrel(packet)) = p {
             assert_eq!(10, packet.variable_header.packet_identifier);
@@ -313,9 +322,9 @@ mod tests {
             assert!(false);
         }
 
-        context.next_state(10);
+        context.next_state(10).await;
 
-        let p = context.get_current_packet(10);
+        let p = context.get_current_packet(10).await;
 
         assert_eq!(true, p.is_none());
     }
