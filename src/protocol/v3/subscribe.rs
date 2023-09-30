@@ -7,7 +7,7 @@ use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
 #[derive(Debug, Clone)]
 pub struct SubscribePacket {
-    fix_header: FixHeader,
+    pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload
 }

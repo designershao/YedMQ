@@ -78,13 +78,32 @@ impl QosContext {
         self.inner.blocking_read().contains_key(&packet_identifier)
     }
 
+    // Get all packet which should be resend to the client and refresh expired time
+    pub async fn get_all_expired_packets_and_refresh_expired_time(&self) -> Vec<MqttPacketV3> {
+        let mut result_vec:Vec<MqttPacketV3> = vec![];
+        let mut inner = self.inner.write().await;
+        for item in inner.values_mut() {
+            if item.last_modified + self.expired_duration.as_secs() < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+                if let Some(packet) = item.current_packet() {
+                    let mut packet = packet.clone();
+                    packet.set_dup(1); // all expired packet should set dup to true
+                    result_vec.push(packet.clone());
+                }
+                item.last_modified = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs();
+            }
+        }    
+        result_vec
+    }
+
     // Get all packet which should be resend to the client
     pub async fn get_all_expired_packets(&self) -> Vec<MqttPacketV3> {
         let mut result_vec:Vec<MqttPacketV3> = vec![];
         let inner = self.inner.read().await;
         for item in inner.values() {
-            if item.last_modified > std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() + self.expired_duration.as_secs() {
+            if item.last_modified + self.expired_duration.as_secs() < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
                 if let Some(packet) = item.current_packet() {
+                    let mut packet = packet.clone();
+                    packet.set_dup(1); // all expired packet should set dup to true
                     result_vec.push(packet.clone());
                 }
             }
@@ -116,8 +135,9 @@ impl QosContext {
     }
 
     // Clean all finished qos packet identifier
-    fn clean_finished_items(&mut self) {
-        self.inner.blocking_write().retain(|_, v| v.last_modified < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs());
+    pub async fn clean_finished_items(&mut self) {
+        let mut inner = self.inner.write().await;
+        inner.retain(|_, v| v.state != QosContextItemState::Finish);
     }
 }
 

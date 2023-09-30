@@ -7,7 +7,7 @@ use super::fixed_header::{FixHeader, self};
 
 #[derive(Debug, Clone)]
 pub struct PingrespPacket {
-    fix_header: FixHeader,
+    pub fix_header: FixHeader,
 }
 
 impl PingrespPacket {

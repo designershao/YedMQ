@@ -54,6 +54,25 @@ pub enum MqttPacketV3 {
 
 impl MqttPacketV3 {
 
+    pub fn set_dup(&mut self, dup: i32) {
+        match self {
+            MqttPacketV3::Connect(p) => p.fix_header.dup = None,
+            MqttPacketV3::Connack(p) => p.fix_header.dup = None,
+            MqttPacketV3::Publish(p) => p.fix_header.dup = Some(dup),
+            MqttPacketV3::Puback(p) => p.fix_header.dup = Some(dup),
+            MqttPacketV3::Pubrec(p) => p.fix_header.dup = Some(dup),
+            MqttPacketV3::Pubrel(p) => p.fix_header.dup = Some(dup),
+            MqttPacketV3::Pubcomp(p) => p.fix_header.dup = Some(dup),
+            MqttPacketV3::Subscribe(p) => p.fix_header.dup = None,
+            MqttPacketV3::Suback(p) => p.fix_header.dup = None,
+            MqttPacketV3::Unsubscribe(p) => p.fix_header.dup = None,
+            MqttPacketV3::Unsuback(p) => p.fix_header.dup = None,
+            MqttPacketV3::Pingreq(p) => p.fix_header.dup = None,
+            MqttPacketV3::Pingresp(p) => p.fix_header.dup = None,
+            MqttPacketV3::Disconnect(p) => p.fix_header.dup = None,
+        }
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         match self {
             MqttPacketV3::Connect(p) => {

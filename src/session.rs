@@ -5,7 +5,7 @@ use crate::qos_context::QosContext;
 use anyhow::{Result, Context};
 use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream, io::{AsyncRead, AsyncWrite}};
 use tokio::sync::{RwLock};
-use log::{warn, info, error};
+use log::{warn, info, error, debug};
 
 pub enum SessionCmd {
     Send(MqttPacketV3),
@@ -85,7 +85,8 @@ where
         session_cmd_receiver: Receiver<SessionCmd>,
         will_message: Option<WillMessage>,
         keep_alive: u16,
-        resend_check_interval: Duration
+        resend_check_interval: Duration,
+        qos_context_expired_duration: Duration
     ) -> Session<T> {
 
         let (main_logic_quit_signal_sender, main_logic_quit_signal_receiver) = tokio::sync::mpsc::channel::<()>(1);
@@ -101,7 +102,7 @@ where
             session_cmd_receiver,
             main_logic_quit_signal_receiver,
             main_logic_quit_signal_sender,
-            qos_context: QosContext::new(Duration::from_secs(10)),
+            qos_context: QosContext::new(qos_context_expired_duration),
             topic_tree,
             will_message,
             keep_alive,
@@ -177,8 +178,9 @@ where
                     // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
                     // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
                     if !self.has_shutdown {
-                        let packets = self.qos_context.get_all_expired_packets().await;
+                        let packets = self.qos_context.get_all_expired_packets_and_refresh_expired_time().await;
                         for packet in packets {
+                            println!("tenant {} session {} resend pubrec packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
                             if let Err(e) = self.write_to_client(&packet).await  {
                                 error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
                                 self.main_logic_quit_signal_sender.send(()).await?;
@@ -189,7 +191,7 @@ where
                 packet = self.connection.as_mut().unwrap().read_packet() => {
                     keep_alive_timeout_flag = false;
                     if let Ok(packet) = packet {
-                        println!("tenant {} session {} read packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
+                        debug!("tenant {} session {} read packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
                         let _ = self.do_process_rx_packet(&packet).await;
                     } else {
                         // read packet io error, send will packet and shutdown the session
@@ -318,6 +320,7 @@ where
                 // Do nothing
             }
         }
+        self.qos_context.clean_finished_items().await;
         Ok(())
     }
 
@@ -372,7 +375,7 @@ where
     // Write a single packet to the underlying stream.
     async fn write_to_client(&mut self, packet: &MqttPacketV3) -> Result<()> {
         if let Some(connection) = &mut self.connection {
-            println!("Send packet: {:?}", packet);
+            debug!("Send packet: {:?}", packet);
             connection.write_packet(packet).await?
         }
         Ok(())
@@ -454,6 +457,7 @@ mod tests {
             session_receiver,
             None,
             6,
+            Duration::from_secs(10),
             Duration::from_secs(10)
         );
         let _ = session.run_logic_loop().await;
@@ -509,7 +513,8 @@ mod tests {
             session_receiver,
             None,
             6, 
-            Duration::from_secs(13) // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(13), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(10)
         );
         let _ = session.run_logic_loop().await;
 
@@ -547,9 +552,54 @@ mod tests {
             session_receiver,
             None,
             6, 
-            Duration::from_secs(24) // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(24), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(10)
         );
         let _ = session.run_logic_loop().await;
 
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_2_resend_process() {
+        // Read Qos1 publish packet should return puback packet
+        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(2)
+            .packet_identifier(0x01)
+            .build();
+
+        let pubrec_packet = PubRecPacket::new(0x01);
+        let mut pubrec_resend_packet = PubRecPacket::new(0x01);
+        pubrec_resend_packet.fix_header.dup = Some(1);
+        
+        let pubrel_packet = PubRelPacket::new(0x01);
+        let pubcomp_packet = PubCompPacket::new(0x01);
+
+        let mock_io = tokio_test::io::Builder::new()
+            .read(MqttPacketV3::Publish(publish_packet).to_bytes().as_bytes())
+            .write(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
+            .wait(Duration::from_secs(8)) // wait 13 seconds, resend the pubrec packet
+            .write(MqttPacketV3::Pubrec(pubrec_resend_packet).to_bytes().as_bytes())
+            .read(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
+            .write(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
+            .build();
+
+        let mut connection = Connection::new(mock_io); 
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+
+        let mut session = Session::new(
+            "client_a".to_string(),
+            "tenant_a".to_string(),
+            connection,
+            Arc::new(RwLock::new(TopicManager::new())),
+            router_sender,
+            session_receiver,
+            None,
+            9, 
+            Duration::from_secs(3), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(5)
+        );
+        let _ = session.run_logic_loop().await;
     }
 }

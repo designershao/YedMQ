@@ -9,7 +9,7 @@ use super::fixed_header::{FixHeader, self};
 
 #[derive(Debug, Clone)]
 pub struct DisconnectPacket {
-    fix_header: FixHeader,
+    pub fix_header: FixHeader,
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], DisconnectPacket> {
