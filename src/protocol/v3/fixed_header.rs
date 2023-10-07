@@ -175,4 +175,19 @@ mod tests {
         let i =  &[0xE0, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
+
+    #[test]
+    fn test_publish_fix_header_qos_2_dup_set_to_bytes() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH, 
+            dup: Some(1),
+            qos: Some(2),
+            retain: None,
+            remaining_length: 0,
+        };
+
+        let bytes = fix_header.to_bytes();
+        let i =  &[0x3C, 0x00];
+        assert_eq!(bytes.as_bytes(), i);
+    }
 }
