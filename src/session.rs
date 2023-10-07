@@ -652,4 +652,52 @@ mod tests {
         session_sender.send(SessionCmd::Send(MqttPacketV3::Publish(publish_packet.clone()))).await.unwrap();
         task.await.unwrap();
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_tx_2_resend_pubrel_packet() {
+        // Read Qos1 publish packet should return puback packet
+        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(2)
+            .packet_identifier(0x01)
+            .build();
+
+        let pubrec_packet = PubRecPacket::new(0x01);
+        let pubrel_packet = PubRelPacket::new(0x01);
+        let resend_pubrel_packet = PubRelPacket::new(0x01);
+        let mut resend_pubrel_packet = MqttPacketV3::Pubrel(resend_pubrel_packet);
+        resend_pubrel_packet.set_dup(1);
+        let pubcomp_packet = PubCompPacket::new(0x01);
+
+        let mock_io = tokio_test::io::Builder::new()
+            .write(MqttPacketV3::Publish(publish_packet.clone()).to_bytes().as_bytes())
+            .read(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
+            .write(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
+            .wait(Duration::from_secs(8)) // wait 13 seconds, resend the pubrec packet
+            .write(resend_pubrel_packet.to_bytes().as_bytes())
+            .read(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
+            .build();
+
+        let mut connection = Connection::new(mock_io); 
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+
+        let mut session = Session::new(
+            "client_a".to_string(),
+            "tenant_a".to_string(),
+            connection,
+            Arc::new(RwLock::new(TopicManager::new())),
+            router_sender,
+            session_receiver,
+            None,
+            9, 
+            Duration::from_secs(3), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
+            Duration::from_secs(5)
+        );
+        let task = tokio::task::spawn(async move {
+            let _ = session.run_logic_loop().await;
+        });
+        session_sender.send(SessionCmd::Send(MqttPacketV3::Publish(publish_packet.clone()))).await.unwrap();
+        task.await.unwrap();
+    }
 }
