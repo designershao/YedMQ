@@ -8,8 +8,8 @@ use tokio::sync::{RwLock};
 use log::{warn, info, error, debug};
 
 pub enum SessionCmd {
-    Send(MqttPacketV3),
-    Disconnect
+    Send(MqttPacketV3), // Send message to the client
+    KickOff // Kick off current client
 }
 
 pub struct WillMessage {
@@ -31,6 +31,7 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
     // Tenant Identifier, unique in the system
     tenant_identifier: String,
 
+    // MQTT Connection
     connection: Option<Connection<T>>,
 
     // The session subscribed topics
@@ -41,12 +42,6 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
 
     // Session cmd receiver
     session_cmd_receiver: Receiver<SessionCmd>,
-
-    // TX packet identifier cache
-    qos_tx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
-
-    // RX packet identifer cache
-    qos_rx_publish_packet_cache: RwLock<HashMap<u16, PublishPacket>>,
 
     // Main logic quit signal sender
     main_logic_quit_signal_sender: tokio::sync::mpsc::Sender<()>,
@@ -96,8 +91,6 @@ where
             tenant_identifier,
             connection: Some(connection),
             subscription_topics: RwLock::new(vec![]),
-            qos_tx_publish_packet_cache: RwLock::new(HashMap::new()),
-            qos_rx_publish_packet_cache: RwLock::new(HashMap::new()),
             router_sender,
             session_cmd_receiver,
             main_logic_quit_signal_receiver,
@@ -147,7 +140,7 @@ where
                                 }
                             }
                         }
-                        SessionCmd::Disconnect => {
+                        SessionCmd::KickOff => {
                             if let Err(e) = self.shutdown().await {
                                 error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
                                 self.main_logic_quit_signal_sender.send(()).await?;
@@ -205,6 +198,7 @@ where
                 }
             }
         }
+        // ensure the session has been shutdown
         if !self.has_shutdown {
             info!("tenant {} session {} shutdown", self.tenant_identifier, self.client_identifier);
             self.shutdown().await?;
@@ -354,15 +348,12 @@ where
             connection.shutdown().await?;
             self.has_shutdown = true;
         }
+        self.connection = None;
         Ok(())
     }
 
     async fn release_packet_identifier(&mut self, packet_id:&u16) {
-        let mut qos_tx_publish_packet_cache = self.qos_tx_publish_packet_cache.write().await;
-        let mut qos_rx_publish_packet_cache = self.qos_rx_publish_packet_cache.write().await;
         self.qos_context.del(packet_id.clone());
-        qos_tx_publish_packet_cache.remove(packet_id);
-        qos_rx_publish_packet_cache.remove(packet_id);
     }
 
     fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
