@@ -41,16 +41,16 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
     qos_context: QosContext,
 
     // Session cmd receiver
-    session_cmd_receiver: Receiver<SessionCmd>,
+    session_cmd_rx: Receiver<SessionCmd>,
 
     // Main logic quit signal sender
-    main_logic_quit_signal_sender: tokio::sync::mpsc::Sender<()>,
+    main_logic_quit_tx: tokio::sync::mpsc::Sender<()>,
 
     // Main logic quit signal receiver
-    main_logic_quit_signal_receiver: tokio::sync::mpsc::Receiver<()>,
+    main_logic_quit_rx: tokio::sync::mpsc::Receiver<()>,
 
     // Router cmd sender 
-    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    router_tx: tokio::sync::mpsc::Sender<RouterCmd>,
 
     // Topic tree
     topic_tree: Arc<RwLock<TopicManager>>,
@@ -76,25 +76,25 @@ where
         tenant_identifier: String, 
         connection: Connection<T>,
         topic_tree: Arc<RwLock<TopicManager>>,
-        router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        session_cmd_receiver: Receiver<SessionCmd>,
+        router_tx: tokio::sync::mpsc::Sender<RouterCmd>,
+        session_cmd_rx: Receiver<SessionCmd>,
         will_message: Option<WillMessage>,
         keep_alive: u16,
         resend_check_interval: Duration,
         qos_context_expired_duration: Duration
     ) -> Session<T> {
 
-        let (main_logic_quit_signal_sender, main_logic_quit_signal_receiver) = tokio::sync::mpsc::channel::<()>(1);
+        let (main_logic_quit_tx, main_logic_quit_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         Session {
             client_identifier,
             tenant_identifier,
             connection: Some(connection),
             subscription_topics: RwLock::new(vec![]),
-            router_sender,
-            session_cmd_receiver,
-            main_logic_quit_signal_receiver,
-            main_logic_quit_signal_sender,
+            router_tx,
+            session_cmd_rx,
+            main_logic_quit_rx,
+            main_logic_quit_tx,
             qos_context: QosContext::new(qos_context_expired_duration),
             topic_tree,
             will_message,
@@ -117,11 +117,11 @@ where
 
         loop {
             select! {
-                _ = self.main_logic_quit_signal_receiver.recv() => {
+                _ = self.main_logic_quit_rx.recv() => {
                     info!("tenant {} session {} exit main logic", self.tenant_identifier, self.client_identifier);
                     break; 
                 }
-                Some(cmd) = self.session_cmd_receiver.recv() => {
+                Some(cmd) = self.session_cmd_rx.recv() => {
                     match cmd {
                         SessionCmd::Send(packet)=>{
                             if let MqttPacketV3::Publish(publish_packet) = packet {
@@ -130,20 +130,20 @@ where
                                     self.new_tx_qos_state_ctx(&packet).await;
                                     if let Err(e) = self.write_to_client(&packet).await {
                                         error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
-                                        self.main_logic_quit_signal_sender.send(()).await?;
+                                        self.main_logic_quit_tx.send(()).await?;
                                     }                                     
                                 }
                             } else {
                                 if let Err(e) = self.write_to_client(&packet).await {
                                     error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
-                                    self.main_logic_quit_signal_sender.send(()).await?;
+                                    self.main_logic_quit_tx.send(()).await?;
                                 }
                             }
                         }
                         SessionCmd::KickOff => {
                             if let Err(e) = self.shutdown().await {
                                 error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
-                                self.main_logic_quit_signal_sender.send(()).await?;
+                                self.main_logic_quit_tx.send(()).await?;
                             }
                         }, 
                     }
@@ -155,7 +155,7 @@ where
                             if let Err(e) = self.shutdown().await {
                                 error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
                             }
-                            self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
+                            self.main_logic_quit_tx.send(()).await?; // notfiy  exit the main logic loop
                         } else {
                             _interval_first_tick = false;
                             keep_alive_timeout_flag = true;
@@ -174,7 +174,7 @@ where
                             println!("tenant {} session {} resend pubrec packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
                             if let Err(e) = self.write_to_client(&packet).await  {
                                 error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
-                                self.main_logic_quit_signal_sender.send(()).await?;
+                                self.main_logic_quit_tx.send(()).await?;
                             }
                         }
                     }
@@ -193,12 +193,17 @@ where
                             error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
                         }
 
-                        self.main_logic_quit_signal_sender.send(()).await?; // notfiy  exit the main logic loop
+                        self.main_logic_quit_tx.send(()).await?; // notfiy  exit the main logic loop
                     }
                 }
             }
         }
         // ensure the session has been shutdown
+        self.ensure_connection_closed().await?;
+        Ok(())
+    }
+
+    async fn ensure_connection_closed(&mut self) -> Result<()> {
         if !self.has_shutdown {
             info!("tenant {} session {} shutdown", self.tenant_identifier, self.client_identifier);
             self.shutdown().await?;
@@ -210,14 +215,14 @@ where
         match packet {
             MqttPacketV3::Publish(publish_packet) => {
                 let cmd = RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet.clone()));
-                self.router_sender.send(cmd).await?;
+                self.router_tx.send(cmd).await?;
                 self.new_rx_qos_state_ctx(packet).await;
                 let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).await.unwrap();
                 self.write_to_client(&packet).await?;
             }
             MqttPacketV3::Disconnect(_) => {
                 self.shutdown().await?; //shutdown the connection
-                self.main_logic_quit_signal_sender.send(()).await?; // notfiy exit the main logic loop
+                self.main_logic_quit_tx.send(()).await?; // notfiy exit the main logic loop
             }
             MqttPacketV3::Pingreq(_) => {
                 self.write_to_client(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
@@ -337,7 +342,7 @@ where
                 will_message.will_message.clone(),
             ).retain(will_message.will_retain).qos(will_message.will_qos).build();
 
-            self.router_sender.send(RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet))).await?;
+            self.router_tx.send(RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet))).await?;
         }
         Ok(())
     }
@@ -385,7 +390,7 @@ impl SessionManager {
     
     pub async fn register(&mut self, client_identifier: String, mut session:Session<TcpStream>) -> Arc<RwLock<Session<TcpStream>>> {
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
-        session.session_cmd_receiver = session_receiver;
+        session.session_cmd_rx = session_receiver;
         let session = Arc::new(RwLock::new(session));
         let mut session_table = self.session_table.write().await;
 
@@ -433,7 +438,7 @@ mod tests {
         let mock_io = tokio_test::io::Builder::new().wait(Duration::from_secs(11)).build();
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -441,7 +446,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             6,
@@ -489,7 +494,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -497,7 +502,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             6, 
@@ -528,7 +533,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -536,7 +541,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             6, 
@@ -573,7 +578,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -581,7 +586,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             9, 
@@ -622,7 +627,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -630,7 +635,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             9, 
@@ -670,7 +675,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
+        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
 
         let mut session = Session::new(
@@ -678,7 +683,7 @@ mod tests {
             "tenant_a".to_string(),
             connection,
             Arc::new(RwLock::new(TopicManager::new())),
-            router_sender,
+            router_tx,
             session_receiver,
             None,
             9, 
