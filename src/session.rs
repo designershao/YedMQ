@@ -207,6 +207,7 @@ where
         if !self.has_shutdown {
             info!("tenant {} session {} shutdown", self.tenant_identifier, self.client_identifier);
             self.shutdown().await?;
+            self.connection = None;
         }
         Ok(())
     }
@@ -353,7 +354,6 @@ where
             connection.shutdown().await?;
             self.has_shutdown = true;
         }
-        self.connection = None;
         Ok(())
     }
 
