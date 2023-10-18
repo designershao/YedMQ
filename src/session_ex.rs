@@ -13,16 +13,18 @@ use crate::{
     topic::TopicManager,
 };
 
+// Represent the message which send from the session
 pub enum SenderMessage {
-    WritePacket(MqttPacketV3),
-    ForwardToPacket(String, MqttPacketV3),
-    ShutdownConnection,
+    WritePacket(MqttPacketV3), // Write packet to the client
+    ForwardToRouter(String, MqttPacketV3), // Packet from router
+    ShutdownConnection, // Notfiy the connection shutdown
 }
 
+// Represent the message which send to the session
 pub enum ReceiverMessage {
-    ForwardFromPacket(MqttPacketV3),
-    Packet(MqttPacketV3),
-    ConnectionHasShutdown,
+    ForwardFromRouter(MqttPacketV3), //Receive packet from router
+    Packet(MqttPacketV3), // Receive packet from client connection
+    ConnectionHasShutdown, // Connection shutdown notify
 }
 
 pub struct WillMessage {
@@ -78,7 +80,7 @@ impl Session {
                         match msg {
                             Some(msg) => {
                                 match msg {
-                                    ReceiverMessage::ForwardFromPacket(packet) => {
+                                    ReceiverMessage::ForwardFromRouter(packet) => {
                                         if let MqttPacketV3::Publish(publish_packet) = packet {
                                             let qos = publish_packet.fix_header.qos;
                                             let packet = MqttPacketV3::Publish(publish_packet);
@@ -163,7 +165,7 @@ impl Session {
             self.deliver_packet_tx
                 .as_ref()
                 .unwrap()
-                .send(SenderMessage::ForwardToPacket(
+                .send(SenderMessage::ForwardToRouter(
                     self.tenant_identifier.clone(),
                     MqttPacketV3::Publish(publish_packet),
                 ))
@@ -188,7 +190,7 @@ impl Session {
         assert!(self.deliver_packet_tx.is_some());
         match packet {
             MqttPacketV3::Publish(publish_packet) => {
-                let cmd = SenderMessage::ForwardToPacket(
+                let cmd = SenderMessage::ForwardToRouter(
                     self.tenant_identifier.clone(),
                     MqttPacketV3::Publish(publish_packet.clone()),
                 );
@@ -472,7 +474,7 @@ mod tests {
         let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
         match receive_msg {
-            SenderMessage::ForwardToPacket(teanant_identifier,packet) => {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
                 match packet {
                     MqttPacketV3::Publish(publish_packet) => {
                         assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
@@ -543,7 +545,7 @@ mod tests {
         let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
         match receive_msg {
-            SenderMessage::ForwardToPacket(teanant_identifier,packet) => {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
                 match packet {
                     MqttPacketV3::Publish(publish_packet) => {
                         assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
@@ -635,7 +637,7 @@ mod tests {
         let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
         match receive_msg {
-            SenderMessage::ForwardToPacket(teanant_identifier,packet) => {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
                 match packet {
                     MqttPacketV3::Publish(publish_packet) => {
                         assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
@@ -742,7 +744,7 @@ mod tests {
 
         let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
-        tx.send(ReceiverMessage::ForwardFromPacket(packet)).await.unwrap();
+        tx.send(ReceiverMessage::ForwardFromRouter(packet)).await.unwrap();
 
         let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
@@ -835,7 +837,7 @@ mod tests {
 
         let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
-        tx.send(ReceiverMessage::ForwardFromPacket(packet)).await.unwrap();
+        tx.send(ReceiverMessage::ForwardFromRouter(packet)).await.unwrap();
 
         let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
