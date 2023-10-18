@@ -1,8 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, collections::HashMap, intrinsics::breakpoint};
 
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::{sync::{mpsc::Sender, RwLock}, net::TcpStream};
 
 use crate::{
     protocol::{
@@ -10,7 +10,7 @@ use crate::{
         MqttPacketV3,
     },
     qos_context::QosContext,
-    topic::TopicManager,
+    topic::TopicManager, connection::Connection,
 };
 
 // Represent the message which send from the session
@@ -375,6 +375,66 @@ impl Session {
         self.qos_context.clean_finished_items().await;
         Ok(())
     }
+}
+
+pub struct SessionHandle {
+    sender: tokio::sync::mpsc::Sender<ReceiverMessage>
+}
+
+impl SessionHandle {
+    pub async fn new(mut session: Session, mut connection: Connection<TcpStream>) -> SessionHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        session.deliver_packet_tx = Some(tx);
+        let sender = session.run_online_loop(10,10).await;
+        let sender_cloned = sender.clone();
+        tokio::spawn(async move {
+            let sender = sender.clone();
+            loop {
+                tokio::select! {
+                    packet = connection.read_packet() => {
+                        if let Ok(packet) = packet {
+                            sender.send(ReceiverMessage::Packet(packet)).await;
+                        } else {
+                            connection.shutdown().await;
+                            sender.send(ReceiverMessage::ConnectionHasShutdown).await;
+                            break;
+                        }
+                    }
+                    msg_from_session = rx.recv() => {
+                        match msg_from_session {
+                            Some(SenderMessage::ShutdownConnection) => {
+                                connection.shutdown().await;
+                            }
+                            Some(SenderMessage::WritePacket(packet)) => {
+                                connection.write_packet(&packet).await;
+                            }
+                            Some(SenderMessage::ForwardToRouter(tenant_identifier,packet)) => {
+                                // todo
+                            }
+                            None => {
+                                break;
+                            }
+                            
+                        }
+                    }
+                }
+            }
+        });
+
+        SessionHandle {
+            sender:sender_cloned
+        }
+    }
+
+    pub async fn forward_packet_to_session(&self, packet: MqttPacketV3) -> Result<()> {
+        self.sender.send(ReceiverMessage::ForwardFromRouter(packet)).await?;
+        Ok(())
+    }
+
+}
+
+pub struct SessionManager {
+    session_table: RwLock<HashMap<String, SessionHandle>> 
 }
 
 #[cfg(test)]
