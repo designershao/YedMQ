@@ -1,27 +1,42 @@
-use std::{sync::{Arc}, collections::HashMap, time::Duration};
+use std::{sync::Arc, time::Duration, collections::HashMap};
 
-use crate::{connection::Connection, protocol::{MqttPacketV3, v3::{publish::{PublishPacket, PublishPacketBuilder}, pingresp::PingrespPacket, suback::SubackPacket, fixed_header::FixHeader}, PacketType}, router::RouterCmd, topic::TopicManager};
-use crate::qos_context::QosContext;
-use anyhow::{Result, Context};
-use tokio::{sync::mpsc::{Receiver, Sender}, select, net::TcpStream, io::{AsyncRead, AsyncWrite}};
-use tokio::sync::{RwLock};
-use log::{warn, info, error, debug};
+use anyhow::{Context, Result};
+use log::{debug, error, info, warn};
+use tokio::{sync::{mpsc::Sender, RwLock}, net::TcpStream};
 
-pub enum SessionCmd {
-    Send(MqttPacketV3), // Send message to the client
-    KickOff // Kick off current client
+use crate::{
+    protocol::{
+        v3::{pingresp::PingrespPacket, publish::PublishPacketBuilder, suback::SubackPacket},
+        MqttPacketV3,
+    },
+    qos_context::QosContext,
+    topic::TopicManager, connection::Connection, router::RouterCmd,
+};
+
+// Represent the message which send from the session
+pub enum SenderMessage {
+    WritePacket(MqttPacketV3), // Write packet to the client
+    ForwardToRouter(String, MqttPacketV3), // Packet from router
+    ShutdownConnection, // Notfiy the connection shutdown
+}
+
+// Represent the message which send to the session
+pub enum ReceiverMessage {
+    ForwardFromRouter(MqttPacketV3), //Receive packet from router
+    Packet(MqttPacketV3), // Receive packet from client connection
+    ConnectionHasShutdown, // Connection shutdown notify
+    KickOff, // Kick off the session
 }
 
 pub struct WillMessage {
     will_topic: String,
     will_message: Vec<u8>,
     will_qos: u8,
-    will_retain: bool
+    will_retain: bool,
 }
 
 // Represent mqtt session
-pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
-
+pub struct Session {
     // MQTT Will Message
     will_message: Option<WillMessage>,
 
@@ -31,9 +46,6 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
     // Tenant Identifier, unique in the system
     tenant_identifier: String,
 
-    // MQTT Connection
-    connection: Option<Connection<T>>,
-
     // The session subscribed topics
     subscription_topics: RwLock<Vec<String>>,
 
@@ -41,244 +53,291 @@ pub struct Session<T: AsyncRead + AsyncWrite + Unpin> {
     qos_context: QosContext,
 
     // Session cmd receiver
-    session_cmd_rx: Receiver<SessionCmd>,
-
-    // Main logic quit signal sender
-    main_logic_quit_tx: tokio::sync::mpsc::Sender<()>,
-
-    // Main logic quit signal receiver
-    main_logic_quit_rx: tokio::sync::mpsc::Receiver<()>,
-
-    // Router cmd sender 
-    router_tx: tokio::sync::mpsc::Sender<RouterCmd>,
+    deliver_packet_tx: Option<Sender<SenderMessage>>,
 
     // Topic tree
     topic_tree: Arc<RwLock<TopicManager>>,
-
-    // MQTT Keep alive
-    keep_alive: u16,
-
-    // Connection has shutdown
-    has_shutdown: bool,
-
-    // Resend qos packet check interval
-    resend_check_interval: Duration
 }
 
-
-impl <T> Session<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin
- {
-
-    pub fn new(
-        client_identifier: String, 
-        tenant_identifier: String, 
-        connection: Connection<T>,
-        topic_tree: Arc<RwLock<TopicManager>>,
-        router_tx: tokio::sync::mpsc::Sender<RouterCmd>,
-        session_cmd_rx: Receiver<SessionCmd>,
-        will_message: Option<WillMessage>,
-        keep_alive: u16,
-        resend_check_interval: Duration,
-        qos_context_expired_duration: Duration
-    ) -> Session<T> {
-
-        let (main_logic_quit_tx, main_logic_quit_rx) = tokio::sync::mpsc::channel::<()>(1);
-
-        Session {
-            client_identifier,
-            tenant_identifier,
-            connection: Some(connection),
-            subscription_topics: RwLock::new(vec![]),
-            router_tx,
-            session_cmd_rx,
-            main_logic_quit_rx,
-            main_logic_quit_tx,
-            qos_context: QosContext::new(qos_context_expired_duration),
-            topic_tree,
-            will_message,
-            keep_alive,
-            has_shutdown: false,
-            resend_check_interval
-        }
-    }
-
-    // Session core logic loop
-    async fn run_logic_loop(&mut self) -> Result<()> {
-
-        let mut resend_check_interval = tokio::time::interval(self.resend_check_interval);
-
-        let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(self.keep_alive.into()));
-
-        let mut keep_alive_timeout_flag = true;
-
-        let mut _interval_first_tick = true;
-
+impl Session {
+    async fn run_offline_loop(mut self) -> Sender<ReceiverMessage> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ReceiverMessage>(1);
         loop {
-            select! {
-                _ = self.main_logic_quit_rx.recv() => {
-                    info!("tenant {} session {} exit main logic", self.tenant_identifier, self.client_identifier);
-                    break; 
-                }
-                Some(cmd) = self.session_cmd_rx.recv() => {
-                    match cmd {
-                        SessionCmd::Send(packet)=>{
-                            if let MqttPacketV3::Publish(publish_packet) = packet {
-                                if publish_packet.fix_header.qos > Some(0) {
-                                    let packet = MqttPacketV3::Publish(publish_packet);
-                                    self.new_tx_qos_state_ctx(&packet).await;
-                                    if let Err(e) = self.write_to_client(&packet).await {
-                                        error!("tenant {} session {} do process qos packet error: {}", self.tenant_identifier, self.client_identifier, e);
-                                        self.main_logic_quit_tx.send(()).await?;
-                                    }                                     
-                                }
-                            } else {
-                                if let Err(e) = self.write_to_client(&packet).await {
-                                    error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
-                                    self.main_logic_quit_tx.send(()).await?;
+            tokio::select! {
+                msg = rx.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                match msg {
+                                    ReceiverMessage::ForwardFromRouter(packet) => {
+                                        if let MqttPacketV3::Publish(publish_packet) = packet {
+                                           if publish_packet.fix_header.qos > Some(0) {
+                                               self.new_tx_qos_state_ctx(&MqttPacketV3::Publish(publish_packet)).await;
+                                           } 
+                                        }
+                                    }
+                                    _ => {
+                                        // Do Nothing
+                                    }
                                 }
                             }
-                        }
-                        SessionCmd::KickOff => {
-                            if let Err(e) = self.shutdown().await {
-                                error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
-                                self.main_logic_quit_tx.send(()).await?;
-                            }
-                        }, 
-                    }
-                }
-                _ = keep_alive_interval.tick() => {
-                    if keep_alive_timeout_flag {
-                        if !_interval_first_tick {
-                            self.send_will_packet().await?;
-                            if let Err(e) = self.shutdown().await {
-                                error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
-                            }
-                            self.main_logic_quit_tx.send(()).await?; // notfiy  exit the main logic loop
-                        } else {
-                            _interval_first_tick = false;
-                            keep_alive_timeout_flag = true;
-                        }
-                    } else {
-                        keep_alive_timeout_flag = true;
-                    }
-                }
-                _ = resend_check_interval.tick() => {
-                    // Qos2 PubRec resend task
-                    // When session write pubrec packet to the underlying stream, the broker should wait the pubrel packet
-                    // if reach the wait pubrel timeout, session should rewrite the pubrec which set dup to 1
-                    if !self.has_shutdown {
-                        let packets = self.qos_context.get_all_expired_packets_and_refresh_expired_time().await;
-                        for packet in packets {
-                            println!("tenant {} session {} resend pubrec packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
-                            if let Err(e) = self.write_to_client(&packet).await  {
-                                error!("tenant {} session {} write to client error: {}", self.tenant_identifier, self.client_identifier, e);
-                                self.main_logic_quit_tx.send(()).await?;
+                            None => {
+                                break;
                             }
                         }
-                    }
-                }
-                packet = self.connection.as_mut().unwrap().read_packet() => {
-                    keep_alive_timeout_flag = false;
-                    if let Ok(packet) = packet {
-                        debug!("tenant {} session {} read packet: {:?}", self.tenant_identifier, self.client_identifier, packet);
-                        let _ = self.do_process_rx_packet(&packet).await;
-                    } else {
-                        // read packet io error, send will packet and shutdown the session
-                        error!("tenant {} session {} read packet io error",self.tenant_identifier, self.client_identifier);
-                        self.send_will_packet().await?;
-
-                        if let Err(e) = self.shutdown().await {
-                            error!("tenant {} session {} shutdown error: {}", self.tenant_identifier, self.client_identifier, e);
-                        }
-
-                        self.main_logic_quit_tx.send(()).await?; // notfiy  exit the main logic loop
                     }
                 }
             }
+        tx
+    }
+
+    async fn run_online_loop(
+        mut self,
+        keep_alive: u64,
+        resend_check: u64,
+    ) -> Sender<ReceiverMessage> {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ReceiverMessage>(1);
+
+        tokio::spawn(async move {
+            let mut resend_check_interval =
+                tokio::time::interval(Duration::from_secs(resend_check));
+
+            let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(keep_alive));
+
+            let mut keep_alive_timeout_flag = false;
+
+            loop {
+                tokio::select! {
+                    msg = rx.recv() => {
+                        match msg {
+                            Some(msg) => {
+                                match msg {
+                                    ReceiverMessage::ForwardFromRouter(packet) => {
+                                        if let MqttPacketV3::Publish(publish_packet) = packet {
+                                            let qos = publish_packet.fix_header.qos;
+                                            let packet = MqttPacketV3::Publish(publish_packet);
+                                            if qos > Some(0) {
+                                                self.new_tx_qos_state_ctx(&packet).await;
+                                            }
+                                            if let Some(deliver_packet_tx) = self.deliver_packet_tx.as_mut() {
+                                                if let Err(send_err) = deliver_packet_tx.send(SenderMessage::WritePacket(packet)).await {
+                                                    warn!("tenant {} session {} write packet error, details: {}", self.tenant_identifier, self.client_identifier, send_err);
+                                                }
+                                            } else {
+                                                warn!("tenant {} session {} deliver packet tx is None, break from the online loop", self.tenant_identifier, self.client_identifier);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    ReceiverMessage::Packet(packet) => {
+                                        keep_alive_timeout_flag = false;
+                                        if let Err(err) = self.do_process_rx_packet(&packet).await {
+                                            warn!("tenant {} session {} process rx packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
+                                        }
+                                    }
+                                    ReceiverMessage::ConnectionHasShutdown => {
+                                        if let Err(err) = self.send_will_packet().await {
+                                            warn!("tenant {} session {} send will packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
+                                        }
+                                        info!("tenant {} session {} connection has shutdown, break from the online loop", self.tenant_identifier, self.client_identifier);
+                                        break;
+                                    }
+                                    ReceiverMessage::KickOff => {
+                                        
+                                    }
+                                }
+                            }
+                            None => {
+                                // Do nothing
+                            }
+                        }
+                    }
+                    _ = keep_alive_interval.tick() => {
+                        if keep_alive_timeout_flag {
+                            if let Err(err) = self.send_will_packet().await {
+                                warn!("tenant {} session {} send will packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
+                            }
+                            info!("tenant {} session {} keep alive timeout", self.tenant_identifier, self.client_identifier);
+                            if let Some(deliver_packet_tx) = self.deliver_packet_tx.as_mut() {
+                                if let Err(send_err) = deliver_packet_tx.send(SenderMessage::ShutdownConnection).await {
+                                    warn!("tenant {} session {}  send connection shutdown error, details: {}", self.tenant_identifier, self.client_identifier, send_err);
+                                }
+                            }
+                            break;
+                        } else {
+                            keep_alive_timeout_flag = true;
+                        }
+                    }
+                    _ = resend_check_interval.tick() => {
+                        let packets = self.qos_context.get_all_expired_packets_and_refresh_expired_time().await;
+                        for packet in packets {
+                            println!("resend packet {:?}", packet);
+                            if let Some(deliver_packet_tx) = self.deliver_packet_tx.as_mut() {
+                                if let Err(send_err) = deliver_packet_tx.send(SenderMessage::WritePacket(packet)).await {
+                                    warn!("tenant {} session {} resend packet error, details: {}", self.tenant_identifier, self.client_identifier, send_err);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        tx
+    }
+
+    async fn send_will_packet(&mut self) -> Result<()> {
+        if let Some(will_message) = &self.will_message {
+            let topic_name = will_message.will_topic.clone();
+
+            let publish_packet =
+                PublishPacketBuilder::new(topic_name, will_message.will_message.clone())
+                    .retain(will_message.will_retain)
+                    .qos(will_message.will_qos)
+                    .build();
+
+            assert!(self.deliver_packet_tx.is_some());
+
+            self.deliver_packet_tx
+                .as_ref()
+                .unwrap()
+                .send(SenderMessage::ForwardToRouter(
+                    self.tenant_identifier.clone(),
+                    MqttPacketV3::Publish(publish_packet),
+                ))
+                .await?;
         }
-        // ensure the session has been shutdown
-        self.ensure_connection_closed().await?;
         Ok(())
     }
 
-    async fn ensure_connection_closed(&mut self) -> Result<()> {
-        if !self.has_shutdown {
-            info!("tenant {} session {} shutdown", self.tenant_identifier, self.client_identifier);
-            self.shutdown().await?;
-            self.connection = None;
+    async fn new_tx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+        if let MqttPacketV3::Publish(_) = packet {
+            self.qos_context.register_with_tx_packet(packet).await;
         }
-        Ok(())
+    }
+
+    async fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
+        if let MqttPacketV3::Publish(_) = packet {
+            self.qos_context.register_with_rx_packet(packet).await;
+        }
     }
 
     async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+        assert!(self.deliver_packet_tx.is_some());
         match packet {
             MqttPacketV3::Publish(publish_packet) => {
-                let cmd = RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet.clone()));
-                self.router_tx.send(cmd).await?;
+                let cmd = SenderMessage::ForwardToRouter(
+                    self.tenant_identifier.clone(),
+                    MqttPacketV3::Publish(publish_packet.clone()),
+                );
+                self.deliver_packet_tx.as_mut().unwrap().send(cmd).await?;
                 self.new_rx_qos_state_ctx(packet).await;
-                let packet = self.qos_context.get_current_packet(publish_packet.variable_header.packet_identifier.unwrap()).await.unwrap();
-                self.write_to_client(&packet).await?;
+                let packet = self
+                    .qos_context
+                    .get_current_packet(publish_packet.variable_header.packet_identifier.unwrap())
+                    .await
+                    .unwrap();
+                self.deliver_packet_tx
+                    .as_mut()
+                    .unwrap()
+                    .send(SenderMessage::WritePacket(packet))
+                    .await?;
             }
             MqttPacketV3::Disconnect(_) => {
-                self.shutdown().await?; //shutdown the connection
-                self.main_logic_quit_tx.send(()).await?; // notfiy exit the main logic loop
+                self.deliver_packet_tx
+                    .as_mut()
+                    .unwrap()
+                    .send(SenderMessage::ShutdownConnection)
+                    .await?;
             }
             MqttPacketV3::Pingreq(_) => {
-                self.write_to_client(&MqttPacketV3::Pingresp(PingrespPacket::new())).await?;
+                self.deliver_packet_tx
+                    .as_mut()
+                    .unwrap()
+                    .send(SenderMessage::WritePacket(MqttPacketV3::Pingresp(
+                        PingrespPacket::new(),
+                    )))
+                    .await?;
             }
             MqttPacketV3::Puback(puback_packet) => {
-                self.qos_context.next_state(puback_packet.variable_header.packet_identifier).await;
-                if let Some(p) = self.qos_context.get_current_packet(puback_packet.variable_header.packet_identifier).await {
-                   self.write_to_client(&p).await?;
+                self.qos_context
+                    .next_state(puback_packet.variable_header.packet_identifier)
+                    .await;
+                if let Some(p) = self
+                    .qos_context
+                    .get_current_packet(puback_packet.variable_header.packet_identifier)
+                    .await
+                {
+                    self.deliver_packet_tx
+                        .as_mut()
+                        .unwrap()
+                        .send(SenderMessage::WritePacket(p))
+                        .await?;
                 }
             }
             MqttPacketV3::Pubrec(pubrec_packet) => {
-                self.qos_context.next_state(pubrec_packet.variable_header.packet_identifier).await;
-                if let Some(p) = self.qos_context.get_current_packet(pubrec_packet.variable_header.packet_identifier).await {
-                   self.write_to_client(&p).await?;
+                self.qos_context
+                    .next_state(pubrec_packet.variable_header.packet_identifier)
+                    .await;
+                if let Some(p) = self
+                    .qos_context
+                    .get_current_packet(pubrec_packet.variable_header.packet_identifier)
+                    .await
+                {
+                    self.deliver_packet_tx
+                        .as_mut()
+                        .unwrap()
+                        .send(SenderMessage::WritePacket(p))
+                        .await?;
                 }
             }
             MqttPacketV3::Pubrel(pubrel_packet) => {
-                self.qos_context.next_state(pubrel_packet.variable_header.packet_identifier).await;
-                if let Some(p) = self.qos_context.get_current_packet(pubrel_packet.variable_header.packet_identifier).await {
-                   self.write_to_client(&p).await?;
+                self.qos_context
+                    .next_state(pubrel_packet.variable_header.packet_identifier)
+                    .await;
+                if let Some(p) = self
+                    .qos_context
+                    .get_current_packet(pubrel_packet.variable_header.packet_identifier)
+                    .await
+                {
+                    self.deliver_packet_tx
+                        .as_mut()
+                        .unwrap()
+                        .send(SenderMessage::WritePacket(p))
+                        .await?;
                 }
             }
             MqttPacketV3::Subscribe(subscribe_packet) => {
                 let subscriptions = &subscribe_packet.payload.topic_filters;
                 let packet_identifier = &subscribe_packet.variable_header.packet_identifier;
 
-                let mut retain_messages:Vec<Arc<MqttPacketV3>> = vec![];
+                let mut retain_messages: Vec<Arc<MqttPacketV3>> = vec![];
 
-                let mut return_code:Vec<crate::protocol::v3::suback::ReturnCode> = vec![];
+                let mut return_code: Vec<crate::protocol::v3::suback::ReturnCode> = vec![];
                 {
                     let mut topic_manager = self.topic_tree.write().await;
 
                     for topic in subscriptions.iter() {
                         let sub_result = topic_manager.subscription(
-                            self.tenant_identifier.clone(), 
-                            self.client_identifier.clone(), 
+                            self.tenant_identifier.clone(),
+                            self.client_identifier.clone(),
                             topic.topic_name.clone(),
-                            topic.qos 
+                            topic.qos,
                         );
                         if let Ok(_) = sub_result {
                             if topic.qos == 0 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0); 
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0);
                             }
                             if topic.qos == 1 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1); 
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1);
                             }
                             if topic.qos == 2 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2); 
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2);
                             }
                             let mut subscription_topics = self.subscription_topics.write().await;
                             subscription_topics.push(topic.topic_name.clone());
                             let packets = topic_manager.get_retain_publish_packet(
-                                self.tenant_identifier.clone(), 
-                                self.client_identifier.clone(), 
-                                topic.topic_name.clone()
+                                self.tenant_identifier.clone(),
+                                self.client_identifier.clone(),
+                                topic.topic_name.clone(),
                             );
                             if let Ok(packets) = packets {
                                 for packet in packets {
@@ -291,26 +350,56 @@ where
                     }
                 }
                 for packet in retain_messages {
-                    self.write_to_client(&packet).await?; 
+                    self.deliver_packet_tx
+                        .as_mut()
+                        .unwrap()
+                        .send(SenderMessage::WritePacket(packet.as_ref().clone()))
+                        .await?;
                 }
-                self.write_to_client(&MqttPacketV3::Suback(
-                    SubackPacket::new(*packet_identifier, return_code))).await?;
+                self.deliver_packet_tx
+                    .as_mut()
+                    .unwrap()
+                    .send(SenderMessage::WritePacket(MqttPacketV3::Suback(
+                        SubackPacket::new(*packet_identifier, return_code),
+                    )))
+                    .await?;
             }
             MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
                 let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
                 {
                     let mut topic_manager = self.topic_tree.write().await;
                     for topic in unsub_topic_filters {
-                        let _ = topic_manager.unsubscription(self.tenant_identifier.clone(), self.client_identifier.clone(), topic.topic_name.clone());
+                        let _ = topic_manager.unsubscription(
+                            self.tenant_identifier.clone(),
+                            self.client_identifier.clone(),
+                            topic.topic_name.clone(),
+                        );
                     }
                 }
-                let unsub_ack = MqttPacketV3::Unsuback(crate::protocol::v3::unsuback::UnSubackPacket::new(unsubscribe_packet.variable_header.packet_identifier));
-                self.write_to_client(&unsub_ack).await?
+                let unsub_ack =
+                    MqttPacketV3::Unsuback(crate::protocol::v3::unsuback::UnSubackPacket::new(
+                        unsubscribe_packet.variable_header.packet_identifier,
+                    ));
+                self.deliver_packet_tx
+                    .as_mut()
+                    .unwrap()
+                    .send(SenderMessage::WritePacket(unsub_ack))
+                    .await?;
             }
             MqttPacketV3::Pubcomp(pubcomp_packet) => {
-                self.qos_context.next_state(pubcomp_packet.variable_header.packet_identifier).await;
-                if let Some(p) = self.qos_context.get_current_packet(pubcomp_packet.variable_header.packet_identifier).await {
-                   self.write_to_client(&p).await?;
+                self.qos_context
+                    .next_state(pubcomp_packet.variable_header.packet_identifier)
+                    .await;
+                if let Some(p) = self
+                    .qos_context
+                    .get_current_packet(pubcomp_packet.variable_header.packet_identifier)
+                    .await
+                {
+                    self.deliver_packet_tx
+                        .as_mut()
+                        .unwrap()
+                        .send(SenderMessage::WritePacket(p))
+                        .await?;
                 }
             }
             _ => {
@@ -320,146 +409,169 @@ where
         self.qos_context.clean_finished_items().await;
         Ok(())
     }
-
-    async fn new_tx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
-        if let MqttPacketV3::Publish(_) = packet {
-           self.qos_context.register_with_tx_packet(packet).await;
-        }
-    }
-
-    async fn new_rx_qos_state_ctx(&mut self, packet: &MqttPacketV3) {
-        if let MqttPacketV3::Publish(_) = packet {
-           self.qos_context.register_with_rx_packet(packet).await;
-        }
-    }
-
-    // Send will packet
-    async fn send_will_packet(&mut self) -> Result<()> {
-        if let Some(will_message) = &self.will_message {
-            let topic_name = will_message.will_topic.clone();
-
-            let publish_packet = PublishPacketBuilder::new(
-                topic_name,
-                will_message.will_message.clone(),
-            ).retain(will_message.will_retain).qos(will_message.will_qos).build();
-
-            self.router_tx.send(RouterCmd::RoutePacket(self.tenant_identifier.clone(), MqttPacketV3::Publish(publish_packet))).await?;
-        }
-        Ok(())
-    }
-
-    // Close the connection voluntarily
-    async fn shutdown(&mut self) -> Result<()> {
-        if let Some(connection) = self.connection.as_mut() {
-            connection.shutdown().await?;
-            self.has_shutdown = true;
-        }
-        Ok(())
-    }
-
-    async fn release_packet_identifier(&mut self, packet_id:&u16) {
-        self.qos_context.del(packet_id.clone());
-    }
-
-    fn packet_identifier_in_used(&self, packet_id: u16) -> bool {
-        self.qos_context.contains_packet_identifier(packet_id)
-    }
-
-    // Write a single packet to the underlying stream.
-    async fn write_to_client(&mut self, packet: &MqttPacketV3) -> Result<()> {
-        if let Some(connection) = &mut self.connection {
-            debug!("Send packet: {:?}", packet);
-            connection.write_packet(packet).await?
-        }
-        Ok(())
-    }
-
 }
 
-struct SessionWrapper {
-    session: Arc<RwLock<Session<TcpStream>>>,
-    session_sender: Sender<SessionCmd>
+pub struct SessionHandle {
+    session_sender: tokio::sync::mpsc::Sender<ReceiverMessage>,
+    router_sender: tokio::sync::mpsc::Sender<RouterCmd>
+}
+
+impl SessionHandle {
+    pub async fn new(mut session: Session, mut connection: Connection<TcpStream>, mut router_sender: tokio::sync::mpsc::Sender<RouterCmd>) -> SessionHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        session.deliver_packet_tx = Some(tx);
+        let sender = session.run_online_loop(10,10).await;
+        let sender_cloned = sender.clone();
+        let router_sender_cloned = router_sender.clone();
+        tokio::spawn(async move {
+            let sender = sender.clone();
+            let router_sender = router_sender.clone();
+            loop {
+                tokio::select! {
+                    packet = connection.read_packet() => {
+                        if let Ok(packet) = packet {
+                            sender.send(ReceiverMessage::Packet(packet)).await;
+                        } else {
+                            connection.shutdown().await;
+                            sender.send(ReceiverMessage::ConnectionHasShutdown).await;
+                            break;
+                        }
+                    }
+                    msg_from_session = rx.recv() => {
+                        match msg_from_session {
+                            Some(SenderMessage::ShutdownConnection) => {
+                                connection.shutdown().await;
+                            }
+                            Some(SenderMessage::WritePacket(packet)) => {
+                                connection.write_packet(&packet).await;
+                            }
+                            Some(SenderMessage::ForwardToRouter(tenant_identifier,packet)) => {
+                                router_sender.send(RouterCmd::RoutePacket(tenant_identifier, packet)).await;
+                            }
+                            None => {
+                                break;
+                            }
+                            
+                        }
+                    }
+                }
+            }
+        });
+
+        SessionHandle {
+            session_sender: sender_cloned,
+            router_sender: router_sender_cloned
+        }
+    }
+
+    pub async fn forward_packet_to_session(&self, packet: MqttPacketV3) -> Result<()> {
+        self.session_sender.send(ReceiverMessage::ForwardFromRouter(packet)).await?;
+        Ok(())
+    }
+
 }
 
 pub struct SessionManager {
-    session_table: RwLock<HashMap<String, SessionWrapper>>,
-    tenant_id: String
+    session_table: RwLock<HashMap<String, SessionHandle>>,
+    tenant_identifier: String
 }
 
 impl SessionManager {
-    
-    pub async fn register(&mut self, client_identifier: String, mut session:Session<TcpStream>) -> Arc<RwLock<Session<TcpStream>>> {
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
-        session.session_cmd_rx = session_receiver;
-        let session = Arc::new(RwLock::new(session));
+    pub async fn register(&mut self, client_identifier: String, session_handle:SessionHandle) {
         let mut session_table = self.session_table.write().await;
-
-        session_table.insert(client_identifier, SessionWrapper { session: session.clone(), session_sender });
-        return session;
+        session_table.insert(client_identifier, session_handle);
     }
 
-    pub async fn get(&self, client_identifier: String) -> Option<Arc<RwLock<Session<TcpStream>>>> {
+    pub async fn send_packet(&self, client_identifier: String, packet: &MqttPacketV3) {
         let session_table = self.session_table.read().await;
-        if let Some(session_wrapper) = session_table.get(&client_identifier){
-            Some(session_wrapper.session.clone())
-        } else {
-            None
+        if let Some(handle) = session_table.get(&client_identifier) {
+            handle.forward_packet_to_session(packet.clone()).await;
         }
     }
-
-    pub async fn send(&self, client_identifier: String, cmd: SessionCmd) -> Result<()> {
-        let session_table = self.session_table.read().await;
-        if let Some(session_wrapper) = session_table.get(&client_identifier) {
-            session_wrapper.session_sender.send(cmd).await.with_context(|| format!("failed to send cmd to session {}", client_identifier))?;
-        }
-        Ok(())
-    }
-
-    pub async fn unregister(&mut self, client_identifier: String) {
-        let mut session_table = self.session_table.write().await;
-        session_table.remove(&client_identifier);
-    }
-
 }
-
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::{Arc}, time::Duration};
+    use std::{sync::Arc, time::Duration};
 
-    use nom::AsBytes;
     use tokio::sync::RwLock;
 
-    use crate::{session::{Session, SessionManager, SessionCmd}, connection::Connection, topic::TopicManager, router::RouterCmd, protocol::{v3::{publish::PublishPacketBuilder, puback::{PubAckPacket, VariableHeader}, fixed_header::FixHeader, pubrel::PubRelPacket, pubcomp::PubCompPacket, pubrec::PubRecPacket}, MqttPacketV3, PacketType}};
-
+    use crate::{session::{Session, SenderMessage, ReceiverMessage}, qos_context::QosContext, topic::TopicManager, protocol::{v3::{publish::PublishPacketBuilder, fixed_header::FixHeader, puback::{VariableHeader, PubAckPacket}, pubrec::PubRecPacket, pubcomp::PubCompPacket, pubrel::PubRelPacket}, MqttPacketV3, PacketType}};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_keep_alive_timeout() {
-        let mock_io = tokio_test::io::Builder::new().wait(Duration::from_secs(11)).build();
-        let mut connection = Connection::new(mock_io); 
+    async fn test_keep_alive_timeout_without_will_message() {
+        let keep_live_duration_secs = 5;
 
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+        let resend_duration_secs = 10;
 
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            6,
-            Duration::from_secs(10),
-            Duration::from_secs(10)
-        );
-        let _ = session.run_logic_loop().await;
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(resend_duration_secs)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
+        let _ = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
+
+        let msg = deliver_packet_rx.recv().await.unwrap();
+        match msg {
+            SenderMessage::ShutdownConnection => {
+                assert!(true);
+            }
+            _ => {
+                assert!(false);
+            }
+        };
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_receive_connection_shutdown_exit_online_loop() {
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(resend_duration_secs)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
+        tx.send(ReceiverMessage::ConnectionHasShutdown).await.unwrap();
+        let receive_msg = deliver_packet_rx.recv().await;
+
+        assert!(receive_msg.is_none());
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_qos_1_process() {
-        // Read Qos1 publish packet should return puback packet
+    async fn test_qos_1_receive_process() {
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(10)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(1)
             .packet_identifier(0x01)
@@ -467,233 +579,435 @@ mod tests {
 
         let packet = MqttPacketV3::Publish(qos_1_publish_packet);
         
-        let fix_header = FixHeader {
-            packet_type: PacketType::PUBACK, 
-            qos: None,
-            retain: None,
-            dup: None,
-            remaining_length: 2,
-        };
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
-        let variable_header = VariableHeader{
-            packet_identifier: 0x01
-        };
+        tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
 
-        let puback_packet = PubAckPacket {
-            fix_header,
-            variable_header
-        };
+        // assert forward publish packet to other client
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
-        let puback_packet = MqttPacketV3::Puback(puback_packet);
+        match receive_msg {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+        //
 
-        let mock_io = tokio_test::io::Builder::new()
-            .wait(Duration::from_secs(3))
-            .read(packet.to_bytes().as_bytes())
-            .write(&puback_packet.to_bytes().as_bytes())
-            .build();
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
-        let mut connection = Connection::new(mock_io); 
-
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
-
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            6, 
-            Duration::from_secs(13), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
-            Duration::from_secs(10)
-        );
-        let _ = session.run_logic_loop().await;
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Puback(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
 
     }
 
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_qos_2_process() {
-        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+    async fn test_qos_2_receive_process() {
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(10)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+        let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(2)
             .packet_identifier(0x01)
             .build();
-
-        let pubrec_packet = PubRecPacket::new(0x01);
-        let pubrel_packet = PubRelPacket::new(0x01);
-        let pubcomp_packet = PubCompPacket::new(0x01);
-
-        let mock_io = tokio_test::io::Builder::new()
-            .read(MqttPacketV3::Publish(publish_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
-            .build();
-
-        let mut connection = Connection::new(mock_io); 
-
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
-
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            6, 
-            Duration::from_secs(24), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
-            Duration::from_secs(10)
-        );
-        let _ = session.run_logic_loop().await;
-
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn test_qos_rx_2_resend_process() {
-        // Read Qos1 publish packet should return puback packet
-        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
-            .qos(2)
-            .packet_identifier(0x01)
-            .build();
-
-        let pubrec_packet = PubRecPacket::new(0x01);
-        let mut pubrec_resend_packet = PubRecPacket::new(0x01);
-        pubrec_resend_packet.fix_header.dup = Some(1);
         
-        let pubrel_packet = PubRelPacket::new(0x01);
-        let pubcomp_packet = PubCompPacket::new(0x01);
+        let packet = MqttPacketV3::Publish(qos_2_publish_packet);
 
-        let mock_io = tokio_test::io::Builder::new()
-            .read(MqttPacketV3::Publish(publish_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
-            .wait(Duration::from_secs(8)) // wait 13 seconds, resend the pubrec packet
-            .write(MqttPacketV3::Pubrec(pubrec_resend_packet).to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
+        let pubrel_packet = MqttPacketV3::Pubrel(PubRelPacket::new(0x01));
+
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
+
+        tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
+
+        // assert forward publish packet to other client
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+        //
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrec(pubrec_packet) => {
+                        assert_eq!(pubrec_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+
+        tx.send(ReceiverMessage::Packet(pubrel_packet)).await.unwrap(); // send pubrel packet
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubcomp(pubcomp_packet) => {
+                        assert_eq!(pubcomp_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_qos_2_receive_resend_pubrec_process() {
+        let keep_live_duration_secs = 10;
+
+        let resend_duration_secs = 5;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(2)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(2)
+            .packet_identifier(0x01)
             .build();
 
-        let mut connection = Connection::new(mock_io); 
+        let packet = MqttPacketV3::Publish(qos_2_publish_packet);
 
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+        let pubrel_packet = MqttPacketV3::Pubrel(PubRelPacket::new(0x01));
 
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            9, 
-            Duration::from_secs(3), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
-            Duration::from_secs(5)
-        );
-        let _ = session.run_logic_loop().await;
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
+
+        tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
+
+        // assert forward publish packet to other client
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::ForwardToRouter(teanant_identifier,packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+        //
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrec(pubrec_packet) => {
+                        assert_eq!(pubrec_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrec(pubrec_packet) => {
+                        assert_eq!(pubrec_packet.variable_header.packet_identifier, 0x01);
+                        assert_eq!(pubrec_packet.fix_header.dup, Some(1));
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        tx.send(ReceiverMessage::Packet(pubrel_packet)).await.unwrap(); // send pubrel packet
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubcomp(pubcomp_packet) => {
+                        assert_eq!(pubcomp_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
     }
 
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_tx_2_resend_publish_packet() {
-        // Read Qos1 publish packet should return puback packet
-        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+        let keep_live_duration_secs = 10;
+
+        let resend_duration_secs = 5;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(2)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(2)
             .packet_identifier(0x01)
             .build();
 
-        let resend_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
-            .qos(2)
-            .packet_identifier(0x01)
-            .build();
-        let mut resend_publish_packet = MqttPacketV3::Publish(resend_publish_packet);
-        resend_publish_packet.set_dup(1);
+        let packet = MqttPacketV3::Publish(qos_2_publish_packet);
 
-        let pubrec_packet = PubRecPacket::new(0x01);
-        let pubrel_packet = PubRelPacket::new(0x01);
-        let pubcomp_packet = PubCompPacket::new(0x01);
+        let pubrec_packet = MqttPacketV3::Pubrec(PubRecPacket::new(0x01));
+        let pubrel_packet = MqttPacketV3::Pubrel(PubRelPacket::new(0x01));
+        let pubcomp_packet = MqttPacketV3::Pubcomp(PubCompPacket::new(0x01));
 
-        let mock_io = tokio_test::io::Builder::new()
-            .write(MqttPacketV3::Publish(publish_packet.clone()).to_bytes().as_bytes())
-            .wait(Duration::from_secs(8)) // wait 13 seconds, resend the pubrec packet
-            .write(resend_publish_packet.to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
-            .build();
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
-        let mut connection = Connection::new(mock_io); 
+        tx.send(ReceiverMessage::ForwardFromRouter(packet)).await.unwrap();
 
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
 
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            9, 
-            Duration::from_secs(3), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
-            Duration::from_secs(5)
-        );
-        let task = tokio::task::spawn(async move {
-            let _ = session.run_logic_loop().await;
-        });
-        session_sender.send(SessionCmd::Send(MqttPacketV3::Publish(publish_packet.clone()))).await.unwrap();
-        task.await.unwrap();
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                        assert_eq!(publish_packet.fix_header.dup, Some(1));
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        tx.send(ReceiverMessage::Packet(pubrec_packet)).await.unwrap();
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrel(pubrel_packet) => {
+                        assert_eq!(pubrel_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+        tx.send(ReceiverMessage::Packet(pubcomp_packet)).await.unwrap();
     }
+
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_tx_2_resend_pubrel_packet() {
-        // Read Qos1 publish packet should return puback packet
-        let publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+        let keep_live_duration_secs = 10;
+
+        let resend_duration_secs = 5;
+
+        let (deliver_packet_tx,mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session{
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(TopicManager::new())),
+            qos_context: QosContext::new(Duration::from_secs(2)),
+            subscription_topics: RwLock::new(vec![]),
+            deliver_packet_tx: Some(deliver_packet_tx)
+        };
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(2)
             .packet_identifier(0x01)
             .build();
 
-        let pubrec_packet = PubRecPacket::new(0x01);
-        let pubrel_packet = PubRelPacket::new(0x01);
-        let resend_pubrel_packet = PubRelPacket::new(0x01);
-        let mut resend_pubrel_packet = MqttPacketV3::Pubrel(resend_pubrel_packet);
-        resend_pubrel_packet.set_dup(1);
-        let pubcomp_packet = PubCompPacket::new(0x01);
+        let packet = MqttPacketV3::Publish(qos_2_publish_packet);
 
-        let mock_io = tokio_test::io::Builder::new()
-            .write(MqttPacketV3::Publish(publish_packet.clone()).to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubrec(pubrec_packet).to_bytes().as_bytes())
-            .write(MqttPacketV3::Pubrel(pubrel_packet).to_bytes().as_bytes())
-            .wait(Duration::from_secs(8)) // wait 13 seconds, resend the pubrec packet
-            .write(resend_pubrel_packet.to_bytes().as_bytes())
-            .read(MqttPacketV3::Pubcomp(pubcomp_packet).to_bytes().as_bytes())
-            .build();
+        let pubrec_packet = MqttPacketV3::Pubrec(PubRecPacket::new(0x01));
+        let pubrel_packet = MqttPacketV3::Pubrel(PubRelPacket::new(0x01));
+        let pubcomp_packet = MqttPacketV3::Pubcomp(PubCompPacket::new(0x01));
 
-        let mut connection = Connection::new(mock_io); 
+        let tx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
-        let (router_tx, router_receiver) = tokio::sync::mpsc::channel::<RouterCmd>(1);
-        let (session_sender, session_receiver) = tokio::sync::mpsc::channel::<SessionCmd>(1);
+        tx.send(ReceiverMessage::ForwardFromRouter(packet)).await.unwrap();
 
-        let mut session = Session::new(
-            "client_a".to_string(),
-            "tenant_a".to_string(),
-            connection,
-            Arc::new(RwLock::new(TopicManager::new())),
-            router_tx,
-            session_receiver,
-            None,
-            9, 
-            Duration::from_secs(3), // because firt write occurs 3 seconds later and the mock io has no other expect write, so resend check interval should twice the keep alive interval
-            Duration::from_secs(5)
-        );
-        let task = tokio::task::spawn(async move {
-            let _ = session.run_logic_loop().await;
-        });
-        session_sender.send(SessionCmd::Send(MqttPacketV3::Publish(publish_packet.clone()))).await.unwrap();
-        task.await.unwrap();
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        tx.send(ReceiverMessage::Packet(pubrec_packet)).await.unwrap();
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrel(pubrel_packet) => {
+                        assert_eq!(pubrel_packet.variable_header.packet_identifier, 0x01);
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+
+        let receive_msg = deliver_packet_rx.recv().await.unwrap();
+
+        match receive_msg {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Pubrel(pubrel_packet) => {
+                        assert_eq!(pubrel_packet.variable_header.packet_identifier, 0x01);
+                        assert_eq!(pubrel_packet.fix_header.dup, Some(1));
+                    }
+                    _ => {
+                        assert!(false);
+                    }
+                }
+            }
+            _ => {
+                assert!(false);
+            }
+        }
+        tx.send(ReceiverMessage::Packet(pubcomp_packet)).await.unwrap();
     }
 }

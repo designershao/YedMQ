@@ -58,12 +58,7 @@ impl Router {
                 topic).unwrap();
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
-                match self.session_manager.send(client_identifier, crate::session::SessionCmd::Send(packet.clone())).await {
-                    Ok(_) => (),
-                    Err(e) => {
-                        warn!("teanant {} route packet to session error: {}", tenant_identifier, e);
-                    }
-                };
+                self.session_manager.send_packet(client_identifier, packet).await;
             }
         }
         
