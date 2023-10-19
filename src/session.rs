@@ -124,7 +124,7 @@ impl Session {
                                                 }
                                             } else {
                                                 warn!("tenant {} session {} deliver packet tx is None, break from the online loop", self.tenant_identifier, self.client_identifier);
-                                                break;
+                                                rx.close();
                                             }
                                         }
                                     }
@@ -132,6 +132,7 @@ impl Session {
                                         keep_alive_timeout_flag = false;
                                         if let Err(err) = self.do_process_rx_packet(&packet).await {
                                             warn!("tenant {} session {} process rx packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
+                                            rx.close();
                                         }
                                     }
                                     ReceiverMessage::ConnectionHasShutdown => {
@@ -139,15 +140,20 @@ impl Session {
                                             warn!("tenant {} session {} send will packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
                                         }
                                         info!("tenant {} session {} connection has shutdown, break from the online loop", self.tenant_identifier, self.client_identifier);
-                                        break;
+                                        rx.close();
                                     }
                                     ReceiverMessage::KickOff => {
-                                        
+                                        if let Some(deliver_packet_tx) = self.deliver_packet_tx.as_mut() {
+                                            deliver_packet_tx.send(SenderMessage::ShutdownConnection).await.unwrap_or_default();
+                                            rx.close();
+                                        }
                                     }
                                 }
                             }
                             None => {
-                                // Do nothing
+                                println!("session receive channel closed, break from the online loop");
+                                info!("session receive channel closed, break from the online loop");
+                                break; // channle closed and has consumerd all bufferd message break the loop
                             }
                         }
                     }
@@ -162,7 +168,7 @@ impl Session {
                                     warn!("tenant {} session {}  send connection shutdown error, details: {}", self.tenant_identifier, self.client_identifier, send_err);
                                 }
                             }
-                            break;
+                            rx.close(); // close receiver waiting to consumer buffered message
                         } else {
                             keep_alive_timeout_flag = true;
                         }
@@ -430,25 +436,45 @@ impl SessionHandle {
                 tokio::select! {
                     packet = connection.read_packet() => {
                         if let Ok(packet) = packet {
-                            sender.send(ReceiverMessage::Packet(packet)).await;
+                            if let Err(error) = sender.send(ReceiverMessage::Packet(packet)).await {
+                                warn!("send packet to session error: {}", error);
+                                break;
+                            }
                         } else {
-                            connection.shutdown().await;
-                            sender.send(ReceiverMessage::ConnectionHasShutdown).await;
+                            if let Err(error) = connection.shutdown().await {
+                                warn!("shutdown connection error: {}", error);
+                            }
+                            if let Err(error) = sender.send(ReceiverMessage::ConnectionHasShutdown).await {
+                                warn!("read packet error, send packet to session error: {}", error);
+                            }
                             break;
                         }
                     }
                     msg_from_session = rx.recv() => {
                         match msg_from_session {
                             Some(SenderMessage::ShutdownConnection) => {
-                                connection.shutdown().await;
+                                info!("receive shutdown connection");
+                                if let Err(error) = connection.shutdown().await {
+                                    warn!("shutdown connection error: {}", error);
+                                }
+                                rx.close(); // close waiting to consumer buffered data
                             }
                             Some(SenderMessage::WritePacket(packet)) => {
-                                connection.write_packet(&packet).await;
+                                if let Err(error) = connection.write_packet(&packet).await {
+                                    warn!("write packet to connection error: {}", error);
+                                    if let Err(error) = sender.send(ReceiverMessage::ConnectionHasShutdown).await {
+                                        warn!("write packet error, send packet to session error: {}", error);
+                                    }
+                                    rx.close();
+                                }
                             }
                             Some(SenderMessage::ForwardToRouter(tenant_identifier,packet)) => {
-                                router_sender.send(RouterCmd::RoutePacket(tenant_identifier, packet)).await;
+                                if let Err(error) = router_sender.send(RouterCmd::RoutePacket(tenant_identifier, packet)).await {
+                                    panic!("forward packet to router error: {}", error);
+                                }
                             }
                             None => {
+                                info!("session deliver channel has closed, exit");
                                 break;
                             }
                             
@@ -482,11 +508,12 @@ impl SessionManager {
         session_table.insert(client_identifier, session_handle);
     }
 
-    pub async fn send_packet(&self, client_identifier: String, packet: &MqttPacketV3) {
+    pub async fn send_packet(&self, client_identifier: String, packet: &MqttPacketV3) -> Result<()> {
         let session_table = self.session_table.read().await;
         if let Some(handle) = session_table.get(&client_identifier) {
-            handle.forward_packet_to_session(packet.clone()).await;
+            handle.forward_packet_to_session(packet.clone()).await?;
         }
+        Ok(())
     }
 }
 
@@ -516,7 +543,7 @@ mod tests {
             deliver_packet_tx: Some(deliver_packet_tx)
         };
 
-        let _ = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
+        let rx = session.run_online_loop(keep_live_duration_secs,resend_duration_secs).await;
 
         let msg = deliver_packet_rx.recv().await.unwrap();
         match msg {
