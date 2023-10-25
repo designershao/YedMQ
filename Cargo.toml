@@ -16,3 +16,5 @@ tokio-test = "0.4.3"
 mlua = { version = "0.8.9", features = ["lua54", "vendored", "macros"]}
 log = "0.4"
 rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+config = "0.13.1"

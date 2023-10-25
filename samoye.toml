@@ -1,0 +1,12 @@
+[session]
+qos_expired_secs = 10
+packet_resend_interval_secs = 10
+
+[plugin]
+dir = "/etc/samoye/plugins"
+
+[log]
+level = "warning"
+
+[listener.tcp]
+external = "0.0.0.0:1883"

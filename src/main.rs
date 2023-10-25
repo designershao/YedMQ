@@ -5,6 +5,7 @@ mod session;
 mod router;
 mod topic;
 mod qos_context;
+mod settings;
 
 fn main() {
     

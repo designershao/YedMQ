@@ -1,0 +1,65 @@
+use config::{Config, ConfigError, File};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct Settings {
+    pub session: Session,
+    pub plugin: Plugin,
+    pub listener: Listener,
+}
+
+#[derive(Debug,Deserialize)]
+pub struct Session {
+    qos_expired_secs: u64, // qos context expired seconds
+    packet_resend_interval_secs: u64 // session packet resend interval seconds
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Plugin {
+    dir: String // plugin dir path
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Log {
+    level: String // enable log level
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Listener {
+    tcp: Tcp
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Tcp {
+    external: String
+}
+
+
+impl Settings {
+
+    pub fn new() -> Result<Self, ConfigError> {
+        let s = Config::builder()
+            .add_source(
+                File::with_name("/etc/samoye/config.toml").required(false)
+            )
+            .add_source(
+                File::with_name("./samoye.toml")
+            )
+            .build()?;
+        s.try_deserialize()
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_load() {
+        let s = Settings::new().unwrap();
+        assert_eq!(10, s.session.qos_expired_secs);
+        assert_eq!(10, s.session.packet_resend_interval_secs);
+        assert_eq!("0.0.0.0:1883", s.listener.tcp.external);
+    }
+}
