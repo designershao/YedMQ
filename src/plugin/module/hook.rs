@@ -36,7 +36,16 @@ impl UserData for LuaConnectPacket {
 }
 
 #[derive(Clone, Copy)]
-struct OnConnectAuthHook {
+pub struct OnConnectAuthHook {
+}
+
+impl OnConnectAuthHook {
+    pub fn handle(&self, lua: &Lua, connect_packet: &ConnectPacket) -> anyhow::Result<bool> {
+        let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
+        let hook_func:Function = hook_table.get("OnConnectAuth")?;
+        let r = hook_func.call::<_, bool>(Some(LuaConnectPacket(connect_packet.clone())))?;
+        Ok(r)
+    }
 }
 
 impl<'a> UserData for OnConnectAuthHook {
@@ -143,9 +152,8 @@ mod tests {
                 end
             end)
         "#).exec().unwrap();
-        let hook_table:Table = lua.globals().get("__HOOK_TABLE__").unwrap();
-        let hook_func:Function = hook_table.get("OnConnectAuth").unwrap();
-        let r = hook_func.call::<_,bool>(Some(LuaConnectPacket(connect_packet))).unwrap();
+        let hook:Hook = lua.globals().get("Hook").unwrap();
+        let r = hook.on_connect_auth_hook.handle(&lua, &connect_packet).unwrap();
         assert!(r);
 
     }
