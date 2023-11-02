@@ -1,14 +1,11 @@
 use std::{fs::File, io::Read, path::{PathBuf, Path}, collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Error, Ok, Result};
-use mlua::{Lua, chunk, Function};
+use mlua::{Lua, Function};
 use thiserror::Error;
-use tokio::sync::Mutex;
 use toml::{Table, Value};
 
 use crate::protocol::v3::connect::ConnectPacket;
-
-use super::hook::Hook;
 
 #[derive(Error, Debug)]
 pub enum PluginError {
@@ -30,47 +27,6 @@ pub enum PluginMessage {
     Quit
 }
 
-fn init_lua_runtime(lua: &Lua) -> Result<()> {
-
-    let hook_table = lua.create_table().unwrap();
-
-    lua.globals().set("__HOOK_TABLE__", hook_table).unwrap();
-
-    let root_module = lua.create_table().unwrap();
-    let hook_module = lua.create_table().unwrap();
-
-    let on_connect_auth = lua.create_table().unwrap();
-    on_connect_auth.set("Register", lua.create_function(|lua, hook_func:Function| {
-        let table:mlua::Table = lua.globals().get("__HOOK_TABLE__")?;
-        table.set("OnConnectAuth", hook_func).unwrap();
-        std::result::Result::Ok(())
-    }).unwrap()).unwrap();
-
-    let on_subscribe_acl_check = lua.create_table().unwrap();
-    on_subscribe_acl_check.set("Register", lua.create_function(|lua, hook_func:Function| {
-        let table:mlua::Table = lua.globals().get("__HOOK_TABLE__")?;
-        table.set("OnSubscribeACLCheck", hook_func).unwrap();
-        std::result::Result::Ok(())
-    }).unwrap()).unwrap();
-
-    let on_publish_acl_check = lua.create_table().unwrap();
-    on_publish_acl_check.set("Register", lua.create_function(|lua, hook_func:Function| {
-        let table:mlua::Table = lua.globals().get("__HOOK_TABLE__")?;
-        table.set("OnPublishACLCheck", hook_func).unwrap();
-        std::result::Result::Ok(())
-    }).unwrap()).unwrap();
-
-    hook_module.set("OnConnectAuth", on_connect_auth).unwrap();
-    hook_module.set("OnSubscribeACLCheck", on_subscribe_acl_check).unwrap();
-    hook_module.set("OnPublishACLCheck", on_publish_acl_check).unwrap();
-
-    root_module.set("Hook", hook_module).unwrap();
-
-    lua.globals().set("Samoye", root_module).unwrap();
-
-    Ok(())
-}
-
 impl Plugin {
     pub fn new(plugin_path: &PathBuf, local_set: tokio::task::LocalSet) -> Result<tokio::sync::mpsc::Sender<PluginMessage>> {
         let plugin_config = PluginConfig::new(plugin_path)?;
@@ -80,7 +36,6 @@ impl Plugin {
 
             let lua = Lua::new();
 
-            init_lua_runtime(&lua).unwrap();
 
             loop {
                 let msg = rx.recv().await;
