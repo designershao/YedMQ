@@ -55,6 +55,7 @@ pub enum PluginMessage {
 
 impl Plugin {
     pub fn new(plugin_path: &PathBuf, local_set: tokio::task::LocalSet) -> Result<tokio::sync::mpsc::Sender<PluginMessage>> {
+
         let plugin_config = PluginConfig::new(plugin_path)?;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(100);
@@ -71,7 +72,11 @@ impl Plugin {
 
             let on_activate = module.get::<&str, Function>("OnActivate").unwrap();
 
-            on_activate.call::<(),()>(()).unwrap();
+            let plugin_context = PluginContext{
+                config: plugin_config
+            };
+
+            on_activate.call::<(PluginContext,),()>((plugin_context,)).unwrap();
 
             loop {
                 let msg = rx.recv().await;
