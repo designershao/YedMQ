@@ -208,7 +208,7 @@ fn parse_config(path: &PathBuf) -> Result<Table> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_config, check_plugin_config};
+    use super::{parse_config, check_plugin_config, PluginConfig, PluginContext};
 
     #[test]
     pub fn test_parse_config() {
@@ -242,4 +242,24 @@ mod tests {
         }
         
     }
+
+    #[test]
+    pub fn test_plugin_config_read_from_lua() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path)
+            .join("tests")
+            .join("demo_plugin");
+        let plugin_config = PluginConfig::new(&plugin_path).unwrap();
+        let plugin_context = PluginContext{
+            config: plugin_config
+        };
+
+        let lua = mlua::Lua::new();
+        lua.globals().set("plugin_context", plugin_context).unwrap();
+        let r = lua.load(r#"
+            return plugin_context.config["plugin"]["name"]
+        "#).eval::<String>().unwrap();
+        assert_eq!(r, "demo_plugin")
+    }
+
 }
