@@ -1,11 +1,34 @@
 use std::{fs::File, io::Read, path::{PathBuf, Path}, collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Error, Ok, Result};
-use mlua::{Lua, Function};
+use mlua::{Lua, Function, UserData};
 use thiserror::Error;
 use toml::{Table, Value};
 
 use crate::protocol::v3::connect::ConnectPacket;
+
+pub struct PluginContext {
+    config: PluginConfig,
+}
+
+impl PluginContext {
+    pub fn new(config: PluginConfig) -> Self {
+        PluginContext { config }
+    }
+}
+
+impl UserData for PluginContext {
+    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    }
+
+    fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+        fields.add_field_method_get("config", |lua, this| {
+            let table:mlua::Table = convert_toml_table_to_mlua_table(&this.config.inner, lua).unwrap();
+            core::result::Result::Ok(table)
+        });
+    }
+
+}
 
 #[derive(Error, Debug)]
 pub enum PluginError {
@@ -17,6 +40,9 @@ pub enum PluginError {
 
     #[error("invalid plugin config: {0}")]
     InvalidPluginConfig(String),
+
+    #[error("invalid plugin: {0}")]
+    RuntimeError(#[from] mlua::Error),
 }
 
 // Represent plugin
@@ -30,18 +56,37 @@ pub enum PluginMessage {
 impl Plugin {
     pub fn new(plugin_path: &PathBuf, local_set: tokio::task::LocalSet) -> Result<tokio::sync::mpsc::Sender<PluginMessage>> {
         let plugin_config = PluginConfig::new(plugin_path)?;
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        
         local_set.spawn_local(async move {
 
             let lua = Lua::new();
 
+            super::module::init_runtime(&lua).unwrap();
+
+            let plugin_entry_src = std::fs::read_to_string(plugin_config.get_entry_path()).unwrap();
+
+            let module = lua.load(plugin_entry_src).eval::<mlua::Table>().unwrap();
+
+            let on_activate = module.get::<&str, Function>("OnActivate").unwrap();
+
+            on_activate.call::<(),()>(()).unwrap();
 
             loop {
                 let msg = rx.recv().await;
 
                 if let Some(msg) = msg  {
-
+                    match msg {
+                        PluginMessage::OnConnectAuth(packet, tx) => {
+                            let root_module = super::module::get_root_module(&lua).unwrap();
+                            let r = root_module.hook.on_connect_auth_hook.handle(&lua, &packet).unwrap();
+                            tx.send(r).unwrap();
+                        }
+                        PluginMessage::Quit => {
+                            rx.close();
+                        },
+                    }
                 } else {
                     break;
                 }
@@ -53,8 +98,42 @@ impl Plugin {
     }
 }
 
+
 pub struct PluginConfig {
-    inner: Table,
+    plugin_path: PathBuf,
+    pub inner: Table,
+}
+
+fn convert_toml_table_to_mlua_table<'a>(src: &toml::Table, lua: &'a Lua) -> Result<mlua::Table<'a>> {
+    let table = lua.create_table()?;
+    for (k, v) in src {
+        match v {
+            toml::Value::String(v) => table.set(lua.create_string(k.to_string())?, lua.create_string(v.to_string())?)?,
+            toml::Value::Integer(v) => table.set(lua.create_string(k.to_string())?, v.clone())?,
+            toml::Value::Float(v) => table.set(lua.create_string(k.to_string())?, v.clone())?,
+            toml::Value::Boolean(v) => table.set(lua.create_string(k.to_string())?, v.clone())?,
+            toml::Value::Datetime(v) => table.set(lua.create_string(k.to_string())?, 0)?,
+            toml::Value::Array(v) => table.set(lua.create_string(k.to_string())?, do_vec_to_mlua_table(v, lua)?)?,
+            toml::Value::Table(v) => table.set(lua.create_string(k.to_string())?, convert_toml_table_to_mlua_table(v,lua)?)?,
+        }
+    }
+    Ok(table)
+}
+
+fn do_vec_to_mlua_table<'a>(src: &Vec<Value>, lua: &'a Lua) -> Result<mlua::Table<'a>> {
+    let table = lua.create_table()?;
+    for v in src {
+        match v {
+            toml::Value::String(v) => table.push(lua.create_string(v.to_string())?)?,
+            toml::Value::Integer(v) => table.push(v.clone())?,
+            toml::Value::Float(v) => table.push(v.clone())?,
+            toml::Value::Boolean(v) => table.push(v.clone())?,
+            toml::Value::Datetime(v) => table.push(0)?,
+            toml::Value::Array(v) => table.push(do_vec_to_mlua_table(v, lua)?)?,
+            toml::Value::Table(v) => table.push(convert_toml_table_to_mlua_table(v,lua)?)?,
+        }
+    }
+    return Ok(table)
 }
 
 impl PluginConfig {
@@ -67,12 +146,21 @@ impl PluginConfig {
         }
         let table = parse_config(&path)?;
         check_plugin_config(&table, plugin_path)?;
-        Ok(PluginConfig { inner: table })
+        Ok(PluginConfig {
+            plugin_path: plugin_path.to_path_buf(),
+            inner: table 
+        })
     }
 
     // get toml config section
-    pub fn get_section(&self, section: &str) -> Option<&Value> {
+    pub fn get_section(&self, section: &str) -> Option<&toml::Value> {
         self.inner.get(section)
+    }
+
+    pub fn get_entry_path(&self) -> PathBuf {
+        let entry = self.inner.get("plugin").unwrap().get("entry").unwrap().as_str().unwrap();
+        let entry_path = self.plugin_path.join(entry);
+        entry_path
     }
 
 }

@@ -2,10 +2,10 @@ use mlua::{Lua, Function, UserData, Table, String as LuaString, AnyUserData, Fro
 
 use crate::protocol::v3::{connect::ConnectPacket, subscribe::SubscribePacket};
 
-#[derive(Clone,FromLua)]
-struct Hook {
-    on_connect_auth_hook: OnConnectAuthHook,
-    on_subscribe_acl_check_hook: OnSubscribeACLCheckHook,
+#[derive(Clone,FromLua,Copy)]
+pub struct Hook {
+    pub on_connect_auth_hook: OnConnectAuthHook,
+    pub on_subscribe_acl_check_hook: OnSubscribeACLCheckHook,
 }
 
 impl Hook {
@@ -65,7 +65,7 @@ impl<'a> UserData for OnConnectAuthHook {
 }
 
 #[derive(Clone, Copy)]
-struct OnSubscribeACLCheckHook {
+pub struct OnSubscribeACLCheckHook {
 }
 
 impl OnSubscribeACLCheckHook {
