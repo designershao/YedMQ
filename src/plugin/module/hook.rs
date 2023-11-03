@@ -1,6 +1,6 @@
-use mlua::{Lua, Function, UserData, Table, String, AnyUserData, FromLua};
+use mlua::{Lua, Function, UserData, Table, String as LuaString, AnyUserData, FromLua};
 
-use crate::protocol::v3::connect::ConnectPacket;
+use crate::protocol::v3::{connect::ConnectPacket, subscribe::SubscribePacket};
 
 #[derive(Clone,FromLua)]
 struct Hook {
@@ -67,6 +67,16 @@ impl<'a> UserData for OnConnectAuthHook {
 #[derive(Clone, Copy)]
 struct OnSubscribeACLCheckHook {
 }
+
+impl OnSubscribeACLCheckHook {
+    pub fn handle(&self, lua: &Lua, topic: String, qos: i32) -> anyhow::Result<bool> {
+        let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
+        let hook_func:Function = hook_table.get("OnSubscribeACLCheck")?;
+        let r = hook_func.call::<_, bool>((topic, qos))?;
+        Ok(r)
+    }
+}
+
 impl<'a> UserData for OnSubscribeACLCheckHook {
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method_mut("Register", |lua ,this, hook_func:Function| {
@@ -156,5 +166,26 @@ mod tests {
         let r = hook.on_connect_auth_hook.handle(&lua, &connect_packet).unwrap();
         assert!(r);
 
+    }
+
+    #[test]
+    pub fn test_on_subscribe_acl_check_hook() {
+        let lua = Lua::new();
+        let hook = Hook::new(&lua);
+
+        lua.globals().set("Hook", hook).unwrap();
+        lua.load(r#"
+            Hook.OnSubscribeACLCheck:Register(function (topic, qos)
+                if topic == "/a" and qos == 0 then
+                    return true
+                else 
+                    return false
+                end
+            end)
+        "#).exec().unwrap();
+
+        let hook:Hook = lua.globals().get("Hook").unwrap();
+        let r = hook.on_subscribe_acl_check_hook.handle(&lua, "/a".to_string(), 0).unwrap();
+        assert!(r);
     }
 }
