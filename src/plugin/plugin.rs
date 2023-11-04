@@ -1,6 +1,7 @@
-use std::{fs::File, io::Read, path::{PathBuf, Path}, collections::HashMap, sync::Arc};
+use std::{fs::File, io::{Read, self}, path::{PathBuf, Path}, collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Error, Ok, Result};
+use log::warn;
 use mlua::{Lua, Function, UserData};
 use thiserror::Error;
 use toml::{Table, Value};
@@ -43,6 +44,9 @@ pub enum PluginError {
 
     #[error("invalid plugin: {0}")]
     RuntimeError(#[from] mlua::Error),
+
+    #[error("load plugin error: {0}")]
+    LoadPluginError(#[from] io::Error),
 }
 
 // Represent plugin
@@ -66,11 +70,22 @@ impl Plugin {
 
             super::module::init_runtime(&lua).unwrap();
 
-            let plugin_entry_src = std::fs::read_to_string(plugin_config.get_entry_path()).unwrap();
+            let plugin_entry_src = std::fs::read_to_string(plugin_config.get_entry_path());
+            if plugin_entry_src.is_err() {
+                let err = plugin_entry_src.unwrap_err();
+                warn!("read plugin entry source error: {}", err);
+                return Err(PluginError::LoadPluginError(err));
+            }
 
-            let module = lua.load(plugin_entry_src).eval::<mlua::Table>().unwrap();
+            let module = lua.load(plugin_entry_src.unwrap()).eval::<mlua::Table>();
 
-            let on_activate = module.get::<&str, Function>("OnActivate").unwrap();
+            if module.is_err() {
+                let err = module.unwrap_err();
+                warn!("load plugin entry error: {}", err);
+                return Err(PluginError::RuntimeError(err));
+            }
+
+            let on_activate = module.unwrap().get::<&str, Function>("OnActivate").unwrap();
 
             let plugin_context = PluginContext{
                 config: plugin_config
@@ -96,6 +111,7 @@ impl Plugin {
                     break;
                 }
             }
+            core::result::Result::Ok(())
         });
         Ok(
             tx
