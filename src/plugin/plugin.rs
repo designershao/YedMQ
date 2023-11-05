@@ -1,4 +1,4 @@
-use std::{fs::File, io::{Read, self}, path::{PathBuf, Path}, collections::HashMap, sync::Arc};
+use std::{fs::File, io::{Read, self}, path::{PathBuf, Path}, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error, Ok, Result};
 use log::warn;
@@ -58,13 +58,13 @@ pub enum PluginMessage {
 }
 
 impl Plugin {
-    pub fn new(plugin_path: &PathBuf, local_set: tokio::task::LocalSet) -> Result<tokio::sync::mpsc::Sender<PluginMessage>> {
+    pub fn new(plugin_path: &PathBuf, local_set: &tokio::task::LocalSet) -> Result<tokio::sync::mpsc::Sender<PluginMessage>> {
 
         let plugin_config = PluginConfig::new(plugin_path)?;
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(100);
         
-        local_set.spawn_local(async move {
+        tokio::task::spawn_local(async move {
 
             let lua = Lua::new();
 
@@ -92,6 +92,8 @@ impl Plugin {
             };
 
             on_activate.call::<(PluginContext,),()>((plugin_context,)).unwrap();
+
+            tokio::time::sleep(Duration::from_millis(1)).await;
 
             loop {
                 let msg = rx.recv().await;
@@ -227,7 +229,11 @@ fn parse_config(path: &PathBuf) -> Result<Table> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Duration};
+
+    use tokio::runtime::Builder;
+
+    use crate::{protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}, plugin::plugin::PluginMessage};
 
     use super::{parse_config, check_plugin_config, PluginConfig, PluginContext};
 
@@ -281,6 +287,80 @@ mod tests {
             return plugin_context.config["plugin"]["name"]
         "#).eval::<String>().unwrap();
         assert_eq!(r, "demo_plugin")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn test_plugin_run_succeed() {
+        let variable_header = VariableHeader {
+                protocol_name: "MQTT".to_string(),
+                protocol_level: 0x04,
+                username_flag: true,
+                password_flag: true,
+                will_retain: true,
+                will_qos: 1,
+                will_flag: true,
+                clean_session: true,
+                keep_alive: 0,
+            };
+        let payload = Payload {
+            client_identifier: "MQTT".to_string(),
+            will_topic: Some("MQTT".to_string()),
+            will_message: Some("MQTT".to_string()),
+            username: Some("admin".to_string()),
+            password: Some("MQTT".to_string()),
+        };
+
+        let fix_header = FixHeader{
+                packet_type: PacketType::CONNECT,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: variable_header.get_length() + payload.get_length(),
+            };
+
+        let connect_packet = ConnectPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path)
+            .join("tests")
+            .join("demo_plugin");
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let (init_tx, mut init_rx) = tokio::sync::oneshot::channel();
+
+        let join = tokio::spawn(async move {
+            let plugin_tx: tokio::sync::mpsc::Sender<PluginMessage> = init_rx.await.unwrap();
+            plugin_tx.send(super::PluginMessage::OnConnectAuth(connect_packet, tx)).await.unwrap();
+            let r = rx.await.unwrap();
+            plugin_tx.send(super::PluginMessage::Quit).await.unwrap();
+            r
+        });
+
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        std::thread::spawn(move || {
+            let local_set = tokio::task::LocalSet::new();
+            local_set.spawn_local(async move {
+                let local_set = tokio::task::LocalSet::new();
+                let plugin_tx = super::Plugin::new(&plugin_path, &local_set).unwrap();
+                init_tx.send(plugin_tx.clone()).unwrap();
+            });
+
+            rt.block_on(local_set);
+        });
+
+
+        let r:bool = join.await.unwrap();
+        assert!(r)
+
     }
 
 }
