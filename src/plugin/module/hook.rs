@@ -1,6 +1,6 @@
 use mlua::{Lua, Function, UserData, Table, String as LuaString, AnyUserData, FromLua};
 
-use crate::protocol::v3::{connect::ConnectPacket, subscribe::SubscribePacket};
+use crate::protocol::v3::{connect::ConnectPacket, subscribe::SubscribePacket, publish::PublishPacket};
 
 #[derive(Clone,FromLua,Copy)]
 pub struct Hook {
@@ -31,6 +31,19 @@ impl UserData for LuaConnectPacket {
         fields.add_field_method_get("password",|_,this| Ok(this.0.payload.password.clone()));
         fields.add_field_method_get("clientIdentifier",|_,this| Ok(this.0.payload.client_identifier.clone()));
     }
+    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+    }
+}
+
+#[derive(Clone, FromLua)]
+struct LuaPublishPacket(PublishPacket);
+impl UserData for LuaPublishPacket {
+    fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+        fields.add_field_method_get("qos", |_, this| Ok(this.0.fix_header.qos));
+        fields.add_field_method_get("topic", |_, this| Ok(this.0.variable_header.topic_name.clone()));
+        fields.add_field_method_get("payload", |_, this| Ok(this.0.payload.payload.clone()));
+    }
+
     fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
     }
 }
@@ -87,6 +100,39 @@ impl<'a> UserData for OnSubscribeACLCheckHook {
     }
 
     fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+    }
+}
+
+pub struct OnPublishHook {
+}
+
+impl OnPublishHook {
+    pub fn handle(&self, lua: &Lua, publish_packet: &PublishPacket) -> anyhow::Result<bool> {
+        let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
+        let hook_func:Function = hook_table.get("OnPublish")?;
+        let r = hook_func.call::<_, _>(Some(LuaPublishPacket(publish_packet.clone())))?;
+        Ok(r)
+    }
+}
+
+impl<'a> UserData for OnPublishHook {
+
+    fn add_methods<'lua, M: mlua::UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method_mut("Register", |lua ,this, hook_func:Function| {
+            let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
+            hook_table.set("OnPublish", hook_func).unwrap();
+            Ok(())
+        });
+        methods.add_method("Handle", |lua, this, publish_packet:LuaPublishPacket| {
+            let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
+            let hook_func:Function = hook_table.get("OnPublish")?;
+            hook_func.call::<_, bool>(Some(publish_packet))?;
+            Ok(())
+        });
+    }
+
+    fn add_fields<'lua, F: mlua::UserDataFields<'lua, Self>>(fields: &mut F) {
+        
     }
 }
 
