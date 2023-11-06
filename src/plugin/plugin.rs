@@ -54,6 +54,7 @@ pub struct Plugin { }
 
 pub enum PluginMessage {
     OnConnectAuth(ConnectPacket, tokio::sync::oneshot::Sender<bool>),
+    GetPluginName(tokio::sync::oneshot::Sender<String>),
     Quit
 }
 
@@ -87,8 +88,9 @@ impl Plugin {
 
             let on_activate = module.unwrap().get::<&str, Function>("OnActivate").unwrap();
 
+
             let plugin_context = PluginContext{
-                config: plugin_config
+                config: plugin_config.clone()
             };
 
             on_activate.call::<(PluginContext,),()>((plugin_context,)).unwrap();
@@ -104,6 +106,10 @@ impl Plugin {
                             let root_module = super::module::get_root_module(&lua).unwrap();
                             let r = root_module.hook.on_connect_auth_hook.handle(&lua, &packet).unwrap();
                             tx.send(r).unwrap();
+                        }
+                        PluginMessage::GetPluginName(tx) => {
+                            let plugin_name = plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap();
+                            tx.send(plugin_name.to_string()).unwrap();
                         }
                         PluginMessage::Quit => {
                             rx.close();
@@ -122,6 +128,7 @@ impl Plugin {
 }
 
 
+#[derive(Clone)]
 pub struct PluginConfig {
     plugin_path: PathBuf,
     pub inner: Table,
