@@ -1,7 +1,7 @@
 use std::{fs::File, io::{Read, self}, path::{PathBuf, Path}, collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error, Ok, Result};
-use log::warn;
+use log::{warn, info};
 use mlua::{Lua, Function, UserData};
 use thiserror::Error;
 use toml::{Table, Value};
@@ -112,10 +112,12 @@ impl Plugin {
                             tx.send(plugin_name.to_string()).unwrap();
                         }
                         PluginMessage::Quit => {
+                            info!("plugin {} receive quit signal", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
                             rx.close();
                         },
                     }
                 } else {
+                    info!("plugin {} quit", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
                     break;
                 }
             }
