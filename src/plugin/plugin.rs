@@ -55,6 +55,7 @@ pub struct Plugin { }
 pub enum PluginMessage {
     OnConnectAuth(ConnectPacket, tokio::sync::oneshot::Sender<bool>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
+    GetRegisterHooks(tokio::sync::oneshot::Sender<Vec<String>>),
     Quit
 }
 
@@ -110,6 +111,11 @@ impl Plugin {
                         PluginMessage::GetPluginName(tx) => {
                             let plugin_name = plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap();
                             tx.send(plugin_name.to_string()).unwrap();
+                        }
+                        PluginMessage::GetRegisterHooks(tx) => {
+                            let root_module = super::module::get_root_module(&lua).unwrap();
+                            let register_hooks:Vec<String> = root_module.hook.get_register_hooks(&lua).iter().map(|i| i.to_string()).collect();
+                            tx.send(register_hooks).unwrap();
                         }
                         PluginMessage::Quit => {
                             info!("plugin {} receive quit signal", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
@@ -296,6 +302,46 @@ mod tests {
             return plugin_context.config["plugin"]["name"]
         "#).eval::<String>().unwrap();
         assert_eq!(r, "demo_plugin")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn test_plugin_get_register_hooks() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path)
+            .join("tests")
+            .join("demo_plugin");
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+
+        let (init_tx, mut init_rx) = tokio::sync::oneshot::channel();
+
+        let join = tokio::spawn(async move {
+            let plugin_tx: tokio::sync::mpsc::Sender<PluginMessage> = init_rx.await.unwrap();
+            plugin_tx.send(super::PluginMessage::GetRegisterHooks(tx)).await.unwrap();
+            let register_hooks = rx.await.unwrap();
+            return register_hooks
+        });
+
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        std::thread::spawn(move || {
+            let local_set = tokio::task::LocalSet::new();
+            local_set.spawn_local(async move {
+                let local_set = tokio::task::LocalSet::new();
+                let plugin_tx = super::Plugin::new(&plugin_path, &local_set).unwrap();
+                init_tx.send(plugin_tx.clone()).unwrap();
+            });
+
+            rt.block_on(local_set);
+        });
+
+
+        let hooks:Vec<String> = join.await.unwrap();
+        assert_eq!(1, hooks.len());
+        assert_eq!("OnConnectAuth", hooks[0]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

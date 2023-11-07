@@ -13,6 +13,23 @@ impl Hook {
         lua.globals().set("__HOOK_TABLE__", lua.create_table().unwrap()).unwrap();
         Hook { on_connect_auth_hook: OnConnectAuthHook {  }, on_subscribe_acl_check_hook: OnSubscribeACLCheckHook {  } }
     }
+
+    pub fn get_register_hooks(&self, lua: &Lua) -> Vec<&str> {
+        let mut result = vec![];
+        let hook_table:mlua::Table = lua.globals().get("__HOOK_TABLE__",).unwrap();
+        if hook_table.contains_key("OnConnectAuth").unwrap() {
+            result.push("OnConnectAuth");
+        }
+        if hook_table.contains_key("OnSubscribeACLCheck").unwrap() {
+            result.push("OnSubscribeACLCheck");
+        }
+        if hook_table.contains_key("OnPublish").unwrap() {
+            result.push("OnPublish");
+        }
+
+        result
+
+    }
 }
 
 impl UserData for Hook {
@@ -233,5 +250,26 @@ mod tests {
         let hook:Hook = lua.globals().get("Hook").unwrap();
         let r = hook.on_subscribe_acl_check_hook.handle(&lua, "/a".to_string(), 0).unwrap();
         assert!(r);
+    }
+
+    #[test]
+    pub fn test_on_get_register_hooks() {
+        let lua = Lua::new();
+        let hook = Hook::new(&lua);
+
+        lua.globals().set("Hook", hook).unwrap();
+        lua.load(r#"
+            Hook.OnSubscribeACLCheck:Register(function (topic, qos)
+                if topic == "/a" and qos == 0 then
+                    return true
+                else 
+                    return false
+                end
+            end)
+        "#).exec().unwrap();
+
+        let hook:Hook = lua.globals().get("Hook").unwrap();
+        let r = hook.get_register_hooks(&lua);
+        assert_eq!("OnSubscribeACLCheck", r[0]);
     }
 }
