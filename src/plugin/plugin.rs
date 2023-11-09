@@ -87,7 +87,7 @@ impl Plugin {
                 return Err(PluginError::RuntimeError(err));
             }
 
-            let on_activate = module.unwrap().get::<&str, Function>("OnActivate").unwrap();
+            let on_activate = module.as_ref().unwrap().get::<&str, Function>("OnActivate").unwrap();
 
 
             let plugin_context = PluginContext{
@@ -119,6 +119,8 @@ impl Plugin {
                         }
                         PluginMessage::Quit => {
                             info!("plugin {} receive quit signal", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
+                            let on_deactive = module.as_ref().unwrap().get::<&str, Function>("OnDeactivate").unwrap();
+                            on_deactive.call::<(),()>(()).unwrap();
                             rx.close();
                         },
                     }
@@ -416,6 +418,27 @@ mod tests {
         let r:bool = join.await.unwrap();
         assert!(r)
 
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn test_plugin_on_deactivate_func() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path)
+            .join("tests")
+            .join("demo_plugin");
+
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        std::thread::spawn(move || {
+            let local_set = tokio::task::LocalSet::new();
+            local_set.spawn_local(async move {
+                let local_set = tokio::task::LocalSet::new();
+                let plugin_tx = super::Plugin::new(&plugin_path, &local_set).unwrap();
+            })
+        });
     }
 
 }
