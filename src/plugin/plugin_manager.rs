@@ -6,7 +6,7 @@ use thiserror::Error;
 use anyhow::{anyhow, Result, Ok};
 use tokio::{runtime::Builder, sync::{mpsc::{error::SendError, Sender}, RwLock}};
 
-use crate::protocol::v3::connect::ConnectPacket;
+use crate::protocol::v3::{connect::ConnectPacket, publish::PublishPacket};
 
 use super::plugin::{PluginMessage, Plugin};
 
@@ -73,6 +73,8 @@ pub enum PluginManagerMessage {
 
 impl PluginManager {
 
+    // Call the connection auth hook
+    // if mutiple plugin register the hook, the hook will be called in order and poerforming logic AND computation on multiple results
     pub async fn call_hook_on_connect_auth(&self, connect_packet: &ConnectPacket) -> Result<bool> {
         if self.hook_sender_table.contains_key("OnConnectAuth") {
             let mut result = true;
@@ -92,6 +94,39 @@ impl PluginManager {
         } else {
             Ok(true)
         }
+    }
+
+    // Call the subscribe acl check hook
+    // if mutiple plugin register the hook, the hook will be called in order and poerforming logic AND computation on multiple results
+    pub async fn call_hook_on_subscribe_acl_check(&self, topic: &String, qos:i32) -> Result<bool> {
+        if self.hook_sender_table.contains_key("OnSubscribeACLCheck") {
+            let mut result = true;
+            for sender in self.hook_sender_table.get("OnSubscribeACLCheck").unwrap() {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                sender.send(PluginMessage::OnSubscribeACLCheck(topic.clone(), qos, tx)).await?;
+                let r = match rx.await {
+                    std::result::Result::Ok(r) => r,
+                    std::result::Result::Err(_) => {
+                        warn!("call hook OnSubscribeACLCheck error");
+                        true
+                    },
+                };
+                result &= r;
+            }
+            Ok(result)
+        } else {
+            Ok(true)
+        }
+    }
+
+    // Call the publish hook
+    pub async fn call_hook_on_publish(&self, packet: &PublishPacket) -> Result<()> {
+        if self.hook_sender_table.contains_key("OnPublish") {
+            for sender in self.hook_sender_table.get("OnPublish").unwrap() {
+                sender.send(PluginMessage::OnPublish(packet.clone())).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn new(plugin_path: &String) -> Result<PluginManager> {

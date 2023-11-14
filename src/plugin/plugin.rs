@@ -6,7 +6,7 @@ use mlua::{Lua, Function, UserData};
 use thiserror::Error;
 use toml::{Table, Value};
 
-use crate::protocol::v3::connect::ConnectPacket;
+use crate::protocol::v3::{connect::ConnectPacket, publish::PublishPacket};
 
 pub struct PluginContext {
     config: PluginConfig,
@@ -54,6 +54,8 @@ pub struct Plugin { }
 
 pub enum PluginMessage {
     OnConnectAuth(ConnectPacket, tokio::sync::oneshot::Sender<bool>),
+    OnPublish(PublishPacket),
+    OnSubscribeACLCheck(String, i32, tokio::sync::oneshot::Sender<bool>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
     GetRegisterHooks(tokio::sync::oneshot::Sender<Vec<String>>),
     Quit
@@ -107,6 +109,18 @@ impl Plugin {
                             let root_module = super::module::get_root_module(&lua).unwrap();
                             let r = root_module.hook.on_connect_auth_hook.handle(&lua, &packet).unwrap();
                             tx.send(r).unwrap();
+                        }
+                        PluginMessage::OnSubscribeACLCheck(topic, qos, tx) => {
+                            let root_module = super::module::get_root_module(&lua).unwrap();
+                            let r = root_module.hook.on_subscribe_acl_check_hook.handle(&lua, topic, qos).unwrap();
+                            tx.send(r).unwrap();
+                        }
+                        PluginMessage::OnPublish(packet) => {
+                            let root_module = super::module::get_root_module(&lua).unwrap();
+                            match root_module.hook.on_publish_hook.handle(&lua, &packet) {
+                                Err(e) => warn!("plugin {} on_publish_hook error: {}", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap(), e),
+                                _ => ()
+                            }
                         }
                         PluginMessage::GetPluginName(tx) => {
                             let plugin_name = plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap();

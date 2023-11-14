@@ -6,12 +6,17 @@ use crate::protocol::v3::{connect::ConnectPacket, subscribe::SubscribePacket, pu
 pub struct Hook {
     pub on_connect_auth_hook: OnConnectAuthHook,
     pub on_subscribe_acl_check_hook: OnSubscribeACLCheckHook,
+    pub on_publish_hook: OnPublishHook
 }
 
 impl Hook {
     pub fn new(lua: &Lua) -> Self {
         lua.globals().set("__HOOK_TABLE__", lua.create_table().unwrap()).unwrap();
-        Hook { on_connect_auth_hook: OnConnectAuthHook {  }, on_subscribe_acl_check_hook: OnSubscribeACLCheckHook {  } }
+        Hook {
+             on_connect_auth_hook: OnConnectAuthHook {  }, 
+             on_subscribe_acl_check_hook: OnSubscribeACLCheckHook {  } ,
+             on_publish_hook: OnPublishHook {  }
+        }
     }
 
     pub fn get_register_hooks(&self, lua: &Lua) -> Vec<&str> {
@@ -120,15 +125,16 @@ impl<'a> UserData for OnSubscribeACLCheckHook {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct OnPublishHook {
 }
 
 impl OnPublishHook {
-    pub fn handle(&self, lua: &Lua, publish_packet: &PublishPacket) -> anyhow::Result<bool> {
+    pub fn handle(&self, lua: &Lua, publish_packet: &PublishPacket) -> anyhow::Result<()> {
         let hook_table:Table = lua.globals().get("__HOOK_TABLE__")?;
         let hook_func:Function = hook_table.get("OnPublish")?;
-        let r = hook_func.call::<_, _>(Some(LuaPublishPacket(publish_packet.clone())))?;
-        Ok(r)
+        hook_func.call::<_, _>(Some(LuaPublishPacket(publish_packet.clone())))?;
+        Ok(())
     }
 }
 
