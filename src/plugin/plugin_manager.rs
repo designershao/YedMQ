@@ -1,9 +1,12 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use log::{warn, info};
+use nom::Err;
 use thiserror::Error;
 use anyhow::{anyhow, Result, Ok};
 use tokio::{runtime::Builder, sync::{mpsc::{error::SendError, Sender}, RwLock}};
+
+use crate::protocol::v3::connect::ConnectPacket;
 
 use super::plugin::{PluginMessage, Plugin};
 
@@ -52,11 +55,13 @@ impl PluginWrapper {
 }
 
 pub struct PluginManager {
-    tx: tokio::sync::mpsc::Sender<PluginManagerMessage>
+    tx: tokio::sync::mpsc::Sender<PluginManagerMessage>,
+    hook_sender_table: HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>, // key: hook_name  value: sender to plugin
 }
 
 #[derive(Debug)]
 pub enum PluginManagerMessage {
+    GetHookTable(tokio::sync::oneshot::Sender<HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>>),
     LoadPlugin(String),
     StartPlugin(String),
     StopPlugin(String),
@@ -67,6 +72,27 @@ pub enum PluginManagerMessage {
 }
 
 impl PluginManager {
+
+    pub async fn call_hook_on_connect_auth(&self, connect_packet: &ConnectPacket) -> Result<bool> {
+        if self.hook_sender_table.contains_key("OnConnectAuth") {
+            let mut result = true;
+            for sender in self.hook_sender_table.get("OnConnectAuth").unwrap() {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                sender.send(PluginMessage::OnConnectAuth(connect_packet.clone(), tx)).await?;
+                let r = match rx.await {
+                    std::result::Result::Ok(r) => r,
+                    std::result::Result::Err(_) => {
+                        warn!("call hook OnConnectAuth error");
+                        true
+                    },
+                };
+                result &= r;
+            }
+            Ok(result)
+        } else {
+            Ok(true)
+        }
+    }
 
     pub async fn new(plugin_path: &String) -> Result<PluginManager> {
         let path = PathBuf::from(plugin_path);
@@ -163,6 +189,29 @@ impl PluginManager {
                                 }).collect();
                                 tx.send(i).unwrap();
                             }
+                            Some(PluginManagerMessage::GetHookTable(tx)) => {
+                                let mut result:HashMap<String, Vec<Sender<PluginMessage>>> = HashMap::new();
+
+                                for (plugin_name, plugin) in plugin_table.iter() {
+                                    let plugin = plugin.read().await;
+                                    let (tx, rx) = tokio::sync::oneshot::channel();
+                                    plugin.plugin_sender.send(PluginMessage::GetRegisterHooks(tx)).await;
+                                    let hook_vec = match rx.await {
+                                        std::result::Result::Ok(v) => v,
+                                        std::result::Result::Err(_) => {
+                                            warn!("call hook GetRegisterHooks error");
+                                            vec![]
+                                        },
+                                    };
+                                    for hook in hook_vec {
+                                        if !result.contains_key(&hook) {
+                                            result.insert(hook.clone(), vec![]);
+                                        }
+                                        result.get_mut(&hook).unwrap().push(plugin.plugin_sender.clone());
+                                    }
+                                }
+                                tx.send(result).unwrap();
+                            }
                             None => {
                                 break;
                             }
@@ -171,8 +220,15 @@ impl PluginManager {
                 });
                 rt.block_on(local_set);
             });
-            return Ok(PluginManager { tx });
+            let hook_table = Self::get_hook_table(tx.clone()).await?;
+            return Ok(PluginManager { tx, hook_sender_table: hook_table });
         }
+    }
+
+    async fn get_hook_table(plugin_manager: Sender<PluginManagerMessage>) -> Result<HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        plugin_manager.send(PluginManagerMessage::GetHookTable(tx)).await?;
+        Ok(rx.await?)
     }
 
     pub async fn get_plugin_names(&self) -> Result<Vec<String>> {
@@ -241,6 +297,18 @@ mod tests {
         let plugin = plugin_manager.get_plugin(&"demo_plugin".to_string()).await.unwrap().unwrap();
 
         assert_eq!(PluginStatus::Running, plugin.read().await.status);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn test_plugin_manager_get_hook_table() {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path)
+            .join("tests");
+
+        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string()).await.unwrap();
+
+        assert_eq!(1, plugin_manager.hook_sender_table.len());
+        assert_eq!("OnConnectAuth", plugin_manager.hook_sender_table.keys().next().unwrap());
     }
 
 }
