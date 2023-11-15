@@ -8,7 +8,13 @@ use tokio::{runtime::Builder, sync::{mpsc::{error::SendError, Sender}, RwLock}};
 
 use crate::protocol::v3::{connect::ConnectPacket, publish::PublishPacket};
 
-use super::plugin::{PluginMessage, Plugin};
+use super::plugin::{PluginMessage, Plugin, ConnectInfo, PluginResponse, PluginAuthResult, RejectResult};
+
+pub enum OnConnectAuthResult {
+    Pass(String, String),
+    Forbidden,
+    Error(anyhow::Error),
+}
 
 #[derive(Error, Debug)]
 pub enum PluginManagerError {
@@ -16,6 +22,8 @@ pub enum PluginManagerError {
     #[error("plugin dir not existed")]
     PluginDirNotExisted,
 
+    #[error("hook {0} no plugin register")]
+    NoPluginRegisterHook(String),
 }
 
 #[derive(Debug,PartialEq, Eq)]
@@ -30,6 +38,7 @@ pub struct PluginWrapper{
     plugin_path: PathBuf,
     plugin_sender: tokio::sync::mpsc::Sender<PluginMessage>,
 }
+
 
 impl PluginWrapper {
 
@@ -75,24 +84,35 @@ impl PluginManager {
 
     // Call the connection auth hook
     // if mutiple plugin register the hook, the hook will be called in order and poerforming logic AND computation on multiple results
-    pub async fn call_hook_on_connect_auth(&self, connect_packet: &ConnectPacket) -> Result<bool> {
+    pub async fn call_hook_on_connect_auth(&self, remote_addr: &String, connect_packet: &ConnectPacket) -> Result<OnConnectAuthResult> {
         if self.hook_sender_table.contains_key("OnConnectAuth") {
-            let mut result = true;
             for sender in self.hook_sender_table.get("OnConnectAuth").unwrap() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                sender.send(PluginMessage::OnConnectAuth(connect_packet.clone(), tx)).await?;
-                let r = match rx.await {
-                    std::result::Result::Ok(r) => r,
-                    std::result::Result::Err(_) => {
-                        warn!("call hook OnConnectAuth error");
-                        true
-                    },
+                let connect_info = ConnectInfo{
+                    remote_addr: remote_addr.clone(),
+                    connect_packet:connect_packet.clone()
                 };
-                result &= r;
+                sender.send(PluginMessage::OnConnectAuth(connect_info, tx)).await?;
+                match rx.await {
+                    std::result::Result::Ok(r) => {
+                        match r {
+                            PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Forbidden)) => {
+                                return Ok(OnConnectAuthResult::Forbidden)
+                            },
+                            PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Error(e))) => {
+                                return Ok(OnConnectAuthResult::Error(e));
+                            },
+                            PluginResponse::AuthResult(PluginAuthResult::Pass(tenant_id, user_id)) => {
+                                return Ok(OnConnectAuthResult::Pass(tenant_id, user_id));
+                            }
+                        }
+                    },
+                    std::result::Result::Err(_) => panic!("call hook on connect auth plugin receiver error"),
+                };
             }
-            Ok(result)
+            Err(anyhow!("OnConnectAuth hook no plugin register"))
         } else {
-            Ok(true)
+            Err(anyhow!(PluginManagerError::NoPluginRegisterHook("OnConnectAuth".to_string())))
         }
     }
 
@@ -342,8 +362,9 @@ mod tests {
 
         let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string()).await.unwrap();
 
-        assert_eq!(1, plugin_manager.hook_sender_table.len());
-        assert_eq!("OnConnectAuth", plugin_manager.hook_sender_table.keys().next().unwrap());
+        assert_eq!(2, plugin_manager.hook_sender_table.len());
+        assert!(plugin_manager.hook_sender_table.contains_key("OnSubscribeACLCheck"));
+        assert!(plugin_manager.hook_sender_table.contains_key("OnConnectAuth"));
     }
 
 }

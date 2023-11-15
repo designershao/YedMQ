@@ -8,6 +8,8 @@ use toml::{Table, Value};
 
 use crate::protocol::v3::{connect::ConnectPacket, publish::PublishPacket};
 
+use super::{session_context::SessionContext, module::hook::ConnectAuthResponse};
+
 pub struct PluginContext {
     config: PluginConfig,
 }
@@ -49,16 +51,37 @@ pub enum PluginError {
     LoadPluginError(#[from] io::Error),
 }
 
+pub struct ConnectInfo {
+    pub remote_addr: String,
+    pub connect_packet: ConnectPacket,
+}
+
 // Represent plugin
 pub struct Plugin { }
 
 pub enum PluginMessage {
-    OnConnectAuth(ConnectPacket, tokio::sync::oneshot::Sender<bool>),
+    OnConnectAuth(ConnectInfo, tokio::sync::oneshot::Sender<PluginResponse>),
     OnPublish(PublishPacket),
     OnSubscribeACLCheck(String, i32, tokio::sync::oneshot::Sender<bool>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
     GetRegisterHooks(tokio::sync::oneshot::Sender<Vec<String>>),
     Quit
+}
+
+pub enum PluginResponse {
+    AuthResult(PluginAuthResult), // Response if the hook is OnConnectAuth or OnSubscribeACLCheck
+}
+
+// Reject the auth details
+pub enum RejectResult {
+    Forbidden, // Auth failed
+    Error(anyhow::Error), // Auth Error
+}
+
+// Plugin auth result (OnConnectAuth or OnSubscribeACLCheck)
+pub enum PluginAuthResult {
+    Pass(String, String), // (TenantId, UserId)
+    Reject(RejectResult),
 }
 
 impl Plugin {
@@ -105,15 +128,36 @@ impl Plugin {
 
                 if let Some(msg) = msg  {
                     match msg {
-                        PluginMessage::OnConnectAuth(packet, tx) => {
+                        PluginMessage::OnConnectAuth(connect_info, tx) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
-                            let r = root_module.hook.on_connect_auth_hook.handle(&lua, &packet).unwrap();
-                            tx.send(r).unwrap();
+                            let r = root_module.hook.on_connect_auth_hook.handle(&lua, &connect_info);
+                            match r {
+                                std::result::Result::Ok(r) => {
+                                    if r.pass {
+                                        let response = PluginResponse::AuthResult(PluginAuthResult::Pass(r.tenant_id, r.user_id));
+                                        if let Err(_) = tx.send(response) {
+                                            warn!("the receiver dropped");
+                                        }
+                                    } else {
+                                        let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Forbidden));
+                                        if let Err(_) = tx.send(response) {
+                                            warn!("the receiver dropped");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("plugin {} on_connect_auth_hook error: {}", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap(), e);
+                                    let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Error(e)));
+                                    if let Err(_) = tx.send(response) {
+                                        warn!("the receiver dropped");
+                                    }
+                                }
+                            }
                         }
                         PluginMessage::OnSubscribeACLCheck(topic, qos, tx) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
-                            let r = root_module.hook.on_subscribe_acl_check_hook.handle(&lua, topic, qos).unwrap();
-                            tx.send(r).unwrap();
+                            //let r = root_module.hook.on_subscribe_acl_check_hook.handle(&lua, topic, qos).unwrap();
+                            todo!("on_subscribe_acl_check_hook")
                         }
                         PluginMessage::OnPublish(packet) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
@@ -264,9 +308,9 @@ mod tests {
 
     use tokio::runtime::Builder;
 
-    use crate::{protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}, plugin::plugin::PluginMessage};
+    use crate::{protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}, plugin::plugin::{PluginMessage, ConnectInfo, PluginResponse}};
 
-    use super::{parse_config, check_plugin_config, PluginConfig, PluginContext};
+    use super::{parse_config, check_plugin_config, PluginConfig, PluginContext, PluginAuthResult};
 
     #[test]
     pub fn test_parse_config() {
@@ -356,8 +400,9 @@ mod tests {
 
 
         let hooks:Vec<String> = join.await.unwrap();
-        assert_eq!(1, hooks.len());
+        assert_eq!(2, hooks.len());
         assert_eq!("OnConnectAuth", hooks[0]);
+        assert_eq!("OnSubscribeACLCheck", hooks[1]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -405,8 +450,9 @@ mod tests {
         let (init_tx, mut init_rx) = tokio::sync::oneshot::channel();
 
         let join = tokio::spawn(async move {
+            let connect_info = ConnectInfo { remote_addr: "127.0.0.1".to_string(), connect_packet };
             let plugin_tx: tokio::sync::mpsc::Sender<PluginMessage> = init_rx.await.unwrap();
-            plugin_tx.send(super::PluginMessage::OnConnectAuth(connect_packet, tx)).await.unwrap();
+            plugin_tx.send(super::PluginMessage::OnConnectAuth(connect_info, tx)).await.unwrap();
             let r = rx.await.unwrap();
             plugin_tx.send(super::PluginMessage::Quit).await.unwrap();
             r
@@ -429,8 +475,13 @@ mod tests {
         });
 
 
-        let r:bool = join.await.unwrap();
-        assert!(r)
+        let r:PluginResponse = join.await.unwrap();
+        if let PluginResponse::AuthResult(PluginAuthResult::Pass(teant_id, user_id)) = r {
+            assert_eq!(teant_id, "t-123");
+            assert_eq!(user_id, "123");
+        } else {
+            assert!(false)
+        }
 
     }
 
@@ -446,13 +497,16 @@ mod tests {
             .build()
             .unwrap();
 
-        std::thread::spawn(move || {
+        let r = std::thread::spawn(move || {
             let local_set = tokio::task::LocalSet::new();
             local_set.spawn_local(async move {
                 let local_set = tokio::task::LocalSet::new();
                 let plugin_tx = super::Plugin::new(&plugin_path, &local_set).unwrap();
-            })
+                plugin_tx.send(super::PluginMessage::Quit).await.unwrap();
+            });
+            rt.block_on(local_set);
         });
+        r.join().unwrap();
     }
 
 }
