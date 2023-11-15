@@ -28,6 +28,7 @@ author = "Samoye"
 description = "Just a demo plugin"
 version = "1.0.0"
 entry = "./src/plugin.lua"
+priority = 1000
 
 [custom_section]
 # all your custom config
@@ -42,6 +43,7 @@ entry = "./src/plugin.lua"
 | description   | string  | plugin description |
 | version | string | plugin version |
 | entry | string | plugin entry file |
+| priority | number | plugin priority |
 
 ### custom section
 The plugin could put settings (database connection, username and etc) in custom section.

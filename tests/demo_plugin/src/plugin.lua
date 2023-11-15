@@ -9,9 +9,9 @@ local function ConnectAuth(clientId, username, password, ip)
 end
 
 local function SubscribeAuth(sessionCtx, topic, qos)
-    result = {}
-    result.pass = true
-    return result
+    response = Samoye.Hook.OnSubscribeACLCheck.response()
+    response.pass = true
+    return response
 end
 
 function M.OnActivate()

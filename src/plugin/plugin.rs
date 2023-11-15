@@ -200,6 +200,7 @@ impl Plugin {
 pub struct PluginConfig {
     plugin_path: PathBuf,
     pub inner: Table,
+    pub priority: i64
 }
 
 fn convert_toml_table_to_mlua_table<'a>(src: &toml::Table, lua: &'a Lua) -> Result<mlua::Table<'a>> {
@@ -244,9 +245,11 @@ impl PluginConfig {
         }
         let table = parse_config(&path)?;
         check_plugin_config(&table, plugin_path)?;
+        let priority = table.get("plugin").unwrap().get("priority").unwrap().as_integer().unwrap();
         Ok(PluginConfig {
             plugin_path: plugin_path.to_path_buf(),
-            inner: table 
+            inner: table,
+            priority
         })
     }
 
@@ -279,6 +282,9 @@ fn check_plugin_config(table:&Table, plugin_path: &PathBuf) -> Result<()> {
         }
         if plugin_section.get("version").is_none() {
             return Err(anyhow!(PluginError::InvalidPluginConfig("missing plugin version".to_string())));
+        }
+        if plugin_section.get("priority").is_none() {
+            return Err(anyhow!(PluginError::InvalidPluginConfig("missing plugin priority".to_string())));
         }
     } else {
         return Err(anyhow!(PluginError::InvalidPluginConfig("missing plugin section".to_string())));
