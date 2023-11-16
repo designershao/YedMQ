@@ -56,6 +56,12 @@ pub struct ConnectInfo {
     pub connect_packet: ConnectPacket,
 }
 
+#[derive(Debug)]
+pub struct RegisterHookResponse {
+    pub hook_names: Vec<String>, // hook name (OnConnectAuth or OnSubscribeACLCheck etc.)
+    pub priority: i64, // plugin priority
+}
+
 // Represent plugin
 pub struct Plugin { }
 
@@ -64,7 +70,7 @@ pub enum PluginMessage {
     OnPublish(PublishPacket),
     OnSubscribeACLCheck(String, i32, tokio::sync::oneshot::Sender<bool>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
-    GetRegisterHooks(tokio::sync::oneshot::Sender<Vec<String>>),
+    GetRegisterHooks(tokio::sync::oneshot::Sender<RegisterHookResponse>),
     Quit
 }
 
@@ -173,7 +179,7 @@ impl Plugin {
                         PluginMessage::GetRegisterHooks(tx) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
                             let register_hooks:Vec<String> = root_module.hook.get_register_hooks(&lua).iter().map(|i| i.to_string()).collect();
-                            tx.send(register_hooks).unwrap();
+                            tx.send(RegisterHookResponse { hook_names: register_hooks, priority: plugin_config.priority }).unwrap();
                         }
                         PluginMessage::Quit => {
                             info!("plugin {} receive quit signal", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
@@ -314,7 +320,7 @@ mod tests {
 
     use tokio::runtime::Builder;
 
-    use crate::{protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}, plugin::plugin::{PluginMessage, ConnectInfo, PluginResponse}};
+    use crate::{protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}, plugin::plugin::{PluginMessage, ConnectInfo, PluginResponse, RegisterHookResponse}};
 
     use super::{parse_config, check_plugin_config, PluginConfig, PluginContext, PluginAuthResult};
 
@@ -405,10 +411,11 @@ mod tests {
         });
 
 
-        let hooks:Vec<String> = join.await.unwrap();
-        assert_eq!(2, hooks.len());
-        assert_eq!("OnConnectAuth", hooks[0]);
-        assert_eq!("OnSubscribeACLCheck", hooks[1]);
+        let hooks:RegisterHookResponse = join.await.unwrap();
+        assert_eq!(2, hooks.hook_names.len());
+        assert_eq!("OnConnectAuth", hooks.hook_names[0]);
+        assert_eq!("OnSubscribeACLCheck", hooks.hook_names[1]);
+        assert_eq!(1000, hooks.priority);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

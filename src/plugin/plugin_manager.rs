@@ -6,7 +6,7 @@ use thiserror::Error;
 use anyhow::{anyhow, Result, Ok};
 use tokio::{runtime::Builder, sync::{mpsc::{error::SendError, Sender}, RwLock}};
 
-use crate::protocol::v3::{connect::ConnectPacket, publish::PublishPacket};
+use crate::{protocol::v3::{connect::ConnectPacket, publish::PublishPacket}, plugin::plugin::RegisterHookResponse};
 
 use super::plugin::{PluginMessage, Plugin, ConnectInfo, PluginResponse, PluginAuthResult, RejectResult};
 
@@ -63,14 +63,20 @@ impl PluginWrapper {
 
 }
 
+#[derive(Debug)]
+pub struct PluginSenderWrapper {
+    pub sender: tokio::sync::mpsc::Sender<PluginMessage>,
+    pub priority: i64,
+}
+
 pub struct PluginManager {
     tx: tokio::sync::mpsc::Sender<PluginManagerMessage>,
-    hook_sender_table: HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>, // key: hook_name  value: sender to plugin
+    hook_sender_table: HashMap<String, Vec<PluginSenderWrapper>>, // key: hook_name  value: sender to plugin
 }
 
 #[derive(Debug)]
 pub enum PluginManagerMessage {
-    GetHookTable(tokio::sync::oneshot::Sender<HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>>),
+    GetHookTable(tokio::sync::oneshot::Sender<HashMap<String, Vec<PluginSenderWrapper>>>),
     LoadPlugin(String),
     StartPlugin(String),
     StopPlugin(String),
@@ -86,13 +92,13 @@ impl PluginManager {
     // if mutiple plugin register the hook, the hook will be called in order and poerforming logic AND computation on multiple results
     pub async fn call_hook_on_connect_auth(&self, remote_addr: &String, connect_packet: &ConnectPacket) -> Result<OnConnectAuthResult> {
         if self.hook_sender_table.contains_key("OnConnectAuth") {
-            for sender in self.hook_sender_table.get("OnConnectAuth").unwrap() {
+            for wrapper in self.hook_sender_table.get("OnConnectAuth").unwrap() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let connect_info = ConnectInfo{
                     remote_addr: remote_addr.clone(),
                     connect_packet:connect_packet.clone()
                 };
-                sender.send(PluginMessage::OnConnectAuth(connect_info, tx)).await?;
+                wrapper.sender.send(PluginMessage::OnConnectAuth(connect_info, tx)).await?;
                 match rx.await {
                     std::result::Result::Ok(r) => {
                         match r {
@@ -121,9 +127,9 @@ impl PluginManager {
     pub async fn call_hook_on_subscribe_acl_check(&self, topic: &String, qos:i32) -> Result<bool> {
         if self.hook_sender_table.contains_key("OnSubscribeACLCheck") {
             let mut result = true;
-            for sender in self.hook_sender_table.get("OnSubscribeACLCheck").unwrap() {
+            for wrapper in self.hook_sender_table.get("OnSubscribeACLCheck").unwrap() {
                 let (tx, rx) = tokio::sync::oneshot::channel();
-                sender.send(PluginMessage::OnSubscribeACLCheck(topic.clone(), qos, tx)).await?;
+                wrapper.sender.send(PluginMessage::OnSubscribeACLCheck(topic.clone(), qos, tx)).await?;
                 let r = match rx.await {
                     std::result::Result::Ok(r) => r,
                     std::result::Result::Err(_) => {
@@ -142,8 +148,8 @@ impl PluginManager {
     // Call the publish hook
     pub async fn call_hook_on_publish(&self, packet: &PublishPacket) -> Result<()> {
         if self.hook_sender_table.contains_key("OnPublish") {
-            for sender in self.hook_sender_table.get("OnPublish").unwrap() {
-                sender.send(PluginMessage::OnPublish(packet.clone())).await?;
+            for wrapper in self.hook_sender_table.get("OnPublish").unwrap() {
+                wrapper.sender.send(PluginMessage::OnPublish(packet.clone())).await?;
             }
         }
         Ok(())
@@ -245,7 +251,7 @@ impl PluginManager {
                                 tx.send(i).unwrap();
                             }
                             Some(PluginManagerMessage::GetHookTable(tx)) => {
-                                let mut result:HashMap<String, Vec<Sender<PluginMessage>>> = HashMap::new();
+                                let mut result:HashMap<String, Vec<PluginSenderWrapper>> = HashMap::new();
 
                                 for (plugin_name, plugin) in plugin_table.iter() {
                                     let plugin = plugin.read().await;
@@ -255,14 +261,20 @@ impl PluginManager {
                                         std::result::Result::Ok(v) => v,
                                         std::result::Result::Err(_) => {
                                             warn!("call hook GetRegisterHooks error");
-                                            vec![]
+                                            RegisterHookResponse {
+                                                hook_names: vec![],
+                                                priority: 0,
+                                            }
                                         },
                                     };
-                                    for hook in hook_vec {
+                                    for hook in hook_vec.hook_names {
                                         if !result.contains_key(&hook) {
                                             result.insert(hook.clone(), vec![]);
                                         }
-                                        result.get_mut(&hook).unwrap().push(plugin.plugin_sender.clone());
+                                        result.get_mut(&hook).unwrap().push(PluginSenderWrapper{
+                                            priority: hook_vec.priority,
+                                            sender: plugin.plugin_sender.clone()
+                                        });
                                     }
                                 }
                                 tx.send(result).unwrap();
@@ -280,7 +292,7 @@ impl PluginManager {
         }
     }
 
-    async fn get_hook_table(plugin_manager: Sender<PluginManagerMessage>) -> Result<HashMap<String, Vec<tokio::sync::mpsc::Sender<PluginMessage>>>> {
+    async fn get_hook_table(plugin_manager: Sender<PluginManagerMessage>) -> Result<HashMap<String, Vec<PluginSenderWrapper>>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         plugin_manager.send(PluginManagerMessage::GetHookTable(tx)).await?;
         Ok(rx.await?)
