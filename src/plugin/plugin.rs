@@ -68,7 +68,7 @@ pub struct Plugin { }
 pub enum PluginMessage {
     OnConnectAuth(ConnectInfo, tokio::sync::oneshot::Sender<PluginResponse>),
     OnPublish(PublishPacket),
-    OnSubscribeACLCheck(String, i32, tokio::sync::oneshot::Sender<bool>),
+    OnSubscribeACLCheck(SessionContext, String, i32, tokio::sync::oneshot::Sender<PluginResponse>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
     GetRegisterHooks(tokio::sync::oneshot::Sender<RegisterHookResponse>),
     Quit
@@ -160,10 +160,30 @@ impl Plugin {
                                 }
                             }
                         }
-                        PluginMessage::OnSubscribeACLCheck(topic, qos, tx) => {
+                        PluginMessage::OnSubscribeACLCheck(session_ctx, topic, qos, tx) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
-                            //let r = root_module.hook.on_subscribe_acl_check_hook.handle(&lua, topic, qos).unwrap();
-                            todo!("on_subscribe_acl_check_hook")
+                            match root_module.hook.on_subscribe_acl_check_hook.handle(&lua, &session_ctx, topic, qos) {
+                                std::result::Result::Ok(r) => {
+                                    if r.pass {
+                                        let response = PluginResponse::AuthResult(PluginAuthResult::Pass("".to_string(), "".to_string()));
+                                        if let Err(_) = tx.send(response) {
+                                            warn!("the receiver dropped");
+                                        }
+                                    } else {
+                                        let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Forbidden));
+                                        if let Err(_) = tx.send(response) {
+                                            warn!("the receiver dropped");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("plugin {} on_subscribe_acl_check_hook error: {}", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap(), e);
+                                    let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Error(e)));
+                                    if let Err(_) = tx.send(response) {
+                                        warn!("the receiver dropped");
+                                    }
+                                } ,
+                            }
                         }
                         PluginMessage::OnPublish(packet) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();

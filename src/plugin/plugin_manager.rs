@@ -8,10 +8,16 @@ use tokio::{runtime::Builder, sync::{mpsc::{error::SendError, Sender}, RwLock}};
 
 use crate::{protocol::v3::{connect::ConnectPacket, publish::PublishPacket}, plugin::plugin::RegisterHookResponse};
 
-use super::plugin::{PluginMessage, Plugin, ConnectInfo, PluginResponse, PluginAuthResult, RejectResult};
+use super::{plugin::{PluginMessage, Plugin, ConnectInfo, PluginResponse, PluginAuthResult, RejectResult}, session_context::SessionContext};
 
 pub enum OnConnectAuthResult {
     Pass(String, String),
+    Forbidden,
+    Error(anyhow::Error),
+}
+
+pub enum OnAclCheckResult {
+    Pass,
     Forbidden,
     Error(anyhow::Error),
 }
@@ -124,23 +130,31 @@ impl PluginManager {
     // Call the subscribe acl check hook
     // Call the highest priority plugin get the final decision
     // Lower priority plugin will not be called
-    pub async fn call_hook_on_subscribe_acl_check(&self, topic: &String, qos:i32) -> Result<bool> {
+    pub async fn call_hook_on_subscribe_acl_check(&self, session_ctx: &SessionContext, topic: &String, qos:i32) -> Result<OnAclCheckResult> {
         if self.hook_sender_table.contains_key("OnSubscribeACLCheck") {
             let wrapper = self.hook_sender_table.get("OnConnectAuth").unwrap();
-            let mut result = true;
             let (tx, rx) = tokio::sync::oneshot::channel();
-            wrapper.into_iter().next_back().unwrap().1.sender.send(PluginMessage::OnSubscribeACLCheck(topic.clone(), qos, tx)).await?;
-            let r = match rx.await {
-                std::result::Result::Ok(r) => r,
+            wrapper.into_iter().next_back().unwrap().1.sender.send(PluginMessage::OnSubscribeACLCheck(session_ctx.clone(), topic.clone(), qos, tx)).await?;
+            match rx.await {
+                std::result::Result::Ok(r) => {
+                    match r {
+                        PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Forbidden)) => {
+                            return Ok(OnAclCheckResult::Forbidden)
+                        },
+                        PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Error(e))) => {
+                            return Ok(OnAclCheckResult::Error(e));
+                        },
+                        PluginResponse::AuthResult(PluginAuthResult::Pass(_, _)) => {
+                            return Ok(OnAclCheckResult::Pass);
+                        }
+                    }
+                },
                 std::result::Result::Err(_) => {
-                    warn!("call hook OnSubscribeACLCheck error");
-                    true
+                    panic!("call hook OnSubscribeACLCheck error");
                 },
             };
-            result &= r;
-            Ok(result)
         } else {
-            Ok(true)
+            Err(anyhow!(PluginManagerError::NoPluginRegisterHook("OnSubscribeACLCheck".to_string())))
         }
     }
 
