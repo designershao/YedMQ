@@ -426,7 +426,7 @@ impl PluginManager {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::plugin::plugin_manager::PluginStatus;
+    use crate::{plugin::plugin_manager::PluginStatus, protocol::{v3::{connect::{VariableHeader, Payload, ConnectPacket}, fixed_header::FixHeader}, PacketType}};
 
     use super::PluginManager;
 
@@ -499,5 +499,66 @@ mod tests {
         assert!(plugin_manager
             .hook_sender_table
             .contains_key("OnConnectAuth"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    pub async fn test_plugin_manager_call_on_connect_auth() {
+        let variable_header = VariableHeader {
+                protocol_name: "MQTT".to_string(),
+                protocol_level: 0x04,
+                username_flag: true,
+                password_flag: true,
+                will_retain: true,
+                will_qos: 1,
+                will_flag: true,
+                clean_session: true,
+                keep_alive: 0,
+            };
+        let payload = Payload {
+            client_identifier: "MQTT".to_string(),
+            will_topic: Some("MQTT".to_string()),
+            will_message: Some("MQTT".to_string()),
+            username: Some("MQTT".to_string()),
+            password: Some("MQTT".to_string()),
+        };
+
+        let fix_header = FixHeader{
+                packet_type: PacketType::CONNECT,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: variable_header.get_length() + payload.get_length(),
+            };
+
+        let connect_packet = ConnectPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests");
+
+        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+
+        let result = plugin_manager.call_hook_on_connect_auth(&"127.0.0.1".to_string(), &connect_packet).await;
+
+        match result {
+            Ok(r) => {
+                match r {
+                    crate::plugin::plugin_manager::OnConnectAuthResult::Pass(tenant_id, user_id) => {
+                        assert_eq!("t-123".to_string(), tenant_id);
+                        assert_eq!("123".to_string(), user_id);
+                    },
+                    crate::plugin::plugin_manager::OnConnectAuthResult::Forbidden => assert!(false),
+                    crate::plugin::plugin_manager::OnConnectAuthResult::Error(_) => assert!(false),
+                }
+            }
+            Err(_) => {
+                assert!(false)
+            }
+        }
+
     }
 }

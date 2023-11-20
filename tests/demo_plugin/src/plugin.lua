@@ -14,6 +14,9 @@ local function SubscribeAuth(sessionCtx, topic, qos)
     return response
 end
 
+local function PublishProcess(sessionCtx, packet)
+end
+
 function M.OnActivate()
     Samoye.Hook.OnConnectAuth:Register(ConnectAuth)
     Samoye.Hook.OnSubscribeACLCheck:Register(SubscribeAuth)
