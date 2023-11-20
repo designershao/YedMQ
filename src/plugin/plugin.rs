@@ -67,7 +67,7 @@ pub struct Plugin { }
 
 pub enum PluginMessage {
     OnConnectAuth(ConnectInfo, tokio::sync::oneshot::Sender<PluginResponse>),
-    OnPublish(PublishPacket),
+    OnPublish(SessionContext, PublishPacket),
     OnSubscribeACLCheck(SessionContext, String, i32, tokio::sync::oneshot::Sender<PluginResponse>),
     GetPluginName(tokio::sync::oneshot::Sender<String>),
     GetRegisterHooks(tokio::sync::oneshot::Sender<RegisterHookResponse>),
@@ -76,12 +76,18 @@ pub enum PluginMessage {
 
 pub enum PluginResponse {
     AuthResult(PluginAuthResult), // Response if the hook is OnConnectAuth or OnSubscribeACLCheck
+    ACLCheckResult(PluginACLCheckResult),
 }
 
 // Reject the auth details
 pub enum RejectResult {
     Forbidden, // Auth failed
     Error(anyhow::Error), // Auth Error
+}
+
+pub enum PluginACLCheckResult {
+    Pass,
+    Reject(RejectResult),
 }
 
 // Plugin auth result (OnConnectAuth or OnSubscribeACLCheck)
@@ -162,30 +168,31 @@ impl Plugin {
                         }
                         PluginMessage::OnSubscribeACLCheck(session_ctx, topic, qos, tx) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
-                            match root_module.hook.on_subscribe_acl_check_hook.handle(&lua, &session_ctx, topic, qos) {
+                            let r = root_module.hook.on_subscribe_acl_check_hook.handle(&lua, &session_ctx, topic, qos);
+                            match r {
                                 std::result::Result::Ok(r) => {
                                     if r.pass {
-                                        let response = PluginResponse::AuthResult(PluginAuthResult::Pass("".to_string(), "".to_string()));
+                                        let response = PluginResponse::ACLCheckResult(PluginACLCheckResult::Pass);
                                         if let Err(_) = tx.send(response) {
                                             warn!("the receiver dropped");
                                         }
                                     } else {
-                                        let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Forbidden));
+                                        let response = PluginResponse::ACLCheckResult(PluginACLCheckResult::Reject(RejectResult::Forbidden));
                                         if let Err(_) = tx.send(response) {
                                             warn!("the receiver dropped");
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    warn!("plugin {} on_subscribe_acl_check_hook error: {}", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap(), e);
-                                    let response = PluginResponse::AuthResult(PluginAuthResult::Reject(RejectResult::Error(e)));
+                                    warn!("plugin {} on_subscribe_acl_check_hook error", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap());
+                                    let response = PluginResponse::ACLCheckResult(PluginACLCheckResult::Reject(RejectResult::Error(e)));
                                     if let Err(_) = tx.send(response) {
                                         warn!("the receiver dropped");
                                     }
-                                } ,
+                                },
                             }
                         }
-                        PluginMessage::OnPublish(packet) => {
+                        PluginMessage::OnPublish(session_ctx, packet) => {
                             let root_module = super::module::get_root_module(&lua).unwrap();
                             match root_module.hook.on_publish_hook.handle(&lua, &packet) {
                                 Err(e) => warn!("plugin {} on_publish_hook error: {}", plugin_config.inner.get("plugin").unwrap().get("name").unwrap().as_str().unwrap(), e),
