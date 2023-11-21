@@ -15,7 +15,7 @@ use crate::{
     },
     qos_context::QosContext,
     router::RouterCmd,
-    topic::TopicManager,
+    topic::TopicManager, plugin::{plugin_manager::PluginManager, session_context::SessionContext},
 };
 
 // Represent the message which send from the session
@@ -34,6 +34,7 @@ pub enum ReceiverMessage {
     KickOff,                         // Kick off the session
     UpdateCleanSession(bool),        // Update clean session
     SwitchToOffline,                   // Switch to offline
+    UpdateConnectionInfo(ConnectionInfo), // Update the session connection info
     SwitchToOnline,
 }
 
@@ -47,6 +48,10 @@ pub struct WillMessage {
     will_message: Vec<u8>,
     will_qos: u8,
     will_retain: bool,
+}
+
+pub struct ConnectionInfo {
+    remote_addr: String,
 }
 
 // Represent mqtt session
@@ -76,7 +81,10 @@ pub struct Session {
     clean_session: bool,
 
     // Session state
-    session_state: SessionState
+    session_state: SessionState,
+
+    // Plugin Manager 
+    plugin_manager: Arc<PluginManager>
 }
 
 impl Session {
@@ -96,12 +104,17 @@ impl Session {
 
             let mut keep_alive_timeout_flag = false;
 
+            let mut connection_info = None;
+
             loop {
                 tokio::select! {
                     msg = rx.recv() => {
                         match msg {
                             Some(msg) => {
                                 match msg {
+                                    ReceiverMessage::UpdateConnectionInfo(c) => {
+                                        connection_info = Some(c);
+                                    }
                                     ReceiverMessage::ForwardFromRouter(packet) => {
                                         if let MqttPacketV3::Publish(publish_packet) = packet {
                                             let qos = publish_packet.fix_header.qos;
@@ -132,12 +145,23 @@ impl Session {
                                         match self.session_state {
                                             SessionState::Online => {
                                                 keep_alive_timeout_flag = false;
-                                                if let Err(err) = self.do_process_rx_packet(&packet).await {
+                                                let remote_addr = connection_info.as_ref().unwrap().remote_addr.clone();
+                                                let session_ctx = SessionContext {
+                                                    tenant_id: self.tenant_identifier.clone(),
+                                                    username: self.client_identifier.clone(),
+                                                    client_identifier: self.client_identifier.clone(),
+                                                    remote_addr,
+                                                };
+                                                if let Err(err) = self.do_process_rx_packet(&packet, &session_ctx, self.plugin_manager.clone()).await {
                                                     warn!("tenant {} session {} process rx packet error, details: {}", self.tenant_identifier, self.client_identifier, err);
                                                     if self.clean_session {
                                                         rx.close();
                                                     }
                                                 }
+                                                // call plugin OnPublish hook
+                                                if let MqttPacketV3::Publish(publish_packet) = packet {
+                                                }
+                                                //
                                             }
                                             _ => {
                                                 info!("session state is offline, do not write packet to the client");
@@ -267,10 +291,13 @@ impl Session {
         }
     }
 
-    async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3) -> Result<()> {
+    async fn do_process_rx_packet(&mut self, packet: &MqttPacketV3, session_ctx: &SessionContext, plugin_manager: Arc<PluginManager>) -> Result<()> {
         assert!(self.deliver_packet_tx.is_some());
         match packet {
             MqttPacketV3::Publish(publish_packet) => {
+                if let Err(e) = plugin_manager.call_hook_on_publish(session_ctx, &publish_packet).await {
+                    warn!("tenant {} session {} call hook on publish error, details: {}", self.tenant_identifier, self.client_identifier, e);
+                }
                 let cmd = SenderMessage::ForwardToRouter(
                     self.tenant_identifier.clone(),
                     MqttPacketV3::Publish(publish_packet.clone()),
@@ -363,35 +390,45 @@ impl Session {
                     let mut topic_manager = self.topic_tree.write().await;
 
                     for topic in subscriptions.iter() {
-                        let sub_result = topic_manager.subscription(
-                            self.tenant_identifier.clone(),
-                            self.client_identifier.clone(),
-                            topic.topic_name.clone(),
-                            topic.qos,
-                        );
-                        if let Ok(_) = sub_result {
-                            if topic.qos == 0 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0);
-                            }
-                            if topic.qos == 1 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1);
-                            }
-                            if topic.qos == 2 {
-                                return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2);
-                            }
-                            self.subscription_topics.push(topic.topic_name.clone());
-                            let packets = topic_manager.get_retain_publish_packet(
-                                self.tenant_identifier.clone(),
-                                self.client_identifier.clone(),
-                                topic.topic_name.clone(),
-                            );
-                            if let Ok(packets) = packets {
-                                for packet in packets {
-                                    retain_messages.push(packet);
+                        let acl_result = plugin_manager.call_hook_on_subscribe_acl_check(session_ctx, &topic.topic_name, topic.qos.into()).await; 
+                        if let Ok(r) = acl_result {
+                            if r {
+                                let sub_result = topic_manager.subscription(
+                                    self.tenant_identifier.clone(),
+                                    self.client_identifier.clone(),
+                                    topic.topic_name.clone(),
+                                    topic.qos,
+                                );
+                                if let Ok(_) = sub_result {
+                                    if topic.qos == 0 {
+                                        return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos0);
+                                    }
+                                    if topic.qos == 1 {
+                                        return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos1);
+                                    }
+                                    if topic.qos == 2 {
+                                        return_code.push(crate::protocol::v3::suback::ReturnCode::MaxQos2);
+                                    }
+                                    self.subscription_topics.push(topic.topic_name.clone());
+                                    let packets = topic_manager.get_retain_publish_packet(
+                                        self.tenant_identifier.clone(),
+                                        self.client_identifier.clone(),
+                                        topic.topic_name.clone(),
+                                    );
+                                    if let Ok(packets) = packets {
+                                        for packet in packets {
+                                            retain_messages.push(packet);
+                                        }
+                                    }
+                                } else {
+                                    return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                                 }
+                            } else {
+                                return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                             }
                         } else {
                             return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
+                            warn!("tenant {} session {} call hook on subscribe error, details: {}", self.tenant_identifier, self.client_identifier, acl_result.unwrap_err());
                         }
                     }
                 }
@@ -568,7 +605,7 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{sync::Arc, time::Duration, path::PathBuf};
 
     use tokio::sync::RwLock;
 
@@ -585,12 +622,25 @@ mod tests {
             MqttPacketV3, PacketType,
         },
         qos_context::QosContext,
-        session::{ReceiverMessage, SenderMessage, Session},
-        topic::TopicManager,
+        session::{ReceiverMessage, SenderMessage, Session, ConnectionInfo},
+        topic::TopicManager, plugin::{plugin_manager::PluginManager, plugin::ConnectInfo},
     };
+
+    async fn get_test_plugin_manager() -> Arc<PluginManager> {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests");
+
+        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+        Arc::new(plugin_manager)
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_keep_alive_timeout_without_will_message() {
+
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
@@ -606,7 +656,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let rx = session
@@ -626,6 +677,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_receive_connection_shutdown_exit_online_loop() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
@@ -641,12 +694,15 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+
         tx.send(ReceiverMessage::ConnectionHasShutdown)
             .await
             .unwrap();
@@ -657,6 +713,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_1_receive_process() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
@@ -672,7 +730,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -685,6 +744,8 @@ mod tests {
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
 
         tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
 
@@ -728,6 +789,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_2_receive_process() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
@@ -743,7 +806,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
         let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(2)
@@ -757,6 +821,8 @@ mod tests {
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
 
         tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
 
@@ -820,6 +886,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_qos_2_receive_resend_pubrec_process() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 10;
 
         let resend_duration_secs = 5;
@@ -835,7 +903,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -850,6 +919,8 @@ mod tests {
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
 
         tx.send(ReceiverMessage::Packet(packet)).await.unwrap();
 
@@ -930,6 +1001,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_tx_2_resend_publish_packet() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 10;
 
         let resend_duration_secs = 5;
@@ -945,7 +1018,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -962,6 +1036,8 @@ mod tests {
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
 
         tx.send(ReceiverMessage::ForwardFromRouter(packet))
             .await
@@ -1032,6 +1108,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_tx_2_resend_pubrel_packet() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 10;
 
         let resend_duration_secs = 5;
@@ -1047,7 +1125,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: true,
-            session_state: crate::session::SessionState::Online
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
         };
 
         let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -1064,6 +1143,8 @@ mod tests {
         let tx = session
             .run_online_loop(keep_live_duration_secs, resend_duration_secs)
             .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
 
         tx.send(ReceiverMessage::ForwardFromRouter(packet))
             .await
@@ -1131,6 +1212,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_qos_1_resend_when_offline_to_online() {
+        let plugin_manager =get_test_plugin_manager().await;
+
         let keep_live_duration_secs = 20;
 
         let resend_duration_secs = 10;
@@ -1146,7 +1229,8 @@ mod tests {
             subscription_topics: vec![],
             deliver_packet_tx: Some(deliver_packet_tx),
             clean_session: false,
-            session_state: crate::session::SessionState::Offline
+            session_state: crate::session::SessionState::Offline,
+            plugin_manager
         };
 
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
