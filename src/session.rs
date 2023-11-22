@@ -158,10 +158,6 @@ impl Session {
                                                         rx.close();
                                                     }
                                                 }
-                                                // call plugin OnPublish hook
-                                                if let MqttPacketV3::Publish(publish_packet) = packet {
-                                                }
-                                                //
                                             }
                                             _ => {
                                                 info!("session state is offline, do not write packet to the client");
@@ -421,6 +417,7 @@ impl Session {
                                         }
                                     }
                                 } else {
+                                    warn!("tenant {} session {} subscribe error, details: {}", self.tenant_identifier, self.client_identifier, sub_result.unwrap_err());
                                     return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                                 }
                             } else {
@@ -617,7 +614,7 @@ mod tests {
                 pubcomp::PubCompPacket,
                 publish::PublishPacketBuilder,
                 pubrec::PubRecPacket,
-                pubrel::PubRelPacket,
+                pubrel::PubRelPacket, subscribe::{Payload, TopicFilter, SubscribePacket}, suback::ReturnCode,
             },
             MqttPacketV3, PacketType,
         },
@@ -1261,6 +1258,83 @@ mod tests {
             _ => {
                 assert!(false);
             }
+        }
+
+    }
+    
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_session_call_on_subscribe_hook() {
+
+        let fix_header = FixHeader {
+            packet_type: PacketType::SUBSCRIBE,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 8,
+        };
+
+        let variable_header = crate::protocol::v3::subscribe::VariableHeader {
+            packet_identifier: 0x10,
+        };
+
+        let payload = Payload {
+            topic_filters: vec![
+                TopicFilter {
+                    topic_name: "a/b".to_string(),
+                    qos: 2
+                }
+            ]
+        };
+
+        let subscribe_packet = SubscribePacket {
+            fix_header,
+            variable_header,
+            payload,
+        };
+
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 20;
+
+        let resend_duration_secs = 10;
+
+        let (deliver_packet_tx, mut deliver_packet_rx) = tokio::sync::mpsc::channel(10);
+
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("tenant_a".to_string());
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            topic_tree: Arc::new(RwLock::new(topic_manager)),
+            qos_context: QosContext::new(Duration::from_secs(resend_duration_secs)),
+            subscription_topics: vec![],
+            deliver_packet_tx: Some(deliver_packet_tx),
+            clean_session: false,
+            session_state: crate::session::SessionState::Online,
+            plugin_manager
+        };
+
+        let tx = session
+            .run_online_loop(keep_live_duration_secs, resend_duration_secs)
+            .await;
+
+        tx.send(ReceiverMessage::UpdateConnectionInfo(ConnectionInfo{ remote_addr: "127.0.0.1".to_string() } )).await.unwrap();
+
+        let _ = tx.send(ReceiverMessage::Packet(MqttPacketV3::Subscribe(subscribe_packet))).await;
+        match deliver_packet_rx.recv().await.unwrap() {
+            SenderMessage::WritePacket(packet) => {
+                match packet {
+                    MqttPacketV3::Suback(packet) => {
+                        assert_eq!(1, packet.payload.return_code.len());
+                        assert_eq!(ReturnCode::MaxQos2, packet.payload.return_code[0]);
+                    }
+                    _ => assert!(false)
+                }
+            }
+            _ => assert!(false)
         }
 
     }
