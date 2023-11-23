@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use log::{debug, error, info, warn};
+use thiserror::Error;
 use tokio::{
     net::TcpStream,
     sync::{mpsc::Sender, RwLock},
@@ -575,26 +576,53 @@ impl SessionHandle {
         Ok(())
     }
 }
+#[derive(Error, Debug)]
+pub enum SessionManagerError {
+    #[error("tenant {0} not found")]
+    TenantNotExisted(String),
+
+    #[error("tenant {0} has existed")]
+    TenantHasExisted(String),
+}
 
 pub struct SessionManager {
-    session_table: RwLock<HashMap<String, SessionHandle>>,
-    tenant_identifier: String,
+    session_table: HashMap<String,RwLock<HashMap<String, SessionHandle>>>,
 }
 
 impl SessionManager {
-    pub async fn register(&mut self, client_identifier: String, session_handle: SessionHandle) {
-        let mut session_table = self.session_table.write().await;
-        session_table.insert(client_identifier, session_handle);
+
+    pub async fn create_tenant(&mut self, tenant_identifier: String) -> Result<()> {
+        if self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantHasExisted(tenant_identifier)));
+        }
+        self.session_table
+            .insert(tenant_identifier, RwLock::new(HashMap::new()));
+        Ok(())
+    }
+
+    pub async fn register(&mut self, tenant_identifier: String, client_identifier: String, session_handle: SessionHandle) -> Result<()> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let mut session_table = self.session_table.get(&tenant_identifier).unwrap().write().await;
+            session_table.insert(client_identifier, session_handle);
+            Ok(())
+        }
     }
 
     pub async fn send_packet(
         &self,
+        tenant_identifier: String,
         client_identifier: String,
         packet: &MqttPacketV3,
     ) -> Result<()> {
-        let session_table = self.session_table.read().await;
-        if let Some(handle) = session_table.get(&client_identifier) {
-            handle.forward_packet_to_session(packet.clone()).await?;
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.session_table.get(&tenant_identifier).unwrap().read().await;
+            if let Some(handle) = session_table.get(&client_identifier) {
+                handle.forward_packet_to_session(packet.clone()).await?;
+            }
         }
         Ok(())
     }

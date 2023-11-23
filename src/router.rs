@@ -58,7 +58,7 @@ impl Router {
                 topic).unwrap();
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
-                if let Err(error) = self.session_manager.send_packet(client_identifier.clone(), packet).await {
+                if let Err(error) = self.session_manager.send_packet(tenant_identifier.clone(), client_identifier.clone(), packet).await {
                     warn!("tenant {} session {} send packet error, details: {}", tenant_identifier, client_identifier.clone(), error);
                 }
             }
