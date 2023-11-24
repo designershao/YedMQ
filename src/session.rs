@@ -58,39 +58,39 @@ pub struct ConnectionInfo {
 // Represent mqtt session
 pub struct Session {
     // MQTT Will Message
-    will_message: Option<WillMessage>,
+    pub will_message: Option<WillMessage>,
 
     // MQTT Client Identifier, unique in the tenant
-    client_identifier: String,
+    pub client_identifier: String,
 
     // Tenant Identifier, unique in the system
-    tenant_identifier: String,
+    pub tenant_identifier: String,
 
     // The session subscribed topics
-    subscription_topics: Vec<String>,
+    pub subscription_topics: Vec<String>,
 
     // The QOS context, track all in flights qos packet.
-    qos_context: QosContext,
+    pub qos_context: QosContext,
 
     // Session cmd receiver
-    deliver_packet_tx: Option<Sender<SenderMessage>>,
+    pub deliver_packet_tx: Option<Sender<SenderMessage>>,
 
     // Topic tree
-    topic_tree: Arc<RwLock<TopicManager>>,
+    pub topic_tree: Arc<RwLock<TopicManager>>,
 
     // Clean session
-    clean_session: bool,
+    pub clean_session: bool,
 
     // Session state
-    session_state: SessionState,
+    pub session_state: SessionState,
 
     // Plugin Manager 
-    plugin_manager: Arc<PluginManager>
+    pub plugin_manager: Arc<PluginManager>
 }
 
 impl Session {
 
-    async fn run_online_loop(
+    pub async fn run_online_loop(
         mut self,
         keep_alive: u64,
         resend_check: u64,
@@ -493,8 +493,8 @@ impl Session {
 }
 
 pub struct SessionHandle {
-    session_sender: tokio::sync::mpsc::Sender<ReceiverMessage>,
-    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    pub session_sender: tokio::sync::mpsc::Sender<ReceiverMessage>,
+    pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
 }
 
 impl SessionHandle {
@@ -583,6 +583,9 @@ pub enum SessionManagerError {
 
     #[error("tenant {0} has existed")]
     TenantHasExisted(String),
+
+    #[error("session {0} not found")]
+    SessionNotExisted(String),
 }
 
 pub struct SessionManager {
@@ -607,6 +610,21 @@ impl SessionManager {
             let mut session_table = self.session_table.get(&tenant_identifier).unwrap().write().await;
             session_table.insert(client_identifier, session_handle);
             Ok(())
+        }
+    }
+
+pub async fn get_session_handle(&mut self, tenant_identifier: String, client_identifier: String) -> Result<SessionHandle> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.session_table.get(&tenant_identifier).unwrap().read().await;
+            if let Some(session_handle) = session_table.get(&client_identifier) {
+                Ok(SessionHandle {
+                     session_sender: session_handle.session_sender.clone(), router_sender: session_handle.router_sender.clone()
+                })
+            } else {
+                Err(anyhow!(SessionManagerError::SessionNotExisted(client_identifier)))
+            }
         }
     }
 

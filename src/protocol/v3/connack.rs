@@ -3,7 +3,7 @@ use bytes::BufMut;
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
 use nom::bytes::{streaming::take};
 use ::bytes::{BytesMut};
-use crate::protocol::MqttPacket;
+use crate::protocol::{MqttPacket, PacketType};
 
 use super::fixed_header::{FixHeader, self};
 
@@ -11,6 +11,63 @@ use super::fixed_header::{FixHeader, self};
 pub struct ConnAckPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
+}
+
+pub enum ConnackReturnCode {
+    Accpet = 0x00,
+    UnsupportedProtocolVersion = 0x01,
+    InvalidClientIdentifier = 0x02,
+    ServerUnavailable = 0x03,
+    InvalidUsernameOrPassword = 0x04,
+    UnAuthorized = 0x05,
+}
+
+pub struct ConnAckPacketBuilder {
+    return_code: ConnackReturnCode,
+    session_present: bool
+}
+
+impl ConnAckPacketBuilder {
+    pub fn new() -> ConnAckPacketBuilder {
+        ConnAckPacketBuilder { return_code: ConnackReturnCode::Accpet, session_present: false }
+    }
+
+    pub fn set_session_present(mut self, session_present: bool) -> Self {
+        self.session_present = session_present;
+        self
+    }
+
+    pub fn set_return_code(mut self, return_code: ConnackReturnCode) -> Self {
+        self.return_code = return_code;
+        self
+    }
+
+    pub fn build(self) -> ConnAckPacket {
+        let fix_header = FixHeader {
+            packet_type: PacketType::CONNACK,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
+        let return_code = match self.return_code {
+            ConnackReturnCode::Accpet => 0x00,
+            ConnackReturnCode::UnsupportedProtocolVersion => 0x01,
+            ConnackReturnCode::InvalidClientIdentifier => 0x02,
+            ConnackReturnCode::ServerUnavailable => 0x03,
+            ConnackReturnCode::InvalidUsernameOrPassword => 0x04,
+            ConnackReturnCode::UnAuthorized => 0x05,
+        };
+        let variable_header = VariableHeader {
+            session_present: self.session_present,
+            connect_return_code: return_code,
+        };
+        let connack_packet = ConnAckPacket{
+            fix_header,
+            variable_header,
+        };
+        connack_packet
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -10,8 +10,8 @@ pub struct Settings {
 
 #[derive(Debug,Deserialize)]
 pub struct Session {
-    qos_expired_secs: u64, // qos context expired seconds
-    packet_resend_interval_secs: u64 // session packet resend interval seconds
+    pub qos_expired_secs: u64, // qos context expired seconds
+    pub packet_resend_interval_secs: u64 // session packet resend interval seconds
 }
 
 #[derive(Debug, Deserialize)]
@@ -26,12 +26,12 @@ pub struct Log {
 
 #[derive(Debug, Deserialize)]
 pub struct Listener {
-    tcp: Tcp
+    pub tcp: Tcp
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Tcp {
-    external: String
+    pub external: String
 }
 
 
