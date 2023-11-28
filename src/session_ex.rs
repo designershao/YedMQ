@@ -468,6 +468,11 @@ impl SessionHandle {
                         }
                     }
                     _ = resend_check_interval.tick() => {
+                        let session = session_inner.lock().await;
+                        let packets = session.inflight.get_all_expired_packets_and_refresh_expired_time().await;
+                        for packet in packets {
+                            connection.write_packet(&packet).await.unwrap();
+                        }
                     }
                 }
             }
