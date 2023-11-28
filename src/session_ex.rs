@@ -218,6 +218,7 @@ impl Session {
 }
 
 
+#[derive(Clone)]
 pub enum SessionMessage {
     ForwardFromRouter(MqttPacketV3), //Receive packet from router
     KickOff,                         // Kick off the session
@@ -230,24 +231,56 @@ pub struct SessionHandle {
 
 impl SessionHandle {
 
-    pub async fn handle(&self, msg: SessionMessage) {
+    pub async fn handle(&mut self, msg: SessionMessage) {
         // if receiver closed, the connection has been closed
         // then only receive the msg which is from router
-        self.sender.send(msg).await;
+        if let Err(_) = self.sender.send(msg.clone()).await {
+            info!("session receiver has been closed, the connection has shutdown.");
+            let sender = Self::run_in_offline(self.session.clone()).await;
+            self.sender = sender;
+            self.sender.send(msg).await;
+        } 
     }
 
-    pub fn new(
-        session: Session,
+    async fn run_in_offline(session: Arc<Mutex<Session>>) -> tokio::sync::mpsc::Sender<SessionMessage> {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
+        tokio::spawn(async move {
+            loop {
+                if let Some(msg) = receiver.recv().await {
+                    match msg {
+                        SessionMessage::ForwardFromRouter(packet) => {
+                            match &packet {
+                                MqttPacketV3::Publish(publish_packet) => {
+                                    if publish_packet.fix_header.qos > Some(0) {
+                                        let mut session = session.lock().await;
+                                        session.new_tx_qos_state_ctx(&packet).await;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    break;
+                }
+            }
+        });
+        sender
+    }
+
+    async fn run_in_online(
+        session: Arc<Mutex<Session>>,
         mut connection: Connection<TcpStream>,
         plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-    ) -> Self {
+    ) -> tokio::sync::mpsc::Sender<SessionMessage> {
+
         let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
 
-        let session = Arc::new(Mutex::new(session));
         let session_inner = session.clone();
 
         let plugin_manager = plugin_manager.clone();
@@ -285,9 +318,11 @@ impl SessionHandle {
                                 info!("session {} kick off", session.client_identifier);
                                 connection.shutdown().await.unwrap();
                                 session.session_state = SessionState::Offline;
+                                receiver.close();
+                            }
+                            None => {
                                 break;
                             }
-                            _ => {}
                         }
                     }
                     read_packet_result = connection.read_packet() => {
@@ -519,8 +554,23 @@ impl SessionHandle {
                 }
             }
         });
+        sender
+    }
+
+    pub fn new(
+        session: Session,
+        mut connection: Connection<TcpStream>,
+        plugin_manager: Arc<PluginManager>,
+        topic_manager: Arc<RwLock<TopicManager>>,
+        keep_alive: u64,
+        resend_check: u64,
+        router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    ) -> Self {
+        let session = Arc::new(Mutex::new(session));
+        let sender = Self::run_in_online(session, connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
         SessionHandle { session, sender }
     }
+
 }
 
 #[derive(Error, Debug)]
