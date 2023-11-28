@@ -1,6 +1,8 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration, collections::HashMap};
 
-use log::warn;
+use anyhow::{Context, Result, anyhow};
+use log::{warn, info};
+use thiserror::Error;
 use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select};
 
 use crate::{protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}}, inflight::Inflight, router::RouterCmd, plugin::{plugin_manager::PluginManager, session_context::SessionContext}, topic::TopicManager, connection::Connection};
@@ -216,12 +218,24 @@ impl Session {
 }
 
 
+pub enum SessionMessage {
+    ForwardFromRouter(MqttPacketV3), //Receive packet from router
+    KickOff,                         // Kick off the session
+}
 
 pub struct SessionHandle {
-    session: Arc<Mutex<Session>>
+    session: Arc<Mutex<Session>>,
+    sender: tokio::sync::mpsc::Sender<SessionMessage>,
 }
 
 impl SessionHandle {
+
+    pub async fn handle(&self, msg: SessionMessage) {
+        // if receiver closed, the connection has been closed
+        // then only receive the msg which is from router
+        self.sender.send(msg).await;
+    }
+
     pub fn new(
         session: Session,
         mut connection: Connection<TcpStream>,
@@ -231,6 +245,8 @@ impl SessionHandle {
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     ) -> Self {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
+
         let session = Arc::new(Mutex::new(session));
         let session_inner = session.clone();
 
@@ -250,6 +266,30 @@ impl SessionHandle {
 
             loop {
                 select! {
+                    session_msg = receiver.recv() => {
+                        match session_msg {
+                            Some(SessionMessage::ForwardFromRouter(packet)) => { // receive the message from the router
+                                let mut session = session_inner.lock().await;
+                                connection.write_packet(&packet).await.unwrap();
+                                match &packet {
+                                    MqttPacketV3::Publish(publish_packet) => {
+                                        if publish_packet.fix_header.qos > Some(0) {
+                                            session.new_tx_qos_state_ctx(&packet).await;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Some(SessionMessage::KickOff) => { // the broker kickoff the client
+                                let mut session = session_inner.lock().await;
+                                info!("session {} kick off", session.client_identifier);
+                                connection.shutdown().await.unwrap();
+                                session.session_state = SessionState::Offline;
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
                     read_packet_result = connection.read_packet() => {
                         match &read_packet_result {
                             Ok(packet) => {
@@ -293,7 +333,9 @@ impl SessionHandle {
                                         }
                                     }
                                     MqttPacketV3::Disconnect(_) => {
+                                        let mut session = session_inner.lock().await;
                                         connection.shutdown().await.unwrap();
+                                        session.session_state = SessionState::Offline;
                                         break;
                                     }
                                     MqttPacketV3::Pingreq(_) => {
@@ -477,6 +519,76 @@ impl SessionHandle {
                 }
             }
         });
-        SessionHandle { session }
+        SessionHandle { session, sender }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SessionManagerError {
+    #[error("tenant {0} not found")]
+    TenantNotExisted(String),
+
+    #[error("tenant {0} has existed")]
+    TenantHasExisted(String),
+
+    #[error("session {0} not found")]
+    SessionNotExisted(String),
+}
+
+pub struct SessionManager {
+    session_table: HashMap<String,RwLock<HashMap<String, SessionHandle>>>,
+}
+
+impl SessionManager {
+
+    pub async fn create_tenant(&mut self, tenant_identifier: String) -> Result<()> {
+        if self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantHasExisted(tenant_identifier)));
+        }
+        self.session_table
+            .insert(tenant_identifier, RwLock::new(HashMap::new()));
+        Ok(())
+    }
+
+    pub async fn register(&mut self, tenant_identifier: String, client_identifier: String, session_handle: SessionHandle) -> Result<()> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let mut session_table = self.session_table.get(&tenant_identifier).unwrap().write().await;
+            session_table.insert(client_identifier, session_handle);
+            Ok(())
+        }
+    }
+
+    pub async fn get_session_handle(&mut self, tenant_identifier: String, client_identifier: String) -> Result<SessionHandle> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.session_table.get(&tenant_identifier).unwrap().read().await;
+            if let Some(session_handle) = session_table.get(&client_identifier) {
+                Ok(SessionHandle {
+                     sender: session_handle.sender.clone(), session: session_handle.session.clone()
+                })
+            } else {
+                Err(anyhow!(SessionManagerError::SessionNotExisted(client_identifier)))
+            }
+        }
+    }
+
+    pub async fn send_packet(
+        &self,
+        tenant_identifier: String,
+        client_identifier: String,
+        packet: &MqttPacketV3,
+    ) -> Result<()> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.session_table.get(&tenant_identifier).unwrap().read().await;
+            if let Some(handle) = session_table.get(&client_identifier) {
+                handle.handle(SessionMessage::ForwardFromRouter(packet.clone())).await;
+            }
+        }
+        Ok(())
     }
 }
