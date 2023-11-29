@@ -373,12 +373,12 @@ impl SessionHandle {
                                 match &packet {
                                     MqttPacketV3::Publish(publish_packet) => {
 
-                                        let session = session_inner.lock().await;
+                                        let mut session = session_inner.lock().await;
 
                                         let session_ctx = SessionContext { 
                                             tenant_id: session.tenant_identifier.clone(), 
                                             client_identifier: session.client_identifier.clone(), 
-                                            username: todo!(), 
+                                            username: "a".to_string(), 
                                             remote_addr: connection.get_stream().peer_addr().unwrap().to_string()
                                         };
 
@@ -773,5 +773,71 @@ mod tests {
             writer.shutdown().await.unwrap();
         }
         tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 12)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_1_receive_process() {
+
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            subscription_topics: vec![],
+            clean_session: true,
+            inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
+            session_state: crate::session_ex::SessionState::Online,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        let (mut reader, _addr) = listener.accept().await.unwrap();
+
+        let connection = Connection::new(reader);
+
+        let session_handle = SessionHandle::new(
+            session,
+            connection, 
+            plugin_manager,
+            Arc::new(RwLock::new(TopicManager::new())),
+            keep_live_duration_secs,
+            resend_duration_secs,
+            router_sender).await;
+
+        let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(1)
+            .packet_identifier(0x01)
+            .build();
+
+        let packet = MqttPacketV3::Publish(qos_1_publish_packet);
+
+        writer.write(&packet.to_bytes().to_vec()).await.unwrap();
+        writer.flush().await.unwrap();
+
+        let mut buf = Vec::new();
+        let read_bytes = writer.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = crate::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Puback(puback_packet) => {
+                    assert_eq!(puback_packet.variable_header.packet_identifier, 0x01);
+                }
+                _ => assert!(false)
+            }
+        }
+
+
     }
 }
