@@ -222,6 +222,7 @@ impl Session {
 pub enum SessionMessage {
     ForwardFromRouter(MqttPacketV3), //Receive packet from router
     KickOff,                         // Kick off the session
+    Stop,
 }
 
 pub struct SessionHandle {
@@ -238,12 +239,37 @@ impl SessionHandle {
             info!("session receiver has been closed, the connection has shutdown.");
             let sender = Self::run_in_offline(self.session.clone()).await;
             self.sender = sender;
-            self.sender.send(msg).await;
+            let _ = self.sender.send(msg).await;
         } 
+    }
+
+    pub async fn into_offline(&mut self) {
+        let _ = self.sender.send(SessionMessage::Stop).await;
+        let sender = Self::run_in_offline(self.session.clone()).await;
+        self.sender = sender;
+    }
+
+    pub async fn into_online(
+        &mut self, 
+        connection: Connection<TcpStream>,
+        plugin_manager: Arc<PluginManager>,
+        topic_manager: Arc<RwLock<TopicManager>>,
+        keep_alive: u64,
+        resend_check: u64,
+        router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    ) {
+        let _ = self.sender.send(SessionMessage::Stop).await;
+        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
+        self.sender = sender;
     }
 
     async fn run_in_offline(session: Arc<Mutex<Session>>) -> tokio::sync::mpsc::Sender<SessionMessage> {
         let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
+        {
+            let session = session.clone();
+            let mut session = session.lock().await;
+            session.session_state = SessionState::Offline;
+        }
         tokio::spawn(async move {
             loop {
                 if let Some(msg) = receiver.recv().await {
@@ -258,6 +284,10 @@ impl SessionHandle {
                                 }
                                 _ => {}
                             }
+                        }
+                        SessionMessage::Stop => {
+                            info!("receive stop message, start close the session message receiver");
+                            receiver.close(); // ensure the message in buffer has been processed
                         }
                         _ => {}
                     }
@@ -278,6 +308,12 @@ impl SessionHandle {
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     ) -> tokio::sync::mpsc::Sender<SessionMessage> {
+
+        {
+            let session = session.clone();
+            let mut session = session.lock().await;
+            session.session_state = SessionState::Online;
+        }
 
         let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
 
@@ -318,9 +354,14 @@ impl SessionHandle {
                                 info!("session {} kick off", session.client_identifier);
                                 connection.shutdown().await.unwrap();
                                 session.session_state = SessionState::Offline;
+                                info!("start close the session message receiver");
+                                receiver.close();
+                            }
+                            Some(SessionMessage::Stop) => {
                                 receiver.close();
                             }
                             None => {
+                                connection.shutdown().await.unwrap();
                                 break;
                             }
                         }
@@ -371,7 +412,8 @@ impl SessionHandle {
                                         let mut session = session_inner.lock().await;
                                         connection.shutdown().await.unwrap();
                                         session.session_state = SessionState::Offline;
-                                        break;
+                                        info!("start close the session message receiver");
+                                        receiver.close();
                                     }
                                     MqttPacketV3::Pingreq(_) => {
                                         connection.write_packet(&MqttPacketV3::Pingresp(PingrespPacket::new())).await.unwrap();
@@ -433,6 +475,7 @@ impl SessionHandle {
                                         let session = session_inner.lock().await;
 
                                         let subscriptions = &subscribe_packet.payload.topic_filters;
+
                                         let packet_identifier = &subscribe_packet.variable_header.packet_identifier;
 
                                         let mut retain_messages: Vec<Arc<MqttPacketV3>> = vec![];
@@ -523,7 +566,8 @@ impl SessionHandle {
                             Err(e) => {
                                 warn!("read packet error: {:?}", e);
                                 connection.shutdown().await.unwrap();
-                                break;
+                                info!("start close the session message receiver");
+                                receiver.close();
                             },
                         }
                     }
@@ -538,6 +582,9 @@ impl SessionHandle {
                                         .qos(will_message.will_qos)
                                         .build();
                                 let _ = router_sender.send(RouterCmd::RoutePacket(session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
+                            }
+                            if session.clean_session {
+                                receiver.close(); // close receiver waiting to consumer buffered message
                             }
 
                         } else {
@@ -557,9 +604,9 @@ impl SessionHandle {
         sender
     }
 
-    pub fn new(
+    pub async fn new(
         session: Session,
-        mut connection: Connection<TcpStream>,
+        connection: Connection<TcpStream>,
         plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
@@ -567,8 +614,8 @@ impl SessionHandle {
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     ) -> Self {
         let session = Arc::new(Mutex::new(session));
-        let sender = Self::run_in_online(session, connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
-        SessionHandle { session, sender }
+        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
+        SessionHandle { session: session.clone(), sender }
     }
 
 }
@@ -634,11 +681,97 @@ impl SessionManager {
         if !self.session_table.contains_key(&tenant_identifier) {
             return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
         } else {
-            let session_table = self.session_table.get(&tenant_identifier).unwrap().read().await;
-            if let Some(handle) = session_table.get(&client_identifier) {
+            let mut session_table = self.session_table.get(&tenant_identifier).unwrap().write().await;
+            if let Some(handle) = session_table.get_mut(&client_identifier) {
                 handle.handle(SessionMessage::ForwardFromRouter(packet.clone())).await;
             }
         }
         Ok(())
+    }
+}
+
+mod tests {
+
+    use std::{sync::Arc, time::Duration, path::PathBuf, io::Write};
+
+    use tokio::{sync::RwLock, io::{AsyncReadExt, AsyncWriteExt}};
+
+    use tokio_test::io::Builder;
+
+    use crate::{
+        protocol::{
+            v3::{
+                fixed_header::FixHeader,
+                puback::{PubAckPacket, VariableHeader},
+                pubcomp::PubCompPacket,
+                publish::PublishPacketBuilder,
+                pubrec::PubRecPacket,
+                pubrel::PubRelPacket, subscribe::{Payload, TopicFilter, SubscribePacket}, suback::ReturnCode,
+            },
+            MqttPacketV3, PacketType,
+        },
+        qos_context::QosContext,
+        topic::TopicManager, plugin::{plugin_manager::PluginManager, plugin::ConnectInfo}, session_ex::Session, inflight::Inflight, session_ex::SessionHandle, connection::{self, Connection},
+    };
+
+    async fn get_test_plugin_manager() -> Arc<PluginManager> {
+        let crate_root_path = env!("CARGO_MANIFEST_DIR");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests");
+
+        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
+            .await
+            .unwrap();
+        Arc::new(plugin_manager)
+    }
+
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_keep_alive_timeout_without_will_message() {
+
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            subscription_topics: vec![],
+            clean_session: true,
+            inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
+            session_state: crate::session_ex::SessionState::Online,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        let (mut reader, _addr) = listener.accept().await.unwrap();
+
+        let connection = Connection::new(reader);
+
+        let session_handle = SessionHandle::new(
+            session,
+            connection, 
+            plugin_manager,
+            Arc::new(RwLock::new(TopicManager::new())),
+            keep_live_duration_secs,
+            resend_duration_secs,
+            router_sender).await;
+
+        tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 2)).await;
+
+        let mut buf = Vec::new();
+        let n = writer.read_buf(&mut buf).await.unwrap();
+        assert_eq!(n , 0);
+        if n == 0 {
+            writer.shutdown().await.unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 12)).await;
     }
 }
