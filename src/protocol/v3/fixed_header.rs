@@ -77,6 +77,12 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
                 PacketType::PUBACK => {
                     Some(dup_u)
                 }
+                PacketType::PUBREL => {
+                    Some(dup_u)
+                }
+                PacketType::PUBCOMP => {
+                    Some(dup_u)
+                }
                 _ => None
             };
             match remaining_length(i) {
