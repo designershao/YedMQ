@@ -444,6 +444,7 @@ impl SessionHandle {
                                         {
                                             connection.write_packet(&p).await.unwrap();
                                         }
+                                        println!("123123");
                                     }
                                     MqttPacketV3::Pubrel(pubrel_packet) => {
                                         let mut session = session_inner.lock().await;
@@ -932,5 +933,102 @@ mod tests {
         
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_qos_2_send_process() {
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            subscription_topics: vec![],
+            clean_session: true,
+            inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
+            session_state: crate::session_ex::SessionState::Online,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        let (mut reader, _addr) = listener.accept().await.unwrap();
+
+        let connection = Connection::new(reader);
+
+        let mut session_handle = SessionHandle::new(
+            session,
+            connection, 
+            plugin_manager,
+            Arc::new(RwLock::new(TopicManager::new())),
+            keep_live_duration_secs,
+            resend_duration_secs,
+            router_sender).await;
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
+            .qos(2)
+            .packet_identifier(0x01)
+            .build();
+
+        let packet = MqttPacketV3::Publish(qos_2_publish_packet);
+
+        session_handle.handle(crate::session_ex::SessionMessage::ForwardFromRouter(packet)).await;
+
+
+        // client should receive publish packet
+        let mut buf = Vec::new();
+        let read_bytes = writer.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = crate::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Publish(publish_packet) => {
+                    assert_eq!(publish_packet.variable_header.packet_identifier.unwrap(), 0x01);
+                    assert_eq!(publish_packet.fix_header.qos.unwrap(), 2);
+                }
+                _ => assert!(false)
+            }
+        }
+
+        // client should send pubrec packet
+        let pubrec_packet: PubRecPacket = PubRecPacket::new(0x01);
+        let packet = MqttPacketV3::Pubrec(pubrec_packet);
+        writer.write(&packet.to_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+        //
+
+        // client should receive pubrel packet
+        let mut buf = Vec::new();
+        let read_bytes = writer.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = crate::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Pubrel(pubrel_packet) => {
+                    assert_eq!(pubrel_packet.variable_header.packet_identifier, 0x01);
+                }
+                _ => assert!(false)
+            }
+        }
+        //
+
+        // client should send pubcomp packet
+        let pubcomp_packet = PubCompPacket::new(0x01);
+        let packet = MqttPacketV3::Pubcomp(pubcomp_packet);
+        writer.write(&packet.to_bytes()).await.unwrap();
+        writer.flush().await.unwrap();
+        //
+
+        writer.shutdown().await.unwrap();
+
+    }
 
 }
