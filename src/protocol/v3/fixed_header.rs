@@ -67,7 +67,18 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
             };
             let qos = if packet_type == PacketType::PUBLISH { Some(qos_u) } else { None };
             let retain = if packet_type == PacketType::PUBLISH  { Some(retain_u == 1) } else { None };
-            let dup = if packet_type == PacketType::PUBLISH { Some(dup_u) } else { None };
+            let dup = match packet_type {
+                PacketType::PUBLISH => {
+                    Some(dup_u)
+                }
+                PacketType::PUBREC => {
+                    Some(dup_u)
+                }
+                PacketType::PUBACK => {
+                    Some(dup_u)
+                }
+                _ => None
+            };
             match remaining_length(i) {
                 Err(e) => Err(e),
                 Ok((i, remaining_length)) => return Ok((i, FixHeader {
@@ -102,7 +113,11 @@ impl FixHeader {
             PacketType::DISCONNECT => 14,
         };
 
-        if self.packet_type == PacketType::PUBLISH {
+        if self.packet_type == PacketType::PUBLISH || 
+            self.packet_type == PacketType::PUBREL || 
+            self.packet_type == PacketType::PUBACK ||
+            self.packet_type == PacketType::PUBCOMP ||
+            self.packet_type == PacketType::PUBREC {
             let mut r:u8 = packet_type_u8 << 4;
             if self.dup.is_some() {
                 r += 1 << 3;
