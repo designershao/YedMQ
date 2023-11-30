@@ -295,7 +295,7 @@ impl SessionHandle {
                     break;
                 }
             }
-            println!("exit offline loop");
+            info!("exit offline loop");
         });
         sender
     }
@@ -473,7 +473,7 @@ impl SessionHandle {
                                         }
                                     }
                                     MqttPacketV3::Subscribe(subscribe_packet) => {
-                                        let session = session_inner.lock().await;
+                                        let mut session = session_inner.lock().await;
 
                                         let subscriptions = &subscribe_packet.payload.topic_filters;
 
@@ -484,7 +484,7 @@ impl SessionHandle {
                                         let session_ctx = SessionContext { 
                                             tenant_id: session.tenant_identifier.clone(), 
                                             client_identifier: session.client_identifier.clone(), 
-                                            username: todo!(), 
+                                            username: "abc".to_string(), 
                                             remote_addr: connection.get_stream().peer_addr().unwrap().to_string()
                                         };
 
@@ -596,7 +596,6 @@ impl SessionHandle {
                         let session = session_inner.lock().await;
                         let packets = session.inflight.get_all_expired_packets_and_refresh_expired_time().await;
                         for packet in packets {
-                            println!("resend {:?}", packet);
                             connection.write_packet(&packet).await.unwrap();
                         }
                     }
@@ -1455,4 +1454,98 @@ mod tests {
         writer.shutdown().await.unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn test_session_call_on_subscribe_hook() {
+
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 10;
+
+        let resend_duration_secs = 5;
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            subscription_topics: vec![],
+            clean_session: true,
+            inflight: Inflight::new(Duration::from_secs(2)),
+            session_state: crate::session_ex::SessionState::Online,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        let (mut reader, _addr) = listener.accept().await.unwrap();
+
+        let connection = Connection::new(reader);
+
+        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+        {
+            let mut topic_manager = topic_manager.write().await;
+            topic_manager.create_tenant("tenant_a".to_string());
+        }
+
+        let mut session_handle = SessionHandle::new(
+            session,
+            connection, 
+            plugin_manager,
+            topic_manager,
+            keep_live_duration_secs,
+            resend_duration_secs,
+            router_sender).await;
+        
+        let fix_header = FixHeader {
+            packet_type: PacketType::SUBSCRIBE,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 8,
+        };
+
+        let variable_header = crate::protocol::v3::subscribe::VariableHeader {
+            packet_identifier: 0x10,
+        };
+
+        let payload = Payload {
+            topic_filters: vec![
+                TopicFilter {
+                    topic_name: "a/b".to_string(),
+                    qos: 2
+                }
+            ]
+        };
+
+        let subscribe_packet = SubscribePacket {
+            fix_header,
+            variable_header,
+            payload,
+        };
+
+        let subscribe_packet = MqttPacketV3::Subscribe(subscribe_packet);
+
+        writer.write(&subscribe_packet.to_bytes()).await.unwrap();
+
+        // client should receive suback packet
+        let mut buf = Vec::new();
+        let read_bytes = writer.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = crate::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Suback(packet) => {
+                    assert_eq!(1, packet.payload.return_code.len());
+                    assert_eq!(ReturnCode::MaxQos2, packet.payload.return_code[0]);
+                }
+                _ => assert!(false)
+            }
+        }
+
+        writer.shutdown().await.unwrap();
+    }
 }
