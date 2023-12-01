@@ -1,6 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
-use crate::protocol::{v3::common::parse_utf8, MqttPacket};
+use crate::protocol::{v3::common::parse_utf8, MqttPacket, PacketType};
 use nom::bits::{streaming::take};
 use super::fixed_header::{FixHeader, self};
 use ::bytes::{BytesMut, BufMut};
@@ -10,6 +10,103 @@ pub struct ConnectPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
     pub payload: Payload
+}
+
+#[derive(Default)]
+pub struct ConnectPacketBuilder {
+    client_identifier: String,
+    username: Option<String>,
+    password: Option<String>,
+    will_retain: bool,
+    will_qos: u8,
+    will_topic: Option<String>,
+    will_message: Option<String>,
+    clean_session: bool,
+    keep_alive: u16,
+}
+
+impl ConnectPacketBuilder {
+    pub fn new(client_identifier: String) -> ConnectPacketBuilder {
+        ConnectPacketBuilder {
+            client_identifier,
+            username: None,
+            password: None,
+            will_retain: false,
+            will_qos: 0,
+            clean_session: false,
+            keep_alive: 2,
+            will_topic: None,
+            will_message: None,
+        }
+    }
+
+    pub fn will_msg(mut self, will_topic: String, will_message: String, will_qos: u8, will_retain: bool) -> ConnectPacketBuilder {
+        self.will_topic = Some(will_topic);
+        self.will_message = Some(will_message);
+        self.will_qos = will_qos;
+        self.will_retain = will_retain;
+        self
+    }
+
+
+    pub fn username(mut self, username: String) -> ConnectPacketBuilder {
+        self.username = Some(username);
+        self
+    }
+
+    pub fn password(mut self, password: String) -> ConnectPacketBuilder {
+        self.password = Some(password);
+        self
+    }
+
+    pub fn keep_alive(mut self, keep_alive: u16) -> ConnectPacketBuilder {
+        self.keep_alive = keep_alive;
+        self
+    }
+
+    pub fn clean_session(mut self, clean_session: bool) -> ConnectPacketBuilder {
+        self.clean_session = clean_session;
+        self
+    }
+
+    pub fn build(self) -> ConnectPacket {
+        let variable_header = VariableHeader {
+                protocol_name: "MQTT".to_string(),
+                protocol_level: 0x04,
+                username_flag: self.username.is_some(),
+                password_flag: self.password.is_some(),
+                will_retain: self.will_retain,
+                will_qos: self.will_qos,
+                will_flag: self.will_message.is_some(),
+                clean_session: self.clean_session,
+                keep_alive: self.keep_alive,
+            };
+
+        let payload = Payload {
+            client_identifier: self.client_identifier,
+            will_topic: self.will_topic,
+            will_message: self.will_message,
+            username: self.username,
+            password: self.password,
+        };
+
+
+        let fix_header = FixHeader{
+                packet_type: PacketType::CONNECT,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: variable_header.get_length() + payload.get_length(),
+            };
+
+        let connect_packet = ConnectPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        connect_packet
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -414,7 +511,7 @@ impl MqttPacket for ConnectPacket {
 mod tests {
     use nom::AsBytes;
 
-    use crate::protocol::{v3::{connect::protocol_level, fixed_header::{FixHeader, self}}, PacketType, MqttPacket};
+    use crate::protocol::{v3::{connect::{protocol_level, ConnectPacketBuilder}, fixed_header::{FixHeader, self}, connack::ConnAckPacketBuilder}, PacketType, MqttPacket};
 
     use super::{connect_flags, protocol_name, payload, parse, ConnectPacket};
 
@@ -510,6 +607,19 @@ mod tests {
 
         assert_eq!(connect_packet_bytes.as_bytes(), input);
 
+    }
+
+    #[test]
+    fn test_connect_packet_builder() {
+        let connect_packet_builder = ConnectPacketBuilder::new("MQTT".to_string());
+        let packet = connect_packet_builder
+            .will_msg("MQTT".to_string(),"MQTT".to_string(), 1, true)
+            .username("MQTT".to_string())
+            .password("MQTT".to_string())
+            .clean_session(true)
+            .keep_alive(0).build();
+        let input = &[0x10, 0x28,0x00,0x04,0x4D,0x51,0x54,0x54,0x04,0xEE,0x00,0x00,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54];
+        assert_eq!(packet.to_bytes().as_bytes(), input);
     }
 
 }
