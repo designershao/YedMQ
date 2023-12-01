@@ -244,9 +244,13 @@ impl SessionHandle {
     }
 
     pub async fn into_offline(&mut self) {
-        let _ = self.sender.send(SessionMessage::Stop).await;
-        let sender = Self::run_in_offline(self.session.clone()).await;
-        self.sender = sender;
+        let session = self.session.clone();
+        let session = session.lock().await;
+        if !session.clean_session {
+            let _ = self.sender.send(SessionMessage::Stop).await;
+            let sender = Self::run_in_offline(self.session.clone()).await;
+            self.sender = sender;
+        }
     }
 
     pub async fn into_online(
@@ -257,9 +261,10 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        quit_signal: tokio::sync::oneshot::Sender<()>
     ) {
         let _ = self.sender.send(SessionMessage::Stop).await;
-        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
+        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
         self.sender = sender;
     }
 
@@ -307,6 +312,7 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        quit_signal: tokio::sync::oneshot::Sender<()>
     ) -> tokio::sync::mpsc::Sender<SessionMessage> {
 
         {
@@ -600,6 +606,7 @@ impl SessionHandle {
                     }
                 }
             }
+            quit_signal.send(());
         });
         sender
     }
@@ -612,9 +619,10 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        quit_signal: tokio::sync::oneshot::Sender<()>
     ) -> Self {
         let session = Arc::new(Mutex::new(session));
-        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender).await;
+        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
         SessionHandle { session: session.clone(), sender }
     }
 
@@ -645,6 +653,16 @@ impl SessionManager {
         self.session_table
             .insert(tenant_identifier, RwLock::new(HashMap::new()));
         Ok(())
+    }
+
+    pub async fn remove(&mut self, tenant_identifier: String, client_identifier: String) -> Result<()> {
+        if !self.session_table.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let mut session_table = self.session_table.get(&tenant_identifier).unwrap().write().await;
+            session_table.remove(&client_identifier);
+            Ok(())
+        }
     }
 
     pub async fn register(&mut self, tenant_identifier: String, client_identifier: String, session_handle: SessionHandle) -> Result<()> {
@@ -701,17 +719,11 @@ mod tests {
     use crate::{
         protocol::{
             v3::{
-                fixed_header::FixHeader,
-                puback::{PubAckPacket, VariableHeader},
-                pubcomp::PubCompPacket,
                 publish::PublishPacketBuilder,
-                pubrec::PubRecPacket,
-                pubrel::PubRelPacket, subscribe::{Payload, TopicFilter, SubscribePacket}, suback::ReturnCode,
             },
-            MqttPacketV3, PacketType,
+            MqttPacketV3,
         },
-        qos_context::QosContext,
-        topic::TopicManager, plugin::{plugin_manager::PluginManager, plugin::ConnectInfo}, session::Session, inflight::Inflight, session::SessionHandle, connection::{self, Connection},
+        topic::TopicManager, plugin::{plugin_manager::PluginManager}, session::Session, inflight::Inflight, session::SessionHandle, connection::{Connection},
     };
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
@@ -755,6 +767,8 @@ mod tests {
 
         let connection = Connection::new(reader);
 
+        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+
         let session_handle = SessionHandle::new(
             session,
             connection, 
@@ -762,7 +776,9 @@ mod tests {
             Arc::new(RwLock::new(TopicManager::new())),
             keep_live_duration_secs,
             resend_duration_secs,
-            router_sender).await;
+            router_sender,
+            quit_sender
+        ).await;
 
         tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 2)).await;
 
@@ -805,6 +821,8 @@ mod tests {
 
         let connection = Connection::new(reader);
 
+        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+
         let session_handle = SessionHandle::new(
             session,
             connection, 
@@ -812,7 +830,9 @@ mod tests {
             Arc::new(RwLock::new(TopicManager::new())),
             keep_live_duration_secs,
             resend_duration_secs,
-            router_sender).await;
+            router_sender,
+            quit_sender
+        ).await;
 
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
             .qos(1)

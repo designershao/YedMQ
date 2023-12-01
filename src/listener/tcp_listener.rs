@@ -47,7 +47,9 @@ impl MqttTcpListener {
                                             return
                                         }
 
-                                        let _ = session_manager.write().await.create_tenant(tenant_id.clone()).await;
+                                        {
+                                            let _ = session_manager.write().await.create_tenant(tenant_id.clone()).await;
+                                        }
 
                                         let new_session = Session {
                                             will_message: None,
@@ -59,6 +61,8 @@ impl MqttTcpListener {
                                             session_state: crate::session::SessionState::Online,
                                         };
 
+                                        let (quit_signal, quit_waiter) = tokio::sync::oneshot::channel();
+
                                         let session_handle = SessionHandle::new(
                                             new_session,
                                             connection,
@@ -67,8 +71,19 @@ impl MqttTcpListener {
                                             packet.variable_header.keep_alive.into(),
                                             settings.session.packet_resend_interval_secs,
                                             router_sender.clone(),
+                                            quit_signal
                                         ).await;
-                                        let _ = session_manager.write().await.register(tenant_id.clone(), packet.payload.client_identifier.clone(), session_handle).await;
+
+                                        {
+                                            let _ = session_manager.write().await.register(tenant_id.clone(), packet.payload.client_identifier.clone(), session_handle).await;
+                                        }
+
+                                        let _ = quit_waiter.await;
+
+                                        if packet.variable_header.clean_session {
+                                            let mut session_manager = session_manager.write().await;
+                                            let _ = session_manager.remove(tenant_id.clone(), packet.payload.client_identifier.clone()).await;
+                                        }
                                     },
                                     crate::plugin::plugin_manager::OnConnectAuthResult::Forbidden => {
                                         let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword).build();
