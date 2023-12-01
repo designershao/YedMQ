@@ -5,7 +5,6 @@ mod session;
 mod inflight;
 mod router;
 mod topic;
-mod qos_context;
 mod settings;
 mod listener;
 
