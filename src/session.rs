@@ -655,7 +655,7 @@ pub enum SessionManagerError {
 }
 
 pub struct SessionManager {
-    session_table: HashMap<String,RwLock<HashMap<String, SessionHandle>>>,
+    pub session_table: HashMap<String,RwLock<HashMap<String, SessionHandle>>>,
 }
 
 impl SessionManager {

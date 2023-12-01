@@ -16,12 +16,12 @@ pub struct Session {
 
 #[derive(Debug, Deserialize)]
 pub struct Plugin {
-    dir: String // plugin dir path
+    pub dir: String // plugin dir path
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Log {
-    level: String // enable log level
+    pub level: String // enable log level
 }
 
 #[derive(Debug, Deserialize)]
