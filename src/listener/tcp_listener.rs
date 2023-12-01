@@ -1,21 +1,36 @@
 use std::{sync::Arc, time::Duration};
 
-use log::warn;
-use tokio::{net::TcpListener, sync::RwLock, select};
 use anyhow::Result;
+use log::warn;
+use tokio::{net::TcpListener, select, sync::RwLock};
 
-use crate::{connection::Connection, plugin::{plugin_manager::PluginManager, self}, session::{SessionManager, SessionManagerError, Session, SessionHandle}, router::RouterCmd, topic::TopicManager, qos_context::QosContext, settings::Settings, protocol::{v3::{connack::{ConnAckPacket, VariableHeader, ConnAckPacketBuilder}, fixed_header::FixHeader}, PacketType}, inflight::Inflight};
+use crate::{
+    connection::Connection,
+    inflight::Inflight,
+    plugin::{self, plugin_manager::PluginManager},
+    protocol::{
+        v3::{
+            connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
+            fixed_header::FixHeader,
+        },
+        PacketType,
+    },
+    qos_context::QosContext,
+    router::RouterCmd,
+    session::{Session, SessionHandle, SessionManager, SessionManagerError},
+    settings::Settings,
+    topic::TopicManager,
+};
 
 pub struct MqttTcpListener {
     plugin_manager: Arc<PluginManager>,
     session_manager: Arc<RwLock<SessionManager>>,
     topic_manager: Arc<RwLock<TopicManager>>,
     router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-    settings: Arc<Settings>
+    settings: Arc<Settings>,
 }
 
 impl MqttTcpListener {
-
     pub async fn run(self) -> Result<()> {
         let listener = TcpListener::bind(self.settings.listener.tcp.external.clone()).await?;
         loop {
@@ -31,10 +46,13 @@ impl MqttTcpListener {
                 let mut connection = Connection::new(stream);
                 // wait the first connect packet, if the packet is not correct, the connection will be closed.
                 let first_packet = connection.read_packet().await.unwrap();
-                
+
                 match first_packet {
                     crate::protocol::MqttPacketV3::Connect(packet) => {
-                        let r = plugin_manager.clone().call_hook_on_connect_auth(&"".to_string(), &packet).await;
+                        let r = plugin_manager
+                            .clone()
+                            .call_hook_on_connect_auth(&"".to_string(), &packet)
+                            .await;
                         match r {
                             Ok(auth_result) => {
                                 match auth_result {
@@ -63,22 +81,56 @@ impl MqttTcpListener {
 
                                         let (quit_signal, quit_waiter) = tokio::sync::oneshot::channel();
 
-                                        let session_handle = SessionHandle::new(
-                                            new_session,
-                                            connection,
-                                            plugin_manager,
-                                            topic_manager,
-                                            packet.variable_header.keep_alive.into(),
-                                            settings.session.packet_resend_interval_secs,
-                                            router_sender.clone(),
-                                            quit_signal
-                                        ).await;
+                                        let mut session_handle = None;
 
                                         {
-                                            let _ = session_manager.write().await.register(tenant_id.clone(), packet.payload.client_identifier.clone(), session_handle).await;
+                                            let mut session_manager = session_manager.write().await;
+                                            let session_handle_result = session_manager.get_session_handle(tenant_id.clone(), packet.payload.client_identifier.clone()).await;
+                                            if session_handle_result.is_ok() {
+                                                let session_handle_pre = session_handle_result.unwrap();
+                                                session_handle = Some(session_handle_pre);
+                                            }
+                                        }
+                                        if session_handle.is_none() {
+                                            let session_handle_new = SessionHandle::new(
+                                                new_session,
+                                                connection,
+                                                plugin_manager,
+                                                topic_manager,
+                                                packet.variable_header.keep_alive.into(),
+                                                settings.session.packet_resend_interval_secs,
+                                                router_sender.clone(),
+                                                quit_signal
+                                            ).await;
+
+                                            session_handle = Some(session_handle_new);
+
+                                        } else {
+                                            // if session is online, should close the pre connection
+                                            //
+                                            let mut session_handle_pre = session_handle.unwrap();
+                                            if session_handle_pre.is_online().await {
+                                                session_handle_pre.kick_off().await;
+                                            }
+
+                                            if !session_handle_pre.is_clean_session().await {
+                                                session_handle_pre.into_online(
+                                                    connection, 
+                                                    plugin_manager, 
+                                                    topic_manager,
+                                                    packet.variable_header.keep_alive.into(),
+                                                    settings.session.packet_resend_interval_secs,
+                                                    router_sender,
+                                                    quit_signal).await;
+                                                session_handle = Some(session_handle_pre);
+                                            }
                                         }
 
-                                        let _ = quit_waiter.await;
+                                        {
+                                            let _ = session_manager.write().await.register(tenant_id.clone(), packet.payload.client_identifier.clone(), session_handle.unwrap()).await;
+                                        }
+
+                                        let _ = quit_waiter.await; // quit session online state
 
                                         if packet.variable_header.clean_session {
                                             let mut session_manager = session_manager.write().await;
@@ -104,10 +156,10 @@ impl MqttTcpListener {
                                         }
                                     },
                                 }
-                            },
+                            }
                             Err(e) => {
                                 warn!("auth on connect failed: {}", e);
-                            },
+                            }
                         }
                     }
                     _ => {
@@ -117,5 +169,4 @@ impl MqttTcpListener {
             });
         }
     }
-
 }

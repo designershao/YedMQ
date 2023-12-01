@@ -243,6 +243,20 @@ impl SessionHandle {
         } 
     }
 
+    pub async fn kick_off(&mut self) {
+        let _ = self.sender.send(SessionMessage::KickOff).await;
+    }
+
+    pub async fn is_online(&self) -> bool {
+        let session = self.session.lock().await;
+        session.clean_session
+    }
+
+    pub async fn is_clean_session(&self) -> bool {
+        let session = self.session.lock().await;
+        session.clean_session
+    }
+
     pub async fn into_offline(&mut self) {
         let session = self.session.clone();
         let session = session.lock().await;
@@ -860,4 +874,55 @@ mod tests {
 
 
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    pub async fn test_session_kickoff() {
+
+        let plugin_manager =get_test_plugin_manager().await;
+
+        let keep_live_duration_secs = 5;
+
+        let resend_duration_secs = 10;
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let mut session = Session {
+            will_message: None,
+            client_identifier: "clinet_a".to_string(),
+            tenant_identifier: "tenant_a".to_string(),
+            subscription_topics: vec![],
+            clean_session: true,
+            inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
+            session_state: crate::session::SessionState::Online,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        let (mut reader, _addr) = listener.accept().await.unwrap();
+
+        let connection = Connection::new(reader);
+
+        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+
+        let mut session_handle = SessionHandle::new(
+            session,
+            connection, 
+            plugin_manager,
+            Arc::new(RwLock::new(TopicManager::new())),
+            keep_live_duration_secs,
+            resend_duration_secs,
+            router_sender,
+            quit_sender
+        ).await;
+
+        session_handle.kick_off().await;
+
+        let mut buf = Vec::new();
+        let read_bytes = writer.read_buf(&mut buf).await.unwrap();
+        assert_eq!(0, read_bytes);
+    }
+
 }
