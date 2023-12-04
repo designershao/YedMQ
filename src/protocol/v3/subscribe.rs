@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, cut, eof}, sequence::tuple, bits, error::Error, multi::many0};
-use crate::protocol::{v3::common::parse_utf8, MqttPacket};
+use crate::protocol::{v3::common::parse_utf8, MqttPacket, PacketType};
 use nom::bits::{streaming::take};
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
@@ -11,6 +11,56 @@ pub struct SubscribePacket {
     pub variable_header: VariableHeader,
     pub payload: Payload
 }
+
+#[derive(Default)]
+pub struct SubscribePacketBuilder {
+    topic_filters: Vec<TopicFilter>,
+    packet_identifier: u16,
+}
+
+impl SubscribePacketBuilder {
+    pub fn new (packet_identifier: u16) -> Self {
+        SubscribePacketBuilder {
+            topic_filters: Vec::new(),
+            packet_identifier
+        }
+    }
+
+    pub fn add_topic_filter(mut self, topic_filter: TopicFilter) -> Self {
+        self.topic_filters.push(topic_filter);
+        self
+    }
+
+    pub fn build(self) -> SubscribePacket {
+
+
+        let variable_header = VariableHeader {
+            packet_identifier: self.packet_identifier,
+        };
+
+        let payload = Payload {
+            topic_filters: self.topic_filters
+        };
+
+        let fix_header = FixHeader {
+            packet_type: PacketType::SUBSCRIBE,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2 + payload.get_length(),
+        };
+
+        let subscribe_packet = SubscribePacket {
+            fix_header,
+            variable_header,
+            payload,
+        };
+
+        subscribe_packet
+
+    }
+}
+
 
 #[derive(Debug, Clone)]
 pub struct VariableHeader {
@@ -176,6 +226,18 @@ mod tests{
         assert_eq!(fixed_header.1.packet_type, PacketType::SUBSCRIBE);
         let out = parse(input).unwrap();
         assert_eq!(out.1.payload.topic_filters[0].topic_name, "a/b".to_string());
+    }
+
+    #[test]
+    fn test_subscribe_pakcet_builder() {
+        let mut builder = SubscribePacketBuilder::new(0x10);
+        let packet = builder.add_topic_filter(TopicFilter {
+            topic_name: "a/b".to_string(),
+            qos: 2
+        }).build();
+
+
+        assert_eq!(packet.to_bytes().as_bytes(), &[0x82,0x08,0x00,0x10,0x00,0x03,0x61,0x2F,0x62,0x02]);
     }
 
     #[test]
