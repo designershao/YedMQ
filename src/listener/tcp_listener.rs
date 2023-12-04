@@ -7,7 +7,7 @@ use tokio::{net::TcpListener, select, sync::RwLock};
 use crate::{
     connection::Connection,
     inflight::Inflight,
-    plugin::{self, plugin_manager::PluginManager},
+    plugin::{self, plugin_manager::PluginManager, session_context::SessionContext},
     protocol::{
         v3::{
             connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
@@ -58,6 +58,13 @@ impl MqttTcpListener {
                                 match auth_result {
                                     crate::plugin::plugin_manager::OnConnectAuthResult::Pass(tenant_id, user_id) => {
 
+                                        let session_context = SessionContext {
+                                            tenant_id: tenant_id.clone(),
+                                            client_identifier: packet.payload.client_identifier.clone(),
+                                            username: user_id,
+                                            remote_addr: connection.get_stream().peer_addr().unwrap().to_string(),
+                                        };
+
                                         let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::Accpet).build();
                                         if let Err(e) = connection.write_packet(&crate::protocol::MqttPacketV3::Connack(connack_packet)).await {
                                             warn!("write connack packet error: {}", e);
@@ -106,7 +113,9 @@ impl MqttTcpListener {
                                                         packet.variable_header.keep_alive.into(),
                                                         settings.session.packet_resend_interval_secs,
                                                         router_sender,
-                                                        quit_signal).await;
+                                                        quit_signal,
+                                                        session_context
+                                                    ).await;
                                                     }
                                                 session_handle_pre
                                             }
@@ -119,7 +128,8 @@ impl MqttTcpListener {
                                                     packet.variable_header.keep_alive.into(),
                                                     settings.session.packet_resend_interval_secs,
                                                     router_sender.clone(),
-                                                    quit_signal
+                                                    quit_signal,
+                                                    session_context
                                                 ).await;
                                                 session_handle_new
                                             }

@@ -5,7 +5,7 @@ use log::{warn, info};
 use thiserror::Error;
 use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select};
 
-use crate::{protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}}, inflight::Inflight, router::RouterCmd, plugin::{plugin_manager::PluginManager, session_context::SessionContext}, topic::TopicManager, connection::Connection};
+use crate::{protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}}, inflight::Inflight, router::RouterCmd, plugin::{plugin_manager::PluginManager, session_context::{SessionContext, self}}, topic::TopicManager, connection::Connection};
 
 pub struct WillMessage {
     will_topic: String,
@@ -275,10 +275,11 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        quit_signal: tokio::sync::oneshot::Sender<()>
+        quit_signal: tokio::sync::oneshot::Sender<()>,
+        session_context: SessionContext
     ) {
         let _ = self.sender.send(SessionMessage::Stop).await;
-        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
+        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal, session_context).await;
         self.sender = sender;
     }
 
@@ -326,7 +327,8 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        quit_signal: tokio::sync::oneshot::Sender<()>
+        quit_signal: tokio::sync::oneshot::Sender<()>,
+        session_context: SessionContext
     ) -> tokio::sync::mpsc::Sender<SessionMessage> {
 
         {
@@ -395,14 +397,7 @@ impl SessionHandle {
 
                                         let mut session = session_inner.lock().await;
 
-                                        let session_ctx = SessionContext { 
-                                            tenant_id: session.tenant_identifier.clone(), 
-                                            client_identifier: session.client_identifier.clone(), 
-                                            username: "a".to_string(), 
-                                            remote_addr: connection.get_stream().peer_addr().unwrap().to_string()
-                                        };
-
-                                        if let Err(e) = plugin_manager.call_hook_on_publish(&session_ctx, &publish_packet).await {
+                                        if let Err(e) = plugin_manager.call_hook_on_publish(&session_context, &publish_packet).await {
                                             warn!("tenant {} session {} call hook on publish error, details: {}", session.tenant_identifier, session.client_identifier, e);
                                         }
 
@@ -492,7 +487,7 @@ impl SessionHandle {
                                         }
                                     }
                                     MqttPacketV3::Subscribe(subscribe_packet) => {
-                                        let session = session_inner.lock().await;
+                                        let mut session = session_inner.lock().await;
 
                                         let subscriptions = &subscribe_packet.payload.topic_filters;
 
@@ -500,19 +495,12 @@ impl SessionHandle {
 
                                         let mut retain_messages: Vec<Arc<MqttPacketV3>> = vec![];
 
-                                        let session_ctx = SessionContext { 
-                                            tenant_id: session.tenant_identifier.clone(), 
-                                            client_identifier: session.client_identifier.clone(), 
-                                            username: todo!(), 
-                                            remote_addr: connection.get_stream().peer_addr().unwrap().to_string()
-                                        };
-
                                         let mut return_code: Vec<crate::protocol::v3::suback::ReturnCode> = vec![];
                                         {
                                             let mut topic_manager = topic_manager.write().await;
 
                                             for topic in subscriptions.iter() {
-                                                let acl_result = plugin_manager.call_hook_on_subscribe_acl_check(&session_ctx, &topic.topic_name, topic.qos.into()).await; 
+                                                let acl_result = plugin_manager.call_hook_on_subscribe_acl_check(&session_context, &topic.topic_name, topic.qos.into()).await; 
                                                 if let Ok(r) = acl_result {
                                                     if r {
                                                         let sub_result = topic_manager.subscription(
@@ -633,10 +621,11 @@ impl SessionHandle {
         keep_alive: u64,
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-        quit_signal: tokio::sync::oneshot::Sender<()>
+        quit_signal: tokio::sync::oneshot::Sender<()>,
+        session_context: SessionContext
     ) -> Self {
         let session = Arc::new(Mutex::new(session));
-        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
+        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal, session_context).await;
         SessionHandle { session: session.clone(), sender }
     }
 
@@ -737,7 +726,7 @@ mod tests {
             },
             MqttPacketV3,
         },
-        topic::TopicManager, plugin::{plugin_manager::PluginManager}, session::Session, inflight::Inflight, session::SessionHandle, connection::{Connection},
+        topic::TopicManager, plugin::{plugin_manager::PluginManager, session_context::SessionContext}, session::Session, inflight::Inflight, session::SessionHandle, connection::{Connection},
     };
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
@@ -783,6 +772,13 @@ mod tests {
 
         let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
 
+        let session_context= SessionContext {
+            tenant_id: "tenant_a".to_string(),
+            client_identifier: "client_a".to_string(),
+            username: "username".to_string(),
+            remote_addr: "127.0.0.1:18088".to_string(),
+        };
+
         let session_handle = SessionHandle::new(
             session,
             connection, 
@@ -791,7 +787,8 @@ mod tests {
             keep_live_duration_secs,
             resend_duration_secs,
             router_sender,
-            quit_sender
+            quit_sender,
+            session_context
         ).await;
 
         tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 2)).await;
@@ -837,6 +834,13 @@ mod tests {
 
         let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
 
+        let session_context= SessionContext {
+            tenant_id: "tenant_a".to_string(),
+            client_identifier: "client_a".to_string(),
+            username: "username".to_string(),
+            remote_addr: "127.0.0.1:18088".to_string(),
+        };
+
         let session_handle = SessionHandle::new(
             session,
             connection, 
@@ -845,7 +849,8 @@ mod tests {
             keep_live_duration_secs,
             resend_duration_secs,
             router_sender,
-            quit_sender
+            quit_sender,
+            session_context
         ).await;
 
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -907,6 +912,13 @@ mod tests {
 
         let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
 
+        let session_context= SessionContext {
+            tenant_id: "tenant_a".to_string(),
+            client_identifier: "client_a".to_string(),
+            username: "username".to_string(),
+            remote_addr: "127.0.0.1:18088".to_string(),
+        };
+
         let mut session_handle = SessionHandle::new(
             session,
             connection, 
@@ -915,7 +927,8 @@ mod tests {
             keep_live_duration_secs,
             resend_duration_secs,
             router_sender,
-            quit_sender
+            quit_sender,
+            session_context
         ).await;
 
         session_handle.kick_off().await;
