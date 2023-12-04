@@ -17,9 +17,9 @@ pub enum RouterCmd {
 }
 
 pub struct Router {
-    session_manager: Arc<SessionManager>,
-    topic_manager: Arc<RwLock<TopicManager>>,
-    router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
+    pub session_manager: Arc<RwLock<SessionManager>>,
+    pub topic_manager: Arc<RwLock<TopicManager>>,
+    pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
 }
 
 impl Router {
@@ -31,7 +31,8 @@ impl Router {
                     match cmd {
                         Some(RouterCmd::RoutePacket(tenant_identifier, packet_)) => {
                             match self.route(&tenant_identifier, &packet_).await {
-                                Ok(_) => (),
+                                Ok(_) => {
+                                },
                                 Err(e) => {
                                     warn!("teanant {} route packet to session error: {}", tenant_identifier, e);
                                 }
@@ -56,9 +57,10 @@ impl Router {
             let subscriptions = topic_manager.get_subscriptions(
                 tenant_identifier.clone(),
                 topic).unwrap();
+            let session_manager = self.session_manager.read().await;
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
-                if let Err(error) = self.session_manager.send_packet(tenant_identifier.clone(), client_identifier.clone(), packet).await {
+                if let Err(error) = session_manager.send_packet(tenant_identifier.clone(), client_identifier.clone(), packet).await {
                     warn!("tenant {} session {} send packet error, details: {}", tenant_identifier, client_identifier.clone(), error);
                 }
             }

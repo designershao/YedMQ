@@ -410,18 +410,20 @@ impl SessionHandle {
 
                                         if publish_packet.fix_header.qos > Some(0) {
                                             session.new_rx_qos_state_ctx(packet).await;
-                                        }
-                                        
-                                        let packet = session
-                                            .inflight
-                                            .get_current_packet(publish_packet.variable_header.packet_identifier.unwrap())
-                                            .await
-                                            .unwrap();
 
-                                        if let Err(e) = connection.write_packet(&packet).await {
-                                            warn!("write packet error: {:?}", e);
-                                            break;
-                                        }
+                                            let packet = session
+                                                .inflight
+                                                .get_current_packet(publish_packet.variable_header.packet_identifier.unwrap())
+                                                .await
+                                                .unwrap();
+
+                                            if let Err(e) = connection.write_packet(&packet).await {
+                                                warn!("write packet error: {:?}", e);
+                                                break;
+                                            }
+                                        } 
+
+                                        router_sender.send(RouterCmd::RoutePacket(session.tenant_identifier.clone() ,MqttPacketV3::Publish(publish_packet.clone()))).await.unwrap();
                                     }
                                     MqttPacketV3::Disconnect(_) => {
                                         let mut session = session_inner.lock().await;

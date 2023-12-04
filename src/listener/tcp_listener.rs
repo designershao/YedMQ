@@ -22,11 +22,11 @@ use crate::{
 };
 
 pub struct MqttTcpListener {
-    plugin_manager: Arc<PluginManager>,
-    session_manager: Arc<RwLock<SessionManager>>,
-    topic_manager: Arc<RwLock<TopicManager>>,
-    router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
-    settings: Arc<Settings>,
+    pub plugin_manager: Arc<PluginManager>,
+    pub session_manager: Arc<RwLock<SessionManager>>,
+    pub topic_manager: Arc<RwLock<TopicManager>>,
+    pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+    pub settings: Arc<Settings>,
 }
 
 impl MqttTcpListener {
