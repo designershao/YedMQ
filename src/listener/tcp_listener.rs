@@ -73,7 +73,8 @@ impl MqttTcpListener {
                                         }
 
                                         {
-                                            let _ = session_manager.write().await.create_tenant(tenant_id.clone()).await;
+                                            let _ = session_manager.clone().write().await.create_tenant(tenant_id.clone()).await;
+                                            let _ = topic_manager.clone().write().await.create_tenant(tenant_id.clone());
                                         }
 
                                         let new_session = Session {
@@ -233,7 +234,7 @@ mod tests {
             listener.run().await.unwrap();
         });
 
-        let mut writer = tokio::net::TcpStream::connect("127.0.0.1:18088").await.unwrap();
+        let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
         let connect_packet = crate::protocol::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)

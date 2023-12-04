@@ -28,7 +28,7 @@ pub async fn test_tcp_listener_connect() {
 
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "127.0.0.1:18088".to_string() }},
+        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() }},
         plugin: samoye::settings::Plugin { dir: "test".to_string() }
     };
 
@@ -44,7 +44,7 @@ pub async fn test_tcp_listener_connect() {
         listener.run().await.unwrap();
     });
 
-    let mut writer = tokio::net::TcpStream::connect("127.0.0.1:18088").await.unwrap();
+    let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
     let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test".to_string())
         .clean_session(true)
         .keep_alive(keep_live_duration_secs)
@@ -78,15 +78,6 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     let plugin_manager =get_test_plugin_manager().await;
     let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-    {
-        let mut topic_manager = topic_manager.write().await;
-        topic_manager.create_tenant("t-123".to_string());
-    }
-
-    {
-        let mut session_manager = session_manager.write().await;
-        session_manager.create_tenant("t-123".to_string()).await.unwrap();
-    }
 
     let keep_live_duration_secs = 5;
 
@@ -106,7 +97,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "127.0.0.1:18088".to_string() }},
+        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() }},
         plugin: samoye::settings::Plugin { dir: "test".to_string() }
     };
 
@@ -124,7 +115,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     // subscriber process
     let sub_join = tokio::spawn(async move {
-        let mut subscriber = tokio::net::TcpStream::connect("127.0.0.1:18088").await.unwrap();
+        let mut subscriber = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
         let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
@@ -195,7 +186,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     // publisher process
     let pub_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut publisher = tokio::net::TcpStream::connect("127.0.0.1:18088").await.unwrap();
+        let mut publisher = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
         let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)

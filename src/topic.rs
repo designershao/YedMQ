@@ -60,7 +60,11 @@ impl TopicManager {
     }
 
     pub fn create_tenant(&mut self, tenant:String) {
-        self.topic_tree.write().unwrap().insert(tenant, Arc::new(RwLock::new(TopicNode::new("/".to_string()))));
+        let topic_tree = self.topic_tree.clone();
+        let mut topic_tree = topic_tree.write().unwrap();
+        if !topic_tree.contains_key(&tenant) {
+            topic_tree.insert(tenant, Arc::new(RwLock::new(TopicNode::new("/".to_string()))));
+        }
     }
 
     pub fn subscription(&mut self, tenant_id:String, client_identifier:String, topic_filter: String, qos: u8) -> Result<(), Error> {
