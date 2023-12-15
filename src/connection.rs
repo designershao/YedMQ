@@ -1,4 +1,5 @@
 use bytes::{BytesMut, Buf};
+use log::error;
 use tokio::{net::TcpStream, io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite}};
 
 use crate::protocol::MqttPacketV3;
@@ -41,22 +42,32 @@ where
     // Read a single packet from the underlying stream.
     pub async fn read_packet(&mut self) -> Result<MqttPacketV3, std::io::Error> {
         loop {
-            let packet_result = crate::protocol::parse(&self.buffer);
+            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = crate::protocol::parse(&self.buffer);
 
             if let Ok((_, (consumed_bytes ,packet))) = packet_result {
                 self.buffer.advance(consumed_bytes.len());
                 return Ok(packet);
+            } else {
+                let err = packet_result.err().unwrap();
+                match err {
+                    nom::Err::Incomplete(_) => {
+                        let n= self.stream.read_buf(&mut self.buffer).await?;
+
+                        if 0 == n {
+                            if self.buffer.is_empty() {
+
+                            } else {
+                                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
+                            }
+                        } 
+                    }
+                    _ => {
+                        error!("read packet error: {:?}", err);
+                        return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid MQTT Packet"));
+                    }
+                }
             }
 
-            let n= self.stream.read_buf(&mut self.buffer).await?;
-
-            if 0 == n {
-                if self.buffer.is_empty() {
-
-                } else {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
-                }
-            } 
         }
     }
 
@@ -92,6 +103,23 @@ mod tests {
             } else {
                 assert!(false)
             }
+        } else {
+            assert!(false)
+        }
+    }
+
+    #[tokio::test(flavor="multi_thread", worker_threads = 1)]
+    async fn test_read_invalid_mqtt_packet_from_stream() {
+
+        let invalid_mqtt_packet = &[0x10, 0x28,0x00,0x08,0x4D,0x51,0x54,0x54,0x04,0xEE,0x00,0x00,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54,0x00,0x04,0x4D,0x51,0x54,0x54];
+
+        let mock_io = tokio_test::io::Builder::new().read(invalid_mqtt_packet).build();
+
+        let mut connection = Connection::new(mock_io); 
+
+        let packet = connection.read_packet().await;
+        if let Err(e) = packet {
+            assert!(true)
         } else {
             assert!(false)
         }
