@@ -1,3 +1,11 @@
+use std::{sync::Arc, collections::HashMap};
+
+use settings::Settings;
+use tokio::sync::RwLock;
+use topic::TopicManager;
+
+use crate::{plugin::plugin_manager::PluginManager, session::{SessionManager, SessionHandle}, listener::tcp_listener::MqttTcpListener, router::Router};
+
 mod protocol;
 mod plugin;
 mod connection;
@@ -8,7 +16,70 @@ mod topic;
 mod settings;
 mod listener;
 
-fn main() {
+#[tokio::main]
+async fn main() {
+
+    // init setting 
+    let s = Settings::new();
+    if let Err(e) = s {
+        println!("load settings error: {}", e);
+        return;
+    }
+
+    let settings =Arc::new(s.unwrap());
+    //
+
+    // init session manager
+    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
+    //
+
+    // init plugin manager
+    println!("start load plugin manager");
+
+    let plugin_manager = PluginManager::new(&settings.plugin.dir)
+        .await
+        .unwrap();
+    let plugin_manager =Arc::new(plugin_manager);
+    println!("plugin manager load succeed");
+    //
+
+    // init topic manager
+    println!("start load topic manager");
+    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+    println!("topic manager load succeed");
+    //
+
+    //
+    println!("start router task");
+    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+    let mut router = Router {
+        topic_manager: topic_manager.clone(),
+        session_manager: session_manager.clone(),
+        router_receiver: router_receiver,
+    };
+
+    tokio::spawn(async move {
+        router.run().await;
+    });
+    println!("start router task succeed");
+    //
+
+
+    let listener = MqttTcpListener {
+        plugin_manager: plugin_manager.clone(),
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_sender: router_sender.clone(),
+        settings: settings.clone(),
+    };
+
+    let tcp_listener_join = tokio::spawn(async move {
+        let settings = settings.clone();
+        println!("start tcp listener on {}", settings.listener.tcp.external);
+        listener.run().await.unwrap();
+    });
+
+    tcp_listener_join.await.unwrap();
     
-    println!("Hello, world!");
 }
