@@ -1,9 +1,9 @@
 local M =  {}
 
-local function ConnectAuth(clientId, username, password, ip)
+local function ConnectAuth(connectInfo)
     response = Samoye.Hook.OnConnectAuth.response()
     response.pass = true
-    response.userId = "123"
+    response.userId = connectInfo.clientIdentifier
     response.tenantId = "t-123"
     return response
 end
