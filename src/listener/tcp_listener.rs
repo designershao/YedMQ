@@ -83,6 +83,7 @@ impl MqttTcpListener {
                             Ok(auth_result) => {
                                 match auth_result {
                                     crate::plugin::plugin_manager::OnConnectAuthResult::Pass(tenant_id, user_id) => {
+                                        println!("tenant_id: {}, user_id: {}", tenant_id, user_id);
 
                                         let session_context = SessionContext {
                                             tenant_id: tenant_id.clone(),
@@ -177,6 +178,7 @@ impl MqttTcpListener {
                                         }
                                     },
                                     crate::plugin::plugin_manager::OnConnectAuthResult::Forbidden => {
+                                        println!("forbidden");
                                         let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword).build();
                                         if let Err(e) = connection.write_packet(&crate::protocol::MqttPacketV3::Connack(connack_packet)).await {
                                             warn!("write connack packet error: {}", e);
@@ -185,7 +187,8 @@ impl MqttTcpListener {
                                             warn!("shutdown connection error: {}", e);
                                         }
                                     },
-                                    crate::plugin::plugin_manager::OnConnectAuthResult::Error(_) => {
+                                    crate::plugin::plugin_manager::OnConnectAuthResult::Error(e) => {
+                                        println!("error: {}", e);
                                         let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::ServerUnavailable).build();
                                         if let Err(e) = connection.write_packet(&crate::protocol::MqttPacketV3::Connack(connack_packet)).await {
                                             warn!("write connack packet error: {}", e);

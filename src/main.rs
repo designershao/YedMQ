@@ -1,5 +1,6 @@
 use std::{sync::Arc, collections::HashMap};
 
+use log::info;
 use settings::Settings;
 use tokio::sync::RwLock;
 use topic::TopicManager;
@@ -18,11 +19,12 @@ mod listener;
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
 
     // init setting 
     let s = Settings::new();
     if let Err(e) = s {
-        println!("load settings error: {}", e);
+        info!("load settings error: {}", e);
         return;
     }
 
@@ -34,23 +36,23 @@ async fn main() {
     //
 
     // init plugin manager
-    println!("start load plugin manager");
+    info!("start load plugin manager");
 
     let plugin_manager = PluginManager::new(&settings.plugin.dir)
         .await
         .unwrap();
     let plugin_manager =Arc::new(plugin_manager);
-    println!("plugin manager load succeed");
+    info!("plugin manager load succeed");
     //
 
     // init topic manager
-    println!("start load topic manager");
+    info!("start load topic manager");
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-    println!("topic manager load succeed");
+    info!("topic manager load succeed");
     //
 
     //
-    println!("start router task");
+    info!("start router task");
     let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
     let mut router = Router {
@@ -62,7 +64,7 @@ async fn main() {
     tokio::spawn(async move {
         router.run().await;
     });
-    println!("start router task succeed");
+    info!("start router task succeed");
     //
 
 
@@ -76,7 +78,7 @@ async fn main() {
 
     let tcp_listener_join = tokio::spawn(async move {
         let settings = settings.clone();
-        println!("start tcp listener on {}", settings.listener.tcp.external);
+        info!("start tcp listener on {}", settings.listener.tcp.external);
         listener.run().await.unwrap();
     });
 

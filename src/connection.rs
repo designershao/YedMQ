@@ -55,7 +55,7 @@ where
 
                         if 0 == n {
                             if self.buffer.is_empty() {
-
+                                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
                             } else {
                                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
                             }

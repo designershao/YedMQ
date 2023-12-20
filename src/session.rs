@@ -383,6 +383,7 @@ impl SessionHandle {
                                 receiver.close();
                             }
                             None => {
+                                info!("session {} receiver closed, exit session loop", session_inner.lock().await.client_identifier);
                                 connection.shutdown().await.unwrap();
                                 break;
                             }
