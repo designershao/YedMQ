@@ -10,3 +10,9 @@ level = "warning"
 
 [listener.tcp]
 external = "0.0.0.0:1883"
+
+[listener.tcp_tls]
+external = "0.0.0.0:8883"
+cacert_file = ""
+cert_file = ""
+key_file = ""
