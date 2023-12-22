@@ -26,7 +26,16 @@ pub struct Log {
 
 #[derive(Debug, Deserialize)]
 pub struct Listener {
-    pub tcp: Tcp
+    pub tcp: Tcp,
+    pub tcp_tls: TcpTls
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TcpTls {
+    pub external: String,
+    pub cacert_file: String,
+    pub cert_file: String,
+    pub key_file: String
 }
 
 #[derive(Debug, Deserialize)]

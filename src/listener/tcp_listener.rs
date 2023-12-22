@@ -246,7 +246,15 @@ mod tests {
 
         let settings = Settings {
             session: crate::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-            listener: crate::settings::Listener { tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() }},
+            listener: crate::settings::Listener { 
+                tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() },
+                tcp_tls: crate::settings::TcpTls {
+                    external: "".to_string(),
+                    cacert_file: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string()
+                }
+            },
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
 
@@ -296,7 +304,15 @@ mod tests {
 
         let settings = Settings {
             session: crate::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-            listener: crate::settings::Listener { tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() }},
+            listener: crate::settings::Listener {
+                tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() },
+                tcp_tls: crate::settings::TcpTls {
+                    external: "".to_string(),
+                    cacert_file: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string()
+                }
+            },
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
 
