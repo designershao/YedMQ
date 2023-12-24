@@ -28,7 +28,15 @@ pub async fn test_tcp_listener_connect() {
 
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() }},
+        listener: samoye::settings::Listener { 
+            tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
+            tcp_tls: samoye::settings::TcpTls {
+                external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            }
+        },
         plugin: samoye::settings::Plugin { dir: "test".to_string() }
     };
 
@@ -97,7 +105,15 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() }},
+        listener: samoye::settings::Listener { 
+            tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
+            tcp_tls: samoye::settings::TcpTls {
+                external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            }
+        },
         plugin: samoye::settings::Plugin { dir: "test".to_string() }
     };
 
@@ -247,7 +263,15 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
-        listener: samoye::settings::Listener { tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() }},
+        listener: samoye::settings::Listener {
+            tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
+            tcp_tls: samoye::settings::TcpTls {
+                external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            }
+        },
         plugin: samoye::settings::Plugin { dir: "test".to_string() }
     };
 

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::Result;
 use log::warn;
-use tokio::{net::TcpListener, select, sync::RwLock};
+use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
 
 use crate::{
     connection::Connection,
@@ -29,7 +29,8 @@ pub struct MqttTcpListener {
     pub settings: Arc<Settings>,
 }
 
-impl MqttTcpListener {
+impl MqttTcpListener
+{
     pub async fn run(self) -> Result<()> {
         let listener = TcpListener::bind(self.settings.listener.tcp.external.clone()).await?;
         loop {

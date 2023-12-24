@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration, collections::HashMap};
 use anyhow::{Context, Result, anyhow};
 use log::{warn, info};
 use thiserror::Error;
-use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select};
+use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select, io::{AsyncRead, AsyncWrite}};
 
 use crate::{protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}}, inflight::Inflight, router::RouterCmd, plugin::{plugin_manager::PluginManager, session_context::{SessionContext, self}}, topic::TopicManager, connection::Connection};
 
@@ -230,7 +230,8 @@ pub struct SessionHandle {
     sender: tokio::sync::mpsc::Sender<SessionMessage>,
 }
 
-impl SessionHandle {
+impl SessionHandle
+{
 
     pub async fn handle(&mut self, msg: SessionMessage) {
         // if receiver closed, the connection has been closed
@@ -267,9 +268,9 @@ impl SessionHandle {
         }
     }
 
-    pub async fn into_online(
+    pub async fn into_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         &mut self, 
-        connection: Connection<TcpStream>,
+        connection: Connection<T>,
         plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
@@ -319,9 +320,9 @@ impl SessionHandle {
         sender
     }
 
-    async fn run_in_online(
+    async fn run_in_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Arc<Mutex<Session>>,
-        mut connection: Connection<TcpStream>,
+        mut connection: Connection<T>,
         plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
@@ -616,9 +617,9 @@ impl SessionHandle {
         sender
     }
 
-    pub async fn new(
+    pub async fn new<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Session,
-        connection: Connection<TcpStream>,
+        connection: Connection<T>,
         plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
@@ -646,11 +647,12 @@ pub enum SessionManagerError {
     SessionNotExisted(String),
 }
 
-pub struct SessionManager {
+pub struct SessionManager{
     pub session_table: HashMap<String,RwLock<HashMap<String, SessionHandle>>>,
 }
 
-impl SessionManager {
+impl SessionManager
+{
 
     pub async fn create_tenant(&mut self, tenant_identifier: String) -> Result<()> {
         if self.session_table.contains_key(&tenant_identifier) {
