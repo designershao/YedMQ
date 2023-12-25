@@ -5,7 +5,7 @@ use settings::Settings;
 use tokio::sync::RwLock;
 use topic::TopicManager;
 
-use crate::{plugin::plugin_manager::PluginManager, session::{SessionManager, SessionHandle}, listener::tcp_listener::MqttTcpListener, router::Router};
+use crate::{plugin::plugin_manager::PluginManager, session::{SessionManager, SessionHandle}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
 
 mod protocol;
 mod plugin;
@@ -76,12 +76,28 @@ async fn main() {
         settings: settings.clone(),
     };
 
+    let settings_clone = settings.clone();
     let tcp_listener_join = tokio::spawn(async move {
-        let settings = settings.clone();
-        info!("start tcp listener on {}", settings.listener.tcp.external);
+        info!("start tcp listener on {}", settings_clone.listener.tcp.external);
         listener.run().await.unwrap();
     });
 
+    let mut tcp_tls_listener = MqttTcpTlsListener {
+        plugin_manager: plugin_manager.clone(),
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_sender: router_sender.clone(),
+        settings: settings.clone(),
+    };
+
+    let settings_clone = settings.clone();
+    let tcp_tls_listener_join = tokio::spawn(async move {
+        let settings = settings_clone.clone();
+        info!("start tls listener on {}", settings.listener.tcp_tls.external);
+        tcp_tls_listener.run().await.unwrap();
+    });
+
     tcp_listener_join.await.unwrap();
+    tcp_tls_listener_join.await.unwrap();
     
 }
