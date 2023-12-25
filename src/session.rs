@@ -403,13 +403,6 @@ impl SessionHandle
                                             warn!("tenant {} session {} call hook on publish error, details: {}", session.tenant_identifier, session.client_identifier, e);
                                         }
 
-                                        let cmd = RouterCmd::RoutePacket(
-                                            session.tenant_identifier.clone(),
-                                            MqttPacketV3::Publish(publish_packet.clone()),
-                                        );
-
-                                        let _ = router_sender.send(cmd).await;
-
                                         if publish_packet.fix_header.qos > Some(0) {
                                             session.new_rx_qos_state_ctx(packet).await;
 
