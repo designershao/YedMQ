@@ -92,7 +92,14 @@ mod tests {
                     cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
-                }
+                },
+                ws: crate::settings::Ws { external: "".to_string() },
+                wss: crate::settings::Wss {
+                     external: "".to_string(),
+                    cacert_file: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string()
+                    }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
@@ -150,7 +157,14 @@ mod tests {
                     cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
-                }
+                },
+                ws: crate::settings::Ws { external: "".to_string() },
+                wss: crate::settings::Wss {
+                     external: "".to_string(),
+                    cacert_file: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string()
+                    }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
