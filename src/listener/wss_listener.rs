@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration, fs::File};
+use std::{sync::Arc, time::Duration, fs::File, io::Read};
 
 use anyhow::Result;
 use log::warn;
@@ -65,9 +65,9 @@ impl MqttWssListener {
 
             let ws_stream = tokio_tungstenite::accept_async(tls_stream).await.unwrap();
 
-            tokio::spawn(
-                accept_connection(ws_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
-            );
+            // tokio::spawn(
+            //    accept_connection(ws_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+            // );
         }
     }
 }
