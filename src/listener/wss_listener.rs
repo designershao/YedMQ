@@ -4,6 +4,7 @@ use anyhow::Result;
 use log::warn;
 use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
 use tokio_native_tls::native_tls::{Identity, self};
+use tokio_util::io::StreamReader;
 
 use crate::{
     connection::Connection,
@@ -22,7 +23,7 @@ use crate::{
     topic::TopicManager,
 };
 
-use super::accept_connection;
+use super::{accept_connection, websocket_tls_tunnel::{WebsocketTlsTunnel, StreamWrapper}};
 pub struct MqttWssListener {
     pub plugin_manager: Arc<PluginManager>,
     pub session_manager: Arc<RwLock<SessionManager>>,
@@ -65,9 +66,17 @@ impl MqttWssListener {
 
             let ws_stream = tokio_tungstenite::accept_async(tls_stream).await.unwrap();
 
-            // tokio::spawn(
-            //    accept_connection(ws_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
-            // );
+            let websocket_tunnel = WebsocketTlsTunnel {
+                inner: StreamReader::new(
+                    StreamWrapper {
+                        inner: ws_stream
+                    }
+                ),
+            };
+
+            tokio::spawn(
+               accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+            );
         }
     }
 }

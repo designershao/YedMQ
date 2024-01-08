@@ -23,6 +23,7 @@ pub mod tcp_tls_listener;
 pub mod ws_listener;
 pub mod wss_listener;
 pub mod websocket_tunnel;
+pub mod websocket_tls_tunnel;
 
 async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: T,

@@ -3,17 +3,18 @@ use std::{pin::Pin, task::{Context, Poll}, io::{ErrorKind, Error}};
 use bytes::Bytes;
 use futures::{Stream, ready, Sink};
 use tokio::{net::TcpStream, io::{AsyncRead, AsyncWrite, ReadBuf, AsyncBufRead}};
+use tokio_native_tls::TlsStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use tokio_util::io::StreamReader;
 
 #[derive(Debug)]
-pub struct WebsocketTunnel {
+pub struct WebsocketTlsTunnel {
     pub inner: StreamReader<StreamWrapper, Bytes>,
 }
 
 #[derive(Debug)]
 pub struct StreamWrapper {
-    pub inner: WebSocketStream<TcpStream>,
+    pub inner: WebSocketStream<TlsStream<TcpStream>>,
 }
 
 impl Stream for StreamWrapper {
@@ -41,7 +42,7 @@ impl Stream for StreamWrapper {
     }
 }
 
-impl AsyncRead for WebsocketTunnel {
+impl AsyncRead for WebsocketTlsTunnel {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -51,7 +52,7 @@ impl AsyncRead for WebsocketTunnel {
     }
 }
 
-impl AsyncBufRead for WebsocketTunnel {
+impl AsyncBufRead for WebsocketTlsTunnel {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<&[u8]>> {
         Pin::new(&mut self.get_mut().inner).poll_fill_buf(cx)
     }
@@ -61,7 +62,7 @@ impl AsyncBufRead for WebsocketTunnel {
     }
 }
 
-impl AsyncWrite for WebsocketTunnel {
+impl AsyncWrite for WebsocketTlsTunnel {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
