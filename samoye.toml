@@ -16,3 +16,9 @@ external = "0.0.0.0:8883"
 cacert_file = ""
 cert_file = ""
 key_file = ""
+
+[listener.ws]
+external = "0.0.0.0:8083"
+
+[listener.wss]
+external = "0.0.0.0:8084"

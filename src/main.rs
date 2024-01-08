@@ -1,6 +1,7 @@
 use std::{sync::Arc, collections::HashMap};
 
 use log::info;
+use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
 use settings::Settings;
 use tokio::sync::RwLock;
 use topic::TopicManager;
@@ -97,7 +98,38 @@ async fn main() {
         tcp_tls_listener.run().await.unwrap();
     });
 
+
+    let ws_listener = MqttWsListener {
+        plugin_manager: plugin_manager.clone(),
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_sender: router_sender.clone(),
+        settings: settings.clone(),
+    };
+    let settings_clone = settings.clone();
+    let mqtt_ws_listener_join = tokio::spawn(async move {
+        let settings = settings_clone.clone();
+        info!("start ws listener on {}", settings.listener.ws.external);
+        ws_listener.run().await.unwrap();
+    });
+
+    let wss_listener = MqttWssListener {
+        plugin_manager: plugin_manager.clone(),
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_sender: router_sender.clone(),
+        settings: settings.clone(),
+    };
+    let settings_clone = settings.clone();
+    let mqtt_wss_listener_join = tokio::spawn(async move {
+        let settings = settings_clone.clone();
+        info!("start wss listener on {}", settings.listener.ws.external);
+        wss_listener.run().await.unwrap();
+    });
+
     tcp_listener_join.await.unwrap();
     tcp_tls_listener_join.await.unwrap();
+    mqtt_ws_listener_join.await.unwrap();
+    mqtt_wss_listener_join.await.unwrap();
     
 }

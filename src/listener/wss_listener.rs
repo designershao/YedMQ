@@ -64,19 +64,24 @@ impl MqttWssListener {
 
             let mut tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
-            let ws_stream = tokio_tungstenite::accept_async(tls_stream).await.unwrap();
+            let ws_stream = tokio_tungstenite::accept_async(tls_stream).await;
 
-            let websocket_tunnel = WebsocketTlsTunnel {
-                inner: StreamReader::new(
-                    StreamWrapper {
-                        inner: ws_stream
-                    }
-                ),
-            };
+            if let Ok(ws_stream) = ws_stream {
+                let websocket_tunnel = WebsocketTlsTunnel {
+                    inner: StreamReader::new(
+                        StreamWrapper {
+                            inner: ws_stream
+                        }
+                    ),
+                };
+                tokio::spawn(
+                accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+                );
+                
+            } else {
+                warn!("Failed to accept WebSocket connection from {}, err {}", remote_addr, ws_stream.err().unwrap());
+            }
 
-            tokio::spawn(
-               accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
-            );
         }
     }
 }
