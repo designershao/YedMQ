@@ -323,10 +323,16 @@ impl TopicNode {
     }
 
     pub fn add_subscription(&mut self, subscribtion:Subscription) {
-        self.subscriptions.write().unwrap().push(Arc::new(subscribtion));
-        self.subscriptions.write().unwrap().sort_by(|sub_a, sub_b| {
-            sub_a.client_identifier.cmp(&sub_b.client_identifier)
+        let find_result = self.subscriptions.write().unwrap().binary_search_by(|f| {
+            f.client_identifier.cmp(&subscribtion.client_identifier)
         });
+
+        if let Err(_) = find_result { // not found in subscriptions
+            self.subscriptions.write().unwrap().push(Arc::new(subscribtion));
+            self.subscriptions.write().unwrap().sort_by(|sub_a, sub_b| {
+                sub_a.client_identifier.cmp(&sub_b.client_identifier)
+            });
+        }
     }
 
     pub fn remove_subscription(&mut self, client_identifier:String) {
@@ -582,6 +588,16 @@ mod tests {
         assert_eq!(clients.len(), 2);
         assert_eq!(clients.clone()[0].client_identifier, "clientB");
         assert_eq!(clients.clone()[1].client_identifier, "clientD");
+    }
+
+    #[test]
+    fn test_mutiple_subscription_the_same_topic_only_one_subscription() {
+        let mut topic_manager = TopicManager::new();
+        topic_manager.create_tenant("hello".to_string());
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().len(), 1);
     }
 
     #[test]

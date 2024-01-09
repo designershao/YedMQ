@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration, net::SocketAddr};
 
-use log::warn;
+use log::{warn, info};
 use tokio::{
     net::{TcpStream},
     sync::{mpsc::Sender, RwLock}, io::{AsyncRead, AsyncWrite},
@@ -222,7 +222,10 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                             let _ = quit_waiter.await; // quit session online state
 
+                            info!("quit waiter done");
+
                             if packet.variable_header.clean_session {
+                                info!("start clean session, client id {}", packet.payload.client_identifier);
                                 let mut session_manager = session_manager.write().await;
                                 let _ = session_manager
                                     .remove(
