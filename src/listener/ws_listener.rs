@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Result;
 use log::warn;
 use tokio::{net::{TcpListener, TcpStream}, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
+use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 use tokio_util::io::StreamReader;
 
 use crate::{
@@ -22,7 +23,7 @@ use crate::{
     topic::TopicManager,
 };
 
-use super::{accept_connection, websocket_tunnel::{WebsocketTunnel, StreamWrapper}};
+use super::{accept_connection, websocket_tunnel::{WebsocketTunnel, StreamWrapper}, WsCallBack};
 pub struct MqttWsListener {
     pub plugin_manager: Arc<PluginManager>,
     pub session_manager: Arc<RwLock<SessionManager>>,
@@ -30,6 +31,7 @@ pub struct MqttWsListener {
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     pub settings: Arc<Settings>,
 }
+
 
 impl MqttWsListener {
 
@@ -48,7 +50,7 @@ impl MqttWsListener {
 
             let remote_addr = stream.peer_addr().unwrap();
 
-            let ws_stream = tokio_tungstenite::accept_async(stream).await;
+            let ws_stream = tokio_tungstenite::accept_hdr_async(stream, WsCallBack{}).await;
 
             if let Ok(ws_stream) = ws_stream  {
                 let websocket_tunnel = WebsocketTunnel {

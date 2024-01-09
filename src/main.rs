@@ -123,7 +123,7 @@ async fn main() {
     let settings_clone = settings.clone();
     let mqtt_wss_listener_join = tokio::spawn(async move {
         let settings = settings_clone.clone();
-        info!("start wss listener on {}", settings.listener.ws.external);
+        info!("start wss listener on {}", settings.listener.wss.external);
         wss_listener.run().await.unwrap();
     });
 

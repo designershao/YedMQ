@@ -23,7 +23,7 @@ use crate::{
     topic::TopicManager,
 };
 
-use super::{accept_connection, websocket_tls_tunnel::{WebsocketTlsTunnel, StreamWrapper}};
+use super::{accept_connection, websocket_tls_tunnel::{WebsocketTlsTunnel, StreamWrapper}, WsCallBack};
 pub struct MqttWssListener {
     pub plugin_manager: Arc<PluginManager>,
     pub session_manager: Arc<RwLock<SessionManager>>,
@@ -64,7 +64,7 @@ impl MqttWssListener {
 
             let mut tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
-            let ws_stream = tokio_tungstenite::accept_async(tls_stream).await;
+            let ws_stream = tokio_tungstenite::accept_hdr_async(tls_stream, WsCallBack{}).await;
 
             if let Ok(ws_stream) = ws_stream {
                 let websocket_tunnel = WebsocketTlsTunnel {
