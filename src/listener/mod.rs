@@ -233,6 +233,22 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                         packet.payload.client_identifier.clone(),
                                     )
                                     .await;
+                            } else {
+                                info!("not clean session, client id {}, set the session into offline mode", packet.payload.client_identifier);
+                                let mut session_manager = session_manager.write().await;
+                                let session_handle_result = session_manager
+                                    .get_session_handle(
+                                        tenant_id.clone(),
+                                        packet.payload.client_identifier.clone(),
+                                    )
+                                    .await;
+                                if session_handle_result.is_ok() {
+                                    let mut session_handle = session_handle_result.unwrap();
+                                    session_handle.into_offline().await;
+                                    info!("set the session into offline mode done");
+                                } else {
+                                    warn!("get session handle error , error: {:?}", session_handle_result.err());
+                                }
                             }
                         }
                         crate::plugin::plugin_manager::OnConnectAuthResult::Forbidden => {

@@ -259,9 +259,14 @@ impl SessionHandle
     }
 
     pub async fn into_offline(&mut self) {
+        info!("client id {} session into offline", self.session.lock().await.client_identifier);
         let session = self.session.clone();
-        let session = session.lock().await;
-        if !session.clean_session {
+        let mut clean_session = true;
+        {
+            let session = session.lock().await;
+            clean_session = session.clean_session;
+        }
+        if !clean_session {
             let _ = self.sender.send(SessionMessage::Stop).await;
             let sender = Self::run_in_offline(self.session.clone()).await;
             self.sender = sender;
@@ -279,6 +284,7 @@ impl SessionHandle
         quit_signal: tokio::sync::oneshot::Sender<()>,
         session_context: SessionContext
     ) {
+        info!("client id {} session into online", self.session.lock().await.client_identifier);
         let _ = self.sender.send(SessionMessage::Stop).await;
         let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal, session_context).await;
         self.sender = sender;
