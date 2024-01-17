@@ -57,11 +57,15 @@ Example:
 local M =  {}
 
 local function ConnectAuth(clientId, username, password, ip)
-    return true
+    response = Samoye.Hook.OnConnectAuth.response()
+    response.pass = true
+    response.userId = connectInfo.clientIdentifier
+    response.tenantId = "tenant-demo"
+    return response
 end
 
 function M.OnActivate()
-    samoye.Hooks.OnConnectAuth:Register(ConnectAuth)
+    Samoye.Hook.OnConnectAuth:Register(ConnectAuth)
 end
 
 function M.OnDeactivate()
