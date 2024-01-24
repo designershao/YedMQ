@@ -1,5 +1,5 @@
 # Description
-Plugin system is based lua script language.When system start, the plugin system scan the plugin directory and then load into seprate lua runtime instance.
+Plugin system is based rune script language.When system start, the plugin system scan the plugin directory and then load into seprate rune vm instance.
 
 # Design
 
@@ -10,8 +10,8 @@ plugin_a/
 ├─ doc/
 ├─ src/
 │  ├─ common/
-│  │  ├─ utils.lua
-│  ├─ plugin.lua
+│  │  ├─ utils.rn
+│  ├─ plugin.rn
 ├─ plugin.toml
 ├─ README.md
 
@@ -52,29 +52,34 @@ The plugin could put settings (database connection, username and etc) in custom 
 
 Example:
 
-```lua
+```rune
+fn on_auth_logic(client_info) {
+    if client_info.identifier_id == "client_a" {
+        true
+    } else {
+        false
+    }
+}
 
-local M =  {}
+fn on_publish_logic(publish_message) {
+}
 
-local function ConnectAuth(clientId, username, password, ip)
-    response = Samoye.Hook.OnConnectAuth.response()
-    response.pass = true
-    response.userId = connectInfo.clientIdentifier
-    response.tenantId = "tenant-demo"
-    return response
-end
+fn on_activate(context) {
+    context.hook.on_connect.set_handler(on_auth_logic);
+    context.hook.on_publish.set_handler(on_publish_logic);
+}
 
-function M.OnActivate()
-    Samoye.Hook.OnConnectAuth:Register(ConnectAuth)
-end
+fn on_deactivate() {
 
-function M.OnDeactivate()
-end
+}
 
-return M
 ```
-### OnAcativate 
-This function will be called when the plugin load into system.
+### on_activate 
+This function will be called when the plugin load into system.        
 
-### OnDeactivate
+### on_deactivate
 This function will be called when the plugin unload from system.
+
+## Reference
+### PluginContext
+Plugin context is provided as the first parameter to the on_activate function.
