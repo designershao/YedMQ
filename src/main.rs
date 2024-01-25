@@ -17,6 +17,7 @@ mod router;
 mod topic;
 mod settings;
 mod listener;
+mod plugin_service;
 
 #[tokio::main]
 async fn main() {
