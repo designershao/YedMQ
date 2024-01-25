@@ -50,4 +50,9 @@ impl PluginHost {
         })
     }
 
+    pub fn init(&mut self) -> Result<()> {
+        self.runtime.call(["on_activate"], ())?;
+        Ok(())
+    }
+
 }

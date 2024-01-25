@@ -65,8 +65,8 @@ fn on_publish_logic(publish_message) {
 }
 
 fn on_activate(context) {
-    context.hook.on_connect.set_handler(on_auth_logic);
-    context.hook.on_publish.set_handler(on_publish_logic);
+    context.hook.subscribe(Hook::OnConnectAuth, on_auth_logic);
+    context.hook.subscribe(Hook::OnPublish, on_publish_logic);
 }
 
 fn on_deactivate() {
