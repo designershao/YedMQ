@@ -2,9 +2,17 @@ use std::collections::HashMap;
 
 use rune::{runtime::Function, Any};
 use crate::protocol::v3::publish::PublishPacket;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum CallPluginError {
+
+    #[error("hook not register: {0}")]
+    HookNotRegister(String)
+}
 
 // Connect the client info
-#[derive(Debug, Default, Any)]
+#[derive(Debug, Default, Any, Clone)]
 pub struct ConnectInfo {
     pub username: Option<String>,
     pub password: Option<String>,
@@ -64,14 +72,14 @@ pub enum AuthenticateResult {
 
 #[derive(Debug, Any)]
 pub struct AuthenticateSucceed {
-    tenant_id: String,
-    user_id: String,
+    pub tenant_id: String,
+    pub user_id: String,
 }
 
 #[derive(Debug, Any)]
 pub struct AuthenticateFail {
-    fail_reason: FailReason,
-    details: String,
+    pub fail_reason: FailReason,
+    pub details: String,
 }
 
 #[derive(Debug)]
@@ -99,8 +107,12 @@ impl Context {
 
     //The function is called during client connection authentication.
     pub fn on_connect_auth(&mut self, connect_info: ConnectInfo) -> anyhow::Result<AuthenticateResult> {
-        let i = self.hook_table.get(&Hooks::OnConnectAuth).unwrap().call((connect_info,)).unwrap();
-        rune::from_value(i)?
+        if self.hook_table.contains_key(&Hooks::OnConnectAuth) {
+            let i = self.hook_table.get(&Hooks::OnConnectAuth).unwrap().call((connect_info,)).unwrap();
+            rune::from_value(i)?
+        } else {
+            Err(anyhow::anyhow!(CallPluginError::HookNotRegister("OnConnectAuth".into())))
+        }
     }
 
     // The function is called when the broker receives a message
