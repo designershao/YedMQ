@@ -1,0 +1,7 @@
+[plugin]
+name = "demo_plugin"
+author = "Samoye"
+description = "Just a demo plugin"
+version = "1.0.0"
+entry = "./src/plugin.rn"
+priority = 1000

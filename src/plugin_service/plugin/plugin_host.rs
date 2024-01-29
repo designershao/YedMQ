@@ -74,9 +74,7 @@ impl PluginHost {
     }
 
     fn module() -> Result<Module> {
-        let mut module = Module::new();
-        module.ty::<plugin_context::Context>()?;
-        Ok(module)
+        super::module::module()
     }
 
     pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> Result<AuthenticateResult> {

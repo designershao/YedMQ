@@ -20,7 +20,7 @@ pub struct ConnectInfo {
 }
 
 // Connected the client info
-#[derive(Debug, Default, Any)]
+#[derive(Debug, Default, Any, Clone)]
 pub struct ClientInfo {
     pub tenant_id: String,
     pub client_identifier: String,
@@ -39,27 +39,85 @@ pub enum Hooks {
     OnDisconnect,
 }
 
-#[derive(Any)]
+#[derive(Any, Clone)]
 pub struct TopicInfo {
     pub topic_filter: String,
     pub qos: i64,
     pub operation: TopicOperation
 }
 
-#[derive(Any)]
-pub struct TopicPermission {
+#[derive(Default)]
+pub struct TopicPermissionBuilder {
     topic_filter: String,
     qos: i64,
     permission: PermissionType,
     operation: TopicOperation
 }
 
+impl TopicPermissionBuilder {
+    pub fn new(topic_filter: String, qos: i64, permission: PermissionType, operation: TopicOperation) -> Self {
+        TopicPermissionBuilder {
+            topic_filter,
+            qos,
+            permission,
+            operation
+        }
+    }
+
+    pub fn topic_filter(mut self, topic_filter: String) -> Self {
+        self.topic_filter = topic_filter;
+        self
+    }
+
+    pub fn qos(mut self, qos: i64) -> Self {
+        self.qos = qos;
+        self
+    }
+
+    pub fn permission(mut self, permission: PermissionType) -> Self {
+        self.permission = permission;
+        self
+    }
+
+    pub fn operation(mut self, operation: TopicOperation) -> Self {
+        self.operation = operation;
+        self
+    }
+
+    pub fn build(self) -> TopicPermission {
+        TopicPermission {
+            topic_filter: self.topic_filter,
+            qos: self.qos,
+            permission: self.permission,
+            operation: self.operation
+        }
+    }
+}
+
+#[derive(Any)]
+pub struct TopicPermission {
+    pub topic_filter: String,
+    pub qos: i64,
+    pub permission: PermissionType,
+    pub operation: TopicOperation
+}
+
+impl TopicPermission {
+    pub fn builder() -> TopicPermissionBuilder {
+        TopicPermissionBuilder::default()
+    }
+}
+
+#[derive(Default, Debug, Any, Clone)]
 pub enum TopicOperation {
+    #[default]
     Publish,
     Subscribe,
 }
 
+#[derive(Default)]
 pub enum PermissionType {
+    #[default]
     Allow,
     Deny
 }

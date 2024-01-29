@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::{Arc, RwLock}};
 
-use crate::plugin_service::plugin::plugin_context::AuthenticateSucceed;
+use crate::{plugin_service::plugin::plugin_context::{AuthenticateSucceed, PermissionType}, protocol::v3::publish::PublishPacket};
 
-use super::plugin::{plugin_host::PluginHost, plugin_context::{self, AuthenticateResult, AuthenticateFail, CallPluginError}};
+use super::plugin::{plugin_host::PluginHost, plugin_context::{self, AuthenticateFail, AuthenticateResult, CallPluginError, TopicInfo, TopicPermission}};
 use log::{warn, info};
 use rune::alloc::BTreeMap;
 use thiserror::Error;
@@ -83,12 +83,6 @@ impl PluginService {
                                     user_id: "anonymous".into(),
                                 }));
                             }
-                            e => {
-                                return Ok(AuthenticateResult::Fail(AuthenticateFail{
-                                    fail_reason: plugin_context::FailReason::InternalError,
-                                    details: format!("{:?}", e)
-                                }));
-                            }
                         }
                     } else {
                         continue;
@@ -106,6 +100,94 @@ impl PluginService {
                 tenant_id: "public".into(),
                 user_id: "anonymous".into(),
             }));
+        }
+    }
+    
+    pub async fn on_topic_permission_check(&mut self,topic_info:TopicInfo) -> anyhow::Result<TopicPermission> {
+        if self.inner.len() > 0 {
+            let mut i = 1;
+            while let Some(plugin) = self.inner.iter().next_back() {
+                let plugin = plugin.1.clone();
+                let auth_response = plugin.write().unwrap().on_topic_permission_check(topic_info.clone()).await;
+                if let core::result::Result::Ok(auth_response) = auth_response {
+                    match auth_response.permission {
+                        PermissionType::Allow => {
+                            let permission = TopicPermission::builder()
+                                    .topic_filter(topic_info.topic_filter)
+                                    .qos(topic_info.qos)
+                                    .permission(PermissionType::Allow)
+                                    .operation(topic_info.operation).build();
+                            return Ok(permission);
+                        }
+                        PermissionType::Deny => {
+                            info!("plugin {} on_topic_permission_check failed, not the last plugin, continue", plugin.read().unwrap().get_plugin_name());
+                            if i >= self.inner.len() { // the lowest priority plugin
+                                info!("plugin {} on_topic_permission_check failed, the last plugin", plugin.read().unwrap().get_plugin_name());
+                                let permission = TopicPermission::builder()
+                                        .topic_filter(topic_info.topic_filter)
+                                        .qos(topic_info.qos)
+                                        .permission(PermissionType::Deny)
+                                        .operation(topic_info.operation).build();
+                                return Ok(permission);
+                            }
+                        }
+                    }
+                } else {
+                    let err = auth_response.err().unwrap();
+                    if i >= self.inner.len() { // the lowest priority plugin
+                        match err.downcast().unwrap() {
+                            CallPluginError::HookNotRegister(hook_name) => {
+                                info!("plugin {} failed, no hook {} call back register, not the last plugin, continue", plugin.read().unwrap().get_plugin_name(), hook_name);
+                                // no on connect auth hook callback, pass anonymous
+                                let permission = TopicPermission::builder()
+                                        .topic_filter(topic_info.topic_filter)
+                                        .qos(topic_info.qos)
+                                        .permission(PermissionType::Allow)
+                                        .operation(topic_info.operation).build();
+                                return Ok(permission);
+                            }
+                            e => {
+                                let permission = TopicPermission::builder()
+                                        .topic_filter(topic_info.topic_filter)
+                                        .qos(topic_info.qos)
+                                        .permission(PermissionType::Deny)
+                                        .operation(topic_info.operation).build();
+                                return Ok(permission);
+                            }
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+            let permission = TopicPermission::builder()
+                    .topic_filter(topic_info.topic_filter)
+                    .qos(topic_info.qos)
+                    .permission(PermissionType::Deny)
+                    .operation(topic_info.operation).build();
+            Ok(permission)
+       } else {
+            info!("no plugin loaded, pass anonymous");
+            let permission = TopicPermission::builder()
+                    .topic_filter(topic_info.topic_filter)
+                    .qos(topic_info.qos)
+                    .permission(PermissionType::Allow)
+                    .operation(topic_info.operation).build();
+            return Ok(permission);
+       }
+    }
+
+
+    pub async fn on_publish(&mut self, client_info: plugin_context::ClientInfo, packet: PublishPacket) -> anyhow::Result<()> {
+        if self.inner.len() > 0 {
+            while let Some(plugin) = self.inner.iter().next_back() {
+                let plugin = plugin.1.clone();
+                plugin.write().unwrap().on_publish(client_info.clone(), packet.clone()).await?;
+            }
+            Ok(())
+        } else {
+            Ok(())
         }
     }
 
