@@ -1,14 +1,14 @@
+use samoye::hook::Authentication;
+use samoye::hook::Hooks;
+
 fn on_auth_logic(connect_info) {
-    let succeed = samoye::hook::AuthenticateSucceed {
-        tenant_id: "public",
-        user_id: "public"
-    };
-    let result = samoye::hook::AuthenticateResult::Success;
-    return result;
+    let result = Authentication::Allow("tenant_id");
+    // let result = AuthenticationResult::Deny("username error", ReturnCode::ReturnCode)
+    return Ok(result);
 }
 
 pub fn on_activate(context) {
-    context.hook_register(samoye::hook::Hooks::OnConnectAuth, on_auth_logic);
+    context.hook_subscribe(Hooks::OnConnectAuth, on_auth_logic);
 }
 
 pub fn on_deactivate() {

@@ -1,8 +1,8 @@
 use std::{path::PathBuf, sync::{Arc, RwLock}};
 
-use crate::{plugin_service::plugin::plugin_context::{AuthenticateSucceed, PermissionType}, protocol::v3::publish::PublishPacket};
+use crate::{plugin_service::plugin::plugin_context::{Authentication, PermissionType}, protocol::v3::publish::PublishPacket};
 
-use super::plugin::{plugin_host::PluginHost, plugin_context::{self, AuthenticateFail, AuthenticateResult, CallPluginError, TopicInfo, TopicPermission}};
+use super::plugin::{plugin_host::PluginHost, plugin_context::{self,CallPluginError, TopicInfo, TopicPermission}};
 use log::{warn, info};
 use rune::alloc::BTreeMap;
 use thiserror::Error;
@@ -52,7 +52,7 @@ impl PluginService {
         self.inner.last_entry().map(|mut e| e.get_mut().clone())
     }
 
-    pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> anyhow::Result<AuthenticateResult> {
+    pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> anyhow::Result<Authentication> {
         if self.inner.len() > 0 {
             let mut i = 1;
             while let Some(plugin) = self.inner.iter().next_back() {
@@ -60,14 +60,14 @@ impl PluginService {
                 let auth_response = plugin.write().unwrap().on_connect_auth(connect_info.clone());
                 if let core::result::Result::Ok(auth_response) = auth_response {
                     match auth_response {
-                        AuthenticateResult::Success(client_info) => {
-                            return Ok(AuthenticateResult::Success(client_info));
+                        Authentication::Allow(tenant_id) => {
+                            return Ok(Authentication::Allow(tenant_id));
                         }
-                        AuthenticateResult::Fail(reason) => {
+                        Authentication::Deny(details, return_code) => {
                             info!("plugin {} on_connect_auth failed, not the last plugin, continue", plugin.read().unwrap().get_plugin_name());
                             if i >= self.inner.len() { // the lowest priority plugin
                                 info!("plugin {} on_connect_auth failed, the last plugin", plugin.read().unwrap().get_plugin_name());
-                                return Ok(AuthenticateResult::Fail(reason));
+                                return Ok(Authentication::Deny(details, return_code));
                             }
                         }
                     }
@@ -78,10 +78,9 @@ impl PluginService {
                             CallPluginError::HookNotRegister(hook_name) => {
                                 info!("plugin {} failed, no hook {} call back register, not the last plugin, continue", plugin.read().unwrap().get_plugin_name(), hook_name);
                                 // no on connect auth hook callback, pass anonymous
-                                return Ok(AuthenticateResult::Success(AuthenticateSucceed{
-                                    tenant_id: "public".into(),
-                                    user_id: "anonymous".into(),
-                                }));
+                                return Ok(Authentication::Allow(
+                                    "public".into(),
+                                ));
                             }
                         }
                     } else {
@@ -90,16 +89,12 @@ impl PluginService {
                 }
                 i += 1;
             }
-            Ok(AuthenticateResult::Fail(AuthenticateFail{
-                fail_reason: plugin_context::FailReason::InternalError,
-                details: "unexpect error".into()
-            }))
+            Ok(Authentication::Deny("unexpect error".into(), plugin_context::ReturnCode::RefusedInteralError))
         } else {
             info!("no plugin loaded, pass anonymous");
-            return Ok(AuthenticateResult::Success(AuthenticateSucceed{
-                tenant_id: "public".into(),
-                user_id: "anonymous".into(),
-            }));
+            Ok(
+                Authentication::Allow("public".into())
+            )
         }
     }
     

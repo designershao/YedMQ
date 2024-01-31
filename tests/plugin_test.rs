@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use samoye::plugin_service::plugin::{plugin_host::PluginHost, plugin_metadata::PluginMetadata};
+use samoye::{plugin_service::plugin::{plugin_context::{Authentication, ConnectInfo}, plugin_host::PluginHost, plugin_metadata::PluginMetadata}};
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -28,5 +28,28 @@ pub fn test_plugin_metadata_load() {
 #[test]
 pub fn test_plugin_host_load() {
     let plugin_path = get_demo_plugin_path();
-    let plugin_host = PluginHost::load(plugin_path.to_str().unwrap().to_string()).unwrap();
+    let mut _plugin_host = PluginHost::load(plugin_path.to_str().unwrap().to_string()).unwrap();
+    assert!(true)
+}
+
+#[test]
+pub fn test_plugin_on_connect_auth() {
+    let plugin_path = get_demo_plugin_path();
+    let mut plugin_host = PluginHost::load(plugin_path.to_str().unwrap().to_string()).unwrap();
+    plugin_host.init().unwrap();
+
+    let connect_info = ConnectInfo {
+        username: Some("samoye".to_string()),
+        password: Some("123456".to_string()),
+        remote_addr: "127.0.0.1".to_string(),
+    };
+
+    let r = plugin_host.on_connect_auth(connect_info).unwrap();
+
+    match r {
+        Authentication::Allow(tenant_id) => {
+            assert_eq!(tenant_id, "tenant_id".to_string());
+        },
+        _ => assert!(false),
+    }
 }

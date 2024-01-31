@@ -31,11 +31,22 @@ pub struct ClientInfo {
 
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Any)]
+#[rune(item=::samoye::hook)]
 pub enum Hooks {
+
+    #[rune(constructor)]
     OnConnect,
+
+    #[rune(constructor)]
     OnConnectAuth,
+
+    #[rune(constructor)]
     OnTopicPermissionCheck,
+
+    #[rune(constructor)]
     OnPublish,
+
+    #[rune(constructor)]
     OnDisconnect,
 }
 
@@ -122,31 +133,39 @@ pub enum PermissionType {
     Deny
 }
 
-#[derive(Debug, Any)]
-pub enum AuthenticateResult {
-    Success(AuthenticateSucceed),
-    Fail(AuthenticateFail)
+#[derive(Debug, Any, Clone)]
+#[rune(item=::samoye::hook)]
+pub enum Authentication {
+    #[rune(constructor)]
+    Allow(#[rune(get)] String),
+
+    #[rune(constructor)]
+    Deny(#[rune(get)] String, #[rune(get)] ReturnCode)
 }
 
-#[derive(Debug, Any)]
-pub struct AuthenticateSucceed {
-    pub tenant_id: String,
-    pub user_id: String,
+#[derive(Debug, Any, Clone)]
+#[rune(item=::samoye::hook)]
+pub enum ReturnCode {
+    #[rune(constructor)]
+    RefusedUnsupportProtocolVersion,
+
+    #[rune(constructor)]
+    RefusedInvalidClientIdentifier,
+
+    #[rune(constructor)]
+    RefusedInteralError,
+
+    #[rune(constructor)]
+    RefusedInvalidUsernameOrPassword,
+
+    #[rune(constructor)]
+    RefusedNotAuthorized,
 }
 
-#[derive(Debug, Any)]
-pub struct AuthenticateFail {
-    pub fail_reason: FailReason,
-    pub details: String,
-}
 
-#[derive(Debug)]
-pub enum FailReason {
-    BadUserOrPassword,
-    InternalError,
-}
 
 #[derive(Any)]
+#[rune(item=::samoye::hook)]
 pub struct Context {
     hook_table: HashMap<Hooks, Function>,
 }
@@ -164,7 +183,7 @@ impl Context {
     }
 
     //The function is called during client connection authentication.
-    pub fn on_connect_auth(&mut self, connect_info: ConnectInfo) -> anyhow::Result<AuthenticateResult> {
+    pub fn on_connect_auth(&mut self, connect_info: ConnectInfo) -> anyhow::Result<Authentication> {
         if self.hook_table.contains_key(&Hooks::OnConnectAuth) {
             let i = self.hook_table.get(&Hooks::OnConnectAuth).unwrap().call((connect_info,)).unwrap();
             rune::from_value(i)?

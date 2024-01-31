@@ -5,7 +5,7 @@ use rune::{ContextError, Diagnostics, Module, Vm};
 
 use crate::protocol::v3::publish::PublishPacket;
 
-use super::plugin_context::{self, AuthenticateResult, Hooks, TopicInfo, TopicPermission};
+use super::plugin_context::{self, Authentication, Hooks, TopicInfo, TopicPermission};
 use super::plugin_metadata::PluginMetadata;
 
 pub struct PluginHost {
@@ -74,10 +74,10 @@ impl PluginHost {
     }
 
     fn module() -> Result<Module> {
-        super::module::module()
+        crate::plugin_service::modules::hook::module()
     }
 
-    pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> Result<AuthenticateResult> {
+    pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> Result<Authentication> {
         self.context.on_connect_auth(connect_info)
     }
 
