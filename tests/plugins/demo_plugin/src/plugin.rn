@@ -1,5 +1,7 @@
 use samoye::hook::Authentication;
 use samoye::hook::Hooks;
+use samoye::hook::Authorization;
+use samoye::hook::TopicOperation;
 
 fn on_auth_logic(connect_info) {
     let result = Authentication::Allow("tenant_id");
@@ -7,9 +9,19 @@ fn on_auth_logic(connect_info) {
     return Ok(result);
 }
 
+fn on_topic_permission_check(client_info, topic_info) {
+    let r = match topic_info.operation {
+        TopicOperation::Publish => Authorization::Allow, 
+        TopicOperation::Subscribe => Authorization::Deny, 
+    };
+    return Ok(r);
+}
+
 pub fn on_activate(context) {
     context.hook_subscribe(Hooks::OnConnectAuth, on_auth_logic);
+    context.hook_subscribe(Hooks::OnTopicPermissionCheck, on_topic_permission_check);
 }
+
 
 pub fn on_deactivate() {
 

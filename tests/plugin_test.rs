@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use samoye::{plugin_service::plugin::{plugin_context::{Authentication, ConnectInfo}, plugin_host::PluginHost, plugin_metadata::PluginMetadata}};
+use samoye::{plugin_service::plugin::{plugin_context::{Authentication, Authorization, ClientInfo, ConnectInfo, TopicInfo, TopicOperation}, plugin_host::PluginHost, plugin_metadata::PluginMetadata}};
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -50,6 +50,30 @@ pub fn test_plugin_on_connect_auth() {
         Authentication::Allow(tenant_id) => {
             assert_eq!(tenant_id, "tenant_id".to_string());
         },
+        _ => assert!(false),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_plugin_on_topic_permission_check() {
+    let plugin_path = get_demo_plugin_path();
+    let mut plugin_host = PluginHost::load(plugin_path.to_str().unwrap().to_string()).unwrap();
+    plugin_host.init().unwrap();
+    let client_info = ClientInfo {
+        tenant_id: "tenant_id".into(),
+        client_identifier: "client_id".into(),
+        username: "samoye".into(),
+        remote_addr: "127.0.0.1".into(),
+    };
+    let topic_info = TopicInfo {
+        topic_filter: "/a/b".into(),
+        qos: 0,
+        operation: TopicOperation::Publish,
+    };
+
+    let r = plugin_host.on_topic_permission_check(client_info, topic_info).await.unwrap();
+    match r {
+        Authorization::Allow => assert!(true),
         _ => assert!(false),
     }
 }

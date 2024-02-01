@@ -13,6 +13,7 @@ pub enum CallPluginError {
 
 // Connect the client info
 #[derive(Debug, Default, Any, Clone)]
+#[rune(item=::samoye::hook)]
 pub struct ConnectInfo {
     pub username: Option<String>,
     pub password: Option<String>,
@@ -21,6 +22,7 @@ pub struct ConnectInfo {
 
 // Connected the client info
 #[derive(Debug, Default, Any, Clone)]
+#[rune(item=::samoye::hook)]
 pub struct ClientInfo {
     pub tenant_id: String,
     pub client_identifier: String,
@@ -51,9 +53,15 @@ pub enum Hooks {
 }
 
 #[derive(Any, Clone)]
+#[rune(item=::samoye::hook)]
 pub struct TopicInfo {
+    #[rune(get)]
     pub topic_filter: String,
+
+    #[rune(get)]
     pub qos: i64,
+
+    #[rune(get)]
     pub operation: TopicOperation
 }
 
@@ -120,18 +128,38 @@ impl TopicPermission {
 }
 
 #[derive(Default, Debug, Any, Clone)]
+#[rune(item=::samoye::hook)]
 pub enum TopicOperation {
     #[default]
+    #[rune(constructor)]
     Publish,
+
+    #[rune(constructor)]
     Subscribe,
 }
 
-#[derive(Default)]
+#[derive(Default, Any, Clone)]
+#[rune(item=::samoye::hook)]
 pub enum PermissionType {
     #[default]
+    #[rune(constructor)]
     Allow,
+
+    #[rune(constructor)]
     Deny
 }
+
+#[derive(Debug, Any, Clone)]
+#[rune(item=::samoye::hook)]
+pub enum Authorization {
+
+    #[rune(constructor)]
+    Allow,
+
+    #[rune(constructor)]
+    Deny
+}
+
 
 #[derive(Debug, Any, Clone)]
 #[rune(item=::samoye::hook)]
@@ -199,8 +227,8 @@ impl Context {
     }
 
     // The function is called for permission checking when subscribing to MQTT topics or sending messages on a specific topic.
-    pub async fn on_topic_permission_check(&mut self,topic_info:TopicInfo) -> anyhow::Result<TopicPermission> {
-        let i = self.hook_table.get(&Hooks::OnTopicPermissionCheck).unwrap().call((topic_info,)).unwrap();
+    pub async fn on_topic_permission_check(&mut self,client_info: ClientInfo, topic_info:TopicInfo) -> anyhow::Result<Authorization> {
+        let i = self.hook_table.get(&Hooks::OnTopicPermissionCheck).unwrap().call((client_info, topic_info,)).unwrap();
         rune::from_value(i)?
     }
 

@@ -5,7 +5,7 @@ use rune::{ContextError, Diagnostics, Module, Vm};
 
 use crate::protocol::v3::publish::PublishPacket;
 
-use super::plugin_context::{self, Authentication, Hooks, TopicInfo, TopicPermission};
+use super::plugin_context::{self, Authentication, Authorization, Hooks, TopicInfo, TopicPermission};
 use super::plugin_metadata::PluginMetadata;
 
 pub struct PluginHost {
@@ -85,8 +85,8 @@ impl PluginHost {
         self.context.on_publish(client_info, publish_packet).await
     }
 
-    pub async fn on_topic_permission_check(&mut self,topic_info:TopicInfo) -> anyhow::Result<TopicPermission> {
-        self.context.on_topic_permission_check(topic_info).await
+    pub async fn on_topic_permission_check(&mut self,client_info: plugin_context::ClientInfo, topic_info:TopicInfo) -> anyhow::Result<Authorization> {
+        self.context.on_topic_permission_check(client_info, topic_info).await
     }
 
 }
