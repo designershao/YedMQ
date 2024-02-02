@@ -1,12 +1,18 @@
-use std::{path::PathBuf, sync::{Arc, RwLock}};
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, RwLock}};
 
 use crate::{plugin_service::plugin::plugin_context::{Authentication, PermissionType}, protocol::v3::publish::PublishPacket};
 
-use super::plugin::{plugin_host::PluginHost, plugin_context::{self, Authorization, CallPluginError, TopicInfo, TopicPermission}};
+use super::plugin::{plugin_host::PluginHost, plugin_context::{self, Authorization, CallPluginError, ClientInfo, ConnectInfo, TopicInfo, TopicPermission}};
 use log::{warn, info};
-use rune::alloc::BTreeMap;
 use thiserror::Error;
 use anyhow::{anyhow, Ok};
+
+pub enum PluginServiceMessage {
+    OnConnectAuth(ConnectInfo, tokio::sync::oneshot::Sender<anyhow::Result<Authentication>>),
+    OnPublish(ClientInfo, PublishPacket),
+    OnTopicPermissionCheck(ClientInfo, TopicInfo, tokio::sync::oneshot::Sender<anyhow::Result<Authorization>>),
+    Quit,
+}
 
 #[derive(Error, Debug)]
 pub enum PluginServiceError {
@@ -15,47 +21,74 @@ pub enum PluginServiceError {
 }
 
 pub struct PluginService {
-    inner: BTreeMap<i64, Arc<RwLock<PluginHost>>>,
-    plugin_dict_path: PathBuf,
+    tx: tokio::sync::mpsc::Sender<PluginServiceMessage>,
 }
 
 impl PluginService {
-
     pub fn new(plugin_dict: String) -> anyhow::Result<PluginService> {
 
         let path = PathBuf::from(plugin_dict);
+
         if !path.exists() {
             return Err(anyhow!(PluginServiceError::PluginDirNotExisted));
         } else {
-            let mut inner = BTreeMap::new();
-            let paths = path.read_dir().unwrap();
-            for path in paths {
-                let path = path.unwrap().path();
-                let plugin = PluginHost::load(path.to_str().unwrap().into());
-            if let core::result::Result::Ok(plugin) = plugin {
-                    info!("load plugin {} success ! path {}",plugin.get_plugin_name(), path.to_str().unwrap());
-                    inner.try_insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin)))?;
-                } else {
-                    warn!("load plugin error skip ! path {} error: {}", path.to_str().unwrap(), plugin.err().unwrap());
-                }
-            }
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+            std::thread::spawn(move || {
+                let local_set = tokio::task::LocalSet::new();
+                local_set.spawn_local(async move {
+                    let mut plugin_table = BTreeMap::new();
+                    let paths = path.read_dir().unwrap();
+                    for path in paths {
+                        let path = path.unwrap().path();
+                        let plugin = PluginHost::load(path.to_str().unwrap().into());
+                    if let core::result::Result::Ok(plugin) = plugin {
+                            info!("load plugin {} success ! path {}",plugin.get_plugin_name(), path.to_str().unwrap());
+                            plugin_table.insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin))).unwrap();
+                        } else {
+                            warn!("load plugin error skip ! path {} error: {}", path.to_str().unwrap(), plugin.err().unwrap());
+                        }
+                    }
+
+                    loop {
+                        let msg = rx.recv().await;
+
+                        match msg {
+                            Some(PluginServiceMessage::OnConnectAuth(connect_info, tx)) => {
+                                let r = Self::on_connect_auth(&plugin_table, connect_info);
+                                tx.send(r).unwrap();
+                            }
+                            Some(PluginServiceMessage::OnPublish(client_info, packet)) => {
+                                Self::on_publish(&plugin_table, client_info, packet).await;
+                            }
+                            Some(PluginServiceMessage::OnTopicPermissionCheck(client_info, topic_info, tx)) => {
+                                let r = Self::on_topic_permission_check(&plugin_table, client_info, topic_info).await;
+                                tx.send(r).unwrap();
+                            }
+                            Some(PluginServiceMessage::Quit) => {
+                                rx.close();
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+
+                    }
+                })
+            });
+
             Ok(
                 PluginService {
-                    inner,
-                    plugin_dict_path: path,
+                    tx,
                 }
             )
         }
     }
 
-    fn get_highest_priority_plugin(&mut self) -> Option<Arc<RwLock<PluginHost>>> {
-        self.inner.last_entry().map(|mut e| e.get_mut().clone())
-    }
-
-    pub fn on_connect_auth(&mut self, connect_info: plugin_context::ConnectInfo) -> anyhow::Result<Authentication> {
-        if self.inner.len() > 0 {
+    fn on_connect_auth(plugin_table: &BTreeMap<i64, Arc<RwLock<PluginHost>>>, connect_info: plugin_context::ConnectInfo) -> anyhow::Result<Authentication> {
+        if plugin_table.len() > 0 {
             let mut i = 1;
-            while let Some(plugin) = self.inner.iter().next_back() {
+            while let Some(plugin) = plugin_table.iter().next_back() {
                 let plugin = plugin.1.clone();
                 let auth_response = plugin.write().unwrap().on_connect_auth(connect_info.clone());
                 if let core::result::Result::Ok(auth_response) = auth_response {
@@ -65,7 +98,7 @@ impl PluginService {
                         }
                         Authentication::Deny(details, return_code) => {
                             info!("plugin {} on_connect_auth failed, not the last plugin, continue", plugin.read().unwrap().get_plugin_name());
-                            if i >= self.inner.len() { // the lowest priority plugin
+                            if i >= plugin_table.len() { // the lowest priority plugin
                                 info!("plugin {} on_connect_auth failed, the last plugin", plugin.read().unwrap().get_plugin_name());
                                 return Ok(Authentication::Deny(details, return_code));
                             }
@@ -73,7 +106,7 @@ impl PluginService {
                     }
                 } else {
                     let err = auth_response.err().unwrap();
-                    if i >= self.inner.len() { // the lowest priority plugin
+                    if i >= plugin_table.len() { // the lowest priority plugin
                         match err.downcast().unwrap() {
                             CallPluginError::HookNotRegister(hook_name) => {
                                 info!("plugin {} failed, no hook {} call back register, not the last plugin, continue", plugin.read().unwrap().get_plugin_name(), hook_name);
@@ -98,10 +131,10 @@ impl PluginService {
         }
     }
     
-    pub async fn on_topic_permission_check(&mut self,client_info: plugin_context::ClientInfo,topic_info:TopicInfo) -> anyhow::Result<Authorization> {
-        if self.inner.len() > 0 {
+    async fn on_topic_permission_check(plugin_table: &BTreeMap<i64, Arc<RwLock<PluginHost>>>,client_info: plugin_context::ClientInfo,topic_info:TopicInfo) -> anyhow::Result<Authorization> {
+        if plugin_table.len() > 0 {
             let mut i = 1;
-            while let Some(plugin) = self.inner.iter().next_back() {
+            while let Some(plugin) = plugin_table.iter().next_back() {
                 let plugin = plugin.1.clone();
                 let auth_response = plugin.write().unwrap().on_topic_permission_check(client_info.clone(), topic_info.clone()).await;
                 if let core::result::Result::Ok(auth_response) = auth_response {
@@ -111,7 +144,7 @@ impl PluginService {
                         }
                         Authorization::Deny => {
                             info!("plugin {} on_topic_permission_check failed, not the last plugin, continue", plugin.read().unwrap().get_plugin_name());
-                            if i >= self.inner.len() { // the lowest priority plugin
+                            if i >= plugin_table.len() { // the lowest priority plugin
                                 info!("plugin {} on_topic_permission_check failed, the last plugin", plugin.read().unwrap().get_plugin_name());
                                 return Ok(Authorization::Deny);
                             }
@@ -119,7 +152,7 @@ impl PluginService {
                     }
                 } else {
                     let err = auth_response.err().unwrap();
-                    if i >= self.inner.len() { // the lowest priority plugin
+                    if i >= plugin_table.len() { // the lowest priority plugin
                         match err.downcast().unwrap() {
                             CallPluginError::HookNotRegister(hook_name) => {
                                 info!("plugin {} failed, no hook {} call back register, not the last plugin, continue", plugin.read().unwrap().get_plugin_name(), hook_name);
@@ -144,11 +177,11 @@ impl PluginService {
     }
 
 
-    pub async fn on_publish(&mut self, client_info: plugin_context::ClientInfo, packet: PublishPacket) -> anyhow::Result<()> {
-        if self.inner.len() > 0 {
-            while let Some(plugin) = self.inner.iter().next_back() {
+    async fn on_publish(plugin_table: &BTreeMap<i64, Arc<RwLock<PluginHost>>>, client_info: plugin_context::ClientInfo, packet: PublishPacket) -> anyhow::Result<()> {
+        if plugin_table.len() > 0 {
+            while let Some(plugin) = plugin_table.iter().next_back() {
                 let plugin = plugin.1.clone();
-                plugin.write().unwrap().on_publish(client_info.clone(), packet.clone()).await?;
+                let _ = plugin.write().unwrap().on_publish(client_info.clone(), packet.clone()).await;
             }
             Ok(())
         } else {
