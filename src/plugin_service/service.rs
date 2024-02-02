@@ -1,11 +1,12 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, RwLock}};
 
-use crate::{plugin_service::plugin::plugin_context::{Authentication, PermissionType}, protocol::v3::publish::PublishPacket};
+use crate::{plugin, plugin_service::plugin::plugin_context::{Authentication, PermissionType}, protocol::v3::publish::PublishPacket};
 
 use super::plugin::{plugin_host::PluginHost, plugin_context::{self, Authorization, CallPluginError, ClientInfo, ConnectInfo, TopicInfo, TopicPermission}};
 use log::{warn, info};
 use thiserror::Error;
 use anyhow::{anyhow, Ok};
+use tokio::runtime::Builder;
 
 pub enum PluginServiceMessage {
     OnConnectAuth(ConnectInfo, tokio::sync::oneshot::Sender<anyhow::Result<Authentication>>),
@@ -34,6 +35,8 @@ impl PluginService {
         } else {
             let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 
+            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+            
             std::thread::spawn(move || {
                 let local_set = tokio::task::LocalSet::new();
                 local_set.spawn_local(async move {
@@ -42,9 +45,10 @@ impl PluginService {
                     for path in paths {
                         let path = path.unwrap().path();
                         let plugin = PluginHost::load(path.to_str().unwrap().into());
-                    if let core::result::Result::Ok(plugin) = plugin {
+                        if let core::result::Result::Ok(mut plugin) = plugin {
+                            plugin.init().unwrap();
                             info!("load plugin {} success ! path {}",plugin.get_plugin_name(), path.to_str().unwrap());
-                            plugin_table.insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin))).unwrap();
+                            plugin_table.insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin)));
                         } else {
                             warn!("load plugin error skip ! path {} error: {}", path.to_str().unwrap(), plugin.err().unwrap());
                         }
@@ -74,7 +78,8 @@ impl PluginService {
                         }
 
                     }
-                })
+                });
+                rt.block_on(local_set);
             });
 
             Ok(
@@ -106,6 +111,7 @@ impl PluginService {
                     }
                 } else {
                     let err = auth_response.err().unwrap();
+                    warn!("plugin {} on_connect_auth error: {}", plugin.read().unwrap().get_plugin_name(), err);
                     if i >= plugin_table.len() { // the lowest priority plugin
                         match err.downcast().unwrap() {
                             CallPluginError::HookNotRegister(hook_name) => {
@@ -187,6 +193,23 @@ impl PluginService {
         } else {
             Ok(())
         }
+    }
+
+    pub async fn call_on_publish(&self, client_info: plugin_context::ClientInfo, packet: PublishPacket) -> anyhow::Result<()> {
+        let _ = self.tx.send(PluginServiceMessage::OnPublish(client_info, packet )).await;
+        Ok(())
+    }
+
+    pub async fn call_on_connect_auth(&self, connect_info: plugin_context::ConnectInfo) -> anyhow::Result<plugin_context::Authentication> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(PluginServiceMessage::OnConnectAuth(connect_info, tx )).await;
+        rx.await.unwrap()
+    }
+
+    pub async fn call_on_topic_permiession_check(&self, client_info: plugin_context::ClientInfo, topic_info: plugin_context::TopicInfo) -> anyhow::Result<plugin_context::Authorization> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _ = self.tx.send(PluginServiceMessage::OnTopicPermissionCheck(client_info, topic_info, tx )).await;
+        rx.await.unwrap()
     }
 
 }

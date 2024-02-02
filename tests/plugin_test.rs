@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use samoye::{plugin_service::plugin::{plugin_context::{Authentication, Authorization, ClientInfo, ConnectInfo, TopicInfo, TopicOperation}, plugin_host::PluginHost, plugin_metadata::PluginMetadata}};
+use samoye::plugin_service::{plugin::{plugin_context::{Authentication, Authorization, ClientInfo, ConnectInfo, TopicInfo, TopicOperation}, plugin_host::PluginHost, plugin_metadata::PluginMetadata}, service::PluginService};
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -7,6 +7,13 @@ fn get_demo_plugin_path() -> PathBuf {
         .join("tests")
         .join("plugins")
         .join("demo_plugin")
+}
+
+fn get_demo_plugins_dir() -> PathBuf {
+    let crate_root_path = env!("CARGO_MANIFEST_DIR");
+    PathBuf::from(crate_root_path)
+        .join("tests")
+        .join("plugins")
 }
 
 #[test]
@@ -74,6 +81,34 @@ pub async fn test_plugin_on_topic_permission_check() {
     let r = plugin_host.on_topic_permission_check(client_info, topic_info).await.unwrap();
     match r {
         Authorization::Allow => assert!(true),
+        _ => assert!(false),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_plugin_service_init() {
+    let plugin_dir = get_demo_plugins_dir();
+    let plugin_service = PluginService::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
+    assert!(true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_plugin_service_call_on_connect_auth() {
+    let plugin_dir = get_demo_plugins_dir();
+    let plugin_service = PluginService::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
+
+    let connect_info = ConnectInfo {
+        username: Some("samoye".to_string()),
+        password: Some("123456".to_string()),
+        remote_addr: "127.0.0.1".to_string(),
+    };
+
+    let r = plugin_service.call_on_connect_auth(connect_info).await.unwrap();
+
+    match r {
+        Authentication::Allow(tenant_id) => {
+            assert_eq!(tenant_id, "tenant_id".to_string());
+        },
         _ => assert!(false),
     }
 }
