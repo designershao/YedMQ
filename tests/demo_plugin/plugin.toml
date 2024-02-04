@@ -1,7 +1,0 @@
-[plugin]
-name = "demo_plugin"
-author = "Samoye"
-description = "Just a demo plugin"
-version = "1.0.0"
-entry = "./src/plugin.lua"
-priority = 1000
