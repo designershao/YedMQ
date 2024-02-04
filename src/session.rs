@@ -4,8 +4,13 @@ use anyhow::{Context, Result, anyhow};
 use log::{warn, info};
 use thiserror::Error;
 use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select, io::{AsyncRead, AsyncWrite}};
+use crate::plugin_service::plugin::plugin_context::{Authorization, SessionContext, TopicInfo, TopicOperation};
 
-use crate::{protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}}, inflight::Inflight, router::RouterCmd, plugin::{plugin_manager::PluginManager, session_context::{SessionContext, self}}, topic::TopicManager, connection::Connection};
+use crate::{connection::Connection, inflight::Inflight, };
+use crate::plugin_service::{plugin::plugin_context::ClientInfo, service::PluginService};
+use crate::protocol::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}};
+use crate::router::RouterCmd;
+use crate::topic::TopicManager;
 
 pub struct WillMessage {
     will_topic: String,
@@ -276,7 +281,7 @@ impl SessionHandle
     pub async fn into_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         &mut self, 
         connection: Connection<T>,
-        plugin_manager: Arc<PluginManager>,
+        plugin_manager: Arc<PluginService>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
@@ -329,7 +334,7 @@ impl SessionHandle
     async fn run_in_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Arc<Mutex<Session>>,
         mut connection: Connection<T>,
-        plugin_manager: Arc<PluginManager>,
+        plugin_manager: Arc<PluginService>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
@@ -405,7 +410,14 @@ impl SessionHandle
 
                                         let mut session = session_inner.lock().await;
 
-                                        if let Err(e) = plugin_manager.call_hook_on_publish(&session_context, &publish_packet).await {
+                                        let client_info = ClientInfo {
+                                             tenant_id: session_context.tenant_id.clone(), 
+                                             client_identifier: session_context.client_identifier.clone(),
+                                                username: session_context.username.clone(), 
+                                            remote_addr: session_context.remote_addr.clone(), 
+                                        };
+
+                                        if let Err(e) = plugin_manager.call_on_publish(client_info, publish_packet.clone()).await {
                                             warn!("tenant {} session {} call hook on publish error, details: {}", session.tenant_identifier, session.client_identifier, e);
                                         }
 
@@ -503,9 +515,25 @@ impl SessionHandle
                                             let mut topic_manager = topic_manager.write().await;
 
                                             for topic in subscriptions.iter() {
-                                                let acl_result = plugin_manager.call_hook_on_subscribe_acl_check(&session_context, &topic.topic_name, topic.qos.into()).await; 
+                                                let client_info = ClientInfo {
+                                                    tenant_id: session_context.tenant_id.clone(), 
+                                                    client_identifier: session_context.client_identifier.clone(),
+                                                    username: session_context.username.clone(), 
+                                                    remote_addr: session_context.remote_addr.clone(), 
+                                                };
+
+                                                let topic_info = TopicInfo {
+                                                    operation: TopicOperation::Subscribe,
+                                                    qos: topic.qos.into(),
+                                                    topic_filter: topic.topic_name.clone(),
+                                                };
+
+                                                let acl_result = plugin_manager.call_on_topic_permiession_check(client_info, topic_info).await;
+
                                                 if let Ok(r) = acl_result {
-                                                    if r {
+                                                    match r {
+                                                        Authorization::Allow=>{
+                                                            
                                                         let sub_result = topic_manager.subscription(
                                                             session.tenant_identifier.clone(),
                                                             session.client_identifier.clone(),
@@ -537,8 +565,11 @@ impl SessionHandle
                                                             warn!("tenant {} session {} subscribe error, details: {}", session.tenant_identifier, session.client_identifier, sub_result.unwrap_err());
                                                             return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
                                                         }
-                                                    } else {
+                                                        }
+                                                        Authorization::Deny => {
                                                         return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
+
+                                                        }, 
                                                     }
                                                 } else {
                                                     return_code.push(crate::protocol::v3::suback::ReturnCode::Failure);
@@ -619,7 +650,7 @@ impl SessionHandle
     pub async fn new<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Session,
         connection: Connection<T>,
-        plugin_manager: Arc<PluginManager>,
+        plugin_manager: Arc<PluginService>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
@@ -724,21 +755,19 @@ mod tests {
     use tokio_test::io::Builder;
 
     use crate::{
-        protocol::{
+        connection::{Connection}, inflight::Inflight,plugin_service::{plugin::plugin_context::SessionContext, service::PluginService}, protocol::{
             v3::{
                 publish::PublishPacketBuilder,
             },
             MqttPacketV3,
-        },
-        topic::TopicManager, plugin::{plugin_manager::PluginManager, session_context::SessionContext}, session::Session, inflight::Inflight, session::SessionHandle, connection::{Connection},
+        }, session::Session, session::SessionHandle, topic::TopicManager
     };
 
-    async fn get_test_plugin_manager() -> Arc<PluginManager> {
+    async fn get_test_plugin_manager() -> Arc<PluginService> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
         let plugin_path = PathBuf::from(crate_root_path).join("tests");
 
-        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
-            .await
+        let plugin_manager = PluginService::new(plugin_path.to_str().unwrap().to_string())
             .unwrap();
         Arc::new(plugin_manager)
     }

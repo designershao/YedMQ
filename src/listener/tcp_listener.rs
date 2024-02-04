@@ -5,26 +5,19 @@ use log::warn;
 use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
 
 use crate::{
-    connection::Connection,
-    inflight::Inflight,
-    plugin::{self, plugin_manager::PluginManager, session_context::SessionContext},
-    protocol::{
+    connection::Connection, inflight::Inflight, plugin_service::service::PluginService, protocol::{
         v3::{
             connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
             fixed_header::FixHeader,
         },
         PacketType,
-    },
-    router::RouterCmd,
-    session::{Session, SessionHandle, SessionManager, SessionManagerError},
-    settings::Settings,
-    topic::TopicManager,
+    }, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
 };
 
 use super::accept_connection;
 
 pub struct MqttTcpListener {
-    pub plugin_manager: Arc<PluginManager>,
+    pub plugin_manager: Arc<PluginService>,
     pub session_manager: Arc<RwLock<SessionManager>>,
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
@@ -62,12 +55,11 @@ mod tests {
 
     use super::*;
 
-    async fn get_test_plugin_manager() -> Arc<PluginManager> {
+    async fn get_test_plugin_manager() -> Arc<PluginService> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
         let plugin_path = PathBuf::from(crate_root_path).join("tests");
 
-        let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
-            .await
+        let plugin_manager = PluginService::new(plugin_path.to_str().unwrap().to_string())
             .unwrap();
         Arc::new(plugin_manager)
     }

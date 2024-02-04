@@ -1,15 +1,14 @@
 use std::{sync::Arc, collections::HashMap};
 
 use log::info;
-use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
+use crate::{listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener}, plugin_service::service::PluginService};
 use settings::Settings;
 use tokio::sync::RwLock;
 use topic::TopicManager;
 
-use crate::{plugin::plugin_manager::PluginManager, session::{SessionManager, SessionHandle}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
+use crate::{session::{SessionManager, SessionHandle}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
 
 mod protocol;
-mod plugin;
 mod connection;
 mod session;
 mod inflight;
@@ -40,10 +39,8 @@ async fn main() {
     // init plugin manager
     info!("start load plugin manager");
 
-    let plugin_manager = PluginManager::new(&settings.plugin.dir)
-        .await
-        .unwrap();
-    let plugin_manager =Arc::new(plugin_manager);
+    let plugin_service = PluginService::new(settings.plugin.dir.clone()).unwrap();
+    let plugin_service = Arc::new(plugin_service);
     info!("plugin manager load succeed");
     //
 
@@ -71,7 +68,7 @@ async fn main() {
 
 
     let listener = MqttTcpListener {
-        plugin_manager: plugin_manager.clone(),
+        plugin_manager: plugin_service.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -85,7 +82,7 @@ async fn main() {
     });
 
     let mut tcp_tls_listener = MqttTcpTlsListener {
-        plugin_manager: plugin_manager.clone(),
+        plugin_manager: plugin_service.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -101,7 +98,7 @@ async fn main() {
 
 
     let ws_listener = MqttWsListener {
-        plugin_manager: plugin_manager.clone(),
+        plugin_manager: plugin_service.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -115,7 +112,7 @@ async fn main() {
     });
 
     let wss_listener = MqttWssListener {
-        plugin_manager: plugin_manager.clone(),
+        plugin_manager: plugin_service.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),

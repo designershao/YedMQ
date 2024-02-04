@@ -4,6 +4,13 @@ use rune::{runtime::Function, Any};
 use crate::protocol::v3::publish::PublishPacket;
 use thiserror::Error;
 
+pub struct SessionContext {
+    pub tenant_id: String,
+    pub client_identifier: String,
+    pub username: String,
+    pub remote_addr: String
+}
+
 #[derive(Error, Debug)]
 pub enum CallPluginError {
 

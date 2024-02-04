@@ -6,26 +6,19 @@ use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}}
 use tokio_native_tls::native_tls::{Identity, self};
 
 use crate::{
-    connection::Connection,
-    inflight::Inflight,
-    plugin::{self, plugin_manager::PluginManager, session_context::SessionContext},
-    protocol::{
+    connection::Connection, inflight::Inflight, plugin_service::service::PluginService, protocol::{
         v3::{
             connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
             fixed_header::FixHeader,
         },
         PacketType,
-    },
-    router::RouterCmd,
-    session::{Session, SessionHandle, SessionManager, SessionManagerError},
-    settings::Settings,
-    topic::TopicManager,
+    }, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
 };
 
 use super::accept_connection;
 
 pub struct MqttTcpTlsListener {
-    pub plugin_manager: Arc<PluginManager>,
+    pub plugin_manager: Arc<PluginService>,
     pub session_manager: Arc<RwLock<SessionManager>>,
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,

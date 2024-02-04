@@ -8,15 +8,13 @@ use tokio::{
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
 use crate::{
-    protocol::{
+    connection::Connection, inflight::Inflight, plugin_service::{plugin::plugin_context::{ConnectInfo, SessionContext}, service::PluginService}, protocol::{
         v3::{
             connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
             fixed_header::FixHeader,
         },
         PacketType,
-    },
-    connection::Connection, plugin::{plugin_manager::PluginManager, session_context::SessionContext}, router::RouterCmd,
-    session::{SessionManager, Session, SessionHandle}, settings::Settings, topic::TopicManager, inflight::Inflight,
+    }, router::RouterCmd, session::{SessionManager, Session, SessionHandle}, settings::Settings, topic::TopicManager
 };
 
 pub mod tcp_listener;
@@ -43,7 +41,7 @@ impl Callback for WsCallBack {
 
 async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: T,
-    plugin_manager: Arc<PluginManager>,
+    plugin_manager: Arc<PluginService>,
     session_manager: Arc<RwLock<SessionManager>>,
     topic_manager: Arc<RwLock<TopicManager>>,
     router_sender: Sender<RouterCmd>,
@@ -89,23 +87,25 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
             //
 
+            let connect_info = ConnectInfo {
+                username: packet.payload.username.clone(),
+                password: packet.payload.password.clone(),
+                remote_addr: peer_addr.to_string(),
+            };
+
             let r = plugin_manager
                 .clone()
-                .call_hook_on_connect_auth(&peer_addr.to_string(), &packet)
+                .call_on_connect_auth(connect_info)
                 .await;
             match r {
                 Ok(auth_result) => {
                     match auth_result {
-                        crate::plugin::plugin_manager::OnConnectAuthResult::Pass(
-                            tenant_id,
-                            user_id,
-                        ) => {
-                            println!("tenant_id: {}, user_id: {}", tenant_id, user_id);
+                        crate::plugin_service::plugin::plugin_context::Authentication::Allow(tenant_id) => {
 
                             let session_context = SessionContext {
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: packet.payload.client_identifier.clone(),
-                                username: user_id,
+                                username: packet.payload.username.unwrap().clone(),
                                 remote_addr: peer_addr.to_string() 
                             };
 
@@ -251,24 +251,9 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 }
                             }
                         }
-                        crate::plugin::plugin_manager::OnConnectAuthResult::Forbidden => {
+                        crate::plugin_service::plugin::plugin_context::Authentication::Deny(reason, code) => {
                             println!("forbidden");
                             let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword).build();
-                            if let Err(e) = connection
-                                .write_packet(&crate::protocol::MqttPacketV3::Connack(
-                                    connack_packet,
-                                ))
-                                .await
-                            {
-                                warn!("write connack packet error: {}", e);
-                            }
-                            if let Err(e) = connection.shutdown().await {
-                                warn!("shutdown connection error: {}", e);
-                            }
-                        }
-                        crate::plugin::plugin_manager::OnConnectAuthResult::Error(e) => {
-                            println!("error: {}", e);
-                            let connack_packet = ConnAckPacketBuilder::new().set_return_code(crate::protocol::v3::connack::ConnackReturnCode::ServerUnavailable).build();
                             if let Err(e) = connection
                                 .write_packet(&crate::protocol::MqttPacketV3::Connack(
                                     connack_packet,

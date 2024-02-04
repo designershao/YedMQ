@@ -1,5 +1,4 @@
 pub mod protocol;
-pub mod plugin;
 pub mod plugin_service;
 pub mod connection;
 pub mod session;
