@@ -46,9 +46,13 @@ impl PluginService {
                         let path = path.unwrap().path();
                         let plugin = PluginHost::load(path.to_str().unwrap().into());
                         if let core::result::Result::Ok(mut plugin) = plugin {
-                            plugin.init().unwrap();
-                            info!("load plugin {} success ! path {}",plugin.get_plugin_name(), path.to_str().unwrap());
-                            plugin_table.insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin)));
+                            if let Err(e) = plugin.init() {
+                                warn!("load plugin error skip ! path {} error: {}", path.to_str().unwrap(), e);
+                                continue;
+                            } else {
+                                info!("load plugin {} success ! path {}",plugin.get_plugin_name(), path.to_str().unwrap());
+                                plugin_table.insert(plugin.get_plugin_priority(),Arc::new(RwLock::new(plugin)));
+                            }
                         } else {
                             warn!("load plugin error skip ! path {} error: {}", path.to_str().unwrap(), plugin.err().unwrap());
                         }
@@ -63,7 +67,9 @@ impl PluginService {
                                 tx.send(r).unwrap();
                             }
                             Some(PluginServiceMessage::OnPublish(client_info, packet)) => {
-                                Self::on_publish(&plugin_table, client_info, packet).await;
+                                if let Err(e) = Self::on_publish(&plugin_table, client_info, packet).await {
+                                    warn!("on_publish error: {}", e);
+                                }
                             }
                             Some(PluginServiceMessage::OnTopicPermissionCheck(client_info, topic_info, tx)) => {
                                 let r = Self::on_topic_permission_check(&plugin_table, client_info, topic_info).await;
@@ -187,7 +193,13 @@ impl PluginService {
         if plugin_table.len() > 0 {
             while let Some(plugin) = plugin_table.iter().next_back() {
                 let plugin = plugin.1.clone();
-                let _ = plugin.write().unwrap().on_publish(client_info.clone(), packet.clone()).await;
+                let plugin_name = plugin.read().unwrap().get_plugin_name();
+                {
+                    let mut plugin = plugin.write().unwrap();
+                    if let Err(e) = plugin.on_publish(client_info.clone(), packet.clone()).await {
+                        warn!("plugin {} on_publish error: {}", plugin_name, e);
+                    }
+                }
             }
             Ok(())
         } else {
