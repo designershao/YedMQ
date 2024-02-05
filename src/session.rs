@@ -765,7 +765,7 @@ mod tests {
 
     async fn get_test_plugin_manager() -> Arc<PluginService> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
-        let plugin_path = PathBuf::from(crate_root_path).join("tests");
+        let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
         let plugin_manager = PluginService::new(plugin_path.to_str().unwrap().to_string())
             .unwrap();
