@@ -1,17 +1,16 @@
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-use samoye::{listener::tcp_listener::MqttTcpListener, plugin::plugin_manager::PluginManager, settings::Settings, session::{SessionHandle, SessionManager}, topic::TopicManager, protocol::{MqttPacketV3, v3::subscribe::TopicFilter}, router::Router};
+use samoye::{listener::tcp_listener::MqttTcpListener, plugin_service::service::PluginService, protocol::{MqttPacketV3, v3::subscribe::TopicFilter}, router::Router, session::{SessionHandle, SessionManager}, settings::Settings, topic::TopicManager};
 use tokio::sync::RwLock;
 
-async fn get_test_plugin_manager() -> Arc<PluginManager> {
+async fn get_test_plugin_manager() -> Arc<PluginService> {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
-    let plugin_path = PathBuf::from(crate_root_path).join("tests");
+    let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
-    let plugin_manager = PluginManager::new(&plugin_path.to_str().unwrap().to_string())
-        .await
+    let plugin_service = PluginService::new(plugin_path.to_str().unwrap().to_string())
         .unwrap();
-    Arc::new(plugin_manager)
+    Arc::new(plugin_service)
 }
 
 
@@ -32,6 +31,13 @@ pub async fn test_tcp_listener_connect() {
             tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
             tcp_tls: samoye::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            },
+            ws: samoye::settings::Ws { external: "0.0.0.0:18090".to_string() },
+            wss: samoye::settings::Wss {
+                external: "0.0.0.0:18091".to_string(),
                 cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
@@ -109,6 +115,13 @@ pub async fn test_tcp_client_subscribe_and_publish() {
             tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
             tcp_tls: samoye::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            },
+            ws: samoye::settings::Ws { external: "0.0.0.0:18090".to_string() },
+            wss: samoye::settings::Wss {
+                external: "0.0.0.0:18091".to_string(),
                 cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
@@ -267,6 +280,13 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
             tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
             tcp_tls: samoye::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
+                cacert_file: "".to_string(),
+                cert_file: "".to_string(),
+                key_file: "".to_string()
+            },
+            ws: samoye::settings::Ws { external: "0.0.0.0:18090".to_string() },
+            wss: samoye::settings::Wss {
+                external: "0.0.0.0:18091".to_string(),
                 cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
