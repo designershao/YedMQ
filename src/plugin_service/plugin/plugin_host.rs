@@ -23,11 +23,8 @@ impl PluginHost {
         self.metadata.priority
     }
 
-    pub fn load(path: String) -> Result<PluginHost> {
-        let metadata = PluginMetadata::new(PathBuf::from(path))?;
-
-        let entry_absolute_path = metadata.get_entry_absolute_path();
-
+    fn create_runtime(entry_absolute_path: PathBuf, metadata: &PluginMetadata) -> Result<Vm> {
+        
         let plugin_entry_src = std::fs::read_to_string(entry_absolute_path.clone())?;
 
         let module = Self::module()?;
@@ -57,7 +54,17 @@ impl PluginHost {
 
         let unit = result?;
 
-        let mut vm = Vm::new(runtime, Arc::new(unit));
+        let vm = Vm::new(runtime, Arc::new(unit));
+
+        Ok(vm)
+    }
+
+    pub fn load(path: String) -> Result<PluginHost> {
+        let metadata = PluginMetadata::new(PathBuf::from(path))?;
+
+        let entry_absolute_path = metadata.get_entry_absolute_path();
+
+        let vm = Self::create_runtime(entry_absolute_path.clone(), &metadata)?;
 
         let plugin_context = plugin_context::Context::new();
 
@@ -71,6 +78,24 @@ impl PluginHost {
     pub fn init(&mut self) -> Result<()> {
         self.runtime.call(["on_activate"], (&mut self.context,))?;
         Ok(())
+    }
+
+    pub fn reload(&mut self) -> Result<()> {
+
+        let entry_absolute_path = self.metadata.get_entry_absolute_path();
+
+        let vm = Self::create_runtime(entry_absolute_path.clone(), &self.metadata)?;
+
+        let plugin_context = plugin_context::Context::new();
+
+        self.runtime = vm;
+
+        self.context = plugin_context;
+
+        self.init()?;
+
+        Ok(())
+
     }
 
     fn module() -> Result<Module> {
