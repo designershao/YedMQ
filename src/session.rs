@@ -396,7 +396,9 @@ impl SessionHandle
                             }
                             None => {
                                 info!("session {} receiver closed, exit session loop", session_inner.lock().await.client_identifier);
-                                connection.shutdown().await.unwrap();
+                                if connection.shutdown().await.is_err() {
+                                    warn!("session {} shutdown error", session_inner.lock().await.client_identifier);
+                                }
                                 break;
                             }
                         }
@@ -607,7 +609,9 @@ impl SessionHandle
                             },
                             Err(e) => {
                                 warn!("read packet error: {:?}", e);
-                                connection.shutdown().await.unwrap();
+                                if connection.shutdown().await.is_err() {
+                                    warn!("session {} shutdown error", session_inner.lock().await.client_identifier);
+                                }
                                 info!("start close the session message receiver");
                                 receiver.close();
                             },

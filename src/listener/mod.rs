@@ -101,12 +101,19 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 Ok(auth_result) => {
                     match auth_result {
                         crate::plugin_service::plugin::plugin_context::Authentication::Allow(tenant_id) => {
-
-                            let session_context = SessionContext {
+                            let session_context = match packet.payload.username {
+                                Some(username) => SessionContext {
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: packet.payload.client_identifier.clone(),
-                                username: packet.payload.username.unwrap().clone(),
+                                username: username,
                                 remote_addr: peer_addr.to_string() 
+                                },
+                                None => SessionContext {
+                                tenant_id: tenant_id.clone(),
+                                client_identifier: packet.payload.client_identifier.clone(),
+                                username: "anonymous".to_string(),
+                                remote_addr: peer_addr.to_string() 
+                                }
                             };
 
                             let connack_packet = ConnAckPacketBuilder::new()

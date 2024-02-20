@@ -1,3 +1,4 @@
+use std::{thread, time};
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
@@ -63,6 +64,11 @@ pub async fn test_tcp_listener_connect() {
         listener.run().await.unwrap();
     });
 
+    // ensure listener start
+    let sleep_duration = time::Duration::from_millis(1000);
+    thread::sleep(sleep_duration);
+    //
+
     let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
     let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test".to_string())
         .clean_session(true)
@@ -127,6 +133,11 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     tokio::spawn(async move {
         listener.run().await.unwrap();
     });
+
+    // ensure listener start
+    let sleep_duration = time::Duration::from_millis(1000);
+    thread::sleep(sleep_duration);
+    //
 
     // subscriber process
     let sub_join = tokio::spawn(async move {
@@ -197,6 +208,10 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         //
     });
 
+    // ensure subscribe start
+    let sleep_duration = time::Duration::from_millis(1000);
+    thread::sleep(sleep_duration);
+    //
 
     // publisher process
     let pub_join = tokio::spawn(async move {

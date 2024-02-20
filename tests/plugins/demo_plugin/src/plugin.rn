@@ -12,7 +12,7 @@ fn on_auth_logic(connect_info) {
 fn on_topic_permission_check(client_info, topic_info) {
     let r = match topic_info.operation {
         TopicOperation::Publish => Authorization::Allow, 
-        TopicOperation::Subscribe => Authorization::Deny, 
+        TopicOperation::Subscribe => Authorization::Allow, 
     };
     return Ok(r);
 }

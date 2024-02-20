@@ -229,7 +229,9 @@ impl Context {
 
     // The function is called when the broker receives a message
     pub async fn on_publish(&mut self, client_info: ClientInfo, packet: PublishPacket) -> anyhow::Result<()> {
-        let _= self.hook_table.get(&Hooks::OnPublish).unwrap().async_send_call::<(ClientInfo, PublishPacket), ()>((client_info, packet)).await;
+        if self.hook_table.contains_key(&Hooks::OnPublish) {
+            let _= self.hook_table.get(&Hooks::OnPublish).unwrap().async_send_call::<(ClientInfo, PublishPacket), ()>((client_info, packet)).await;
+        }
         Ok(())
     }
 
