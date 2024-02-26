@@ -384,19 +384,19 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
 }
 
 impl VariableHeader {
+
     pub fn get_length(&self) -> usize {
-        10
+        2 + self.protocol_name.len()
     }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(10);
 
-        buf.put_u8(0);
-        buf.put_u8(4);
-        buf.put_u8(0x4D);
-        buf.put_u8(0x51);
-        buf.put_u8(0x54);
-        buf.put_u8(0x54);
+        buf.put_u16(self.protocol_name.len() as u16);
+
+        for byte in self.protocol_name.as_bytes() {
+            buf.put_u8(*byte);
+        }
         buf.put_u8(0x04);
 
         let mut connect_flags:u8 = 0;
