@@ -101,7 +101,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
 
 impl FixHeader {
     pub fn to_bytes(&self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(2);
+        let mut buf = BytesMut::with_capacity(2 + FixHeader::get_variable_length_encoding_bytes_size(self.remaining_length));
         let packet_type_u8:u8 = match self.packet_type {
             PacketType::CONNECT => 1,
             PacketType::CONNACK => 2,
@@ -141,10 +141,38 @@ impl FixHeader {
             buf.put_u8(packet_type_u8 << 4);
         }
 
-        buf.put_u8(self.remaining_length.try_into().unwrap());
+        buf.put(FixHeader::get_variable_length_encoding(self.remaining_length));
 
         buf
 
+    }
+
+    fn get_variable_length_encoding_bytes_size(size: usize) -> usize {
+        let mut size = size;
+        let mut length = 0;
+        loop {
+            size = size / 128;
+            length += 1;
+            if size <= 0 {
+                return length;
+            }        
+        }
+    }
+    
+    fn get_variable_length_encoding(size: usize) -> BytesMut {
+        let mut size = size;
+        let mut buf = BytesMut::with_capacity(FixHeader::get_variable_length_encoding_bytes_size(size)); // variable length encoding scheme max size is 4 bytes 
+        loop {
+            let byte = size % 128;
+            size = size / 128;
+            if size > 0 {
+                buf.put_u8((byte | 128).try_into().unwrap());
+            } else {
+                buf.put_u8(byte.try_into().unwrap());
+                break;
+            }
+        }
+        buf
     }
 }
 
@@ -209,6 +237,21 @@ mod tests {
 
         let bytes = fix_header.to_bytes();
         let i =  &[0x3C, 0x00];
+        assert_eq!(bytes.as_bytes(), i);
+    }
+
+    #[test]
+    fn test_variable_length_encoding_byte_size() {
+        let size = 268435455;
+        let bytes = FixHeader::get_variable_length_encoding_bytes_size(size);
+        assert_eq!(bytes, 4);
+    }
+
+    #[test]
+    fn test_variable_length_encoding() {
+        let size = 268435455;
+        let bytes = FixHeader::get_variable_length_encoding(size);
+        let i =  &[0xFF, 0xFF, 0xFF, 0x7F];
         assert_eq!(bytes.as_bytes(), i);
     }
 }
