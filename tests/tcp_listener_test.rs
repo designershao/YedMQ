@@ -342,3 +342,156 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     invalid_connect_join.await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_message() {
+
+    let plugin_manager =get_test_plugin_manager().await;
+    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
+    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+
+    let keep_live_duration_secs = 5;
+
+    let resend_duration_secs = 10;
+
+    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+    let mut router = Router {
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_receiver: router_receiver,
+    };
+
+    tokio::spawn(async move {
+        router.run().await;
+    });
+
+    let settings = get_test_settings(2, resend_duration_secs);
+
+    let listener = MqttTcpListener {
+        plugin_manager,
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_sender: router_sender,
+        settings: Arc::new(settings),
+    };
+
+    tokio::spawn(async move {
+        listener.run().await.unwrap();
+    });
+
+    // ensure listener start
+    let sleep_duration = time::Duration::from_millis(1000);
+    thread::sleep(sleep_duration);
+    //
+
+    let unexpect_disconnect_join = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
+        let mut publisher = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
+            .clean_session(true)
+            .keep_alive(keep_live_duration_secs)
+            .will_msg("/last_will".to_string(), "good bye".to_string(), 0, false)
+            .build();
+
+        let connect_packet = samoye::protocol::MqttPacketV3::Connect(connect_packet);
+        publisher.write(&connect_packet.to_bytes()).await.unwrap();
+        publisher.flush().await.unwrap();
+
+        // ensure connect succeed
+        let mut buf = Vec::new();
+        let read_bytes = publisher.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = samoye::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Connack(connack_packet) => {
+                    assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
+                }
+                _ => assert!(false)
+            }
+        }
+        //
+
+        // ensure subscribe connect
+        let sleep_duration = time::Duration::from_millis(1000);
+        thread::sleep(sleep_duration);
+        //
+
+        publisher.shutdown().await.unwrap();
+    });
+
+    let sub_will_join = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
+        let mut subscriber = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let connect_packet = samoye::protocol::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
+            .clean_session(true)
+            .keep_alive(keep_live_duration_secs)
+            .build();
+
+        let connect_packet = samoye::protocol::MqttPacketV3::Connect(connect_packet);
+        subscriber.write(&connect_packet.to_bytes()).await.unwrap();
+        subscriber.flush().await.unwrap();
+
+        let mut buf = Vec::new();
+        let read_bytes = subscriber.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = samoye::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Connack(connack_packet) => {
+                    assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
+                }
+                _ => assert!(false)
+            }
+        }
+
+        // subscribe
+        let subscribe_packet = samoye::protocol::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
+            topic_name: "/last_will".to_string(),
+            qos: 0
+        }).build();
+
+        let subscribe_packet = samoye::protocol::MqttPacketV3::Subscribe(subscribe_packet);
+
+        subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
+        subscriber.flush().await.unwrap();
+
+        let mut buf = Vec::new();
+        let read_bytes = subscriber.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = samoye::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Suback(suback_packet) => {
+                    assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
+                }
+                _ => assert!(false)
+            }
+        }
+        //
+
+        // wait publish message
+        let mut buf = Vec::new();
+        let read_bytes = subscriber.read_buf(&mut buf).await.unwrap();
+        if read_bytes == 0 {
+            assert!(false)
+        } else {
+            let packet = samoye::protocol::parse(&buf).unwrap().1.1;
+            match packet {
+                MqttPacketV3::Publish(publish_packet) => {
+                    assert_eq!(std::str::from_utf8(&publish_packet.payload.payload), Ok("good bye"));
+                }
+                _ => assert!(false)
+            }
+        }
+        //
+    });
+
+    unexpect_disconnect_join.await.unwrap();
+    sub_will_join.await.unwrap();
+
+}

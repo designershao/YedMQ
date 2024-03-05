@@ -386,7 +386,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnectPacket> {
 impl VariableHeader {
 
     pub fn get_length(&self) -> usize {
-        2 + self.protocol_name.len()
+        2 + self.protocol_name.len() + 2 + 2
     }
 
     pub fn to_bytes(&self) -> BytesMut {

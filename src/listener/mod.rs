@@ -10,11 +10,10 @@ use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderVa
 use crate::{
     connection::Connection, inflight::Inflight, plugin_service::{plugin::plugin_context::{ConnectInfo, SessionContext}, service::PluginService}, protocol::{
         v3::{
-            connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
-            fixed_header::FixHeader,
+            connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader}, connect::Payload, fixed_header::FixHeader
         },
         PacketType,
-    }, router::RouterCmd, session::{SessionManager, Session, SessionHandle}, settings::Settings, topic::TopicManager
+    }, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager
 };
 
 pub mod tcp_listener;
@@ -146,8 +145,20 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                     .create_tenant(tenant_id.clone());
                             }
 
+                            let will_message = match packet.variable_header.will_flag {
+                                true => {
+                                    Some(WillMessage{
+                                        will_topic: packet.payload.will_topic.unwrap(),
+                                        will_message: packet.payload.will_message.unwrap().into(),
+                                        will_qos: packet.variable_header.will_qos,
+                                        will_retain: packet.variable_header.will_retain,
+                                    })
+                                }
+                                false => None
+                            };
+
                             let new_session = Session {
-                                will_message: None,
+                                will_message: will_message,
                                 client_identifier: packet.payload.client_identifier.clone(),
                                 tenant_identifier: tenant_id.clone(),
                                 subscription_topics: vec![],

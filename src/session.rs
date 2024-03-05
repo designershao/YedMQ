@@ -13,10 +13,10 @@ use crate::router::RouterCmd;
 use crate::topic::TopicManager;
 
 pub struct WillMessage {
-    will_topic: String,
-    will_message: Vec<u8>,
-    will_qos: u8,
-    will_retain: bool,
+    pub will_topic: String,
+    pub will_message: Vec<u8>,
+    pub will_qos: u8,
+    pub will_retain: bool,
 }
 
 pub enum SessionState {
@@ -613,6 +613,16 @@ impl SessionHandle
                                     warn!("session {} shutdown error", session_inner.lock().await.client_identifier);
                                 }
                                 info!("start close the session message receiver");
+                                let session = session_inner.lock().await;
+                                if session.will_message.is_some() {
+                                    let will_message = session.will_message.as_ref().unwrap();
+                                    let publish_packet =
+                                        PublishPacketBuilder::new(will_message.will_topic.clone(), will_message.will_message.clone())
+                                            .retain(will_message.will_retain)
+                                            .qos(will_message.will_qos)
+                                            .build();
+                                    let _ = router_sender.send(RouterCmd::RoutePacket(session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
+                                }
                                 receiver.close();
                             },
                         }
