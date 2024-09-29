@@ -9,13 +9,13 @@ pub trait Plugin: Any + Send + Sync {
 
     fn connect_authenticate() -> Result<AuthenticationResult>;
 
-    fn publish_authorizate() -> Result<bool>;
+    fn publish_authorizate(client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool>;
 
-    fn subscribe_authorizate() -> Result<SubscribeAuthorizationResult>;
+    fn subscribe_authorizate(client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<SubscribeAuthorizationResult>;
 
-    fn on_publish();
+    fn on_publish(client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
 
-    fn on_disconnect();
+    fn on_disconnect(client: &Client);
 
 }
 
