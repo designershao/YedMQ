@@ -27,3 +27,5 @@ futures = "0.3"
 rune = "0.13.1"
 rune-modules = "0.13.1"
 samoye-mqtt = { path = "../mqtt" }
+samoye-plugin = { path = "../plugin" }
+libloading = "0.8.5"

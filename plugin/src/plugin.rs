@@ -3,19 +3,19 @@ use anyhow::Result;
 
 pub trait Plugin: Any + Send + Sync {
 
-    fn on_activate();
+    fn on_activate(&self);
 
-    fn on_deactivate();
+    fn on_deactivate(&self);
 
-    fn connect_authenticate() -> Result<AuthenticationResult>;
+    fn connect_authenticate(&self) -> Result<AuthenticationResult>;
 
-    fn publish_authorizate(client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool>;
+    fn publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool>;
 
-    fn subscribe_authorizate(client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<SubscribeAuthorizationResult>;
+    fn subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<SubscribeAuthorizationResult>;
 
-    fn on_publish(client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
+    fn on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
 
-    fn on_disconnect(client: &Client);
+    fn on_disconnect(&self, client: &Client);
 
 }
 

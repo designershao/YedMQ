@@ -6,3 +6,4 @@ pub mod router;
 pub mod topic;
 pub mod settings;
 pub mod listener;
+pub mod plugin_manager;
