@@ -1,0 +1,12 @@
+[package]
+name = "example_plugin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+samoye-plugin = { path = "../plugin" }
+samoye-mqtt = { path = "../mqtt" }
+anyhow = "1.0"

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "broker", 
+    "example_plugin", 
     "mqtt",
     "plugin"
 ]
