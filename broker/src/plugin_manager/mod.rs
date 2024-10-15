@@ -2,10 +2,12 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use samoye_plugin::plugin::Plugin;
+use rune::alloc::vec;
+use samoye_mqtt::v3::suback::ReturnCode;
+use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin, SubscribeAuthorizationResult, SubscribeReturnCode};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
-use log::warn;
+use log::{info, warn};
 
 mod plugin_metadata;
 
@@ -22,14 +24,21 @@ pub struct PluginManager {
 
     plugin_dir: String,
 
-    plugin_table: BTreeMap<i64, Arc<Box<dyn Plugin>>>
+    plugin_table: BTreeMap<i64, Arc<PluginWrapper>>
 
 }
 
+pub struct PluginWrapper {
+
+    plugin_metadata: PluginMetadata,
+
+    plugin: Box<dyn Plugin>
+
+}
 
 impl PluginManager {
 
-    pub fn load_plugin(&mut self, metadata: PluginMetadata) -> anyhow::Result<()> {
+    fn load_plugin(&mut self, metadata: PluginMetadata) -> anyhow::Result<()> {
         type PluginRegister = unsafe fn() -> *mut dyn samoye_plugin::plugin::Plugin;
         unsafe {
             let path = metadata.get_entry_absolute_path();
@@ -43,7 +52,10 @@ impl PluginManager {
             plugin.on_activate();
             //
 
-            self.plugin_table.insert(metadata.priority, Arc::new(plugin));
+            self.plugin_table.insert(metadata.priority, Arc::new(PluginWrapper{
+                plugin_metadata: metadata,
+                plugin
+            }));
 
             Ok(())
         }
@@ -80,6 +92,77 @@ impl PluginManager {
                 }
             }
             Ok(manager)
+        }
+    }
+
+    pub fn do_on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {
+        if self.plugin_table.len() > 0 {
+            while let Some(plugin) = self.plugin_table.iter().next_back() {
+                let plugin = plugin.1.clone();
+                plugin.plugin.on_publish(client, packet);
+            }
+        }
+    }
+
+    pub fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
+        let mut return_code = vec![SubscribeReturnCode::MaxQosLeastOnce; packet.payload.topic_filters.len()];
+        if self.plugin_table.len() > 0 {
+
+            while let Some(plugin) = self.plugin_table.iter().next_back() {
+                let plugin = plugin.1.clone();
+                let subscribe_authorizate_result = plugin.plugin.subscribe_authorizate(client, packet);
+                if let core::result::Result::Ok(subscribe_authorizate_result) = subscribe_authorizate_result {
+                    let return_code_from_plugin = subscribe_authorizate_result.return_code;
+                    if return_code_from_plugin.len() != return_code.len() { // plugin not return all topic filter permission
+                        continue;
+                    } else {
+                        for i in 0..return_code.len() {
+                            if return_code[i] != SubscribeReturnCode::Failure {
+                                return_code[i] = return_code_from_plugin[i].clone();
+                            }
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            }
+        }
+        Ok(SubscribeAuthorizationResult{
+            return_code
+        })
+    }
+
+    pub fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResult> {
+        if self.plugin_table.len() > 0 {
+            let mut i = 1;
+            while let Some(plugin) = self.plugin_table.iter().next_back() {
+                let plugin = plugin.1.clone();
+                let authenticate_result = plugin.plugin.connect_authenticate(packet);
+                if let core::result::Result::Ok(authenticate_result) = authenticate_result {
+                    match authenticate_result {
+                        AuthenticationResult::Success(tenant_id) => {
+                            return Ok(AuthenticationResult::Success(tenant_id));
+                        },
+                        AuthenticationResult::Fail(connect_return_code) => {
+                            info!("plugin {} on_connect_auth failed, not the last plugin, continue", plugin.plugin_metadata.name);
+                            if i >= self.plugin_table.len() { // the lowest priority plugin
+                                info!("plugin {} on_connect_auth failed, the last plugin", plugin.plugin_metadata.name);
+                                return Ok(AuthenticationResult::Fail(connect_return_code));
+                            }
+                        },
+                    }
+                } else {
+                    let err = authenticate_result.err().unwrap();
+                    warn!("plugin {} on_connect_auth error: {}", plugin.plugin_metadata.name, err);
+                }
+                i+=1;
+            }
+            Ok(AuthenticationResult::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth))
+        } else {
+            info!("no plugin loaded, pass anonymous");
+            Ok(
+                AuthenticationResult::Success("public".into())
+            )
         }
     }
 }

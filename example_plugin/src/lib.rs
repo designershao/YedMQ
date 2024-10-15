@@ -22,8 +22,8 @@ impl samoye_plugin::plugin::Plugin for ExamplePlugin {
         println!("example plugin on_deactivate");
     }
 
-    fn connect_authenticate(&self) -> Result<samoye_plugin::plugin::AuthenticationResult> {
-        return Ok(samoye_plugin::plugin::AuthenticationResult::Success)
+    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<samoye_plugin::plugin::AuthenticationResult> {
+        return Ok(samoye_plugin::plugin::AuthenticationResult::Success("tenant_id".into()))
     }
 
     fn publish_authorizate(&self, client: &samoye_plugin::plugin::Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool> {

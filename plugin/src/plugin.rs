@@ -7,7 +7,7 @@ pub trait Plugin: Any + Send + Sync {
 
     fn on_deactivate(&self);
 
-    fn connect_authenticate(&self) -> Result<AuthenticationResult>;
+    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult>;
 
     fn publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool>;
 
@@ -59,7 +59,7 @@ pub enum ConnectReturnCode {
 
 pub enum AuthenticationResult {
 
-    Success,
+    Success(String),
 
     Fail(ConnectReturnCode)
 
@@ -73,7 +73,7 @@ pub struct TopicFilter {
 
 }
 
-
+#[derive(Clone, PartialEq, Debug)]
 pub enum SubscribeReturnCode {
 
     MaxQosMostOnce,
