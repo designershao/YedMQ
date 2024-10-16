@@ -7,7 +7,7 @@ use tokio_native_tls::native_tls::{Identity, self};
 use tokio_util::io::StreamReader;
 
 use crate::{
-    connection::Connection, inflight::Inflight, plugin_service::service::PluginService, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
+    connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::service::PluginService, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
 };
 
 use samoye_mqtt::{
@@ -20,7 +20,7 @@ use samoye_mqtt::{
 
 use super::{accept_connection, websocket_tls_tunnel::{WebsocketTlsTunnel, StreamWrapper}, WsCallBack};
 pub struct MqttWssListener {
-    pub plugin_manager: Arc<PluginService>,
+    pub plugin_manager: Arc<PluginManager>,
     pub session_manager: Arc<RwLock<SessionManager>>,
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,

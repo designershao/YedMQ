@@ -2,9 +2,10 @@ use std::{sync::Arc, time::Duration, collections::HashMap};
 
 use anyhow::{Context, Result, anyhow};
 use log::{warn, info};
+use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
 use thiserror::Error;
 use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select, io::{AsyncRead, AsyncWrite}};
-use crate::plugin_service::plugin::plugin_context::{Authorization, SessionContext, TopicInfo, TopicOperation};
+use crate::{plugin_manager::PluginManager, plugin_service::plugin::plugin_context::{Authorization, SessionContext, TopicInfo, TopicOperation}};
 
 use crate::{connection::Connection, inflight::Inflight, };
 use crate::plugin_service::{plugin::plugin_context::ClientInfo, service::PluginService};
@@ -47,6 +48,34 @@ pub struct Session {
 }
 
 impl Session {
+
+    fn get_plugin_client_info(&self) -> Client {
+        // TODO: will retain info
+        if self.will_message.is_some() {
+            Client { 
+                client_identifier: self.will_message.as_ref().unwrap().will_topic.clone(),
+                properties: ClientProperties {
+                    username: "".to_string(),
+                    clean_session: self.clean_session,
+                    will_retain: self.will_message.as_ref().unwrap().will_retain,
+                    will_topic: Some(self.will_message.as_ref().unwrap().will_topic.clone()),
+                    will_message: Some(self.will_message.as_ref().unwrap().will_message.clone()),
+                }
+            }
+        } else {
+            Client { 
+                client_identifier: self.client_identifier.clone(),
+                properties: ClientProperties {
+                    username: "".to_string(),
+                    clean_session: self.clean_session,
+                    will_retain: false,
+                    will_topic: None,
+                    will_message: None,
+                }
+            }
+                
+        }
+    }
 
     pub async fn handle_rx_inflight_packet(&mut self, packet: &MqttPacketV3) -> Option<MqttPacketV3> {
         match packet {
@@ -281,7 +310,7 @@ impl SessionHandle
     pub async fn into_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         &mut self, 
         connection: Connection<T>,
-        plugin_manager: Arc<PluginService>,
+        plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
@@ -334,7 +363,7 @@ impl SessionHandle
     async fn run_in_online<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Arc<Mutex<Session>>,
         mut connection: Connection<T>,
-        plugin_manager: Arc<PluginService>,
+        plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,
@@ -356,6 +385,8 @@ impl SessionHandle
         let plugin_manager = plugin_manager.clone();
         let topic_manager = topic_manager.clone();
         let router_sender = router_sender.clone();
+
+        let plugin_client_info = session.lock().await.get_plugin_client_info();
 
         tokio::spawn(async move {
 
@@ -419,9 +450,7 @@ impl SessionHandle
                                             remote_addr: session_context.remote_addr.clone(), 
                                         };
 
-                                        if let Err(e) = plugin_manager.call_on_publish(client_info, publish_packet.clone()).await {
-                                            warn!("tenant {} session {} call hook on publish error, details: {}", session.tenant_identifier, session.client_identifier, e);
-                                        }
+                                        plugin_manager.do_on_publish(&plugin_client_info, &publish_packet);
 
                                         if publish_packet.fix_header.qos > Some(0) {
                                             session.new_rx_qos_state_ctx(packet).await;
@@ -512,46 +541,25 @@ impl SessionHandle
 
                                         let mut retain_messages: Vec<Arc<MqttPacketV3>> = vec![];
 
+                                        let topic_authorizate_result = plugin_manager.do_subscribe_authorizate(&plugin_client_info, &subscribe_packet);
+
                                         let mut return_code: Vec<samoye_mqtt::v3::suback::ReturnCode> = vec![];
-                                        {
-                                            let mut topic_manager = topic_manager.write().await;
 
-                                            for topic in subscriptions.iter() {
-                                                let client_info = ClientInfo {
-                                                    tenant_id: session_context.tenant_id.clone(), 
-                                                    client_identifier: session_context.client_identifier.clone(),
-                                                    username: session_context.username.clone(), 
-                                                    remote_addr: session_context.remote_addr.clone(), 
-                                                };
-
-                                                let topic_info = TopicInfo {
-                                                    operation: TopicOperation::Subscribe,
-                                                    qos: topic.qos.into(),
-                                                    topic_filter: topic.topic_name.clone(),
-                                                };
-
-                                                let acl_result = plugin_manager.call_on_topic_permiession_check(client_info, topic_info).await;
-
-                                                if let Ok(r) = acl_result {
-                                                    match r {
-                                                        Authorization::Allow=>{
-                                                            
-                                                        let sub_result = topic_manager.subscription(
-                                                            session.tenant_identifier.clone(),
-                                                            session.client_identifier.clone(),
-                                                            topic.topic_name.clone(),
-                                                            topic.qos,
-                                                        );
-                                                        if let Ok(_) = sub_result {
-                                                            if topic.qos == 0 {
-                                                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos0);
-                                                            }
-                                                            if topic.qos == 1 {
-                                                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos1);
-                                                            }
-                                                            if topic.qos == 2 {
-                                                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos2);
-                                                            }
+                                        match topic_authorizate_result {
+                                            Ok(r) => {
+                                                let plugin_return_code = r.return_code;
+                                                for i in 0..subscriptions.len() {
+                                                    let mut topic_manager = topic_manager.write().await;
+                                                    let topic = subscribe_packet.payload.topic_filters[i].clone();
+                                                    match plugin_return_code[i] {
+                                                        SubscribeReturnCode::Failure=>{
+                                                        return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
+                                                        }
+                                                        SubscribeReturnCode::Invalid=>{
+                                                        return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
+                                                        }
+                                                        SubscribeReturnCode::MaxQosMostOnce=>{
+                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos0);
                                                             session.subscription_topics.push(topic.topic_name.clone());
                                                             let packets = topic_manager.get_retain_publish_packet(
                                                                 session.tenant_identifier.clone(),
@@ -563,25 +571,49 @@ impl SessionHandle
                                                                     retain_messages.push(packet);
                                                                 }
                                                             }
-                                                        } else {
-                                                            warn!("tenant {} session {} subscribe error, details: {}", session.tenant_identifier, session.client_identifier, sub_result.unwrap_err());
-                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
                                                         }
-                                                        }
-                                                        Authorization::Deny => {
-                                                        return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
+                                                        SubscribeReturnCode::MaxQosLeastOnce=>{
+                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos1);
+                                                            session.subscription_topics.push(topic.topic_name.clone());
+                                                            let packets = topic_manager.get_retain_publish_packet(
+                                                                session.tenant_identifier.clone(),
+                                                                session.client_identifier.clone(),
+                                                                topic.topic_name.clone(),
+                                                            );
+                                                            if let Ok(packets) = packets {
+                                                                for packet in packets {
+                                                                    retain_messages.push(packet);
+                                                                }
+                                                            }
 
-                                                        }, 
+                                                        }
+                                                        SubscribeReturnCode::MaxQosExactlyOnce => {
+                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos2);
+                                                            session.subscription_topics.push(topic.topic_name.clone());
+                                                            let packets = topic_manager.get_retain_publish_packet(
+                                                                session.tenant_identifier.clone(),
+                                                                session.client_identifier.clone(),
+                                                                topic.topic_name.clone(),
+                                                            );
+                                                            if let Ok(packets) = packets {
+                                                                for packet in packets {
+                                                                    retain_messages.push(packet);
+                                                                }
+                                                            }
+
+                                                        }
                                                     }
-                                                } else {
-                                                    return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
-                                                    warn!("tenant {} session {} call hook on subscribe error, details: {}", session.tenant_identifier, session.client_identifier, acl_result.unwrap_err());
                                                 }
                                             }
+                                            Err(e) => {
+                                                warn!("auth on subscribe failed: {}", e);
+                                            }
                                         }
+
                                         for packet in retain_messages {
                                             connection.write_packet(&packet).await.unwrap();
                                         }
+
                                         connection.write_packet(&MqttPacketV3::Suback(SubackPacket::new(*packet_identifier, return_code))).await.unwrap();
                                     }
                                     MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
@@ -664,7 +696,7 @@ impl SessionHandle
     pub async fn new<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         session: Session,
         connection: Connection<T>,
-        plugin_manager: Arc<PluginService>,
+        plugin_manager: Arc<PluginManager>,
         topic_manager: Arc<RwLock<TopicManager>>,
         keep_alive: u64,
         resend_check: u64,

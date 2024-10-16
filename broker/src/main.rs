@@ -1,6 +1,7 @@
 use std::{sync::Arc, collections::HashMap};
 
 use log::info;
+use samoye::plugin_manager::PluginManager;
 use crate::{listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener}, plugin_service::service::PluginService};
 use settings::Settings;
 use tokio::sync::RwLock;
@@ -37,9 +38,8 @@ async fn main() {
 
     // init plugin manager
     info!("start load plugin manager");
-
-    let plugin_service = PluginService::new(settings.plugin.dir.clone()).unwrap();
-    let plugin_service = Arc::new(plugin_service);
+    let plugin_manager = PluginManager::new(settings.plugin.dir.clone()).unwrap();
+    let plugin_manager = Arc::new(plugin_manager);
     info!("plugin manager load succeed");
     //
 
@@ -67,7 +67,7 @@ async fn main() {
 
 
     let listener = MqttTcpListener {
-        plugin_manager: plugin_service.clone(),
+        plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -81,7 +81,7 @@ async fn main() {
     });
 
     let mut tcp_tls_listener = MqttTcpTlsListener {
-        plugin_manager: plugin_service.clone(),
+        plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -97,7 +97,7 @@ async fn main() {
 
 
     let ws_listener = MqttWsListener {
-        plugin_manager: plugin_service.clone(),
+        plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
@@ -111,7 +111,7 @@ async fn main() {
     });
 
     let wss_listener = MqttWssListener {
-        plugin_manager: plugin_service.clone(),
+        plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),

@@ -1,13 +1,14 @@
 use std::{sync::Arc, time::Duration, net::SocketAddr};
 
 use log::{warn, info};
+use samoye_plugin::plugin::{AuthenticationResult, ConnectReturnCode};
 use tokio::{
     net::{TcpStream},
     sync::{mpsc::Sender, RwLock}, io::{AsyncRead, AsyncWrite},
 };
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
-use crate::{connection::Connection, inflight::Inflight, plugin_service::{plugin::plugin_context::{ConnectInfo, SessionContext}, service::PluginService}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
+use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::{plugin::plugin_context::{ConnectInfo, SessionContext}, service::PluginService}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
 
 use samoye_mqtt::{
         v3::{
@@ -41,7 +42,7 @@ impl Callback for WsCallBack {
 
 async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: T,
-    plugin_manager: Arc<PluginService>,
+    plugin_manager: Arc<PluginManager>,
     session_manager: Arc<RwLock<SessionManager>>,
     topic_manager: Arc<RwLock<TopicManager>>,
     router_sender: Sender<RouterCmd>,
@@ -95,12 +96,11 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
             let r = plugin_manager
                 .clone()
-                .call_on_connect_auth(connect_info)
-                .await;
+                .do_connect_authenticate(&packet);
             match r {
                 Ok(auth_result) => {
                     match auth_result {
-                        crate::plugin_service::plugin::plugin_context::Authentication::Allow(tenant_id) => {
+                        AuthenticationResult::Success(tenant_id) => {
                             let session_context = match packet.payload.username {
                                 Some(username) => SessionContext {
                                 tenant_id: tenant_id.clone(),
@@ -270,9 +270,15 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 }
                             }
                         }
-                        crate::plugin_service::plugin::plugin_context::Authentication::Deny(reason, code) => {
+                        AuthenticationResult::Fail(return_code) => {
                             println!("forbidden");
-                            let connack_packet = ConnAckPacketBuilder::new().set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword).build();
+                            let connect_ack_return_code =match return_code {
+                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
+                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenInvalidClientIdentifier => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidClientIdentifier,
+                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnsupportUsernameOrPasswordFormat => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
+                                _ => samoye_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable
+                            };
+                            let connack_packet = ConnAckPacketBuilder::new().set_return_code(connect_ack_return_code).build();
                             if let Err(e) = connection
                                 .write_packet(&samoye_mqtt::MqttPacketV3::Connack(
                                     connack_packet,

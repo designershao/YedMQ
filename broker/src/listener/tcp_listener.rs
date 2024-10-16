@@ -5,7 +5,7 @@ use log::warn;
 use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
 
 use crate::{
-    connection::Connection, inflight::Inflight, plugin_service::service::PluginService, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
+    connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::service::PluginService, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
 };
 
 use samoye_mqtt::{
@@ -19,7 +19,7 @@ use samoye_mqtt::{
 use super::accept_connection;
 
 pub struct MqttTcpListener {
-    pub plugin_manager: Arc<PluginService>,
+    pub plugin_manager: Arc<PluginManager>,
     pub session_manager: Arc<RwLock<SessionManager>>,
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
