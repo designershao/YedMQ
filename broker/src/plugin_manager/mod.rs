@@ -95,6 +95,15 @@ impl PluginManager {
         }
     }
 
+    pub fn do_on_disconnect(&self, client: &Client) {
+        if self.plugin_table.len() > 0 {
+            while let Some(plugin) = self.plugin_table.iter().next_back() {
+                let plugin = plugin.1.clone();
+                plugin.plugin.on_disconnect(client);
+            }
+        }
+    }
+
     pub fn do_on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {
         if self.plugin_table.len() > 0 {
             while let Some(plugin) = self.plugin_table.iter().next_back() {
@@ -102,6 +111,29 @@ impl PluginManager {
                 plugin.plugin.on_publish(client, packet);
             }
         }
+    }
+
+    pub fn do_publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool> {
+        if self.plugin_table.len() > 0 {
+            while let Some(plugin) = self.plugin_table.iter().next_back() {
+                let plugin = plugin.1.clone();
+                let publish_authorizate_result = plugin.plugin.publish_authorizate(client, packet);
+                match publish_authorizate_result {
+                    core::result::Result::Ok(publish_authorizate_result) => {
+                        if publish_authorizate_result {
+                            continue;
+                        } else {
+                            return Ok(false);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("plugin {} publish_authorizate error: {}", plugin.plugin_metadata.name, e);
+                        continue;
+                    }
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
