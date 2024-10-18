@@ -2,14 +2,12 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use rune::alloc::vec;
-use samoye_mqtt::v3::suback::ReturnCode;
 use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin, SubscribeAuthorizationResult, SubscribeReturnCode};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{info, warn};
 
-mod plugin_metadata;
+pub mod plugin_metadata;
 
 #[derive(Error, Debug)]
 pub enum PluginManagerError {

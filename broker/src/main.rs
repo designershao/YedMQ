@@ -1,7 +1,7 @@
 use std::{sync::Arc, collections::HashMap};
 
 use log::info;
-use samoye::plugin_manager::PluginManager;
+use plugin_manager::PluginManager;
 use crate::{listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener}, plugin_service::service::PluginService};
 use settings::Settings;
 use tokio::sync::RwLock;
@@ -17,6 +17,7 @@ mod topic;
 mod settings;
 mod listener;
 mod plugin_service;
+mod plugin_manager;
 
 #[tokio::main]
 async fn main() {

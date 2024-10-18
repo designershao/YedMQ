@@ -23,7 +23,7 @@ pub struct Client {
 
     pub client_identifier: String,
 
-    pub properties: ClientProperties
+    pub properties: ClientProperties,
 
 }
 

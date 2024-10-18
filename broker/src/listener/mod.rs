@@ -1,21 +1,15 @@
 use std::{sync::Arc, time::Duration, net::SocketAddr};
 
 use log::{warn, info};
-use samoye_plugin::plugin::{AuthenticationResult, ConnectReturnCode};
+use samoye_plugin::plugin::AuthenticationResult;
 use tokio::{
-    net::{TcpStream},
     sync::{mpsc::Sender, RwLock}, io::{AsyncRead, AsyncWrite},
 };
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
-use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::{plugin::plugin_context::{ConnectInfo, SessionContext}, service::PluginService}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
+use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::plugin::plugin_context::{ConnectInfo, SessionContext}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
 
-use samoye_mqtt::{
-        v3::{
-            connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader}, connect::Payload, fixed_header::FixHeader
-        },
-        PacketType,
-    };
+use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
 
 
 pub mod tcp_listener;

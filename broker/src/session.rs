@@ -1,14 +1,14 @@
 use std::{sync::Arc, time::Duration, collections::HashMap};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use log::{warn, info};
 use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
 use thiserror::Error;
-use tokio::{sync::{oneshot::Sender, RwLock, Mutex}, net::TcpStream, select, io::{AsyncRead, AsyncWrite}};
-use crate::{plugin_manager::PluginManager, plugin_service::plugin::plugin_context::{Authorization, SessionContext, TopicInfo, TopicOperation}};
+use tokio::{sync::{RwLock, Mutex}, select, io::{AsyncRead, AsyncWrite}};
+use crate::{plugin_service::plugin::plugin_context::{ClientInfo, SessionContext}};
+use crate::plugin_manager::PluginManager;
 
 use crate::{connection::Connection, inflight::Inflight, };
-use crate::plugin_service::{plugin::plugin_context::ClientInfo, service::PluginService};
 use samoye_mqtt::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::PingrespPacket, suback::SubackPacket}};
 use crate::router::RouterCmd;
 use crate::topic::TopicManager;
@@ -45,6 +45,9 @@ pub struct Session {
 
     // Session state
     pub session_state: SessionState,
+
+    // MQTT Will Retain
+    pub will_retain: bool,
 }
 
 impl Session {
@@ -800,21 +803,22 @@ mod tests {
 
     use tokio_test::io::Builder;
 
-    use crate::{
-        connection::{Connection}, inflight::Inflight,plugin_service::{plugin::plugin_context::SessionContext, service::PluginService}, session::Session, session::SessionHandle, topic::TopicManager
-    };
-    use samoye_mqtt::{
+    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::plugin::plugin_context::SessionContext, session::{Session, SessionHandle}, topic::TopicManager};
+    use 
+    samoye_mqtt::{
             v3::{
                 publish::PublishPacketBuilder,
             },
             MqttPacketV3,
         };
 
-    async fn get_test_plugin_manager() -> Arc<PluginService> {
+    
+
+    async fn get_test_plugin_manager() -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
         let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
-        let plugin_manager = PluginService::new(plugin_path.to_str().unwrap().to_string())
+        let plugin_manager = PluginManager::new(plugin_path.to_str().unwrap().to_string())
             .unwrap();
         Arc::new(plugin_manager)
     }

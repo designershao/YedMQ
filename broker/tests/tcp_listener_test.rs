@@ -1,16 +1,17 @@
 use std::{thread, time};
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
+use samoye::plugin_manager::PluginManager;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 use samoye::{listener::tcp_listener::MqttTcpListener, plugin_service::service::PluginService, router::Router, session::{SessionHandle, SessionManager}, settings::Settings, topic::TopicManager};
 use samoye_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
 use tokio::sync::RwLock;
 
-async fn get_test_plugin_manager() -> Arc<PluginService> {
+async fn get_test_plugin_manager() -> Arc<PluginManager> {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
-    let plugin_service = PluginService::new(plugin_path.to_str().unwrap().to_string())
+    let plugin_service = PluginManager::new(plugin_path.to_str().unwrap().to_string())
         .unwrap();
     Arc::new(plugin_service)
 }
