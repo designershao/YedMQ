@@ -2,7 +2,7 @@ use std::{sync::Arc, collections::HashMap};
 
 use log::info;
 use plugin_manager::PluginManager;
-use crate::{listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener}, plugin_service::service::PluginService};
+use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
 use settings::Settings;
 use tokio::sync::RwLock;
 use topic::TopicManager;

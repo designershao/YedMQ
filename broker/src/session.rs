@@ -5,7 +5,7 @@ use log::{warn, info};
 use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
 use thiserror::Error;
 use tokio::{sync::{RwLock, Mutex}, select, io::{AsyncRead, AsyncWrite}};
-use crate::{plugin_service::plugin::plugin_context::{ClientInfo, SessionContext}};
+use crate::plugin_service::plugin::plugin_context::{ClientInfo, SessionContext};
 use crate::plugin_manager::PluginManager;
 
 use crate::{connection::Connection, inflight::Inflight, };
@@ -839,6 +839,7 @@ mod tests {
             will_message: None,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
+            will_retain: false,
             subscription_topics: vec![],
             clean_session: true,
             inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
@@ -899,6 +900,7 @@ mod tests {
 
         let mut session = Session {
             will_message: None,
+            will_retain: false,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
             subscription_topics: vec![],
@@ -977,6 +979,7 @@ mod tests {
 
         let mut session = Session {
             will_message: None,
+            will_retain: false,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
             subscription_topics: vec![],

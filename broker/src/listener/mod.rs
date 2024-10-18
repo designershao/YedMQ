@@ -82,15 +82,10 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
             //
 
-            let connect_info = ConnectInfo {
-                username: packet.payload.username.clone(),
-                password: packet.payload.password.clone(),
-                remote_addr: peer_addr.to_string(),
-            };
-
             let r = plugin_manager
                 .clone()
                 .do_connect_authenticate(&packet);
+
             match r {
                 Ok(auth_result) => {
                     match auth_result {
@@ -162,6 +157,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 )),
                                 clean_session: packet.variable_header.clean_session,
                                 session_state: crate::session::SessionState::Online,
+                                will_retain: packet.variable_header.will_retain,
                             };
 
                             let (quit_signal, quit_waiter) = tokio::sync::oneshot::channel();

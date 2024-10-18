@@ -6,7 +6,7 @@ use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}}
 use tokio_native_tls::native_tls::{Identity, self};
 
 use crate::{
-    connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::service::PluginService, router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
+    connection::Connection, inflight::Inflight, plugin_manager::PluginManager,  router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
 };
 
 use samoye_mqtt::{
