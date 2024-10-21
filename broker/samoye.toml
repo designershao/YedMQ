@@ -22,3 +22,6 @@ external = "0.0.0.0:8083"
 
 [listener.wss]
 external = "0.0.0.0:8084"
+cacert_file = ""
+cert_file = ""
+key_file = ""
