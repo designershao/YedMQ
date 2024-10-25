@@ -1,6 +1,6 @@
 use bytes::{BytesMut, Buf};
 use log::error;
-use tokio::{net::TcpStream, io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite}};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 
 use samoye_mqtt::MqttPacketV3;
 use anyhow::Result;
@@ -83,7 +83,7 @@ where
 #[cfg(test)]
 mod tests {
     use nom::AsBytes;
-    use samoye_mqtt::{v3::{publish::{PublishPacketBuilder}}, MqttPacketV3};
+    use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
     use super::Connection;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -118,7 +118,7 @@ mod tests {
         let mut connection = Connection::new(mock_io); 
 
         let packet = connection.read_packet().await;
-        if let Err(e) = packet {
+        if let Err(_) = packet {
             assert!(true)
         } else {
             assert!(false)

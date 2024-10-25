@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use samoye::{plugin_manager::PluginManager, plugin_service::plugin::{plugin_context::{Authentication, Authorization, ClientInfo, ConnectInfo, TopicInfo, TopicOperation},  plugin_metadata::PluginMetadata}};
+
+use samoye::plugin_manager::{plugin_metadata::PluginMetadata, PluginManager};
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
