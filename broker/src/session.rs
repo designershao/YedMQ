@@ -57,6 +57,7 @@ impl Session {
     fn get_plugin_client_info(&self) -> Client {
         if self.will_message.is_some() {
             Client { 
+                tenant_id: self.tenant_identifier.clone(),
                 client_identifier: self.will_message.as_ref().unwrap().will_topic.clone(),
                 properties: ClientProperties {
                     username: self.username.clone(),
@@ -68,6 +69,7 @@ impl Session {
             }
         } else {
             Client { 
+                tenant_id: self.tenant_identifier.clone(),
                 client_identifier: self.client_identifier.clone(),
                 properties: ClientProperties {
                     username: self.username.clone(),
@@ -447,13 +449,6 @@ impl SessionHandle
 
                                         let mut session = session_inner.lock().await;
 
-                                        let client_info = ClientInfo {
-                                             tenant_id: session_context.tenant_id.clone(), 
-                                             client_identifier: session_context.client_identifier.clone(),
-                                                username: session_context.username.clone(), 
-                                            remote_addr: session_context.remote_addr.clone(), 
-                                        };
-
                                         plugin_manager.do_on_publish(&plugin_client_info, &publish_packet);
 
                                         if publish_packet.fix_header.qos > Some(0) {
@@ -478,6 +473,7 @@ impl SessionHandle
                                         connection.shutdown().await.unwrap();
                                         session.session_state = SessionState::Offline;
                                         info!("start close the session message receiver");
+                                        plugin_manager.do_on_disconnect(&plugin_client_info);
                                         receiver.close();
                                     }
                                     MqttPacketV3::Pingreq(_) => {

@@ -21,6 +21,8 @@ pub trait Plugin: Any + Send + Sync {
 
 pub struct Client {
 
+    pub tenant_id: String,
+
     pub client_identifier: String,
 
     pub properties: ClientProperties,
