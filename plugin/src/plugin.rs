@@ -29,7 +29,7 @@ pub struct Client {
 
 pub struct ClientProperties {
 
-    pub username:String,
+    pub username: Option<String>,
 
     pub clean_session: bool,
 

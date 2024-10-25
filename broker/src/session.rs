@@ -25,6 +25,10 @@ pub enum SessionState {
     Offline,
 }
 pub struct Session {
+
+    // MQTT Auth Username
+    pub username: Option<String>,
+
     // MQTT Will Message
     pub will_message: Option<WillMessage>,
 
@@ -46,19 +50,16 @@ pub struct Session {
     // Session state
     pub session_state: SessionState,
 
-    // MQTT Will Retain
-    pub will_retain: bool,
 }
 
 impl Session {
 
     fn get_plugin_client_info(&self) -> Client {
-        // TODO: will retain info
         if self.will_message.is_some() {
             Client { 
                 client_identifier: self.will_message.as_ref().unwrap().will_topic.clone(),
                 properties: ClientProperties {
-                    username: "".to_string(),
+                    username: self.username.clone(),
                     clean_session: self.clean_session,
                     will_retain: self.will_message.as_ref().unwrap().will_retain,
                     will_topic: Some(self.will_message.as_ref().unwrap().will_topic.clone()),
@@ -69,7 +70,7 @@ impl Session {
             Client { 
                 client_identifier: self.client_identifier.clone(),
                 properties: ClientProperties {
-                    username: "".to_string(),
+                    username: self.username.clone(),
                     clean_session: self.clean_session,
                     will_retain: false,
                     will_topic: None,
@@ -797,22 +798,10 @@ impl SessionManager
 
 mod tests {
 
-    use std::{sync::Arc, time::Duration, path::PathBuf, io::Write};
-
-    use tokio::{sync::RwLock, io::{AsyncReadExt, AsyncWriteExt}};
-
-    use tokio_test::io::Builder;
-
+    use std::{path::PathBuf, sync::Arc, time::Duration};
+    use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
     use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::plugin::plugin_context::SessionContext, session::{Session, SessionHandle}, topic::TopicManager};
-    use 
-    samoye_mqtt::{
-            v3::{
-                publish::PublishPacketBuilder,
-            },
-            MqttPacketV3,
-        };
-
-    
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -833,13 +822,13 @@ mod tests {
 
         let resend_duration_secs = 10;
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
-        let mut session = Session {
+        let session = Session {
+            username: Some("test".to_string()),
             will_message: None,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
-            will_retain: false,
             subscription_topics: vec![],
             clean_session: true,
             inflight: Inflight::new(Duration::from_secs(resend_duration_secs)),
@@ -851,11 +840,11 @@ mod tests {
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        let (mut reader, _addr) = listener.accept().await.unwrap();
+        let (reader, _addr) = listener.accept().await.unwrap();
 
         let connection = Connection::new(reader);
 
-        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+        let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
         let session_context= SessionContext {
             tenant_id: "tenant_a".to_string(),
@@ -864,7 +853,7 @@ mod tests {
             remote_addr: "127.0.0.1:18088".to_string(),
         };
 
-        let session_handle = SessionHandle::new(
+        let _session_handle = SessionHandle::new(
             session,
             connection, 
             plugin_manager,
@@ -896,11 +885,11 @@ mod tests {
 
         let resend_duration_secs = 10;
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
-        let mut session = Session {
+        let session = Session {
+            username: Some("test".to_string()),
             will_message: None,
-            will_retain: false,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
             subscription_topics: vec![],
@@ -914,11 +903,11 @@ mod tests {
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        let (mut reader, _addr) = listener.accept().await.unwrap();
+        let (reader, _addr) = listener.accept().await.unwrap();
 
         let connection = Connection::new(reader);
 
-        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+        let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
         let session_context= SessionContext {
             tenant_id: "tenant_a".to_string(),
@@ -927,7 +916,7 @@ mod tests {
             remote_addr: "127.0.0.1:18088".to_string(),
         };
 
-        let session_handle = SessionHandle::new(
+        let _session_handle = SessionHandle::new(
             session,
             connection, 
             plugin_manager,
@@ -975,11 +964,11 @@ mod tests {
 
         let resend_duration_secs = 10;
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
-        let mut session = Session {
+        let session = Session {
+            username: Some("test".to_string()),
             will_message: None,
-            will_retain: false,
             client_identifier: "clinet_a".to_string(),
             tenant_identifier: "tenant_a".to_string(),
             subscription_topics: vec![],
@@ -993,11 +982,11 @@ mod tests {
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
 
-        let (mut reader, _addr) = listener.accept().await.unwrap();
+        let (reader, _addr) = listener.accept().await.unwrap();
 
         let connection = Connection::new(reader);
 
-        let (quit_sender, quit_receiver) = tokio::sync::oneshot::channel();
+        let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
         let session_context= SessionContext {
             tenant_id: "tenant_a".to_string(),

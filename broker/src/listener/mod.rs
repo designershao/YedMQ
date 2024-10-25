@@ -147,7 +147,14 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 false => None
                             };
 
+                            let username = if session_context.username == "anonymous" {
+                                None
+                            } else {
+                                Some(session_context.username.clone())
+                            };
+
                             let new_session = Session {
+                                username: username,
                                 will_message: will_message,
                                 client_identifier: packet.payload.client_identifier.clone(),
                                 tenant_identifier: tenant_id.clone(),
@@ -157,7 +164,6 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 )),
                                 clean_session: packet.variable_header.clean_session,
                                 session_state: crate::session::SessionState::Online,
-                                will_retain: packet.variable_header.will_retain,
                             };
 
                             let (quit_signal, quit_waiter) = tokio::sync::oneshot::channel();
