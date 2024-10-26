@@ -76,7 +76,7 @@ impl PluginManager {
                 let metadata_result = plugin_metadata::PluginMetadata::new(path.to_str().unwrap().into());
                 match metadata_result {
                     std::result::Result::Ok(metadata) => {
-                            let load_plugin_result = manager.load_plugin(metadata).and_then(|plugin| {
+                            let load_plugin_result = manager.load_plugin(metadata).and_then(|_| {
                                 Ok(())
                             });
 
