@@ -16,7 +16,6 @@ mod router;
 mod topic;
 mod settings;
 mod listener;
-mod plugin_service;
 mod plugin_manager;
 
 #[tokio::main]

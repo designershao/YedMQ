@@ -5,7 +5,6 @@ use log::{warn, info};
 use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
 use thiserror::Error;
 use tokio::{sync::{RwLock, Mutex}, select, io::{AsyncRead, AsyncWrite}};
-use crate::plugin_service::plugin::plugin_context::SessionContext;
 use crate::plugin_manager::PluginManager;
 
 use crate::{connection::Connection, inflight::Inflight, };
@@ -161,11 +160,10 @@ impl SessionHandle
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         quit_signal: tokio::sync::oneshot::Sender<()>,
-        session_context: SessionContext
     ) {
         info!("client id {} session into online", self.session.lock().await.client_identifier);
         let _ = self.sender.send(SessionMessage::Stop).await;
-        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal, session_context).await;
+        let sender = Self::run_in_online(self.session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
         self.sender = sender;
     }
 
@@ -214,7 +212,6 @@ impl SessionHandle
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         quit_signal: tokio::sync::oneshot::Sender<()>,
-        session_context: SessionContext
     ) -> tokio::sync::mpsc::Sender<SessionMessage> {
 
         {
@@ -543,7 +540,7 @@ impl SessionHandle
                     }
                 }
             }
-            quit_signal.send(());
+            let _ = quit_signal.send(());
         });
         sender
     }
@@ -557,10 +554,9 @@ impl SessionHandle
         resend_check: u64,
         router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
         quit_signal: tokio::sync::oneshot::Sender<()>,
-        session_context: SessionContext
     ) -> Self {
         let session = Arc::new(Mutex::new(session));
-        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal, session_context).await;
+        let sender = Self::run_in_online(session.clone(), connection, plugin_manager, topic_manager, keep_alive, resend_check, router_sender, quit_signal).await;
         SessionHandle { session: session.clone(), sender }
     }
 
@@ -652,7 +648,7 @@ mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
     use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
     use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
-    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::plugin::plugin_context::SessionContext, session::{Session, SessionHandle}, topic::TopicManager};
+    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, session::{Session, SessionHandle}, topic::TopicManager};
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -697,13 +693,6 @@ mod tests {
 
         let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
-        let session_context= SessionContext {
-            tenant_id: "tenant_a".to_string(),
-            client_identifier: "client_a".to_string(),
-            username: "username".to_string(),
-            remote_addr: "127.0.0.1:18088".to_string(),
-        };
-
         let _session_handle = SessionHandle::new(
             session,
             connection, 
@@ -713,7 +702,6 @@ mod tests {
             resend_duration_secs,
             router_sender,
             quit_sender,
-            session_context
         ).await;
 
         tokio::time::sleep(Duration::from_secs(keep_live_duration_secs + 2)).await;
@@ -760,13 +748,6 @@ mod tests {
 
         let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
-        let session_context= SessionContext {
-            tenant_id: "tenant_a".to_string(),
-            client_identifier: "client_a".to_string(),
-            username: "username".to_string(),
-            remote_addr: "127.0.0.1:18088".to_string(),
-        };
-
         let _session_handle = SessionHandle::new(
             session,
             connection, 
@@ -776,7 +757,6 @@ mod tests {
             resend_duration_secs,
             router_sender,
             quit_sender,
-            session_context
         ).await;
 
         let qos_1_publish_packet = PublishPacketBuilder::new("a/b".to_string(), vec![0x01])
@@ -839,13 +819,6 @@ mod tests {
 
         let (quit_sender, _quit_receiver) = tokio::sync::oneshot::channel();
 
-        let session_context= SessionContext {
-            tenant_id: "tenant_a".to_string(),
-            client_identifier: "client_a".to_string(),
-            username: "username".to_string(),
-            remote_addr: "127.0.0.1:18088".to_string(),
-        };
-
         let mut session_handle = SessionHandle::new(
             session,
             connection, 
@@ -855,7 +828,6 @@ mod tests {
             resend_duration_secs,
             router_sender,
             quit_sender,
-            session_context
         ).await;
 
         session_handle.kick_off().await;

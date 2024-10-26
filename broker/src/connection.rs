@@ -21,11 +21,6 @@ impl<T> Connection<T>
 where
     T: AsyncRead + AsyncWrite + Unpin
 {
-    
-    pub fn get_stream(&mut self) -> &mut T {
-        &mut self.stream
-    }
-
     pub fn new(stream: T) -> Self {
         Self {
             stream,
@@ -34,7 +29,6 @@ where
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        //self.stream.shutdown().await?;
         self.stream.shutdown().await?;
         Ok(())
     }

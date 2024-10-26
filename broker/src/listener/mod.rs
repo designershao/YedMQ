@@ -7,7 +7,7 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
-use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, plugin_service::plugin::plugin_context::SessionContext, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
+use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
 
 use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
 
@@ -90,20 +90,6 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 Ok(auth_result) => {
                     match auth_result {
                         AuthenticationResult::Success(tenant_id) => {
-                            let session_context = match packet.payload.username {
-                                Some(username) => SessionContext {
-                                tenant_id: tenant_id.clone(),
-                                client_identifier: packet.payload.client_identifier.clone(),
-                                username: username,
-                                remote_addr: peer_addr.to_string() 
-                                },
-                                None => SessionContext {
-                                tenant_id: tenant_id.clone(),
-                                client_identifier: packet.payload.client_identifier.clone(),
-                                username: "anonymous".to_string(),
-                                remote_addr: peer_addr.to_string() 
-                                }
-                            };
 
                             let connack_packet = ConnAckPacketBuilder::new()
                                 .set_return_code(
@@ -147,11 +133,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 false => None
                             };
 
-                            let username = if session_context.username == "anonymous" {
-                                None
-                            } else {
-                                Some(session_context.username.clone())
-                            };
+                            let username =packet.payload.username.clone();
 
                             let new_session = Session {
                                 username: username,
@@ -200,7 +182,6 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                                 settings.session.packet_resend_interval_secs,
                                                 router_sender,
                                                 quit_signal,
-                                                session_context,
                                             )
                                             .await;
                                     }
@@ -216,7 +197,6 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                         settings.session.packet_resend_interval_secs,
                                         router_sender.clone(),
                                         quit_signal,
-                                        session_context,
                                     )
                                     .await;
                                     session_handle_new
