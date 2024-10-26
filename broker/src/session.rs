@@ -5,7 +5,7 @@ use log::{warn, info};
 use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
 use thiserror::Error;
 use tokio::{sync::{RwLock, Mutex}, select, io::{AsyncRead, AsyncWrite}};
-use crate::plugin_service::plugin::plugin_context::{ClientInfo, SessionContext};
+use crate::plugin_service::plugin::plugin_context::SessionContext;
 use crate::plugin_manager::PluginManager;
 
 use crate::{connection::Connection, inflight::Inflight, };
