@@ -1,11 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
-use log::warn;
 use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
 
 use crate::{
-    connection::Connection, inflight::Inflight, plugin_manager::PluginManager,  router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
+     plugin_manager::PluginManager,  router::RouterCmd, session::SessionManager, settings::Settings, topic::TopicManager
 };
 
 use samoye_mqtt::{
@@ -53,7 +52,7 @@ mod tests {
 
     use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-    use crate::settings::Plugin;
+    use crate::{session::SessionHandle, settings::Plugin};
 
     use samoye_mqtt::MqttPacketV3;
 
