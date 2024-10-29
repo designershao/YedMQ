@@ -108,6 +108,12 @@ pub struct SessionHandle {
     sender: tokio::sync::mpsc::Sender<SessionMessage>,
 }
 
+
+// check subscribe return code
+fn is_allowd_subscribe(subscribe_return_code: &SubscribeReturnCode) -> bool {
+    !(matches!(subscribe_return_code, SubscribeReturnCode::Invalid) || matches!(subscribe_return_code, SubscribeReturnCode::Failure))
+}
+
 impl SessionHandle
 {
 
@@ -403,57 +409,40 @@ impl SessionHandle
                                                 for i in 0..subscriptions.len() {
                                                     let mut topic_manager = topic_manager.write().await;
                                                     let topic = subscribe_packet.payload.topic_filters[i].clone();
-                                                    match plugin_return_code[i] {
-                                                        SubscribeReturnCode::Failure=>{
+                                                    if is_allowd_subscribe(&plugin_return_code[i]) {
+                                                        let sub_result = topic_manager.subscription(
+                                                            session.tenant_identifier.clone(),
+                                                            session.client_identifier.clone(),
+                                                            topic.topic_name.clone(),
+                                                            topic.qos,
+                                                        );
+                                                        if let Ok(_) = sub_result {
+                                                            match plugin_return_code[i] {
+                                                                SubscribeReturnCode::MaxQosMostOnce=>{
+                                                                    return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos0);
+                                                                }
+                                                                SubscribeReturnCode::MaxQosLeastOnce=>{
+                                                                    return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos1);
+                                                                }
+                                                                SubscribeReturnCode::MaxQosExactlyOnce => {
+                                                                    return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos2);
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                            session.subscription_topics.push(topic.topic_name.clone());
+                                                            let packets = topic_manager.get_retain_publish_packet(
+                                                                session.tenant_identifier.clone(),
+                                                                session.client_identifier.clone(),
+                                                                topic.topic_name.clone(),
+                                                            );
+                                                            if let Ok(packets) = packets {
+                                                                for packet in packets {
+                                                                    retain_messages.push(packet);
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
                                                         return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
-                                                        }
-                                                        SubscribeReturnCode::Invalid=>{
-                                                        return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
-                                                        }
-                                                        SubscribeReturnCode::MaxQosMostOnce=>{
-                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos0);
-                                                            session.subscription_topics.push(topic.topic_name.clone());
-                                                            let packets = topic_manager.get_retain_publish_packet(
-                                                                session.tenant_identifier.clone(),
-                                                                session.client_identifier.clone(),
-                                                                topic.topic_name.clone(),
-                                                            );
-                                                            if let Ok(packets) = packets {
-                                                                for packet in packets {
-                                                                    retain_messages.push(packet);
-                                                                }
-                                                            }
-                                                        }
-                                                        SubscribeReturnCode::MaxQosLeastOnce=>{
-                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos1);
-                                                            session.subscription_topics.push(topic.topic_name.clone());
-                                                            let packets = topic_manager.get_retain_publish_packet(
-                                                                session.tenant_identifier.clone(),
-                                                                session.client_identifier.clone(),
-                                                                topic.topic_name.clone(),
-                                                            );
-                                                            if let Ok(packets) = packets {
-                                                                for packet in packets {
-                                                                    retain_messages.push(packet);
-                                                                }
-                                                            }
-
-                                                        }
-                                                        SubscribeReturnCode::MaxQosExactlyOnce => {
-                                                            return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos2);
-                                                            session.subscription_topics.push(topic.topic_name.clone());
-                                                            let packets = topic_manager.get_retain_publish_packet(
-                                                                session.tenant_identifier.clone(),
-                                                                session.client_identifier.clone(),
-                                                                topic.topic_name.clone(),
-                                                            );
-                                                            if let Ok(packets) = packets {
-                                                                for packet in packets {
-                                                                    retain_messages.push(packet);
-                                                                }
-                                                            }
-
-                                                        }
                                                     }
                                                 }
                                             }

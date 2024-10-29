@@ -131,7 +131,7 @@ impl PluginManager {
                 }
             }
         }
-        Ok(false)
+        Ok(true)
     }
 
     pub fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
