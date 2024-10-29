@@ -48,7 +48,7 @@ impl MqttTcpListener
 
 
 mod tests {
-    use std::{path::PathBuf, collections::HashMap};
+    use std::{collections::HashMap, fmt::format, path::PathBuf, time::Duration};
 
     use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
@@ -57,6 +57,11 @@ mod tests {
     use samoye_mqtt::MqttPacketV3;
 
     use super::*;
+
+    fn random_tcp_port() -> u16 {
+        use rand::Rng;
+        rand::thread_rng().gen_range(1024..=65535)
+    }
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -76,12 +81,14 @@ mod tests {
 
         let resend_duration_secs = 10;
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (router_sender, _) = tokio::sync::mpsc::channel(10);
+
+        let tcp_port = random_tcp_port();
 
         let settings = Settings {
             session: crate::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
             listener: crate::settings::Listener { 
-                tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() },
+                tcp: crate::settings::Tcp { external: format!("127.0.0.1:{}", tcp_port).to_string() },
                 tcp_tls: crate::settings::TcpTls {
                     external: "".to_string(),
                     cacert_file: "".to_string(),
@@ -111,7 +118,9 @@ mod tests {
             listener.run().await.unwrap();
         });
 
-        let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await; // ensure listener start
+
+        let mut writer = tokio::net::TcpStream::connect(format!("0.0.0.0:{}", tcp_port)).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
@@ -141,12 +150,14 @@ mod tests {
 
         let resend_duration_secs = 10;
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (router_sender, _) = tokio::sync::mpsc::channel(10);
+
+        let tcp_port = random_tcp_port();
 
         let settings = Settings {
             session: crate::settings::Session { qos_expired_secs: 2, packet_resend_interval_secs: resend_duration_secs },
             listener: crate::settings::Listener {
-                tcp: crate::settings::Tcp { external: "127.0.0.1:18088".to_string() },
+                tcp: crate::settings::Tcp { external: format!("127.0.0.1:{}", tcp_port).to_string() },
                 tcp_tls: crate::settings::TcpTls {
                     external: "".to_string(),
                     cacert_file: "".to_string(),
@@ -176,7 +187,9 @@ mod tests {
             listener.run().await.unwrap();
         });
 
-        let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1000)).await; // ensure listener start
+
+        let mut writer = tokio::net::TcpStream::connect(format!("0.0.0.0:{}", tcp_port)).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)

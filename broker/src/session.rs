@@ -637,7 +637,12 @@ mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
     use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
     use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
-    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, session::{Session, SessionHandle}, topic::TopicManager};
+    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, session::{Session, SessionHandle}, settings::Tcp, topic::TopicManager};
+
+    fn random_tcp_port() -> u16 {
+        use rand::Rng;
+        rand::thread_rng().gen_range(1024..=65535)
+    }
 
     async fn get_test_plugin_manager() -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -660,6 +665,8 @@ mod tests {
 
         let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
+        let tcp_port = random_tcp_port();
+
         let session = Session {
             username: Some("test".to_string()),
             will_message: None,
@@ -671,7 +678,7 @@ mod tests {
             session_state: crate::session::SessionState::Online,
         };
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", tcp_port)).await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -715,6 +722,8 @@ mod tests {
 
         let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
+        let tcp_port = random_tcp_port();
+
         let session = Session {
             username: Some("test".to_string()),
             will_message: None,
@@ -726,7 +735,7 @@ mod tests {
             session_state: crate::session::SessionState::Online,
         };
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", tcp_port)).await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -786,6 +795,8 @@ mod tests {
 
         let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(10);
 
+        let tcp_port = random_tcp_port();
+
         let session = Session {
             username: Some("test".to_string()),
             will_message: None,
@@ -797,7 +808,7 @@ mod tests {
             session_state: crate::session::SessionState::Online,
         };
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:18088").await.unwrap();
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", tcp_port)).await.unwrap();
         let addr = listener.local_addr().unwrap();
 
         let mut writer = tokio::net::TcpStream::connect(addr).await.unwrap();

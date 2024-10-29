@@ -7,6 +7,11 @@ use samoye::{listener::tcp_listener::MqttTcpListener, router::Router, session::{
 use samoye_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
 use tokio::sync::RwLock;
 
+fn random_tcp_port() -> u16 {
+    use rand::Rng;
+    rand::thread_rng().gen_range(1024..=65535)
+}
+
 async fn get_test_plugin_manager() -> Arc<PluginManager> {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
@@ -17,10 +22,11 @@ async fn get_test_plugin_manager() -> Arc<PluginManager> {
 }
 
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
+    let tcp_port = random_tcp_port();
     let settings = Settings {
         session: samoye::settings::Session { qos_expired_secs: qos_expired_secs, packet_resend_interval_secs: resend_duration_sec },
         listener: samoye::settings::Listener { 
-            tcp: samoye::settings::Tcp { external: "0.0.0.0:18088".to_string() },
+            tcp: samoye::settings::Tcp { external: format!("0.0.0.0:{}", tcp_port).to_string() },
             tcp_tls: samoye::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
                 cacert_file: "".to_string(),
@@ -50,9 +56,11 @@ pub async fn test_tcp_listener_connect() {
 
     let resend_duration_secs = 10;
 
-    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+    let (router_sender, _) = tokio::sync::mpsc::channel(10);
 
     let settings = get_test_settings(2, resend_duration_secs);
+
+    let connect_address = settings.listener.tcp.external.clone();
 
     let listener = MqttTcpListener {
         plugin_manager,
@@ -71,7 +79,8 @@ pub async fn test_tcp_listener_connect() {
     thread::sleep(sleep_duration);
     //
 
-    let mut writer = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+
+    let mut writer = tokio::net::TcpStream::connect(connect_address).await.unwrap();
     let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
         .clean_session(true)
         .keep_alive(keep_live_duration_secs)
@@ -124,6 +133,9 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     let settings = get_test_settings(2, resend_duration_secs);
 
+    let connect_address = settings.listener.tcp.external.clone();
+    let connect_address_cloned = connect_address.clone();
+
     let listener = MqttTcpListener {
         plugin_manager,
         session_manager: session_manager.clone(),
@@ -143,7 +155,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     // subscriber process
     let sub_join = tokio::spawn(async move {
-        let mut subscriber = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let mut subscriber = tokio::net::TcpStream::connect(connect_address).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
@@ -218,7 +230,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     // publisher process
     let pub_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut publisher = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let mut publisher = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
@@ -278,6 +290,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
     });
 
     let settings = get_test_settings(2, resend_duration_secs);
+    let connect_address = settings.listener.tcp.external.clone();
 
     let listener = MqttTcpListener {
         plugin_manager,
@@ -328,7 +341,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
             payload
         };
 
-        let mut invalid_connect = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let mut invalid_connect = tokio::net::TcpStream::connect(connect_address).await.unwrap();
         let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
         invalid_connect.write(&connect_packet.to_bytes()).await.unwrap();
         invalid_connect.flush().await.unwrap();
@@ -370,6 +383,8 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let settings = get_test_settings(2, resend_duration_secs);
 
+    let connect_address = settings.listener.tcp.external.clone();
+
     let listener = MqttTcpListener {
         plugin_manager,
         session_manager: session_manager.clone(),
@@ -387,9 +402,10 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     thread::sleep(sleep_duration);
     //
 
+    let connect_address_cloned = connect_address.clone();
     let unexpect_disconnect_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut publisher = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let mut publisher = tokio::net::TcpStream::connect(connect_address).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
@@ -426,7 +442,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let sub_will_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut subscriber = tokio::net::TcpStream::connect("0.0.0.0:18088").await.unwrap();
+        let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
