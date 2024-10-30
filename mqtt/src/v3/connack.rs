@@ -1,8 +1,7 @@
-use byteorder::{BigEndian, ByteOrder};
 use bytes::BufMut;
-use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
-use nom::bytes::{streaming::take};
-use ::bytes::{BytesMut};
+use nom::{IResult, combinator::{map_res, flat_map, map}, sequence::tuple, error::Error};
+use nom::bytes::streaming::take;
+use ::bytes::BytesMut;
 
 use crate::{MqttPacket, PacketType};
 
@@ -105,7 +104,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnAckPacket> {
             map_res(
             nom::bytes::streaming::take(fixed_header.remaining_length),
             variable_header
-            ), move |(_,(variable_header))| {
+            ), move |(_,variable_header)| {
                 let cloned_fixed_header = fixed_header.clone();
                 ConnAckPacket { 
                     fix_header:cloned_fixed_header , 

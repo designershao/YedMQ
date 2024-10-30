@@ -1,10 +1,8 @@
-use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
-use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
-use nom::bytes::{streaming::take};
+use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, error::Error};
 use crate::{MqttPacket, PacketType};
 
-use super::{fixed_header::{FixHeader, self}, common::parse_utf8};
+use super::fixed_header::{FixHeader, self};
 
 #[derive(Debug, Clone)]
 pub struct PubCompPacket {

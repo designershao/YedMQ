@@ -1,7 +1,7 @@
 use nom::bits::{bits, streaming::take};
 use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
-use nom::{IResult, Err, Needed, error::{Error, ErrorKind}, bytes, character};
+use nom::{IResult, error::Error};
 use ::bytes::{BytesMut, BufMut};
 use crate::PacketType;
 

@@ -1,8 +1,6 @@
-use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
-use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, cut, eof}, sequence::tuple, bits, error::Error, multi::many0};
-use crate::{v3::common::parse_utf8, MqttPacket, PacketType};
-use nom::bits::{streaming::take};
+use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, sequence::tuple, multi::many0};
+use crate::{MqttPacket, PacketType};
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
 #[derive(Debug, Clone)]

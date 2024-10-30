@@ -1,12 +1,10 @@
-use byteorder::{BigEndian, ByteOrder};
 use bytes::{BytesMut, BufMut};
-use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map, rest}, sequence::tuple, bits, error::Error};
-use nom::bytes::{streaming::take};
+use nom::{IResult, combinator::{map_res, flat_map, map, rest}, sequence::tuple};
 use rune::Any;
 use crate::{MqttPacket, PacketType};
 use rand::{Rng, thread_rng};
 
-use super::{fixed_header::{FixHeader, self}, common::{parse_utf8, parse_utf8_complete}};
+use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
 #[derive(Debug, Clone, Any)]
 pub struct PublishPacket {

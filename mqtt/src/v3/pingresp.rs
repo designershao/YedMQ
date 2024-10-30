@@ -1,4 +1,4 @@
-use bytes::{BytesMut};
+use bytes::BytesMut;
 use nom::{IResult, combinator::map};
 
 use crate::{MqttPacket, PacketType};
