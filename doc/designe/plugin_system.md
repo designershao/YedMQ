@@ -1,5 +1,5 @@
 # Description
-Plugin system is based rune script language.When system start, the plugin system scan the plugin directory and then load into seprate rune vm instance.
+Plugin is based dynamic library.When system start, the plugin system scan the plugin directory and then load into the system.
 
 # Design
 
@@ -8,10 +8,7 @@ Plugin system is based rune script language.When system start, the plugin system
 ```
 plugin_a/
 ├─ doc/
-├─ src/
-│  ├─ common/
-│  │  ├─ utils.rn
-│  ├─ plugin.rn
+├─ lib_plugin.so
 ├─ plugin.toml
 ├─ README.md
 
@@ -27,7 +24,7 @@ name = "demo_plugin"
 author = "Samoye"
 description = "Just a demo plugin"
 version = "1.0.0"
-entry = "./src/plugin.lua"
+entry = "./lib_plugin.so"
 priority = 1000
 
 [custom_section]
@@ -52,34 +49,46 @@ The plugin could put settings (database connection, username and etc) in custom 
 
 Example:
 
-```rune
-fn on_auth_logic(client_info) {
-    if client_info.identifier_id == "client_a" {
-        true
-    } else {
-        false
+```rust
+
+pub struct ExamplePlugin {
+
+}
+
+impl ExamplePlugin {
+    pub fn new() -> Self {
+        ExamplePlugin {}
     }
 }
 
-fn on_publish_logic(publish_message) {
+impl samoye_plugin::plugin::Plugin for ExamplePlugin {
+    // implement the plugin trait
 }
 
-fn on_activate(context) {
-    context.hook.subscribe(Hook::OnConnectAuth, on_auth_logic);
-    context.hook.subscribe(Hook::OnPublish, on_publish_logic);
-}
 
-fn on_deactivate() {
-
-}
+egister_plugin!(ExamplePlugin, ExamplePlugin::new); // register plugin to plugin system
 
 ```
-### on_activate 
-This function will be called when the plugin load into system.        
+
+## Plugin Trait
+### on_activate
+When the plugin loaded into system, this method will be called.
 
 ### on_deactivate
-This function will be called when the plugin unload from system.
+When the plugin unload from then system, this method will be called.
 
-## Reference
-### PluginContext
-Plugin context is provided as the first parameter to the on_activate function.
+### connect_authenticate
+When a new client connects to the broker and performs login verification, this method will be called.
+
+### publish_authorizate
+When a client publishes a message, and the system needs to check if it has the permission to publish, this method will be called.
+
+### subscribe_authorizate
+When a client subscribes to a topic, and the system needs to check if it has the permission to subscribe, this method will be called.
+
+### on_publish
+When a client publishes a message, this method will be called.
+
+
+### on_disconnect
+When a client disconnect, this method will be called.
