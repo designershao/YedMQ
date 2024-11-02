@@ -28,7 +28,7 @@ pub fn test_plugin_metadata_load() {
     assert!(plugin_metadata.author == "Samoye");
     assert!(plugin_metadata.description == "Just a demo plugin");
     assert!(plugin_metadata.version == "1.0.0");
-    assert!(plugin_metadata.entry == "./src/plugin.rn");
+    assert!(plugin_metadata.entry == "./libexample_plugin.so");
     assert!(plugin_metadata.priority == 1000);
 
 }
