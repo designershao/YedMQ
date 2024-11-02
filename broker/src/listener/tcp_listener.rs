@@ -1,19 +1,12 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use tokio::{net::TcpListener, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
+use tokio::{net::TcpListener, sync::RwLock};
 
 use crate::{
      plugin_manager::PluginManager,  router::RouterCmd, session::SessionManager, settings::Settings, topic::TopicManager
 };
 
-use samoye_mqtt::{
-    v3::{
-        connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
-        fixed_header::FixHeader,
-    },
-    PacketType,
-};
 
 use super::accept_connection;
 
@@ -47,12 +40,13 @@ impl MqttTcpListener
 }
 
 
+#[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fmt::format, path::PathBuf, time::Duration};
+    use std::{collections::HashMap, path::PathBuf, time::Duration};
 
     use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-    use crate::{session::SessionHandle, settings::Plugin};
+    use crate::session::SessionHandle;
 
     use samoye_mqtt::MqttPacketV3;
 

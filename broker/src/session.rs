@@ -632,6 +632,7 @@ impl SessionManager
     }
 }
 
+#[cfg(test)]
 mod tests {
 
     use std::{path::PathBuf, sync::Arc, time::Duration};

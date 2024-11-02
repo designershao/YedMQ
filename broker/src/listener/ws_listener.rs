@@ -1,22 +1,14 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::Result;
 use log::warn;
-use tokio::{net::{TcpListener, TcpStream}, select, sync::RwLock, io::{AsyncRead, AsyncWrite}};
-use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
+use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::io::StreamReader;
 
 use crate::{
-    connection::Connection, inflight::Inflight, plugin_manager::PluginManager,  router::RouterCmd, session::{Session, SessionHandle, SessionManager, SessionManagerError}, settings::Settings, topic::TopicManager
+    plugin_manager::PluginManager,  router::RouterCmd, session::SessionManager, settings::Settings, topic::TopicManager
 };
 
-use samoye_mqtt::{
-        v3::{
-            connack::{ConnAckPacket, ConnAckPacketBuilder, VariableHeader},
-            fixed_header::FixHeader,
-        },
-        PacketType,
-    };
 
 use super::{accept_connection, websocket_tunnel::{WebsocketTunnel, StreamWrapper}, WsCallBack};
 pub struct MqttWsListener {

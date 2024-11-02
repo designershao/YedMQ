@@ -1,7 +1,7 @@
 use std::{pin::Pin, task::{Context, Poll}, io::{ErrorKind, Error}};
 
 use bytes::Bytes;
-use futures::{Stream, ready, Sink};
+use futures::{Stream, Sink};
 use tokio::{net::TcpStream, io::{AsyncRead, AsyncWrite, ReadBuf, AsyncBufRead}};
 use tokio_native_tls::TlsStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
