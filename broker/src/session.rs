@@ -638,7 +638,7 @@ mod tests {
     use std::{path::PathBuf, sync::Arc, time::Duration};
     use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
     use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
-    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, session::{Session, SessionHandle}, settings::Tcp, topic::TopicManager};
+    use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, session::{Session, SessionHandle}, topic::TopicManager};
 
     fn random_tcp_port() -> u16 {
         use rand::Rng;

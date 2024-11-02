@@ -1,5 +1,3 @@
-use std::ops::Sub;
-
 use anyhow::Result;
 use samoye_plugin::{plugin::SubscribeReturnCode, register_plugin};
 
@@ -22,15 +20,15 @@ impl samoye_plugin::plugin::Plugin for ExamplePlugin {
         println!("example plugin on_deactivate");
     }
 
-    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<samoye_plugin::plugin::AuthenticationResult> {
+    fn connect_authenticate(&self, _packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<samoye_plugin::plugin::AuthenticationResult> {
         return Ok(samoye_plugin::plugin::AuthenticationResult::Success("tenant_id".into()))
     }
 
-    fn publish_authorizate(&self, client: &samoye_plugin::plugin::Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool> {
+    fn publish_authorizate(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool> {
         return Ok(true)
     }
 
-    fn subscribe_authorizate(&self, client: &samoye_plugin::plugin::Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<samoye_plugin::plugin::SubscribeAuthorizationResult> {
+    fn subscribe_authorizate(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<samoye_plugin::plugin::SubscribeAuthorizationResult> {
         let return_code = SubscribeReturnCode::MaxQosMostOnce;
         return Ok(samoye_plugin::plugin::SubscribeAuthorizationResult{
             return_code: vec![return_code]

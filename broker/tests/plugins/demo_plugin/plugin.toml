@@ -3,5 +3,5 @@ name = "demo_plugin"
 author = "Samoye"
 description = "Just a demo plugin"
 version = "1.0.0"
-entry = "./src/plugin.rn"
+entry = "./libexample_plugin.so"
 priority = 1000

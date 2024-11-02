@@ -95,7 +95,8 @@ impl PluginManager {
 
     pub fn do_on_disconnect(&self, client: &Client) {
         if self.plugin_table.len() > 0 {
-            while let Some(plugin) = self.plugin_table.iter().next_back() {
+            let mut iter = self.plugin_table.iter();
+            while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 plugin.plugin.on_disconnect(client);
             }
@@ -104,7 +105,8 @@ impl PluginManager {
 
     pub fn do_on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {
         if self.plugin_table.len() > 0 {
-            while let Some(plugin) = self.plugin_table.iter().next_back() {
+            let mut iter = self.plugin_table.iter();
+            while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 plugin.plugin.on_publish(client, packet);
             }
@@ -113,7 +115,8 @@ impl PluginManager {
 
     pub fn do_publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool> {
         if self.plugin_table.len() > 0 {
-            while let Some(plugin) = self.plugin_table.iter().next_back() {
+            let mut iter = self.plugin_table.iter();
+            while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 let publish_authorizate_result = plugin.plugin.publish_authorizate(client, packet);
                 match publish_authorizate_result {
@@ -137,8 +140,8 @@ impl PluginManager {
     pub fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
         let mut return_code = vec![SubscribeReturnCode::MaxQosLeastOnce; packet.payload.topic_filters.len()];
         if self.plugin_table.len() > 0 {
-
-            while let Some(plugin) = self.plugin_table.iter().next_back() {
+            let mut iter = self.plugin_table.iter();
+            while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 let subscribe_authorizate_result = plugin.plugin.subscribe_authorizate(client, packet);
                 if let core::result::Result::Ok(subscribe_authorizate_result) = subscribe_authorizate_result {
@@ -165,7 +168,8 @@ impl PluginManager {
     pub fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResult> {
         if self.plugin_table.len() > 0 {
             let mut i = 1;
-            while let Some(plugin) = self.plugin_table.iter().next_back() {
+            let mut iter = self.plugin_table.iter();
+            while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 let authenticate_result = plugin.plugin.connect_authenticate(packet);
                 if let core::result::Result::Ok(authenticate_result) = authenticate_result {
