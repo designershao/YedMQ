@@ -26,7 +26,7 @@ pub enum PluginError {
     InvalidPluginConfig(String),
 
     #[error("invalid plugin: {0}")]
-    RuntimeError(#[from] mlua::Error),
+    RuntimeError(#[from] Error),
 
     #[error("load plugin error: {0}")]
     LoadPluginError(#[from] io::Error),
