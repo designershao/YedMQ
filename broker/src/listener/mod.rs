@@ -135,6 +135,8 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                             let username =packet.payload.username.clone();
 
+                            
+
                             let new_session = Session {
                                 username: username,
                                 will_message: will_message,

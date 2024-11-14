@@ -12,6 +12,8 @@ use samoye_mqtt::{MqttPacketV3, v3::{publish::PublishPacketBuilder, pingresp::Pi
 use crate::router::RouterCmd;
 use crate::topic::TopicManager;
 
+pub mod session_manager;
+
 pub struct WillMessage {
     pub will_topic: String,
     pub will_message: Vec<u8>,
@@ -20,7 +22,9 @@ pub struct WillMessage {
 }
 
 pub enum SessionState {
+
     Online,
+
     Offline,
 }
 pub struct Session {
@@ -78,7 +82,6 @@ impl Session {
                     will_message: None,
                 }
             }
-                
         }
     }
 
@@ -93,6 +96,23 @@ impl Session {
             self.inflight.register_with_rx_packet(packet).await;
         }
     }
+
+    pub async fn bootstrap<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+        &mut self,
+        connection: Connection<T>,
+        plugin_manager: Arc<PluginManager>,
+        topic_manager: Arc<RwLock<TopicManager>>,
+        keep_alive: u64,
+        resend_check: u64,
+        router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
+        quit_signal: tokio::sync::oneshot::Sender<()>,
+    ) -> tokio::sync::mpsc::Sender<SessionMessage> {
+        self.session_state = SessionState::Online;
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(100);
+        tokio::spawn(async move {
+        });
+        sender    }
+
 }
 
 
