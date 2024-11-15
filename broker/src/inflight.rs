@@ -18,7 +18,7 @@ impl Inflight {
         }
     }
 
-    pub async fn register_with_rx_packet(&mut self, packet: &MqttPacketV3) {
+    pub async fn register_with_rx_packet(&self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
@@ -43,7 +43,7 @@ impl Inflight {
         }
     }
 
-    pub async fn register_with_tx_packet(&mut self, packet: &MqttPacketV3) {
+    pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {

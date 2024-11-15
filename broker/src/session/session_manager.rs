@@ -1,11 +1,12 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use log::{info, warn};
-use samoye_mqtt::MqttPacketV3;
+use samoye_mqtt::{v3::{pingresp::PingrespPacket, publish::PublishPacket}, MqttPacketV3};
+use samoye_plugin::plugin::{Client, ClientProperties};
 use tokio::{select, sync::{mpsc::{Receiver, Sender}, RwLock}};
 use anyhow::Result;
 
-use crate::inflight::Inflight;
+use crate::{inflight::Inflight, plugin_manager::PluginManager, router::RouterCmd, topic::TopicManager};
 
 use super::WillMessage;
 
@@ -24,6 +25,14 @@ enum KeepAliveMessage {
 
 }
 
+#[derive(Debug, PartialEq)]
+pub enum KickOffReason {
+
+    KeepAliveExpired,
+
+    Other(String)
+}
+
 // Represent session message
 pub enum SessionMessage {
 
@@ -35,7 +44,7 @@ pub enum SessionMessage {
 
     InActivate,
 
-    KickOff(String), // notify session to disconnect current connection with some reason
+    KickOff(KickOffReason), // notify session to disconnect current connection with some reason
 
 }
 
@@ -50,6 +59,9 @@ pub struct SessionContext {
 
     // MQTT Keep Alive
     pub keep_alive: u64,
+
+    // MQTT Client Info For Plugin
+    pub client_info: Client,
 
 }
 
@@ -72,6 +84,16 @@ pub struct Session {
 
 }
 
+impl Session {
+    async fn new_tx_qos_state_ctx(&self, packet: &MqttPacketV3) {
+        self.inflight.register_with_tx_packet(packet).await;
+    }
+
+    async fn new_rx_qos_state_ctx(&self, packet: &MqttPacketV3) {
+        self.inflight.register_with_rx_packet(packet).await;
+    }
+}
+
 struct SessionWrapper {
 
     session: Session,
@@ -82,7 +104,11 @@ struct SessionWrapper {
 
     session_receiver: Receiver<SessionMessage>,
 
-    keep_alive_sender: Option<Sender<KeepAliveMessage>>
+    keep_alive_sender: Option<Sender<KeepAliveMessage>>,
+
+    plugin_manager: Arc<PluginManager>,
+
+    topic_manager: Arc<RwLock<TopicManager>>,
 
 }
 
@@ -101,7 +127,7 @@ async fn keep_alive_task(sender: Sender<SessionMessage>, keep_alive: u64) -> Sen
                             received = false;
                         } else {
                             // not received pingresp, disconnect
-                            if let Err(_) = sender.send(SessionMessage::KickOff("keep alive expired".into())).await {
+                            if let Err(_) = sender.send(SessionMessage::KickOff(KickOffReason::KeepAliveExpired)).await {
                                 warn!("session sender dropped");
                             }
                             //
@@ -131,11 +157,49 @@ async fn keep_alive_task(sender: Sender<SessionMessage>, keep_alive: u64) -> Sen
 }
 
 impl SessionWrapper {
+
+    // Process publish packet which received from the client connection
+    async fn process_publish_packet(&self, packet: &PublishPacket, connection_sender: &Sender<ConnectionMessage>, router_sender: &Sender<RouterCmd>) -> Result<()> {
+
+        let publish_authorization  = self.plugin_manager.do_publish_authorizate(&self.context.as_ref().unwrap().client_info, packet);
+
+        let allow_publish =match publish_authorization {
+            Ok(allow) => {
+                allow
+            },
+            Err(e) => { // if plugin do publish_authorizate error, default allow publish
+                warn!("publish_authorizate error: {}", e);
+                true
+            }
+        };
+
+        if allow_publish{
+            self.plugin_manager.do_on_publish(&self.context.as_ref().unwrap().client_info, &packet);
+
+            if packet.fix_header.qos > Some(0) {
+                self.session.new_rx_qos_state_ctx(&MqttPacketV3::Publish(packet.clone())).await;
+
+                let packet = self.session
+                    .inflight
+                    .get_current_packet(packet.variable_header.packet_identifier.unwrap())
+                    .await
+                    .unwrap();
+
+                if let Err(e) = connection_sender.send(ConnectionMessage::WritePacket(packet)).await {
+                    warn!("write packet error");
+                    return Err(anyhow::format_err!("write packet error: {}", e));
+                }
+            } 
+            router_sender.send(RouterCmd::RoutePacket(self.session.tenant_identifier.clone() ,MqttPacketV3::Publish(packet.clone()))).await.unwrap();
+        }
+        Ok(())
+    }
     
     pub async fn run_event_loop(
         &mut self,
         mut session_receiver:Receiver<SessionMessage>,
-        session_sender:Sender<SessionMessage>
+        session_sender:Sender<SessionMessage>,
+        router_sender:Sender<RouterCmd>,
     ) {
         loop {
             match self.state {
@@ -145,13 +209,13 @@ impl SessionWrapper {
                             match msg {
                                 Some(session_message) => {
                                     match session_message {
-                                        SessionMessage::Activate(session_context) => {
-                                            self.context = Some(session_context);
-                                            let keep_alive_sender =keep_alive_task(session_sender.clone(), self.context.as_ref().unwrap().keep_alive).await;
-                                            self.keep_alive_sender = Some(keep_alive_sender);
-                                        }
                                         SessionMessage::InActivate => {
                                             self.state = SessionState::Inactivate;
+                                            if let Some(keep_alive_sender) = &self.keep_alive_sender {
+                                                if let Err(_) = keep_alive_sender.send(KeepAliveMessage::Stop).await {
+                                                    warn!("keep alive sender dropped when send stop message");
+                                                }
+                                            }
                                         }
                                         SessionMessage::ForwardFromRouter(packet) => {
                                             // TODO: write to connection sender
@@ -165,15 +229,35 @@ impl SessionWrapper {
                                             }
                                             //
 
+                                            //
+                                            match packet {
+                                                MqttPacketV3::Publish(publish_packet) => {
+                                                    if let Some(context) = &self.context {
+                                                        let _ = self.process_publish_packet(&publish_packet, &context.connection, &router_sender);
+                                                    }
+                                                }
+                                                MqttPacketV3::Pingreq(_) => {
+                                                    if let Some(context) = &self.context {
+                                                        context.connection.send(ConnectionMessage::WritePacket(MqttPacketV3::Pingresp(PingrespPacket::new()))).await.unwrap();
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                            //
+
                                             // TODO: write to connection sender
                                         }
                                         SessionMessage::KickOff(some_reason) => {
-                                            info!("session {} kick off, reason: {}", self.session.client_identifier, some_reason);
-                                            self.state = SessionState::Inactivate;
                                             if let Some(context) = &self.context {
                                                 if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
                                                     warn!("connection receiver dropped");
                                                 }
+                                            }
+                                            self.state = SessionState::Inactivate;
+                                            self.context = None;
+                                            match some_reason {
+                                                KickOffReason::KeepAliveExpired => todo!("send will message to all subscribed client"),
+                                                KickOffReason::Other(_) => todo!(),
                                             }
                                         }
                                         _ => {}
@@ -185,7 +269,26 @@ impl SessionWrapper {
                         }
                     }
                 },
-                SessionState::Inactivate => todo!(),
+                SessionState::Inactivate => {
+                    select! {
+                        msg = session_receiver.recv() => {
+                            match msg {
+                                Some(session_message) => {
+                                    match session_message {
+                                        SessionMessage::Activate(session_context) => {
+                                            self.context = Some(session_context);
+                                            self.state = SessionState::Activate;
+                                            let keep_alive_sender =keep_alive_task(session_sender.clone(), self.context.as_ref().unwrap().keep_alive).await;
+                                            self.keep_alive_sender = Some(keep_alive_sender);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                },
             }
         }
     }
@@ -251,7 +354,7 @@ impl SessionManager
 mod tests {
     use std::time::Duration;
 
-    use crate::session::session_manager::{keep_alive_task, KeepAliveMessage};
+    use crate::session::session_manager::{keep_alive_task, KeepAliveMessage, KickOffReason};
 
     /// Test that the keep alive task should send a SessionMessage::KickOff to the session when keep alive expired.
     #[tokio::test]
@@ -267,7 +370,7 @@ mod tests {
         let msg = session_receiver.recv().await;
 
         if let Some(crate::session::session_manager::SessionMessage::KickOff(reason)) = msg {
-            assert_eq!(reason, "keep alive expired");
+            assert_eq!(reason, KickOffReason::KeepAliveExpired);
         } else {
             assert!(false);
         }
