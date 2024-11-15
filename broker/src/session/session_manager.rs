@@ -1,11 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, time::Duration};
 
-use log::warn;
+use log::{info, warn};
 use samoye_mqtt::MqttPacketV3;
-use tokio::{io::{AsyncRead, AsyncWrite}, select, sync::{mpsc::{Receiver, Sender}, Mutex, RwLock}};
+use tokio::{select, sync::{mpsc::{Receiver, Sender}, RwLock}};
 use anyhow::Result;
 
-use crate::{connection::Connection, inflight::Inflight};
+use crate::inflight::Inflight;
 
 use super::WillMessage;
 
@@ -16,10 +16,29 @@ pub enum ConnectionMessage{
     Disconnect
 }
 
-pub enum KeepAliveMessage {
+enum KeepAliveMessage {
+
     Trigger,
+
     Stop
+
 }
+
+// Represent session message
+pub enum SessionMessage {
+
+    ForwardFromRouter(MqttPacketV3), //Receive packet from router
+
+    ReceiveFromClient(MqttPacketV3), //Receive packet from client
+
+    Activate(SessionContext),
+
+    InActivate,
+
+    KickOff(String), // notify session to disconnect current connection with some reason
+
+}
+
 
 pub struct SessionContext {
 
@@ -61,48 +80,62 @@ struct SessionWrapper {
 
     state: SessionState,
 
-    session_receiver: Receiver<SessionMessage>
+    session_receiver: Receiver<SessionMessage>,
+
+    keep_alive_sender: Option<Sender<KeepAliveMessage>>
 
 }
 
-impl SessionWrapper {
-
-    pub async fn keep_alive_task(sender: Sender<SessionMessage>, keep_alive: u64) -> Sender<KeepAliveMessage> {
+// Run keep alive task, when not received pingresp in keep alive time, send kick off to current session
+async fn keep_alive_task(sender: Sender<SessionMessage>, keep_alive: u64) -> Sender<KeepAliveMessage> {
+    let (keep_alive_sender, mut keep_alive_receiver) = tokio::sync::mpsc::channel(10);
+    tokio::task::spawn(async move {
         let mut keep_alive_interval = tokio::time::interval(Duration::from_secs(keep_alive));
-        let (mut keep_alive_sender, mut keep_alive_receiver) = tokio::sync::mpsc::channel(1);
-        tokio::task::spawn(async move {
-            let mut received = false;
-            loop {
-                select! {
-                    _ = keep_alive_interval.tick() => {
+        let mut received = false;
+        let mut tick_first_raise = true;
+        loop {
+            select! {
+                _ = keep_alive_interval.tick() => {
+                    if !tick_first_raise {
                         if received {
                             received = false;
                         } else {
-                            if let Err(_) = sender.send(SessionMessage::KickOff).await {
+                            // not received pingresp, disconnect
+                            if let Err(_) = sender.send(SessionMessage::KickOff("keep alive expired".into())).await {
                                 warn!("session sender dropped");
                             }
+                            //
                         }
+                    } else {
+                        tick_first_raise = false;
                     }
-                    msg = keep_alive_receiver.recv() => {
-                        match msg {
-                            Some(KeepAliveMessage::Trigger) => {
-                                received = true
-                            },
-                            Some(KeepAliveMessage::Stop) => {
-                                break;
-                            },
-                            None => todo!(),
-                        }
+                }
+                msg = keep_alive_receiver.recv() => {
+                    match msg {
+                        Some(KeepAliveMessage::Trigger) => {
+                            received = true
+                        },
+                        Some(KeepAliveMessage::Stop) => {
+                            keep_alive_receiver.close();
+                        },
+                        None => {
+                            // receiver closed, return the task
+                            break;
+                        },
                     }
                 }
             }
-        });
-        keep_alive_sender
-    }
+        }
+    });
+    keep_alive_sender
+}
+
+impl SessionWrapper {
     
     pub async fn run_event_loop(
         &mut self,
         mut session_receiver:Receiver<SessionMessage>,
+        session_sender:Sender<SessionMessage>
     ) {
         loop {
             match self.state {
@@ -114,6 +147,8 @@ impl SessionWrapper {
                                     match session_message {
                                         SessionMessage::Activate(session_context) => {
                                             self.context = Some(session_context);
+                                            let keep_alive_sender =keep_alive_task(session_sender.clone(), self.context.as_ref().unwrap().keep_alive).await;
+                                            self.keep_alive_sender = Some(keep_alive_sender);
                                         }
                                         SessionMessage::InActivate => {
                                             self.state = SessionState::Inactivate;
@@ -122,9 +157,18 @@ impl SessionWrapper {
                                             // TODO: write to connection sender
                                         }
                                         SessionMessage::ReceiveFromClient(packet) => {
+                                            // trigger keep alive
+                                            if let Some(keep_alive_sender) = &self.keep_alive_sender {
+                                                if let Err(_) = keep_alive_sender.send(KeepAliveMessage::Trigger).await {
+                                                    warn!("keep alive sender dropped");
+                                                }
+                                            }
+                                            //
+
                                             // TODO: write to connection sender
                                         }
-                                        SessionMessage::KickOff => {
+                                        SessionMessage::KickOff(some_reason) => {
+                                            info!("session {} kick off, reason: {}", self.session.client_identifier, some_reason);
                                             self.state = SessionState::Inactivate;
                                             if let Some(context) = &self.context {
                                                 if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
@@ -147,19 +191,6 @@ impl SessionWrapper {
     }
 }
 
-
-pub enum SessionMessage {
-
-    ForwardFromRouter(MqttPacketV3), //Receive packet from router
-
-    ReceiveFromClient(MqttPacketV3), //Receive packet from client
-
-    KickOff,
-
-    Activate(SessionContext),
-
-    InActivate
-}
 
 pub enum SessionState {
 
@@ -213,5 +244,54 @@ impl SessionManager
     // Check if a tenant existed
     fn tenant_existed(&self, tenant_identifier: &str) -> bool {
         return self.active_sessions.contains_key(tenant_identifier);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use crate::session::session_manager::{keep_alive_task, KeepAliveMessage};
+
+    /// Test that the keep alive task should send a SessionMessage::KickOff to the session when keep alive expired.
+    #[tokio::test]
+    pub async fn test_keep_alive_expired_send_kick_off() {
+        let test_keep_alive = 2;
+
+        let (session_sender, mut session_receiver) = tokio::sync::mpsc::channel(100);
+
+        let _keep_alive_sender = keep_alive_task(session_sender.clone(), test_keep_alive).await;
+
+        tokio::time::sleep(Duration::from_secs(test_keep_alive + 1)).await; // wait keep alive expired
+
+        let msg = session_receiver.recv().await;
+
+        if let Some(crate::session::session_manager::SessionMessage::KickOff(reason)) = msg {
+            assert_eq!(reason, "keep alive expired");
+        } else {
+            assert!(false);
+        }
+    }
+
+    #[tokio::test]
+    pub async fn test_keep_alive_trigger() {
+        let test_keep_alive = 2;
+
+        let (session_sender,  _session_receiver) = tokio::sync::mpsc::channel(100);
+
+        let keep_alive_sender = keep_alive_task(session_sender.clone(), test_keep_alive).await;
+
+        tokio::time::sleep(Duration::from_secs(test_keep_alive - 1)).await;
+
+        keep_alive_sender.send(KeepAliveMessage::Trigger).await.unwrap();
+
+        tokio::time::sleep(Duration::from_secs(test_keep_alive - 1)).await;
+
+        keep_alive_sender.send(KeepAliveMessage::Stop).await.unwrap();
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        assert!(keep_alive_sender.is_closed());
+
     }
 }
