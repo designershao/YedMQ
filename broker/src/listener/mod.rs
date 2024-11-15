@@ -7,7 +7,7 @@ use tokio::{
 };
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
-use crate::{connection::Connection, inflight::Inflight, plugin_manager::PluginManager, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
+use crate::{connection::Connection, inflight::Inflight, plugin_manager::{PluginManager, PluginService}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
 
 use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
 
