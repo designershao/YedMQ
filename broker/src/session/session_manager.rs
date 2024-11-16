@@ -3,15 +3,14 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::Result;
 use log::{info, warn};
 use samoye_mqtt::{
-    v3::{pingresp::PingrespPacket, publish::PublishPacket, suback::SubackPacket, subscribe::SubscribePacket, unsubscribe::UnsubscribePacket},
+    v3::{pingresp::PingrespPacket, publish::{PublishPacket, PublishPacketBuilder}, suback::SubackPacket, subscribe::SubscribePacket, unsubscribe::UnsubscribePacket},
     MqttPacketV3,
 };
 use samoye_plugin::plugin::{Client, SubscribeReturnCode};
 use tokio::{
     select,
     sync::{
-        mpsc::{Receiver, Sender},
-        RwLock,
+        mpsc::{Receiver, Sender}, Mutex, RwLock
     },
 };
 
@@ -34,6 +33,12 @@ enum KeepAliveMessage {
     Trigger,
 
     Stop,
+}
+
+enum InflightResendTaskMessage {
+
+    Stop
+
 }
 
 #[derive(Debug, PartialEq)]
@@ -84,16 +89,18 @@ pub struct Session {
     pub subscription_topics: Vec<String>,
 
     // The inflight , track all in flights qos packet.
-    pub inflight: Inflight,
+    pub inflight: Arc<Mutex<Inflight>>,
 }
 
 impl Session {
     async fn new_tx_qos_state_ctx(&self, packet: &MqttPacketV3) {
-        self.inflight.register_with_tx_packet(packet).await;
+        let inflight = self.inflight.lock().await;
+        inflight.register_with_tx_packet(packet).await;
     }
 
     async fn new_rx_qos_state_ctx(&self, packet: &MqttPacketV3) {
-        self.inflight.register_with_rx_packet(packet).await;
+        let inflight = self.inflight.lock().await;
+        inflight.register_with_rx_packet(packet).await;
     }
 }
 
@@ -107,6 +114,8 @@ struct SessionWrapper {
     session_receiver: Receiver<SessionMessage>,
 
     keep_alive_sender: Option<Sender<KeepAliveMessage>>,
+
+    inflight_resend_task_sender: Option<Sender<InflightResendTaskMessage>>,
 
     plugin_manager: Arc<dyn PluginService>,
 
@@ -158,6 +167,50 @@ async fn keep_alive_task(
         }
     });
     keep_alive_sender
+}
+
+async fn inflight_resend_task(
+    connection_sender: Sender<ConnectionMessage>,
+    inflight: Arc<Mutex<Inflight>>,
+    resend_duration_secs: u64
+)  -> Sender<InflightResendTaskMessage>{
+    let (inflight_resend_sender, mut inflight_resend_receiver) = tokio::sync::mpsc::channel(10);
+    tokio::task::spawn(async move {
+        let mut resend_interval = tokio::time::interval(Duration::from_secs(resend_duration_secs));
+        let mut tick_first_raise = true;
+
+        loop {
+            select! {
+                _ = resend_interval.tick() => {
+                    
+                    if !tick_first_raise {
+                        let inflight = inflight.lock().await;
+                        let packets = inflight.get_all_expired_packets().await;
+                        for packet in packets {
+                            if let Err(_) = connection_sender.send(ConnectionMessage::WritePacket(packet.clone())).await {
+                                warn!("in flight resend task: connection sender dropped");
+                            }
+                        }
+                    } else {
+                        tick_first_raise = false
+                    }
+                }
+                msg = inflight_resend_receiver.recv() => {
+                    match msg {
+                        Some(InflightResendTaskMessage::Stop) => {
+                            inflight_resend_receiver.close();
+                        },
+                        None => {
+                            // receiver closed, return the task
+                            break;
+                        },
+                    }
+                }
+            }
+        }
+
+    });
+    inflight_resend_sender
 }
 
 fn is_allowd_subscribe(subscribe_return_code: &SubscribeReturnCode) -> bool {
@@ -304,10 +357,8 @@ impl SessionWrapper {
                     .new_rx_qos_state_ctx(&MqttPacketV3::Publish(packet.clone()))
                     .await;
 
-                let packet = self
-                    .session
-                    .inflight
-                    .get_current_packet(packet.variable_header.packet_identifier.unwrap())
+                let inflight = self.session.inflight.lock().await;
+                let packet = inflight.get_current_packet(packet.variable_header.packet_identifier.unwrap())
                     .await
                     .unwrap();
 
@@ -330,6 +381,24 @@ impl SessionWrapper {
         Ok(())
     }
 
+    pub async fn stop_keep_alive_task(&mut self) {
+        if let Some(keep_alive_sender) = &self.keep_alive_sender {
+            if let Err(_) = keep_alive_sender.send(KeepAliveMessage::Stop).await {
+                warn!("keep alive sender dropped when send stop message");
+            }
+            self.keep_alive_sender = None;
+        }
+    }
+
+    pub async fn stop_inflight_task(&mut self) {
+        if let Some(inflight_sender) = &self.inflight_resend_task_sender {
+            if let Err(_) = inflight_sender.send(InflightResendTaskMessage::Stop).await {
+                warn!("inflight sender dropped when send stop message");
+            }
+            self.inflight_resend_task_sender = None;
+        }
+    }
+
     pub async fn run_event_loop(
         &mut self,
         mut session_receiver: Receiver<SessionMessage>,
@@ -346,14 +415,28 @@ impl SessionWrapper {
                                     match session_message {
                                         SessionMessage::InActivate => {
                                             self.state = SessionState::Inactivate;
-                                            if let Some(keep_alive_sender) = &self.keep_alive_sender {
-                                                if let Err(_) = keep_alive_sender.send(KeepAliveMessage::Stop).await {
-                                                    warn!("keep alive sender dropped when send stop message");
-                                                }
-                                            }
+
+                                            self.context = None;
+
+                                            self.stop_inflight_task().await;
+
+                                            self.stop_keep_alive_task().await;
+
                                         }
                                         SessionMessage::ForwardFromRouter(packet) => {
-                                            // TODO: write to connection sender
+                                            if let Some(context) = &self.context {
+                                                match &packet {
+                                                    MqttPacketV3::Publish(publish_packet) => {
+                                                        if publish_packet.fix_header.qos > Some(0) {
+                                                            self.session.new_tx_qos_state_ctx(&packet).await;
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                                if let Err(_) =context.connection.send(ConnectionMessage::WritePacket(packet)).await {
+                                                    warn!("connection sender dropped");
+                                                }
+                                            }
                                         }
                                         SessionMessage::ReceiveFromClient(packet) => {
                                             // trigger keep alive
@@ -378,12 +461,12 @@ impl SessionWrapper {
                                                 }
                                                 MqttPacketV3::Puback(puback_packet) => {
                                                     if let Some(context) = &self.context {
-                                                        self.session.inflight
+                                                        let mut inflight = self.session.inflight.lock().await;
+                                                        inflight
                                                             .next_state(puback_packet.variable_header.packet_identifier)
                                                             .await;
 
-                                                        if let Some(p) = self.session
-                                                            .inflight
+                                                        if let Some(p) = inflight
                                                             .get_current_packet(puback_packet.variable_header.packet_identifier)
                                                             .await
                                                         {
@@ -393,11 +476,11 @@ impl SessionWrapper {
                                                 }
                                                 MqttPacketV3::Pubrel(pubrel_packet) => {
                                                     if let Some(context) = &self.context {
-                                                        self.session.inflight
+                                                        let mut inflight = self.session.inflight.lock().await;
+                                                        inflight
                                                             .next_state(pubrel_packet.variable_header.packet_identifier)
                                                             .await;
-                                                        if let Some(p) = self.session
-                                                            .inflight
+                                                        if let Some(p) = inflight
                                                             .get_current_packet(pubrel_packet.variable_header.packet_identifier)
                                                             .await
                                                         {
@@ -409,11 +492,11 @@ impl SessionWrapper {
                                                 }
                                                 MqttPacketV3::Pubcomp(pubcomp_packet) => {
                                                     if let Some(context) = &self.context {
-                                                        self.session.inflight
+                                                        let mut inflight = self.session.inflight.lock().await;
+                                                        inflight
                                                             .next_state(pubcomp_packet.variable_header.packet_identifier)
                                                             .await;
-                                                        if let Some(p) = self.session
-                                                            .inflight
+                                                        if let Some(p) = inflight
                                                             .get_current_packet(pubcomp_packet.variable_header.packet_identifier)
                                                             .await
                                                         {
@@ -439,22 +522,59 @@ impl SessionWrapper {
                                                         }
                                                     }
                                                 }
+                                                MqttPacketV3::Disconnect(_) => {
+                                                    if let Some(context) = &self.context {
+                                                        if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
+                                                            warn!("connection receiver dropped");
+                                                        }
+                                                        self.plugin_manager.do_on_disconnect(&self.context.as_ref().unwrap().client_info);
+                                                    }
+
+                                                    self.state = SessionState::Inactivate;
+
+                                                    self.context = None;
+
+                                                    self.stop_inflight_task().await;
+
+                                                    self.stop_keep_alive_task().await;
+
+                                                }
                                                 _ => {}
                                             }
                                             //
-
-                                            // TODO: write to connection sender
                                         }
                                         SessionMessage::KickOff(some_reason) => {
                                             if let Some(context) = &self.context {
                                                 if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
                                                     warn!("connection receiver dropped");
                                                 }
+                                                self.plugin_manager.do_on_disconnect(&self.context.as_ref().unwrap().client_info);
                                             }
+
                                             self.state = SessionState::Inactivate;
+
                                             self.context = None;
+
+                                            // stop keep alive task
+                                            self.stop_keep_alive_task().await;
+                                            //
+
+                                            // stop inflight resend task
+                                            self.stop_inflight_task().await;
+                                            //
+
                                             match some_reason {
-                                                KickOffReason::KeepAliveExpired => todo!("send will message to all subscribed client"),
+                                                KickOffReason::KeepAliveExpired => {
+                                                    if self.session.will_message.is_some() {
+                                                        let will_message = self.session.will_message.as_ref().unwrap();
+                                                        let publish_packet =
+                                                            PublishPacketBuilder::new(will_message.will_topic.clone(), will_message.will_message.clone())
+                                                                .retain(will_message.will_retain)
+                                                                .qos(will_message.will_qos)
+                                                                .build();
+                                                        let _ = router_sender.send(RouterCmd::RoutePacket(self.session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
+                                                    }
+                                                },
                                                 KickOffReason::Other(_) => todo!(),
                                             }
                                         }
@@ -476,8 +596,20 @@ impl SessionWrapper {
                                         SessionMessage::Activate(session_context) => {
                                             self.context = Some(session_context);
                                             self.state = SessionState::Activate;
+
+                                            // start keep alive task
                                             let keep_alive_sender =keep_alive_task(session_sender.clone(), self.context.as_ref().unwrap().keep_alive).await;
                                             self.keep_alive_sender = Some(keep_alive_sender);
+                                            //
+
+                                            // start inflight resend task
+                                            let inflight_resend_sender = inflight_resend_task(
+                                                self.context.as_ref().unwrap().connection.clone(), 
+                                                self.session.inflight.clone(), 
+                                                20).await;
+                                            self.inflight_resend_task_sender = Some(inflight_resend_sender);
+                                            //
+                        
                                         }
                                         _ => {}
                                     }
