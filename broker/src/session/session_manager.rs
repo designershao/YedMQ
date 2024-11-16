@@ -45,6 +45,10 @@ enum InflightResendTaskMessage {
 pub enum KickOffReason {
     KeepAliveExpired,
 
+    UnexpectDisconnect,
+
+    InvalidMqttPacket,
+
     Other(String),
 }
 
@@ -62,6 +66,7 @@ pub enum SessionMessage {
 }
 
 pub struct SessionContext {
+
     // MQTT Auth Username
     pub username: Option<String>,
 
@@ -73,6 +78,9 @@ pub struct SessionContext {
 
     // MQTT Client Info For Plugin
     pub client_info: Client,
+
+    // MQTT Clean Session Flag
+    pub clean_session: bool,
 }
 
 pub struct Session {
@@ -381,6 +389,22 @@ impl SessionWrapper {
         Ok(())
     }
 
+    pub async fn start_keep_alive_task(&mut self) {
+        let inflight_resend_sender = inflight_resend_task(
+            self.context.as_ref().unwrap().connection.clone(), 
+            self.session.inflight.clone(), 
+            20).await;
+        self.inflight_resend_task_sender = Some(inflight_resend_sender);
+    }
+
+    pub async fn start_inflight_task(&mut self) {
+        let inflight_resend_sender = inflight_resend_task(
+            self.context.as_ref().unwrap().connection.clone(), 
+            self.session.inflight.clone(), 
+            20).await;
+        self.inflight_resend_task_sender = Some(inflight_resend_sender);
+    }
+
     pub async fn stop_keep_alive_task(&mut self) {
         if let Some(keep_alive_sender) = &self.keep_alive_sender {
             if let Err(_) = keep_alive_sender.send(KeepAliveMessage::Stop).await {
@@ -399,10 +423,21 @@ impl SessionWrapper {
         }
     }
 
+    pub async fn process_will_message(&self, router_sender: &Sender<RouterCmd>) {
+        if self.session.will_message.is_some() {
+            let will_message = self.session.will_message.as_ref().unwrap();
+            let publish_packet =
+                PublishPacketBuilder::new(will_message.will_topic.clone(), will_message.will_message.clone())
+                    .retain(will_message.will_retain)
+                    .qos(will_message.will_qos)
+                    .build();
+            let _ = router_sender.send(RouterCmd::RoutePacket(self.session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
+        }
+    }
+
     pub async fn run_event_loop(
         &mut self,
         mut session_receiver: Receiver<SessionMessage>,
-        session_sender: Sender<SessionMessage>,
         router_sender: Sender<RouterCmd>,
     ) {
         loop {
@@ -416,11 +451,17 @@ impl SessionWrapper {
                                         SessionMessage::InActivate => {
                                             self.state = SessionState::Inactivate;
 
+                                            let clean_session = self.context.as_ref().unwrap().clean_session;
+
                                             self.context = None;
 
                                             self.stop_inflight_task().await;
 
                                             self.stop_keep_alive_task().await;
+
+                                            if clean_session {
+                                                break;
+                                            }
 
                                         }
                                         SessionMessage::ForwardFromRouter(packet) => {
@@ -565,16 +606,14 @@ impl SessionWrapper {
 
                                             match some_reason {
                                                 KickOffReason::KeepAliveExpired => {
-                                                    if self.session.will_message.is_some() {
-                                                        let will_message = self.session.will_message.as_ref().unwrap();
-                                                        let publish_packet =
-                                                            PublishPacketBuilder::new(will_message.will_topic.clone(), will_message.will_message.clone())
-                                                                .retain(will_message.will_retain)
-                                                                .qos(will_message.will_qos)
-                                                                .build();
-                                                        let _ = router_sender.send(RouterCmd::RoutePacket(self.session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
-                                                    }
+                                                    self.process_will_message(&router_sender).await;
                                                 },
+                                                KickOffReason::UnexpectDisconnect => {
+                                                    self.process_will_message(&router_sender).await;
+                                                },
+                                                KickOffReason::InvalidMqttPacket => {
+                                                    self.process_will_message(&router_sender).await;
+                                                }
                                                 KickOffReason::Other(_) => todo!(),
                                             }
                                         }
@@ -598,18 +637,23 @@ impl SessionWrapper {
                                             self.state = SessionState::Activate;
 
                                             // start keep alive task
-                                            let keep_alive_sender =keep_alive_task(session_sender.clone(), self.context.as_ref().unwrap().keep_alive).await;
-                                            self.keep_alive_sender = Some(keep_alive_sender);
+                                            self.start_keep_alive_task().await;
                                             //
 
                                             // start inflight resend task
-                                            let inflight_resend_sender = inflight_resend_task(
-                                                self.context.as_ref().unwrap().connection.clone(), 
-                                                self.session.inflight.clone(), 
-                                                20).await;
-                                            self.inflight_resend_task_sender = Some(inflight_resend_sender);
+                                            self.start_inflight_task().await;
                                             //
                         
+                                        }
+                                        SessionMessage::ForwardFromRouter(packet) => {
+                                            match &packet {
+                                                MqttPacketV3::Publish(publish_packet) => {
+                                                    if publish_packet.fix_header.qos > Some(0) {
+                                                        self.session.new_tx_qos_state_ctx(&packet).await;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -621,6 +665,7 @@ impl SessionWrapper {
                 }
             }
         }
+        info!("session {} stoped, return session event loop", self.session.client_identifier);
     }
 }
 
