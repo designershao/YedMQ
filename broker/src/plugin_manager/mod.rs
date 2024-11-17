@@ -34,7 +34,7 @@ pub struct PluginWrapper {
 
 }
 
-pub trait PluginService {
+pub trait PluginService: Send + Sync {
 
     fn do_on_disconnect(&self, client: &Client);
 

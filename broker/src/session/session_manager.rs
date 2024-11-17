@@ -125,7 +125,7 @@ struct SessionWrapper {
 
     inflight_resend_task_sender: Option<Sender<InflightResendTaskMessage>>,
 
-    plugin_manager: Arc<dyn PluginService>,
+    plugin_manager: Arc<dyn PluginService + 'static>,
 
     topic_manager: Arc<RwLock<TopicManager>>,
 }
@@ -734,13 +734,18 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
-    use crate::session::session_manager::{keep_alive_task, KeepAliveMessage, KickOffReason};
+    use samoye_plugin::plugin::{Client, ClientProperties};
+    use tokio::sync::{mpsc::Sender, Mutex};
+
+    use crate::{inflight::Inflight, session::session_manager::{keep_alive_task, KeepAliveMessage, KickOffReason, SessionState, SessionWrapper}};
+
+    use super::{ConnectionMessage, Session, SessionContext};
 
     /// Test that the keep alive task should send a SessionMessage::KickOff to the session when keep alive expired.
     #[tokio::test]
-    pub async fn test_keep_alive_expired_send_kick_off() {
+    pub async fn when_keep_alive_expired_keep_alive_task_shuould_send_kick_off() {
         let test_keep_alive = 2;
 
         let (session_sender, mut session_receiver) = tokio::sync::mpsc::channel(100);
@@ -758,8 +763,9 @@ mod tests {
         }
     }
 
+
     #[tokio::test]
-    pub async fn test_keep_alive_trigger() {
+    pub async fn when_recevie_message_trigger_keep_alive_task_should_not_stop() {
         let test_keep_alive = 2;
 
         let (session_sender, _session_receiver) = tokio::sync::mpsc::channel(100);
@@ -783,5 +789,61 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         assert!(keep_alive_sender.is_closed());
+    }
+
+    fn mock_session(client_identifier: &str, tenant_identifier: &str) -> Session {
+        Session {
+            will_message: None,
+            client_identifier: client_identifier.to_string(),
+            tenant_identifier: tenant_identifier.to_string(),
+            subscription_topics: vec![],
+            inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(10)))),
+        }
+    }
+
+    fn mock_session_context(
+        username: &str, 
+        connection: Sender<ConnectionMessage>,
+        keep_alive: u64,
+        clean_session: bool,
+        client_info:Client
+    ) -> SessionContext {
+        SessionContext {
+            username: Some(username.to_string()),
+            connection,
+            keep_alive,
+            client_info,
+            clean_session,
+        }
+    }
+    
+    #[tokio::test]
+    pub async fn when_receive_activate_message_session_wrapper_should_set_current_context() {
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let(connection_sender, _connection_receiver) = tokio::sync::mpsc::channel(100);
+        let(router_sender, _router_receiver) = tokio::sync::mpsc::channel(100); 
+
+        let client_info = Client { tenant_id: "tenant_a".into(), client_identifier: "client_a".into(), properties: ClientProperties { username: Some("username_a".to_string()), clean_session: true, will_retain: false, will_topic: None, will_message: None } };
+            
+        let session_context = mock_session_context("username_a", connection_sender, 300, false, client_info);
+
+        let mut session_wrapper = SessionWrapper {
+             session: session_mock, 
+             context: Some(session_context), 
+             state: SessionState::Activate, 
+             session_receiver, 
+             keep_alive_sender: None, 
+             inflight_resend_task_sender: None, 
+             plugin_manager: todo!(), 
+             topic_manager: todo!()
+        };
+
+        let join_handle = tokio::task::spawn(async move {
+            session_wrapper.run_event_loop(session_receiver, router_sender).await;
+        }).await;
+
+        
     }
 }
