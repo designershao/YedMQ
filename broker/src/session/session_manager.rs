@@ -618,6 +618,9 @@ impl SessionWrapper {
                                             //
                                         }
                                         SessionMessage::KickOff(some_reason) => {
+
+                                            let clean_session = self.context.as_ref().unwrap().clean_session;
+
                                             if let Some(context) = &self.context {
                                                 if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
                                                     warn!("connection receiver dropped");
@@ -647,7 +650,11 @@ impl SessionWrapper {
                                                 KickOffReason::InvalidMqttPacket => {
                                                     self.process_will_message(&router_sender).await;
                                                 }
-                                                KickOffReason::Other(_) => todo!(),
+                                                KickOffReason::Other(_) => {},
+                                            }
+
+                                            if clean_session {
+                                                break;
                                             }
                                         }
                                         _ => {}
@@ -774,6 +781,7 @@ mod tests {
 
     use samoye_plugin::plugin::{Client, ClientProperties};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
+    use tokio_tungstenite::tungstenite::connect;
 
     use crate::{
         inflight::Inflight,
@@ -1069,6 +1077,66 @@ mod tests {
 
         match result {
             Ok(_) => {
+                assert!(true)
+            }
+            _ => {
+                assert!(false)
+            }
+        }
+
+    }
+
+    #[tokio::test]
+    pub async fn when_kick_off_session_message_wrapper_should_send_disconnect_to_connection() {
+
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context =
+            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+
+        session_sender.send(SessionMessage::KickOff(KickOffReason::InvalidMqttPacket)).await.unwrap();
+
+        let msg = connection_receiver.recv().await;
+        match msg {
+            Some(ConnectionMessage::Disconnect) => {
                 assert!(true)
             }
             _ => {
