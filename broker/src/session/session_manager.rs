@@ -3,14 +3,21 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::Result;
 use log::{info, warn};
 use samoye_mqtt::{
-    v3::{pingresp::PingrespPacket, publish::{PublishPacket, PublishPacketBuilder}, suback::SubackPacket, subscribe::SubscribePacket, unsubscribe::UnsubscribePacket},
+    v3::{
+        pingresp::PingrespPacket,
+        publish::{PublishPacket, PublishPacketBuilder},
+        suback::SubackPacket,
+        subscribe::SubscribePacket,
+        unsubscribe::UnsubscribePacket,
+    },
     MqttPacketV3,
 };
 use samoye_plugin::plugin::{Client, SubscribeReturnCode};
 use tokio::{
     select,
     sync::{
-        mpsc::{Receiver, Sender}, Mutex, RwLock
+        mpsc::{Receiver, Sender},
+        Mutex, RwLock,
     },
 };
 
@@ -36,9 +43,7 @@ enum KeepAliveMessage {
 }
 
 enum InflightResendTaskMessage {
-
-    Stop
-
+    Stop,
 }
 
 #[derive(Debug, PartialEq)]
@@ -66,7 +71,6 @@ pub enum SessionMessage {
 }
 
 pub struct SessionContext {
-
     // MQTT Auth Username
     pub username: Option<String>,
 
@@ -180,8 +184,8 @@ async fn keep_alive_task(
 async fn inflight_resend_task(
     connection_sender: Sender<ConnectionMessage>,
     inflight: Arc<Mutex<Inflight>>,
-    resend_duration_secs: u64
-)  -> Sender<InflightResendTaskMessage>{
+    resend_duration_secs: u64,
+) -> Sender<InflightResendTaskMessage> {
     let (inflight_resend_sender, mut inflight_resend_receiver) = tokio::sync::mpsc::channel(10);
     tokio::task::spawn(async move {
         let mut resend_interval = tokio::time::interval(Duration::from_secs(resend_duration_secs));
@@ -190,7 +194,7 @@ async fn inflight_resend_task(
         loop {
             select! {
                 _ = resend_interval.tick() => {
-                    
+
                     if !tick_first_raise {
                         let inflight = inflight.lock().await;
                         let packets = inflight.get_all_expired_packets().await;
@@ -216,7 +220,6 @@ async fn inflight_resend_task(
                 }
             }
         }
-
     });
     inflight_resend_sender
 }
@@ -227,6 +230,23 @@ fn is_allowd_subscribe(subscribe_return_code: &SubscribeReturnCode) -> bool {
 }
 
 impl SessionWrapper {
+    fn new(
+        session: Session,
+        session_receiver: Receiver<SessionMessage>,
+        plugin_manager: Arc<dyn PluginService + 'static>,
+        topic_manager: Arc<RwLock<TopicManager>>,
+    ) -> Self {
+        SessionWrapper {
+            session,
+            context: None,
+            state: SessionState::Inactivate,
+            session_receiver,
+            keep_alive_sender: None,
+            inflight_resend_task_sender: None,
+            plugin_manager,
+            topic_manager,
+        }
+    }
 
     async fn process_unsubscribe_packet(
         &mut self,
@@ -244,12 +264,14 @@ impl SessionWrapper {
                 );
             }
         }
-        let unsub_ack =
-            MqttPacketV3::Unsuback(samoye_mqtt::v3::unsuback::UnSubackPacket::new(
-                unsubscribe_packet.variable_header.packet_identifier,
-            ));
-            
-        connection_sender.send(ConnectionMessage::WritePacket(unsub_ack)).await.unwrap();
+        let unsub_ack = MqttPacketV3::Unsuback(samoye_mqtt::v3::unsuback::UnSubackPacket::new(
+            unsubscribe_packet.variable_header.packet_identifier,
+        ));
+
+        connection_sender
+            .send(ConnectionMessage::WritePacket(unsub_ack))
+            .await
+            .unwrap();
 
         Ok(())
     }
@@ -323,15 +345,18 @@ impl SessionWrapper {
         }
         for packet in retain_messages {
             let packet = (*packet).clone();
-            connection_sender.send(ConnectionMessage::WritePacket(packet)).await.unwrap();
+            connection_sender
+                .send(ConnectionMessage::WritePacket(packet))
+                .await
+                .unwrap();
         }
 
-        connection_sender.send(ConnectionMessage::WritePacket(MqttPacketV3::Suback(SubackPacket::new(
-            *packet_identifier,
-            return_code,
-        ))))
-        .await
-        .unwrap();
+        connection_sender
+            .send(ConnectionMessage::WritePacket(MqttPacketV3::Suback(
+                SubackPacket::new(*packet_identifier, return_code),
+            )))
+            .await
+            .unwrap();
 
         Ok(())
     }
@@ -366,7 +391,8 @@ impl SessionWrapper {
                     .await;
 
                 let inflight = self.session.inflight.lock().await;
-                let packet = inflight.get_current_packet(packet.variable_header.packet_identifier.unwrap())
+                let packet = inflight
+                    .get_current_packet(packet.variable_header.packet_identifier.unwrap())
                     .await
                     .unwrap();
 
@@ -389,19 +415,19 @@ impl SessionWrapper {
         Ok(())
     }
 
-    pub async fn start_keep_alive_task(&mut self) {
-        let inflight_resend_sender = inflight_resend_task(
-            self.context.as_ref().unwrap().connection.clone(), 
-            self.session.inflight.clone(), 
-            20).await;
-        self.inflight_resend_task_sender = Some(inflight_resend_sender);
+    pub async fn start_keep_alive_task(&mut self, session_sender: Sender<SessionMessage>) {
+        let keep_alive_sender =
+            keep_alive_task(session_sender, self.context.as_ref().unwrap().keep_alive).await;
+        self.keep_alive_sender = Some(keep_alive_sender);
     }
 
     pub async fn start_inflight_task(&mut self) {
         let inflight_resend_sender = inflight_resend_task(
-            self.context.as_ref().unwrap().connection.clone(), 
-            self.session.inflight.clone(), 
-            20).await;
+            self.context.as_ref().unwrap().connection.clone(),
+            self.session.inflight.clone(),
+            20,
+        )
+        .await;
         self.inflight_resend_task_sender = Some(inflight_resend_sender);
     }
 
@@ -426,25 +452,32 @@ impl SessionWrapper {
     pub async fn process_will_message(&self, router_sender: &Sender<RouterCmd>) {
         if self.session.will_message.is_some() {
             let will_message = self.session.will_message.as_ref().unwrap();
-            let publish_packet =
-                PublishPacketBuilder::new(will_message.will_topic.clone(), will_message.will_message.clone())
-                    .retain(will_message.will_retain)
-                    .qos(will_message.will_qos)
-                    .build();
-            let _ = router_sender.send(RouterCmd::RoutePacket(self.session.tenant_identifier.clone(),MqttPacketV3::Publish(publish_packet))).await;
+            let publish_packet = PublishPacketBuilder::new(
+                will_message.will_topic.clone(),
+                will_message.will_message.clone(),
+            )
+            .retain(will_message.will_retain)
+            .qos(will_message.will_qos)
+            .build();
+            let _ = router_sender
+                .send(RouterCmd::RoutePacket(
+                    self.session.tenant_identifier.clone(),
+                    MqttPacketV3::Publish(publish_packet),
+                ))
+                .await;
         }
     }
 
     pub async fn run_event_loop(
         &mut self,
-        mut session_receiver: Receiver<SessionMessage>,
+        session_sender: Sender<SessionMessage>,
         router_sender: Sender<RouterCmd>,
     ) {
         loop {
             match self.state {
                 SessionState::Activate => {
                     select! {
-                        msg = session_receiver.recv() => {
+                        msg = self.session_receiver.recv() => {
                             match msg {
                                 Some(session_message) => {
                                     match session_message {
@@ -628,7 +661,7 @@ impl SessionWrapper {
                 }
                 SessionState::Inactivate => {
                     select! {
-                        msg = session_receiver.recv() => {
+                        msg = self.session_receiver.recv() => {
                             match msg {
                                 Some(session_message) => {
                                     match session_message {
@@ -637,13 +670,13 @@ impl SessionWrapper {
                                             self.state = SessionState::Activate;
 
                                             // start keep alive task
-                                            self.start_keep_alive_task().await;
+                                            self.start_keep_alive_task(session_sender.clone()).await;
                                             //
 
                                             // start inflight resend task
                                             self.start_inflight_task().await;
                                             //
-                        
+
                                         }
                                         SessionMessage::ForwardFromRouter(packet) => {
                                             match &packet {
@@ -665,7 +698,10 @@ impl SessionWrapper {
                 }
             }
         }
-        info!("session {} stoped, return session event loop", self.session.client_identifier);
+        info!(
+            "session {} stoped, return session event loop",
+            self.session.client_identifier
+        );
     }
 }
 
@@ -737,9 +773,17 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use samoye_plugin::plugin::{Client, ClientProperties};
-    use tokio::sync::{mpsc::Sender, Mutex};
+    use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 
-    use crate::{inflight::Inflight, session::session_manager::{keep_alive_task, KeepAliveMessage, KickOffReason, SessionState, SessionWrapper}};
+    use crate::{
+        inflight::Inflight,
+        plugin_manager::PluginService,
+        session::session_manager::{
+            keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage, SessionState,
+            SessionWrapper,
+        },
+        topic::TopicManager,
+    };
 
     use super::{ConnectionMessage, Session, SessionContext};
 
@@ -762,7 +806,6 @@ mod tests {
             assert!(false);
         }
     }
-
 
     #[tokio::test]
     pub async fn when_recevie_message_trigger_keep_alive_task_should_not_stop() {
@@ -802,11 +845,11 @@ mod tests {
     }
 
     fn mock_session_context(
-        username: &str, 
+        username: &str,
         connection: Sender<ConnectionMessage>,
         keep_alive: u64,
         clean_session: bool,
-        client_info:Client
+        client_info: Client,
     ) -> SessionContext {
         SessionContext {
             username: Some(username.to_string()),
@@ -816,34 +859,223 @@ mod tests {
             clean_session,
         }
     }
-    
+
+    struct MockPluginManager;
+
+    impl PluginService for MockPluginManager {
+        fn do_on_disconnect(&self, _client: &Client) {
+            println!("on_disconnect")
+        }
+
+        fn do_on_publish(
+            &self,
+            _client: &Client,
+            _packet: &samoye_mqtt::v3::publish::PublishPacket,
+        ) {
+            println!("on_publish")
+        }
+
+        fn do_publish_authorizate(
+            &self,
+            _client: &Client,
+            _packet: &samoye_mqtt::v3::publish::PublishPacket,
+        ) -> anyhow::Result<bool> {
+            return Ok(true);
+        }
+
+        fn do_subscribe_authorizate(
+            &self,
+            _client: &Client,
+            _packet: &samoye_mqtt::v3::subscribe::SubscribePacket,
+        ) -> anyhow::Result<samoye_plugin::plugin::SubscribeAuthorizationResult> {
+            return Ok(samoye_plugin::plugin::SubscribeAuthorizationResult {
+                return_code: vec![],
+            });
+        }
+
+        fn do_connect_authenticate(
+            &self,
+            _packet: &samoye_mqtt::v3::connect::ConnectPacket,
+        ) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResult> {
+            return Ok(samoye_plugin::plugin::AuthenticationResult::Success(
+                "tenant_a".into(),
+            ));
+        }
+    }
+
     #[tokio::test]
-    pub async fn when_receive_activate_message_session_wrapper_should_set_current_context() {
+    pub async fn when_receive_activate_message_session_wrapper_should_start_keep_alive_task() {
         let session_mock = mock_session("client_a", "tenant_a");
 
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
-        let(connection_sender, _connection_receiver) = tokio::sync::mpsc::channel(100);
-        let(router_sender, _router_receiver) = tokio::sync::mpsc::channel(100); 
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
 
-        let client_info = Client { tenant_id: "tenant_a".into(), client_identifier: "client_a".into(), properties: ClientProperties { username: Some("username_a".to_string()), clean_session: true, will_retain: false, will_topic: None, will_message: None } };
-            
-        let session_context = mock_session_context("username_a", connection_sender, 300, false, client_info);
-
-        let mut session_wrapper = SessionWrapper {
-             session: session_mock, 
-             context: Some(session_context), 
-             state: SessionState::Activate, 
-             session_receiver, 
-             keep_alive_sender: None, 
-             inflight_resend_task_sender: None, 
-             plugin_manager: todo!(), 
-             topic_manager: todo!()
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
         };
 
-        let join_handle = tokio::task::spawn(async move {
-            session_wrapper.run_event_loop(session_receiver, router_sender).await;
-        }).await;
+        let session_context =
+            mock_session_context("username_a", connection_sender, 5, false, client_info);
 
-        
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        match msg {
+            ConnectionMessage::Disconnect => {
+                assert!(true)
+            }
+            _ => {
+                assert!(false)
+            }
+        }
     }
+
+    #[tokio::test]
+    pub async fn when_receive_inactivate_message_session_wrapper_should_run_event_loop_continue_if_clean_session_is_false() {
+
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: false,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context =
+            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, false, client_info);
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+
+        session_sender.send(SessionMessage::InActivate).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(keep_alive_expired_secs + 1), join_handle).await;
+
+        match result {
+            Ok(_) => {
+                assert!(false)
+            }
+            _ => {
+                assert!(true)
+            }
+        }
+
+    }
+
+    #[tokio::test]
+    pub async fn when_receive_inactivate_message_session_wrapper_should_stop_event_loop_if_clean_session_is_true() {
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context =
+            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+
+        session_sender.send(SessionMessage::InActivate).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(keep_alive_expired_secs + 1), join_handle).await;
+
+        match result {
+            Ok(_) => {
+                assert!(true)
+            }
+            _ => {
+                assert!(false)
+            }
+        }
+
+    }
+
 }
