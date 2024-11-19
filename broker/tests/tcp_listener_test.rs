@@ -436,14 +436,14 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
         // ensure subscribe connect
         let sleep_duration = time::Duration::from_millis(1000);
-        thread::sleep(sleep_duration);
+        tokio::time::sleep(sleep_duration).await;
         //
 
         publisher.shutdown().await.unwrap();
     });
 
     let sub_will_join = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
+        tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
         let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
         let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
@@ -478,6 +478,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
         subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
         subscriber.flush().await.unwrap();
+
 
         let mut buf = Vec::new();
         let read_bytes = subscriber.read_buf(&mut buf).await.unwrap();

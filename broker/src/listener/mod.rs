@@ -14,10 +14,10 @@ use crate::{
     inflight::Inflight,
     plugin_manager::{PluginManager, PluginService},
     router::RouterCmd,
-    session::session_manager::{
-            ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager,
-            SessionMessage, SessionWrapper,
-        },
+    session::{session_manager::{
+        ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager, SessionMessage,
+        SessionWrapper,
+    }, WillMessage},
     settings::Settings,
     topic::TopicManager,
 };
@@ -137,19 +137,32 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                         }
 
                         let client_properties = match packet.variable_header.will_flag {
-                            true => ClientProperties {
-                                username: packet.payload.username.clone(),
-                                clean_session: packet.variable_header.clean_session,
-                                will_retain: packet.variable_header.will_retain,
-                                will_topic: packet.payload.will_topic.clone(),
-                                will_message: Some(packet.payload.will_message.unwrap().into()),
+                            true => {
+                                let will_message = packet.payload.will_message.unwrap().to_string();
+                                let client_properties = ClientProperties {
+                                    username: packet.payload.username.clone(),
+                                    clean_session: packet.variable_header.clean_session,
+                                    will_retain: packet.variable_header.will_retain,
+                                    will_topic: packet.payload.will_topic.clone(),
+                                    will_message: Some(will_message.clone().into()),
+                                };
+                                let will_message = WillMessage {
+                                    will_topic: packet.payload.will_topic.unwrap().to_string(),
+                                    will_message: will_message.into(),
+                                    will_qos: packet.variable_header.will_qos,
+                                    will_retain: packet.variable_header.will_retain,
+                                };
+                                (client_properties, Some(will_message))
                             },
-                            false => ClientProperties {
-                                username: packet.payload.username.clone(),
-                                clean_session: packet.variable_header.clean_session,
-                                will_retain: packet.variable_header.will_retain,
-                                will_topic: None,
-                                will_message: None,
+                            false => {
+                                let client_properties = ClientProperties {
+                                    username: packet.payload.username.clone(),
+                                    clean_session: packet.variable_header.clean_session,
+                                    will_retain: packet.variable_header.will_retain,
+                                    will_topic: None,
+                                    will_message: None,
+                                };
+                                (client_properties, None)
                             },
                         };
 
@@ -166,7 +179,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             client_info: Client {
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: packet.payload.client_identifier.clone(),
-                                properties: client_properties,
+                                properties: client_properties.0,
                             },
                         };
 
@@ -181,19 +194,20 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                         if existed_session_sender_option.is_none() {
                             // no same client session has existed, create new session event loop
-                            if let Err(e) = session_manager
-                                .write()
-                                .await
-                                .register(
-                                    tenant_id.clone(),
-                                    packet.payload.client_identifier.to_string(),
-                                    session_sender.clone(),
-                                ) {
-                                    warn!("register session error: {}, exit the accept connection loop", e);
-                                    return;
-                                }
+                            if let Err(e) = session_manager.write().await.register(
+                                tenant_id.clone(),
+                                packet.payload.client_identifier.to_string(),
+                                session_sender.clone(),
+                            ) {
+                                warn!(
+                                    "register session error: {}, exit the accept connection loop",
+                                    e
+                                );
+                                return;
+                            }
+
                             let session = Session {
-                                will_message: None,
+                                will_message: client_properties.1,
                                 client_identifier: packet.payload.client_identifier.to_string(),
                                 tenant_identifier: tenant_id.to_string(),
                                 subscription_topics: vec![],
