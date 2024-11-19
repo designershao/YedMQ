@@ -10,6 +10,53 @@ pub struct UnsubscribePacket {
     pub payload: Payload
 }
 
+#[derive(Default)]
+pub struct UnsubscribePacketBuilder {
+    topic_filters: Vec<TopicFilter>,
+    packet_identifier: u16
+}
+
+impl UnsubscribePacketBuilder {
+    pub fn new (packet_identifier: u16) -> Self {
+        UnsubscribePacketBuilder {
+            topic_filters: Vec::new(),
+            packet_identifier,
+        }
+    }
+
+    pub fn add_topic_filter(mut self, topic_filter: TopicFilter) -> Self {
+        self.topic_filters.push(topic_filter);
+        self
+    }
+
+    pub fn build(self) -> UnsubscribePacket {
+
+        let variable_header = VariableHeader {
+            packet_identifier: self.packet_identifier
+        };
+
+        let payload = Payload {
+            topic_filters: self.topic_filters
+        };
+
+        let fixed_header = FixHeader {
+            packet_type: PacketType::UNSUBSCRIBE,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2 + payload.get_length(),
+        };
+
+        let unsubscribe_packet = UnsubscribePacket {
+            fix_header: fixed_header,
+            variable_header,
+            payload,
+        };
+
+        unsubscribe_packet
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VariableHeader {
     pub packet_identifier: u16,

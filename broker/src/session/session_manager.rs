@@ -23,9 +23,9 @@ use tokio::{
 
 use crate::{
     inflight::Inflight,
-    plugin_manager::{PluginManager, PluginService},
+    plugin_manager::PluginService,
     router::RouterCmd,
-    topic::{self, TopicManager},
+    topic::TopicManager,
 };
 
 use super::WillMessage;
@@ -779,17 +779,22 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{sync::Arc, time::Duration, vec};
 
-    use samoye_mqtt::v3::{publish::PublishPacketBuilder, suback::ReturnCode, subscribe::{SubscribePacketBuilder, TopicFilter}};
+    use samoye_mqtt::v3::{
+        pingreq::PingreqPacketBuilder, publish::PublishPacketBuilder, pubrel::PubRelPacket, suback::ReturnCode, subscribe::{SubscribePacketBuilder, TopicFilter}, unsubscribe::{UnsubscribePacket, UnsubscribePacketBuilder}
+    };
     use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 
     use crate::{
-        inflight::Inflight, plugin_manager::PluginService, router::RouterCmd, session::session_manager::{
-            keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage,
-            SessionWrapper,
-        }, topic::{self, TopicManager}
+        inflight::Inflight,
+        plugin_manager::PluginService,
+        router::RouterCmd,
+        session::session_manager::{
+            keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage, SessionWrapper,
+        },
+        topic::TopicManager,
     };
 
     use super::{ConnectionMessage, Session, SessionContext};
@@ -966,14 +971,14 @@ mod tests {
     }
 
     #[tokio::test]
-    pub async fn when_receive_inactivate_message_session_wrapper_should_run_event_loop_continue_if_clean_session_is_false() {
-
+    pub async fn when_receive_inactivate_message_session_wrapper_should_run_event_loop_continue_if_clean_session_is_false(
+    ) {
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
 
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
-        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut _connection_receiver) = tokio::sync::mpsc::channel(100);
         let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
 
         let client_info = Client {
@@ -988,8 +993,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, false, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            false,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1010,10 +1020,16 @@ mod tests {
             .await
             .unwrap();
 
+        session_sender
+            .send(SessionMessage::InActivate)
+            .await
+            .unwrap();
 
-        session_sender.send(SessionMessage::InActivate).await.unwrap();
-
-        let result = tokio::time::timeout(Duration::from_secs(keep_alive_expired_secs + 1), join_handle).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(keep_alive_expired_secs + 1),
+            join_handle,
+        )
+        .await;
 
         match result {
             Ok(_) => {
@@ -1023,17 +1039,17 @@ mod tests {
                 assert!(true)
             }
         }
-
     }
 
     #[tokio::test]
-    pub async fn when_receive_inactivate_message_session_wrapper_should_stop_event_loop_if_clean_session_is_true() {
+    pub async fn when_receive_inactivate_message_session_wrapper_should_stop_event_loop_if_clean_session_is_true(
+    ) {
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
 
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
-        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut _connection_receiver) = tokio::sync::mpsc::channel(100);
         let (router_sender, _router_receiver) = tokio::sync::mpsc::channel(100);
 
         let client_info = Client {
@@ -1048,8 +1064,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1070,10 +1091,16 @@ mod tests {
             .await
             .unwrap();
 
+        session_sender
+            .send(SessionMessage::InActivate)
+            .await
+            .unwrap();
 
-        session_sender.send(SessionMessage::InActivate).await.unwrap();
-
-        let result = tokio::time::timeout(Duration::from_secs(keep_alive_expired_secs + 1), join_handle).await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(keep_alive_expired_secs + 1),
+            join_handle,
+        )
+        .await;
 
         match result {
             Ok(_) => {
@@ -1083,12 +1110,10 @@ mod tests {
                 assert!(false)
             }
         }
-
     }
 
     #[tokio::test]
     pub async fn when_kick_off_session_message_wrapper_should_send_disconnect_to_connection() {
-
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1109,8 +1134,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1131,8 +1161,10 @@ mod tests {
             .await
             .unwrap();
 
-
-        session_sender.send(SessionMessage::KickOff(KickOffReason::InvalidMqttPacket)).await.unwrap();
+        session_sender
+            .send(SessionMessage::KickOff(KickOffReason::InvalidMqttPacket))
+            .await
+            .unwrap();
 
         let msg = connection_receiver.recv().await;
         match msg {
@@ -1143,12 +1175,10 @@ mod tests {
                 assert!(false)
             }
         }
-
     }
 
     #[tokio::test]
     pub async fn when_receive_publish_packet_session_wrapper_should_send_publish_to_router() {
-        
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1169,8 +1199,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1193,8 +1228,12 @@ mod tests {
 
         let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01]).build();
 
-
-        session_sender.send(SessionMessage::ReceiveFromClient(samoye_mqtt::MqttPacketV3::Publish(packet))).await.unwrap();
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Publish(packet),
+            ))
+            .await
+            .unwrap();
 
         let msg = router_receiver.recv().await.unwrap();
         match msg {
@@ -1206,23 +1245,21 @@ mod tests {
                         assert!(p.payload.payload.len() == 1);
                         assert!(p.payload.payload[0] == 0x01);
                     }
-                    _ => assert!(false)
+                    _ => assert!(false),
                 }
             }
         }
-
     }
 
     #[tokio::test]
     pub async fn when_receive_subscribe_packet_session_wrapper_should_call_topic_manager() {
-        
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
 
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
         let (connection_sender, mut _connection_receiver) = tokio::sync::mpsc::channel(100);
-        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
 
         let client_info = Client {
             tenant_id: "tenant_a".into(),
@@ -1236,8 +1273,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1265,15 +1307,27 @@ mod tests {
             .await
             .unwrap();
 
-        let packet = SubscribePacketBuilder::new(123).add_topic_filter(TopicFilter { topic_name: "/a/b".to_string(), qos: 0 }).build();
+        let packet = SubscribePacketBuilder::new(123)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/a/b".to_string(),
+                qos: 0,
+            })
+            .build();
 
-        session_sender.send(SessionMessage::ReceiveFromClient(samoye_mqtt::MqttPacketV3::Subscribe(packet))).await.unwrap();
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+            ))
+            .await
+            .unwrap();
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         let topic_manger = topic_manger_arc.read().await;
 
-        let topics = topic_manger.get_subscriptions("tenant_a".to_string(), "/a/b".to_string()).unwrap();
+        let topics = topic_manger
+            .get_subscriptions("tenant_a".to_string(), "/a/b".to_string())
+            .unwrap();
         assert!(topics.len() == 1);
     }
 
@@ -1285,7 +1339,7 @@ mod tests {
 
         let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
         let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
-        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
 
         let client_info = Client {
             tenant_id: "tenant_a".into(),
@@ -1299,8 +1353,13 @@ mod tests {
             },
         };
 
-        let session_context =
-            mock_session_context("username_a", connection_sender, keep_alive_expired_secs, true, client_info);
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
@@ -1328,9 +1387,99 @@ mod tests {
             .await
             .unwrap();
 
-        let packet = SubscribePacketBuilder::new(123).add_topic_filter(TopicFilter { topic_name: "/a/b".to_string(), qos: 0 }).build();
+        let packet = SubscribePacketBuilder::new(123)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/a/b".to_string(),
+                qos: 0,
+            })
+            .build();
 
-        session_sender.send(SessionMessage::ReceiveFromClient(samoye_mqtt::MqttPacketV3::Subscribe(packet))).await.unwrap();
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Suback(packet)) = msg {
+            assert_eq!(packet.variable_header.packet_identifier, 123);
+            assert_eq!(packet.payload.return_code[0], ReturnCode::MaxQos0);
+        }
+    }
+
+    #[tokio::test]
+    pub async fn when_receive_unsubscribe_packet_session_wrapper_should_return_unsuback_packet() {
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let topic_manger_arc = session_wrapper.topic_manager.clone();
+
+        {
+            let mut topic_manager = topic_manger_arc.write().await;
+            topic_manager.create_tenant("tenant_a".to_string());
+        }
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let packet = SubscribePacketBuilder::new(123)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/a/b".to_string(),
+                qos: 0,
+            })
+            .build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+            ))
+            .await
+            .unwrap();
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -1341,5 +1490,265 @@ mod tests {
             assert_eq!(packet.payload.return_code[0], ReturnCode::MaxQos0);
         }
 
+        let unsubscribe_packet = UnsubscribePacketBuilder::new(123)
+            .add_topic_filter(samoye_mqtt::v3::unsubscribe::TopicFilter {
+                topic_name: "/a/b".to_string(),
+            })
+            .build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Unsubscribe(unsubscribe_packet),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Unsuback(packet)) = msg {
+            assert_eq!(packet.variable_header.packet_identifier, 123);
+        }
+    }
+
+    #[tokio::test]
+    pub async fn when_receive_pingreq_packet_session_wrapper_should_return_pingresp_packet() {
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let pingreq_packet = PingreqPacketBuilder::new().build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Pingreq(pingreq_packet),
+            ))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;    
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pingresp(packet)) = msg {
+            assert!(true)
+        } else {
+            assert!(false)
+        }
+
+    }
+
+    #[tokio::test]
+    pub async fn when_receive_qos_1_publish_packet_session_wrapper_should_finish_the_whole_loop() {
+        
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let topic_manger_arc = session_wrapper.topic_manager.clone();
+
+        {
+            let mut topic_manager = topic_manger_arc.write().await;
+            topic_manager.create_tenant("tenant_a".to_string());
+        }
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let qos_1_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+            .packet_identifier(123)
+            .qos(1)
+            .build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Publish(qos_1_publish_packet),
+            ))
+            .await
+            .unwrap();
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Puback(packet)) = msg {
+            assert_eq!(packet.variable_header.packet_identifier, 123);
+        }
+
+    }
+    #[tokio::test]
+    pub async fn when_receive_qos_2_publish_packet_session_wrapper_should_finish_the_whole_loop() {
+        
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let topic_manger_arc = session_wrapper.topic_manager.clone();
+
+        {
+            let mut topic_manager = topic_manger_arc.write().await;
+            topic_manager.create_tenant("tenant_a".to_string());
+        }
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let packet_id = 123;
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+            .packet_identifier(packet_id)
+            .qos(2)
+            .build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
+            ))
+            .await
+            .unwrap();
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
+            assert_eq!(packet.variable_header.packet_identifier, packet_id);
+        }
+
+        let qos_2_pubrel_packet = PubRelPacket::new(packet_id);
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
+            ))
+            .await
+            .unwrap();
+
+        let msg = connection_receiver.recv().await.unwrap();
+
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrel(packet)) = msg {
+            assert_eq!(packet.variable_header.packet_identifier, packet_id);
+        }
     }
 }

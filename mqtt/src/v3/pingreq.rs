@@ -11,6 +11,28 @@ pub struct PingreqPacket {
     pub fix_header: FixHeader,
 }
 
+#[derive(Default)]
+pub struct  PingreqPacketBuilder;
+
+impl PingreqPacketBuilder {
+
+    pub fn new () -> PingreqPacketBuilder {
+        PingreqPacketBuilder
+    }
+
+    pub fn build(self) -> PingreqPacket {
+        PingreqPacket {
+            fix_header: FixHeader {
+                packet_type: crate::PacketType::PINGREQ,
+                qos: None,
+                retain: None,
+                dup: None,
+                remaining_length: 0,
+            }
+        }
+    }
+}
+
 pub fn parse(input: &[u8]) -> IResult<&[u8], PingreqPacket> {
     map(
     fixed_header::parse,
