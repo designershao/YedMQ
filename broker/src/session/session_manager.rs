@@ -1744,11 +1744,124 @@ mod tests {
             ))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    pub async fn when_reactivate_not_clean_session_session_wrapper_should_finish_qos2_whole_loop() {
+        
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut _router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: false,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender.clone(),
+            keep_alive_expired_secs,
+            false,
+            client_info,
+        );
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            Arc::new(RwLock::new(TopicManager::new())),
+        );
+
+        let topic_manger_arc = session_wrapper.topic_manager.clone();
+
+        {
+            let mut topic_manager = topic_manger_arc.write().await;
+            topic_manager.create_tenant("tenant_a".to_string());
+        }
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(session_sender_clone, router_sender)
+                .await;
+        });
+
+        let packet_id = 123;
+
+        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+            .packet_identifier(packet_id)
+            .qos(2)
+            .build();
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
+            ))
+            .await
+            .unwrap();
+
+        session_sender.send(SessionMessage::InActivate).await.unwrap();
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: false,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrel(packet)) = msg {
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, packet_id);
+        } else {
+            assert!(false);
         }
+
+        let qos_2_pubrel_packet = PubRelPacket::new(packet_id);
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                samoye_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
+            ))
+            .await
+            .unwrap();
+
     }
 }
