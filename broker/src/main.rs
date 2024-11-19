@@ -4,10 +4,10 @@ use log::info;
 use plugin_manager::PluginManager;
 use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
 use settings::Settings;
-use tokio::sync::RwLock;
+use tokio::{sync::mpsc::Sender, sync::RwLock};
 use topic::TopicManager;
 
-use crate::{session::{SessionManager, SessionHandle}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
+use crate::{session::session_manager::{SessionMessage, SessionManager}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
 
 mod connection;
 mod session;
@@ -33,7 +33,7 @@ async fn main() {
     //
 
     // init session manager
-    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
+    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
     //
 
     // init plugin manager

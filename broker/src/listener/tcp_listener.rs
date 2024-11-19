@@ -4,7 +4,7 @@ use anyhow::Result;
 use tokio::{net::TcpListener, sync::RwLock};
 
 use crate::{
-     plugin_manager::PluginManager,  router::RouterCmd, session::SessionManager, settings::Settings, topic::TopicManager
+     plugin_manager::PluginManager,  router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
 };
 
 
@@ -44,11 +44,11 @@ impl MqttTcpListener
 mod tests {
     use std::{collections::HashMap, path::PathBuf, time::Duration};
 
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
-
-    use crate::session::SessionHandle;
+    use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::mpsc::Sender};
 
     use samoye_mqtt::MqttPacketV3;
+
+    use crate::session::session_manager::SessionMessage;
 
     use super::*;
 
@@ -102,7 +102,7 @@ mod tests {
 
         let listener = MqttTcpListener {
             plugin_manager,
-            session_manager: Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()})),
+            session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
             settings: Arc::new(settings),
@@ -171,7 +171,7 @@ mod tests {
 
         let listener = MqttTcpListener {
             plugin_manager,
-            session_manager: Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()})),
+            session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
             settings: Arc::new(settings),

@@ -1,6 +1,6 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync:: Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{anyhow, Error, Result};
 use log::{info, warn};
 use samoye_mqtt::{
     v3::{
@@ -13,6 +13,7 @@ use samoye_mqtt::{
     MqttPacketV3,
 };
 use samoye_plugin::plugin::{Client, SubscribeReturnCode};
+use thiserror::Error;
 use tokio::{
     select,
     sync::{
@@ -116,7 +117,7 @@ impl Session {
     }
 }
 
-struct SessionWrapper {
+pub struct SessionWrapper {
     session: Session,
 
     context: Option<SessionContext>,
@@ -230,7 +231,7 @@ fn is_allowd_subscribe(subscribe_return_code: &SubscribeReturnCode) -> bool {
 }
 
 impl SessionWrapper {
-    fn new(
+    pub fn new(
         session: Session,
         session_receiver: Receiver<SessionMessage>,
         plugin_manager: Arc<dyn PluginService + 'static>,
@@ -720,60 +721,77 @@ pub enum SessionState {
     Inactivate,
 }
 
-pub struct SessionManager {
-    active_sessions: HashMap<String, RwLock<HashMap<String, SessionWrapper>>>,
+#[derive(Error, Debug)]
+pub enum SessionManagerError {
+    #[error("tenant {0} not found")]
+    TenantNotExisted(String),
 
-    inactivate_sessions: HashMap<String, RwLock<HashMap<String, SessionWrapper>>>,
+    #[error("tenant {0} has existed")]
+    TenantHasExisted(String),
+
+    #[error("session {0} not found")]
+    SessionNotExisted(String),
+}
+
+pub struct SessionManager {
+
+    pub sessions: HashMap<String, HashMap<String, Sender<SessionMessage>>>,
+
 }
 
 impl SessionManager {
-    // Get session state
-    pub async fn get_session_state(
-        &self,
-        tenant_identifier: &str,
-        client_identifier: &str,
-    ) -> Option<SessionState> {
-        if self.tenant_existed(tenant_identifier) {
-            let active_sessions = self
-                .active_sessions
-                .get(tenant_identifier)
-                .unwrap()
-                .read()
-                .await;
-            let inactivate_sessions = self
-                .inactivate_sessions
-                .get(tenant_identifier)
-                .unwrap()
-                .read()
-                .await;
-            if active_sessions.contains_key(client_identifier) {
-                Some(SessionState::Activate)
-            } else if inactivate_sessions.contains_key(client_identifier) {
-                Some(SessionState::Inactivate)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
 
     // Create a new tenant
     pub fn create_tenant(&mut self, tenant_identifier: &str) -> Result<()> {
-        if !self.active_sessions.contains_key(tenant_identifier) {
-            self.active_sessions
-                .insert(tenant_identifier.to_string(), RwLock::new(HashMap::new()));
+        if self.sessions.contains_key(&tenant_identifier.to_string()) {
+            return Err(anyhow!(SessionManagerError::TenantHasExisted(tenant_identifier.into())));
         }
-        if !self.inactivate_sessions.contains_key(tenant_identifier) {
-            self.inactivate_sessions
-                .insert(tenant_identifier.to_string(), RwLock::new(HashMap::new()));
-        }
+        self.sessions
+            .insert(tenant_identifier.into(), HashMap::new());
         Ok(())
     }
 
     // Check if a tenant existed
     fn tenant_existed(&self, tenant_identifier: &str) -> bool {
-        return self.active_sessions.contains_key(tenant_identifier);
+        return self.sessions.contains_key(tenant_identifier);
+    }
+
+    pub fn get_session_sender(&self, tenant_identifier: String, client_identifier: String) -> Option<Sender<SessionMessage>> {
+        if !self.sessions.contains_key(&tenant_identifier) {
+            return None;
+        } else {
+            let session_table = self.sessions.get(&tenant_identifier).unwrap();
+            return session_table.get(&client_identifier).cloned();
+        }
+    }
+
+    pub fn register(&mut self, tenant_identifier: String, client_identifier: String, session_sender: Sender<SessionMessage>) -> Result<()> {
+        if !self.sessions.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.sessions.get_mut(&tenant_identifier).unwrap();
+            session_table.insert(client_identifier, session_sender);
+            Ok(())
+        }
+    }
+
+    pub async fn send_packet(
+        &self,
+        tenant_identifier: String,
+        client_identifier: String,
+        packet: &MqttPacketV3,
+    ) -> Result<()> {
+        if !self.sessions.contains_key(&tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+        } else {
+            let session_table = self.sessions.get(&tenant_identifier).unwrap();
+            if let Some(handle) = session_table.get(&client_identifier) {
+                if let Err(_) = handle.send(SessionMessage::ForwardFromRouter(packet.clone())).await {
+                    warn!("session receiver dropped");
+                }
+            }
+        }
+        Ok(())
     }
 }
 

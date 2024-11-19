@@ -1,23 +1,35 @@
-use std::{sync::Arc, time::Duration, net::SocketAddr};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use log::{warn, info};
-use samoye_plugin::plugin::AuthenticationResult;
+use log::warn;
+use samoye_plugin::plugin::{AuthenticationResult, Client, ClientProperties};
 use tokio::{
-    sync::{mpsc::Sender, RwLock}, io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite},
+    select,
+    sync::{mpsc::Sender, Mutex, RwLock},
 };
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
-use crate::{connection::Connection, inflight::Inflight, plugin_manager::{PluginManager, PluginService}, router::RouterCmd, session::{Session, SessionHandle, SessionManager, WillMessage}, settings::Settings, topic::TopicManager};
+use crate::{
+    connection::Connection,
+    inflight::Inflight,
+    plugin_manager::{PluginManager, PluginService},
+    router::RouterCmd,
+    session::session_manager::{
+            ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager,
+            SessionMessage, SessionWrapper,
+        },
+    settings::Settings,
+    topic::TopicManager,
+};
 
 use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
 
-
 pub mod tcp_listener;
 pub mod tcp_tls_listener;
+pub mod websocket_tls_tunnel;
+pub mod websocket_tunnel;
 pub mod ws_listener;
 pub mod wss_listener;
-pub mod websocket_tunnel;
-pub mod websocket_tls_tunnel;
 
 struct WsCallBack {}
 
@@ -26,10 +38,22 @@ impl Callback for WsCallBack {
         self,
         request: &tokio_tungstenite::tungstenite::handshake::server::Request,
         response: tokio_tungstenite::tungstenite::handshake::server::Response,
-    ) -> std::prelude::v1::Result<tokio_tungstenite::tungstenite::handshake::server::Response, tokio_tungstenite::tungstenite::handshake::server::ErrorResponse> {
-        let protocol = request.headers().get("Sec-WebSocket-Protocol").unwrap().to_str().unwrap().to_string();
+    ) -> std::prelude::v1::Result<
+        tokio_tungstenite::tungstenite::handshake::server::Response,
+        tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+    > {
+        let protocol = request
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         let mut mut_response = response.clone();
-        mut_response.headers_mut().append("Sec-WebSocket-Protocol", HeaderValue::from_str(protocol.as_str()).unwrap());
+        mut_response.headers_mut().append(
+            "Sec-WebSocket-Protocol",
+            HeaderValue::from_str(protocol.as_str()).unwrap(),
+        );
         std::prelude::v1::Ok(mut_response)
     }
 }
@@ -41,7 +65,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     topic_manager: Arc<RwLock<TopicManager>>,
     router_sender: Sender<RouterCmd>,
     settings: Arc<Settings>,
-    peer_addr: SocketAddr
+    peer_addr: SocketAddr,
 ) {
     let mut connection: Connection<T> = Connection::new(stream);
     // wait the first connect packet, if the packet is not correct, the connection will be closed.
@@ -82,195 +106,202 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             }
             //
 
-            let r = plugin_manager
-                .clone()
-                .do_connect_authenticate(&packet);
+            let r = plugin_manager.clone().do_connect_authenticate(&packet);
 
             match r {
-                Ok(auth_result) => {
-                    match auth_result {
-                        AuthenticationResult::Success(tenant_id) => {
+                Ok(auth_result) => match auth_result {
+                    AuthenticationResult::Success(tenant_id) => {
+                        let connack_packet = ConnAckPacketBuilder::new()
+                            .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet)
+                            .build();
+                        if let Err(e) = connection
+                            .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
+                            .await
+                        {
+                            warn!("write connack packet error: {}", e);
+                            connection.shutdown().await.unwrap();
+                            return;
+                        }
 
-                            let connack_packet = ConnAckPacketBuilder::new()
-                                .set_return_code(
-                                    samoye_mqtt::v3::connack::ConnackReturnCode::Accpet,
-                                )
-                                .build();
-                            if let Err(e) = connection
-                                .write_packet(&samoye_mqtt::MqttPacketV3::Connack(
-                                    connack_packet,
-                                ))
+                        {
+                            let _ = session_manager
+                                .clone()
+                                .write()
                                 .await
-                            {
-                                warn!("write connack packet error: {}", e);
-                                connection.shutdown().await.unwrap();
-                                return;
-                            }
+                                .create_tenant(&tenant_id);
+                            let _ = topic_manager
+                                .clone()
+                                .write()
+                                .await
+                                .create_tenant(tenant_id.clone());
+                        }
 
-                            {
-                                let _ = session_manager
-                                    .clone()
-                                    .write()
-                                    .await
-                                    .create_tenant(tenant_id.clone())
-                                    .await;
-                                let _ = topic_manager
-                                    .clone()
-                                    .write()
-                                    .await
-                                    .create_tenant(tenant_id.clone());
-                            }
-
-                            let will_message = match packet.variable_header.will_flag {
-                                true => {
-                                    Some(WillMessage{
-                                        will_topic: packet.payload.will_topic.unwrap(),
-                                        will_message: packet.payload.will_message.unwrap().into(),
-                                        will_qos: packet.variable_header.will_qos,
-                                        will_retain: packet.variable_header.will_retain,
-                                    })
-                                }
-                                false => None
-                            };
-
-                            let username =packet.payload.username.clone();
-
-                            
-
-                            let new_session = Session {
-                                username: username,
-                                will_message: will_message,
-                                client_identifier: packet.payload.client_identifier.clone(),
-                                tenant_identifier: tenant_id.clone(),
-                                subscription_topics: vec![],
-                                inflight: Inflight::new(Duration::from_secs(
-                                    settings.session.qos_expired_secs,
-                                )),
+                        let client_properties = match packet.variable_header.will_flag {
+                            true => ClientProperties {
+                                username: packet.payload.username.clone(),
                                 clean_session: packet.variable_header.clean_session,
-                                session_state: crate::session::SessionState::Online,
+                                will_retain: packet.variable_header.will_retain,
+                                will_topic: packet.payload.will_topic.clone(),
+                                will_message: Some(packet.payload.will_message.unwrap().into()),
+                            },
+                            false => ClientProperties {
+                                username: packet.payload.username.clone(),
+                                clean_session: packet.variable_header.clean_session,
+                                will_retain: packet.variable_header.will_retain,
+                                will_topic: None,
+                                will_message: None,
+                            },
+                        };
+
+                        let username = packet.payload.username.clone();
+
+                        let (connection_sender, mut connection_receiver) =
+                            tokio::sync::mpsc::channel(100);
+
+                        let session_context = SessionContext {
+                            username,
+                            connection: connection_sender.clone(),
+                            keep_alive: packet.variable_header.keep_alive.into(),
+                            clean_session: packet.variable_header.clean_session,
+                            client_info: Client {
+                                tenant_id: tenant_id.clone(),
+                                client_identifier: packet.payload.client_identifier.clone(),
+                                properties: client_properties,
+                            },
+                        };
+
+                        let existed_session_sender_option =
+                            session_manager.read().await.get_session_sender(
+                                tenant_id.clone(),
+                                packet.payload.client_identifier.to_string(),
+                            );
+
+                        let (mut session_sender, session_receiver) =
+                            tokio::sync::mpsc::channel(100);
+
+                        if existed_session_sender_option.is_none() {
+                            // no same client session has existed, create new session event loop
+                            if let Err(e) = session_manager
+                                .write()
+                                .await
+                                .register(
+                                    tenant_id.clone(),
+                                    packet.payload.client_identifier.to_string(),
+                                    session_sender.clone(),
+                                ) {
+                                    warn!("register session error: {}, exit the accept connection loop", e);
+                                    return;
+                                }
+                            let session = Session {
+                                will_message: None,
+                                client_identifier: packet.payload.client_identifier.to_string(),
+                                tenant_identifier: tenant_id.to_string(),
+                                subscription_topics: vec![],
+                                inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
+                                    10,
+                                )))),
                             };
 
-                            let (quit_signal, quit_waiter) = tokio::sync::oneshot::channel();
+                            let mut session_wrapper = SessionWrapper::new(
+                                session,
+                                session_receiver,
+                                plugin_manager.clone(),
+                                topic_manager.clone(),
+                            );
 
-                            let mut session_handle = None;
-
-                            {
-                                let mut session_manager = session_manager.write().await;
-                                let session_handle_result = session_manager
-                                    .get_session_handle(
-                                        tenant_id.clone(),
-                                        packet.payload.client_identifier.clone(),
-                                    )
+                            let session_sender_clone = session_sender.clone();
+                            let _join_handle = tokio::task::spawn(async move {
+                                session_wrapper
+                                    .run_event_loop(session_sender_clone, router_sender)
                                     .await;
-                                if session_handle_result.is_ok() {
-                                    let session_handle_pre = session_handle_result.unwrap();
-                                    session_handle = Some(session_handle_pre);
-                                }
-                            }
+                            });
+                            session_sender
+                                .send(SessionMessage::Activate(session_context))
+                                .await
+                                .unwrap();
+                        } else {
+                            // same client session has existed, update the session sender
+                            session_sender = existed_session_sender_option.unwrap();
+                            session_sender
+                                .send(SessionMessage::Activate(session_context))
+                                .await
+                                .unwrap();
+                        }
 
-                            let session_handle = match session_handle {
-                                Some(mut session_handle_pre) => {
-                                    if session_handle_pre.is_online().await {
-                                        session_handle_pre.kick_off().await;
+                        loop {
+                            select! {
+                                read_packet_result = connection.read_packet() => {
+                                    match read_packet_result {
+                                        Ok(packet) => {
+                                            if let Err(e) = session_sender
+                                                .send(SessionMessage::ReceiveFromClient(packet))
+                                                .await {
+                                                    warn!("send packet error: {}", e);
+                                                }
+                                        }
+                                        Err(e) => {
+                                            warn!("read packet error: {}", e);
+                                            if let Err(e) = session_sender
+                                                .send(SessionMessage::KickOff(KickOffReason::InvalidMqttPacket))
+                                                .await {
+                                                    warn!("send packet error: {}", e);
+                                                }
+                                            connection.shutdown().await.unwrap();
+                                            return;
+                                        }
                                     }
-
-                                    if !session_handle_pre.is_clean_session().await {
-                                        session_handle_pre
-                                            .into_online(
-                                                connection,
-                                                plugin_manager,
-                                                topic_manager,
-                                                packet.variable_header.keep_alive.into(),
-                                                settings.session.packet_resend_interval_secs,
-                                                router_sender,
-                                                quit_signal,
-                                            )
-                                            .await;
+                                }
+                                msg = connection_receiver.recv() => {
+                                    match msg {
+                                        Some(msg) => {
+                                            match msg {
+                                                ConnectionMessage::Disconnect => {
+                                                    connection.shutdown().await.unwrap();
+                                                    return;
+                                                }
+                                                ConnectionMessage::WritePacket(msg) => {
+                                                    if let Err(e) = connection.write_packet(&msg).await {
+                                                        warn!("write packet error: {}", e);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            connection.shutdown().await.unwrap();
+                                            if let Err(e) = session_sender
+                                                .send(SessionMessage::InActivate).await {
+                                                    warn!("send packet error: {}", e);
+                                                }
+                                            return;
+                                        }
                                     }
-                                    session_handle_pre
                                 }
-                                None => {
-                                    let session_handle_new = SessionHandle::new(
-                                        new_session,
-                                        connection,
-                                        plugin_manager,
-                                        topic_manager,
-                                        packet.variable_header.keep_alive.into(),
-                                        settings.session.packet_resend_interval_secs,
-                                        router_sender.clone(),
-                                        quit_signal,
-                                    )
-                                    .await;
-                                    session_handle_new
-                                }
-                            };
 
-                            {
-                                let _ = session_manager
-                                    .write()
-                                    .await
-                                    .register(
-                                        tenant_id.clone(),
-                                        packet.payload.client_identifier.clone(),
-                                        session_handle,
-                                    )
-                                    .await;
-                            }
-
-                            let _ = quit_waiter.await; // quit session online state
-
-                            info!("quit waiter done");
-
-                            if packet.variable_header.clean_session {
-                                info!("start clean session, client id {}", packet.payload.client_identifier);
-                                let mut session_manager = session_manager.write().await;
-                                let _ = session_manager
-                                    .remove(
-                                        tenant_id.clone(),
-                                        packet.payload.client_identifier.clone(),
-                                    )
-                                    .await;
-                            } else {
-                                info!("not clean session, client id {}, set the session into offline mode", packet.payload.client_identifier);
-                                let mut session_manager = session_manager.write().await;
-                                let session_handle_result = session_manager
-                                    .get_session_handle(
-                                        tenant_id.clone(),
-                                        packet.payload.client_identifier.clone(),
-                                    )
-                                    .await;
-                                if session_handle_result.is_ok() {
-                                    let mut session_handle = session_handle_result.unwrap();
-                                    session_handle.into_offline().await;
-                                    info!("set the session into offline mode done");
-                                } else {
-                                    warn!("get session handle error , error: {:?}", session_handle_result.err());
-                                }
                             }
                         }
-                        AuthenticationResult::Fail(return_code) => {
-                            println!("forbidden");
-                            let connect_ack_return_code =match return_code {
+                    }
+                    AuthenticationResult::Fail(return_code) => {
+                        println!("forbidden");
+                        let connect_ack_return_code =match return_code {
                                 samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
                                 samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenInvalidClientIdentifier => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidClientIdentifier,
                                 samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnsupportUsernameOrPasswordFormat => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
                                 _ => samoye_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable
                             };
-                            let connack_packet = ConnAckPacketBuilder::new().set_return_code(connect_ack_return_code).build();
-                            if let Err(e) = connection
-                                .write_packet(&samoye_mqtt::MqttPacketV3::Connack(
-                                    connack_packet,
-                                ))
-                                .await
-                            {
-                                warn!("write connack packet error: {}", e);
-                            }
-                            if let Err(e) = connection.shutdown().await {
-                                warn!("shutdown connection error: {}", e);
-                            }
+                        let connack_packet = ConnAckPacketBuilder::new()
+                            .set_return_code(connect_ack_return_code)
+                            .build();
+                        if let Err(e) = connection
+                            .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
+                            .await
+                        {
+                            warn!("write connack packet error: {}", e);
+                        }
+                        if let Err(e) = connection.shutdown().await {
+                            warn!("shutdown connection error: {}", e);
                         }
                     }
-                }
+                },
                 Err(e) => {
                     warn!("auth on connect failed: {}", e);
                 }
