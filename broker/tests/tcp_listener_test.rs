@@ -1,10 +1,12 @@
 use std::{thread, time};
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
 use samoye::plugin_manager::PluginManager;
+use samoye::session::session_manager::SessionMessage;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-use samoye::{listener::tcp_listener::MqttTcpListener, router::Router, session::{SessionHandle, SessionManager}, settings::Settings, topic::TopicManager};
+use samoye::{listener::tcp_listener::MqttTcpListener, router::Router, session::session_manager::SessionManager, settings::Settings, topic::TopicManager};
 use samoye_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
+use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 
 fn random_tcp_port() -> u16 {
@@ -64,7 +66,7 @@ pub async fn test_tcp_listener_connect() {
 
     let listener = MqttTcpListener {
         plugin_manager,
-        session_manager: Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()})),
+        session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
         topic_manager: Arc::new(RwLock::new(TopicManager::new())),
         router_sender: router_sender,
         settings: Arc::new(settings),
@@ -112,8 +114,8 @@ pub async fn test_tcp_listener_connect() {
 pub async fn test_tcp_client_subscribe_and_publish() {
 
     let plugin_manager =get_test_plugin_manager().await;
-    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
 
     let keep_live_duration_secs = 5;
 
@@ -270,7 +272,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let plugin_manager =get_test_plugin_manager().await;
-    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
+    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
 
     let keep_live_duration_secs = 5;
@@ -362,7 +364,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_message() {
 
     let plugin_manager =get_test_plugin_manager().await;
-    let session_manager = Arc::new(RwLock::new(SessionManager{ session_table:  HashMap::<String,RwLock<HashMap<String, SessionHandle>>>::new()}));
+    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
 
     let keep_live_duration_secs = 5;
