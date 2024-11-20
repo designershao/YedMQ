@@ -212,7 +212,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 tenant_identifier: tenant_id.to_string(),
                                 subscription_topics: vec![],
                                 inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
-                                    10,
+                                    settings.session.qos_expired_secs,
                                 )))),
                             };
 
@@ -226,7 +226,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             let session_sender_clone = session_sender.clone();
                             let _join_handle = tokio::task::spawn(async move {
                                 session_wrapper
-                                    .run_event_loop(session_sender_clone, router_sender, session_manager.clone())
+                                    .run_event_loop(session_sender_clone, router_sender, session_manager.clone(), settings.session.packet_resend_interval_secs)
                                     .await;
                             });
                             session_sender

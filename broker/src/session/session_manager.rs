@@ -419,11 +419,11 @@ impl SessionWrapper {
         self.keep_alive_sender = Some(keep_alive_sender);
     }
 
-    pub async fn start_inflight_task(&mut self) {
+    pub async fn start_inflight_task(&mut self, resend_duration_secs: u64) {
         let inflight_resend_sender = inflight_resend_task(
             self.context.as_ref().unwrap().connection.clone(),
             self.session.inflight.clone(),
-            20,
+            resend_duration_secs,
         )
         .await;
         self.inflight_resend_task_sender = Some(inflight_resend_sender);
@@ -471,6 +471,7 @@ impl SessionWrapper {
         session_sender: Sender<SessionMessage>,
         router_sender: Sender<RouterCmd>,
         session_manager: Arc<RwLock<SessionManager>>,
+        inflight_resend_duration_secs: u64
     ) {
         loop {
             match self.state {
@@ -682,7 +683,7 @@ impl SessionWrapper {
                                             //
 
                                             // start inflight resend task
-                                            self.start_inflight_task().await;
+                                            self.start_inflight_task(inflight_resend_duration_secs).await;
                                             //
 
                                         }
@@ -1023,7 +1024,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1085,7 +1086,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
                 .await;
         });
 
@@ -1156,7 +1157,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
                 .await;
         });
 
@@ -1226,7 +1227,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1291,7 +1292,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1372,7 +1373,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
                 .await;
         });
 
@@ -1452,7 +1453,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1532,7 +1533,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1626,7 +1627,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1702,7 +1703,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
@@ -1776,7 +1777,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
                 .await;
         });
 
@@ -1862,7 +1863,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
                 .await;
         });
 
