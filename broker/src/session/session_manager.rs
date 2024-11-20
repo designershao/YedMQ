@@ -470,6 +470,7 @@ impl SessionWrapper {
         &mut self,
         session_sender: Sender<SessionMessage>,
         router_sender: Sender<RouterCmd>,
+        session_manager: Arc<RwLock<SessionManager>>,
     ) {
         loop {
             match self.state {
@@ -721,6 +722,13 @@ impl SessionWrapper {
         }
         //
 
+        // unregister session from session manager
+        session_manager.write().await.unregister(
+            self.session.tenant_identifier.clone(),
+            self.session.client_identifier.clone(),
+        );
+        //
+
         info!(
             "session {} stoped, return session event loop",
             self.session.client_identifier
@@ -798,6 +806,15 @@ impl SessionManager {
         }
     }
 
+    pub fn unregister(&mut self, tenant_identifier: String, client_identifier: String) {
+        if !self.sessions.contains_key(&tenant_identifier) {
+            return;
+        } else {
+            let session_table = self.sessions.get_mut(&tenant_identifier).unwrap();
+            session_table.remove(&client_identifier);
+        }
+    }
+
     pub async fn send_packet(
         &self,
         tenant_identifier: String,
@@ -825,7 +842,7 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration, vec};
+    use std::{collections::HashMap, sync::Arc, time::Duration, vec};
 
     use samoye_mqtt::v3::{
         pingreq::PingreqPacketBuilder,
@@ -848,7 +865,7 @@ mod tests {
         topic::TopicManager,
     };
 
-    use super::{ConnectionMessage, Session, SessionContext};
+    use super::{ConnectionMessage, Session, SessionContext, SessionManager};
 
     /// Test that the keep alive task should send a SessionMessage::KickOff to the session when keep alive expired.
     #[tokio::test]
@@ -895,6 +912,12 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         assert!(keep_alive_sender.is_closed());
+    }
+
+    fn mock_session_manager() -> Arc<RwLock<SessionManager>> {
+        Arc::new(RwLock::new(SessionManager {
+            sessions: HashMap::new(),
+        }))
     }
 
     fn mock_session(client_identifier: &str, tenant_identifier: &str) -> Session {
@@ -1000,7 +1023,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1062,7 +1085,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1133,7 +1156,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1203,7 +1226,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1268,7 +1291,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1349,7 +1372,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1429,7 +1452,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1509,7 +1532,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1603,7 +1626,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1679,7 +1702,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1753,7 +1776,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 
@@ -1839,7 +1862,7 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender)
+                .run_event_loop(session_sender_clone, router_sender, mock_session_manager())
                 .await;
         });
 

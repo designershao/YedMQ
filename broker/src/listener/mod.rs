@@ -226,7 +226,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             let session_sender_clone = session_sender.clone();
                             let _join_handle = tokio::task::spawn(async move {
                                 session_wrapper
-                                    .run_event_loop(session_sender_clone, router_sender)
+                                    .run_event_loop(session_sender_clone, router_sender, session_manager.clone())
                                     .await;
                             });
                             session_sender
