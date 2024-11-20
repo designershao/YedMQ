@@ -1,7 +1,7 @@
-use std::{collections::HashMap, sync:: Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error, Result};
-use log::{info, warn};
+use log::{error, info, warn};
 use samoye_mqtt::{
     v3::{
         pingresp::PingrespPacket,
@@ -23,10 +23,7 @@ use tokio::{
 };
 
 use crate::{
-    inflight::Inflight,
-    plugin_manager::PluginService,
-    router::RouterCmd,
-    topic::TopicManager,
+    inflight::Inflight, plugin_manager::PluginService, router::RouterCmd, topic::TopicManager,
 };
 
 use super::WillMessage;
@@ -708,6 +705,22 @@ impl SessionWrapper {
                 }
             }
         }
+
+        // unsubscribe all topics
+        for topic in &self.session.subscription_topics {
+            if let Err(e) = self.topic_manager.write().await.unsubscription(
+                self.session.client_identifier.clone(),
+                self.session.tenant_identifier.clone(),
+                topic.clone(),
+            ) {
+                error!(
+                    "when exit session event loop, unsubscribe topic {} error: {}",
+                    topic, e
+                );
+            }
+        }
+        //
+
         info!(
             "session {} stoped, return session event loop",
             self.session.client_identifier
@@ -734,17 +747,16 @@ pub enum SessionManagerError {
 }
 
 pub struct SessionManager {
-
     pub sessions: HashMap<String, HashMap<String, Sender<SessionMessage>>>,
-
 }
 
 impl SessionManager {
-
     // Create a new tenant
     pub fn create_tenant(&mut self, tenant_identifier: &str) -> Result<()> {
         if self.sessions.contains_key(&tenant_identifier.to_string()) {
-            return Err(anyhow!(SessionManagerError::TenantHasExisted(tenant_identifier.into())));
+            return Err(anyhow!(SessionManagerError::TenantHasExisted(
+                tenant_identifier.into()
+            )));
         }
         self.sessions
             .insert(tenant_identifier.into(), HashMap::new());
@@ -756,7 +768,11 @@ impl SessionManager {
         return self.sessions.contains_key(tenant_identifier);
     }
 
-    pub fn get_session_sender(&self, tenant_identifier: String, client_identifier: String) -> Option<Sender<SessionMessage>> {
+    pub fn get_session_sender(
+        &self,
+        tenant_identifier: String,
+        client_identifier: String,
+    ) -> Option<Sender<SessionMessage>> {
         if !self.sessions.contains_key(&tenant_identifier) {
             return None;
         } else {
@@ -765,9 +781,16 @@ impl SessionManager {
         }
     }
 
-    pub fn register(&mut self, tenant_identifier: String, client_identifier: String, session_sender: Sender<SessionMessage>) -> Result<()> {
+    pub fn register(
+        &mut self,
+        tenant_identifier: String,
+        client_identifier: String,
+        session_sender: Sender<SessionMessage>,
+    ) -> Result<()> {
         if !self.sessions.contains_key(&tenant_identifier) {
-            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(
+                tenant_identifier
+            )));
         } else {
             let session_table = self.sessions.get_mut(&tenant_identifier).unwrap();
             session_table.insert(client_identifier, session_sender);
@@ -782,11 +805,16 @@ impl SessionManager {
         packet: &MqttPacketV3,
     ) -> Result<()> {
         if !self.sessions.contains_key(&tenant_identifier) {
-            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier)));
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(
+                tenant_identifier
+            )));
         } else {
             let session_table = self.sessions.get(&tenant_identifier).unwrap();
             if let Some(handle) = session_table.get(&client_identifier) {
-                if let Err(_) = handle.send(SessionMessage::ForwardFromRouter(packet.clone())).await {
+                if let Err(_) = handle
+                    .send(SessionMessage::ForwardFromRouter(packet.clone()))
+                    .await
+                {
                     warn!("session receiver dropped");
                 }
             }
@@ -800,7 +828,12 @@ mod tests {
     use std::{sync::Arc, time::Duration, vec};
 
     use samoye_mqtt::v3::{
-        pingreq::PingreqPacketBuilder, publish::PublishPacketBuilder, pubrel::PubRelPacket, suback::ReturnCode, subscribe::{SubscribePacketBuilder, TopicFilter}, unsubscribe::{UnsubscribePacket, UnsubscribePacketBuilder}
+        pingreq::PingreqPacketBuilder,
+        publish::PublishPacketBuilder,
+        pubrel::PubRelPacket,
+        suback::ReturnCode,
+        subscribe::{SubscribePacketBuilder, TopicFilter},
+        unsubscribe::{UnsubscribePacket, UnsubscribePacketBuilder},
     };
     use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
@@ -1588,7 +1621,7 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::sleep(Duration::from_secs(2)).await;    
+        tokio::time::sleep(Duration::from_secs(2)).await;
 
         let msg = connection_receiver.recv().await.unwrap();
 
@@ -1597,12 +1630,10 @@ mod tests {
         } else {
             assert!(false)
         }
-
     }
 
     #[tokio::test]
     pub async fn when_receive_qos_1_publish_packet_session_wrapper_should_finish_the_whole_loop() {
-        
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1657,7 +1688,7 @@ mod tests {
             .await
             .unwrap();
 
-        let qos_1_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+        let qos_1_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01, 0x02])
             .packet_identifier(123)
             .qos(1)
             .build();
@@ -1674,11 +1705,9 @@ mod tests {
         if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Puback(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, 123);
         }
-
     }
     #[tokio::test]
     pub async fn when_receive_qos_2_publish_packet_session_wrapper_should_finish_the_whole_loop() {
-        
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1735,7 +1764,7 @@ mod tests {
 
         let packet_id = 123;
 
-        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01, 0x02])
             .packet_identifier(packet_id)
             .qos(2)
             .build();
@@ -1748,7 +1777,6 @@ mod tests {
             .unwrap();
 
         let msg = connection_receiver.recv().await.unwrap();
-
 
         if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, packet_id);
@@ -1766,7 +1794,6 @@ mod tests {
 
     #[tokio::test]
     pub async fn when_reactivate_not_clean_session_session_wrapper_should_finish_qos2_whole_loop() {
-        
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1818,7 +1845,7 @@ mod tests {
 
         let packet_id = 123;
 
-        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02])
+        let qos_2_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01, 0x02])
             .packet_identifier(packet_id)
             .qos(2)
             .build();
@@ -1828,7 +1855,6 @@ mod tests {
             .await
             .unwrap();
 
-
         session_sender
             .send(SessionMessage::ReceiveFromClient(
                 samoye_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
@@ -1836,7 +1862,10 @@ mod tests {
             .await
             .unwrap();
 
-        session_sender.send(SessionMessage::InActivate).await.unwrap();
+        session_sender
+            .send(SessionMessage::InActivate)
+            .await
+            .unwrap();
 
         let client_info = Client {
             tenant_id: "tenant_a".into(),
@@ -1863,7 +1892,6 @@ mod tests {
             .await
             .unwrap();
 
-
         let msg = connection_receiver.recv().await.unwrap();
 
         if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
@@ -1880,6 +1908,5 @@ mod tests {
             ))
             .await
             .unwrap();
-
     }
 }
