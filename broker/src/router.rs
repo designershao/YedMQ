@@ -1,20 +1,18 @@
 use std::sync::Arc;
 
 use log::warn;
-use tokio::{sync::RwLock, select};
+use tokio::{select, sync::RwLock};
 
 use crate::{session::session_manager::SessionManager, topic::TopicManager};
-use samoye_mqtt::MqttPacketV3;
 use anyhow::Result;
+use samoye_mqtt::MqttPacketV3;
 
 // Represent router command
 pub enum RouterCmd {
-
     // Route publish packet to the subscribtion session
     // struct:
     // tenant_identifier: String, packet: MqttPacketV3
-    RoutePacket(String,MqttPacketV3), 
-
+    RoutePacket(String, MqttPacketV3),
 }
 
 pub struct Router {
@@ -23,9 +21,7 @@ pub struct Router {
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
 }
 
-impl Router
-{
-
+impl Router {
     pub async fn run(&mut self) {
         loop {
             select! {
@@ -53,21 +49,38 @@ impl Router
             if publish_packet.fix_header.retain == Some(true) {
                 // register retain publish packet
                 let mut topic_manager = self.topic_manager.write().await;
-                let _ = topic_manager.register_retain_publish_packet(tenant_identifier.clone(),packet);
+                let _ =
+                    topic_manager.register_retain_publish_packet(tenant_identifier.clone(), packet);
             }
             let topic_manager = self.topic_manager.read().await;
-            let subscriptions = topic_manager.get_subscriptions(
-                tenant_identifier.clone(),
-                topic).unwrap();
+            let subscriptions = topic_manager
+                .get_subscriptions(tenant_identifier.clone(), topic)
+                .unwrap();
             let session_manager = self.session_manager.read().await;
             for item in subscriptions.iter() {
                 let client_identifier = item.client_identifier.clone();
-                if let Err(error) = session_manager.send_packet(tenant_identifier.clone(), client_identifier.clone(), packet).await {
-                    warn!("tenant {} session {} send packet error, details: {}", tenant_identifier, client_identifier.clone(), error);
+                let packet = packet.clone();
+                if let MqttPacketV3::Publish(mut publish_packet) = packet {
+                    publish_packet.fix_header.qos = Some(item.qos.into());
+                    if let Err(error) = session_manager
+                        .send_packet(
+                            tenant_identifier.clone(),
+                            client_identifier.clone(),
+                            &MqttPacketV3::Publish(publish_packet),
+                        )
+                        .await
+                    {
+                        warn!(
+                            "tenant {} session {} send packet error, details: {}",
+                            tenant_identifier,
+                            client_identifier.clone(),
+                            error
+                        );
+                    }
                 }
             }
         }
-        
+
         Ok(())
     }
 }
