@@ -41,7 +41,6 @@ impl MqttTcpTlsListener
         loop {
             let (stream, _) = listener.accept().await?;
 
-            let peer_addr = stream.peer_addr().unwrap();
             let plugin_manager = self.plugin_manager.clone();
             let session_manager = self.session_manager.clone();
             let topic_manager = self.topic_manager.clone();
@@ -51,7 +50,7 @@ impl MqttTcpTlsListener
 
             let remote_addr = stream.peer_addr().unwrap();
 
-            let mut tls_stream = tls_acceptor.accept(stream).await.unwrap();
+            let tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
             tokio::spawn(accept_connection(tls_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, remote_addr));
         }

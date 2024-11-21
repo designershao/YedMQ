@@ -65,7 +65,7 @@ impl AsyncBufRead for WebsocketTlsTunnel {
 impl AsyncWrite for WebsocketTlsTunnel {
     fn poll_write(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+        _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
         match Pin::new(&mut self.get_mut().inner.get_mut().inner).start_send(Message::Binary(buf.to_vec())) {

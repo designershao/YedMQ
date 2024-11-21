@@ -169,6 +169,8 @@ impl PluginManager {
             let boxed_raw = constructor();
             let plugin = Box::from_raw(boxed_raw);
 
+            info!("plugin {} loaded, version: {}, author: {}, description: {} ", metadata.name, metadata.version, metadata.author, metadata.description);
+
             // after plugin load call on activate hook
             plugin.on_activate();
             //

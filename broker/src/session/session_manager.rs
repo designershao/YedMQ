@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
 use log::{error, info, warn};
 use samoye_mqtt::{
     v3::{
@@ -194,13 +194,14 @@ async fn inflight_resend_task(
                 _ = resend_interval.tick() => {
 
                     if !tick_first_raise {
-                        let inflight = inflight.lock().await;
-                        let packets = inflight.get_all_expired_packets().await;
+                        let mut inflight = inflight.lock().await;
+                        let packets = inflight.get_all_expired_packets_and_refresh_expired_time().await;
                         for packet in packets {
                             if let Err(_) = connection_sender.send(ConnectionMessage::WritePacket(packet.clone())).await {
                                 warn!("in flight resend task: connection sender dropped");
                             }
                         }
+                        inflight.clean_finished_items().await;
                     } else {
                         tick_first_raise = false
                     }
@@ -762,7 +763,7 @@ pub struct SessionManager {
 impl SessionManager {
     // Create a new tenant
     pub fn create_tenant(&mut self, tenant_identifier: &str) -> Result<()> {
-        if self.sessions.contains_key(&tenant_identifier.to_string()) {
+        if self.tenant_existed(tenant_identifier) {
             return Err(anyhow!(SessionManagerError::TenantHasExisted(
                 tenant_identifier.into()
             )));
@@ -1002,6 +1003,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1059,6 +1061,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: false,
@@ -1130,6 +1133,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1200,6 +1204,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1265,6 +1270,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1339,6 +1345,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1419,6 +1426,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1499,6 +1507,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1600,6 +1609,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1649,7 +1659,7 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pingresp(packet)) = msg {
+        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pingresp(_)) = msg {
             assert!(true)
         } else {
             assert!(false)
@@ -1669,6 +1679,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1743,6 +1754,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: true,
@@ -1829,6 +1841,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: false,
@@ -1894,6 +1907,7 @@ mod tests {
         let client_info = Client {
             tenant_id: "tenant_a".into(),
             client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
             properties: ClientProperties {
                 username: Some("username_a".to_string()),
                 clean_session: false,

@@ -68,16 +68,6 @@ impl Inflight {
         }
     }
 
-    // Remove qos context with packet identifier
-    pub fn del(&mut self, packet_identifier: u16) {
-        self.inner.blocking_write().remove(&packet_identifier);
-    }
-
-    // Check the packet identifier in used
-    pub fn contains_packet_identifier(&self, packet_identifier:u16) -> bool {
-        self.inner.blocking_read().contains_key(&packet_identifier)
-    }
-
     // Get all packet which should be resend to the client and refresh expired time
     pub async fn get_all_expired_packets_and_refresh_expired_time(&self) -> Vec<MqttPacketV3> {
         let mut result_vec:Vec<MqttPacketV3> = vec![];
@@ -90,22 +80,6 @@ impl Inflight {
                     result_vec.push(packet.clone());
                 }
                 item.last_modified = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs();
-            }
-        }    
-        result_vec
-    }
-
-    // Get all packet which should be resend to the client
-    pub async fn get_all_expired_packets(&self) -> Vec<MqttPacketV3> {
-        let mut result_vec:Vec<MqttPacketV3> = vec![];
-        let inner = self.inner.read().await;
-        for item in inner.values() {
-            if item.last_modified + self.expired_duration.as_secs() < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
-                if let Some(packet) = item.current_packet() {
-                    let mut packet = packet.clone();
-                    packet.set_dup(1); // all expired packet should set dup to true
-                    result_vec.push(packet.clone());
-                }
             }
         }    
         result_vec
@@ -151,7 +125,6 @@ enum InflightState {
 }
 
 struct InflightItem {
-    qos: u8,
     packet_identifier: u16,
     state: InflightState,
     packet: Option<MqttPacketV3>,
@@ -198,7 +171,6 @@ impl InflightItemBuilder {
 
     fn build(&self) -> InflightItem {
         InflightItem {
-            qos: self.qos,
             packet_identifier: self.packet_identifier,
             state: self.state.clone(),
             packet: self.packet.clone(),

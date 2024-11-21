@@ -1,7 +1,7 @@
 use core::fmt;
-use std::{string, sync::{Arc, Mutex, RwLock}, collections::HashMap};
+use std::{sync::{Arc, RwLock}, collections::HashMap};
 
-use samoye_mqtt::{MqttPacketV3, v3::publish::PublishPacket};
+use samoye_mqtt::MqttPacketV3;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -241,7 +241,6 @@ impl TopicManager {
     }
 
     pub fn get_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String, topic_filter: String) -> Result<Vec<Arc<MqttPacketV3>>, Error> {
-        let map = self.topic_tree.clone();
         if !test_topic(&topic_filter) {
             return Err(Error::InvalidTopicFilter(topic_filter));
         }
@@ -405,7 +404,7 @@ pub struct Subscription {
 #[cfg(test)]
 mod tests {
 
-    use samoye_mqtt::{v3::{fixed_header::FixHeader, publish::{VariableHeader, Payload}}, PacketType};
+    use samoye_mqtt::{v3::{fixed_header::FixHeader, publish::{Payload, PublishPacket, VariableHeader}}, PacketType};
 
     use super::*;
     use std::{thread, borrow::BorrowMut, cell::RefCell};

@@ -27,6 +27,7 @@ pub struct Client {
 
     pub properties: ClientProperties,
 
+    pub socket_addr: std::net::SocketAddr
 }
 
 pub struct ClientProperties {

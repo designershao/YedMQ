@@ -180,6 +180,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: packet.payload.client_identifier.clone(),
                                 properties: client_properties.0,
+                                socket_addr: peer_addr,
                             },
                         };
 

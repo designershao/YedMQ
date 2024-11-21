@@ -51,7 +51,7 @@ impl MqttWssListener {
 
             let remote_addr = stream.peer_addr().unwrap();
 
-            let mut tls_stream = tls_acceptor.accept(stream).await.unwrap();
+            let tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
             let ws_stream = tokio_tungstenite::accept_hdr_async(tls_stream, WsCallBack{}).await;
 
