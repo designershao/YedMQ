@@ -508,7 +508,7 @@ impl SessionWrapper {
                                             if let Some(context) = &self.context {
                                                 match &packet {
                                                     MqttPacketV3::Publish(publish_packet) => {
-                                                        if publish_packet.fix_header.qos > Some(0) {
+                                                        if publish_packet.fix_header.qos.unwrap() > 0 {
                                                             self.session.new_tx_qos_state_ctx(&packet).await;
                                                         }
                                                     }
@@ -678,7 +678,15 @@ impl SessionWrapper {
                                             if clean_session {
                                                 debug!("session {} clean session, break event loop.", self.session.client_identifier);
                                                 break;
+                                            } else {
+                                                // if some one wait qujit signal, send quit signal
+                                                if let Some(quit_signal_sender) = &self.quit_signal_sender {
+                                                    if let Err(e) = quit_signal_sender.send(()).await {
+                                                        warn!("send quit signal error, {}", e);
+                                                    }
+                                                }
                                             }
+
                                         }
                                         _ => {}
                                     }
