@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use samoye_mqtt::{
     v3::{
         pingresp::PingrespPacket,
@@ -44,7 +44,7 @@ enum InflightResendTaskMessage {
     Stop,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum KickOffReason {
     KeepAliveExpired,
 
@@ -52,7 +52,7 @@ pub enum KickOffReason {
 
     InvalidMqttPacket,
 
-    Other(String),
+    Other(String, Sender<()>),
 }
 
 // Represent session message
@@ -100,6 +100,7 @@ pub struct Session {
 
     // The inflight , track all in flights qos packet.
     pub inflight: Arc<Mutex<Inflight>>,
+
 }
 
 impl Session {
@@ -130,6 +131,9 @@ pub struct SessionWrapper {
     plugin_manager: Arc<dyn PluginService + 'static>,
 
     topic_manager: Arc<RwLock<TopicManager>>,
+
+    quit_signal_sender: Option<Sender<()>>
+
 }
 
 // Run keep alive task, when not received pingresp in keep alive time, send kick off to current session
@@ -244,6 +248,7 @@ impl SessionWrapper {
             inflight_resend_task_sender: None,
             plugin_manager,
             topic_manager,
+            quit_signal_sender: None
         }
     }
 
@@ -494,6 +499,7 @@ impl SessionWrapper {
                                             self.stop_keep_alive_task().await;
 
                                             if clean_session {
+                                                debug!("session {} inactivate, clean session", self.session.client_identifier);
                                                 break;
                                             }
 
@@ -551,6 +557,22 @@ impl SessionWrapper {
                                                         }
                                                     }
                                                 }
+                                                MqttPacketV3::Pubrec(pubrec_packet) => {
+                                                    if let Some(context) = &self.context {
+                                                        let mut inflight = self.session.inflight.lock().await;
+                                                        inflight
+                                                            .next_state(pubrec_packet.variable_header.packet_identifier)
+                                                            .await;
+                                                        if let Some(p) = inflight
+                                                            .get_current_packet(pubrec_packet.variable_header.packet_identifier)
+                                                            .await
+                                                        {
+                                                            if let Err(_) = context.connection.send(ConnectionMessage::WritePacket(p)).await {
+                                                                warn!("connection receiver dropped");
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 MqttPacketV3::Pubrel(pubrel_packet) => {
                                                     if let Some(context) = &self.context {
                                                         let mut inflight = self.session.inflight.lock().await;
@@ -600,21 +622,15 @@ impl SessionWrapper {
                                                     }
                                                 }
                                                 MqttPacketV3::Disconnect(_) => {
+                                                    debug!("session {} receive disconnect packet", self.session.client_identifier);
                                                     if let Some(context) = &self.context {
                                                         if let Err(_) = context.connection.send(ConnectionMessage::Disconnect).await {
                                                             warn!("connection receiver dropped");
                                                         }
                                                         self.plugin_manager.do_on_disconnect(&self.context.as_ref().unwrap().client_info);
+
+                                                        session_sender.send(SessionMessage::InActivate).await.unwrap();
                                                     }
-
-                                                    self.state = SessionState::Inactivate;
-
-                                                    self.context = None;
-
-                                                    self.stop_inflight_task().await;
-
-                                                    self.stop_keep_alive_task().await;
-
                                                 }
                                                 _ => {}
                                             }
@@ -653,10 +669,14 @@ impl SessionWrapper {
                                                 KickOffReason::InvalidMqttPacket => {
                                                     self.process_will_message(&router_sender).await;
                                                 }
-                                                KickOffReason::Other(_) => {},
+                                                KickOffReason::Other(msg, quit_signal_sender) => {
+                                                    info!("session client id {} kick off reason: {}",self.session.client_identifier, msg);
+                                                    self.quit_signal_sender = Some(quit_signal_sender);
+                                                },
                                             }
 
                                             if clean_session {
+                                                debug!("session {} clean session, break event loop.", self.session.client_identifier);
                                                 break;
                                             }
                                         }
@@ -676,6 +696,7 @@ impl SessionWrapper {
                                 Some(session_message) => {
                                     match session_message {
                                         SessionMessage::Activate(session_context) => {
+                                            debug!("session {} activate", session_context.client_info.client_identifier);
                                             self.context = Some(session_context);
                                             self.state = SessionState::Activate;
 
@@ -709,11 +730,14 @@ impl SessionWrapper {
             }
         }
 
+        debug!("session {} break out the loop, start clean resources", self.session.client_identifier);
+
         // unsubscribe all topics
         for topic in &self.session.subscription_topics {
+            debug!("unsubscribe topic {}", topic);
             if let Err(e) = self.topic_manager.write().await.unsubscription(
-                self.session.client_identifier.clone(),
                 self.session.tenant_identifier.clone(),
+                self.session.client_identifier.clone(),
                 topic.clone(),
             ) {
                 error!(
@@ -725,11 +749,18 @@ impl SessionWrapper {
         //
 
         // unregister session from session manager
+        debug!(
+            "when exit session event loop, unregister session {}",self.session.client_identifier);
         session_manager.write().await.unregister(
             self.session.tenant_identifier.clone(),
             self.session.client_identifier.clone(),
         );
         //
+
+        if let Some(quit_signal_sender) = &self.quit_signal_sender {
+            quit_signal_sender.send(()).await.unwrap();
+            self.quit_signal_sender = None;
+        }
 
         info!(
             "session {} stoped, return session event loop",
@@ -780,14 +811,14 @@ impl SessionManager {
 
     pub fn get_session_sender(
         &self,
-        tenant_identifier: String,
-        client_identifier: String,
+        tenant_identifier: &String,
+        client_identifier: &String,
     ) -> Option<Sender<SessionMessage>> {
-        if !self.sessions.contains_key(&tenant_identifier) {
+        if !self.sessions.contains_key(tenant_identifier) {
             return None;
         } else {
-            let session_table = self.sessions.get(&tenant_identifier).unwrap();
-            return session_table.get(&client_identifier).cloned();
+            let session_table = self.sessions.get(tenant_identifier).unwrap();
+            return session_table.get(client_identifier).cloned();
         }
     }
 
@@ -852,7 +883,7 @@ mod tests {
         pubrel::PubRelPacket,
         suback::ReturnCode,
         subscribe::{SubscribePacketBuilder, TopicFilter},
-        unsubscribe::{UnsubscribePacket, UnsubscribePacketBuilder},
+        unsubscribe::UnsubscribePacketBuilder,
     };
     use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
@@ -883,7 +914,12 @@ mod tests {
         let msg = session_receiver.recv().await;
 
         if let Some(crate::session::session_manager::SessionMessage::KickOff(reason)) = msg {
-            assert_eq!(reason, KickOffReason::KeepAliveExpired);
+            match reason {
+                KickOffReason::KeepAliveExpired => {
+                    assert!(true);
+                }
+                _ => assert!(false),
+            }
         } else {
             assert!(false);
         }
@@ -1826,6 +1862,11 @@ mod tests {
             ))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    pub async fn when_session_exsited_session_wrapper_should_set_connack_present_flag() {
+        
     }
 
     #[tokio::test]

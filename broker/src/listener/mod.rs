@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use log::{debug, warn};
+use log::{debug, error, warn};
 use samoye_plugin::plugin::{AuthenticationResult, Client, ClientProperties};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -113,10 +113,32 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     AuthenticationResult::Success(tenant_id) => {
                         let mut connack_packet_builder = ConnAckPacketBuilder::new()
                             .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet);
-                        if session_manager.read().await.get_session_sender(&tenant_id, &packet.payload.client_identifier).is_some() {
+
+                        //
+
+                        let mut session_sender_option = None;
+                        if let Some(session_sender) = session_manager.read().await.get_session_sender(&tenant_id, &packet.payload.client_identifier) {
+                            session_sender_option = Some(session_sender);
+                        }
+                        if let Some(session_sender) = session_sender_option {
                             debug!("session {} already exist, set session present", packet.payload.client_identifier);
                             connack_packet_builder = connack_packet_builder.set_session_present(true);
+
+                            let (quit_sender, mut quit_receiver) = tokio::sync::mpsc::channel(1);
+
+                            if let Err(_) = session_sender.send(SessionMessage::KickOff(KickOffReason::Other("kick off the same client identifiy connection".into(), quit_sender))).await {
+                                error!("client id {} send kick off message error", packet.payload.client_identifier);
+                                return;
+                            }
+
+                            debug!("wait previous session client id {} stop", packet.payload.client_identifier);
+
+                            quit_receiver.recv().await;
+
+                            debug!("previous session client id {} stoped", packet.payload.client_identifier);
                         }
+                        //
+
                         let connack_packet = connack_packet_builder.build();
                         if let Err(e) = connection
                             .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
@@ -247,6 +269,10 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                 .unwrap();
                         }
 
+                        debug!(
+                            "session {} connected from {}",
+                            packet.payload.client_identifier, peer_addr);
+
                         loop {
                             select! {
                                 read_packet_result = connection.read_packet() => {
@@ -255,17 +281,23 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                             if let Err(e) = session_sender
                                                 .send(SessionMessage::ReceiveFromClient(packet))
                                                 .await {
-                                                    warn!("send packet error: {}", e);
+                                                    warn!("socket: {}, send packet error: {}, session sender may be closed, exit the accept connection loop", peer_addr, e);
+                                                    if let Err(e) = connection.shutdown().await {
+                                                        warn!("shutdown connection error: {}", e);
+                                                    };
+                                                    return;
                                                 }
                                         }
                                         Err(e) => {
-                                            warn!("read packet error: {}", e);
+                                            warn!("session {} read packet error: {}", packet.payload.client_identifier , e);
                                             if let Err(e) = session_sender
                                                 .send(SessionMessage::KickOff(KickOffReason::InvalidMqttPacket))
                                                 .await {
                                                     warn!("send packet error: {}", e);
                                                 }
-                                            connection.shutdown().await.unwrap();
+                                            if let Err(e) = connection.shutdown().await {
+                                                warn!("shutdown connection error: {}", e);
+                                            };
                                             return;
                                         }
                                     }
