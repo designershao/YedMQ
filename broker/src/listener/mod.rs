@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use log::warn;
+use log::{debug, warn};
 use samoye_plugin::plugin::{AuthenticationResult, Client, ClientProperties};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -111,9 +111,13 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             match r {
                 Ok(auth_result) => match auth_result {
                     AuthenticationResult::Success(tenant_id) => {
-                        let connack_packet = ConnAckPacketBuilder::new()
-                            .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet)
-                            .build();
+                        let mut connack_packet_builder = ConnAckPacketBuilder::new()
+                            .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet);
+                        if session_manager.read().await.get_session_sender(&tenant_id, &packet.payload.client_identifier).is_some() {
+                            debug!("session {} already exist, set session present", packet.payload.client_identifier);
+                            connack_packet_builder = connack_packet_builder.set_session_present(true);
+                        }
+                        let connack_packet = connack_packet_builder.build();
                         if let Err(e) = connection
                             .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
                             .await
@@ -186,8 +190,8 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                         let existed_session_sender_option =
                             session_manager.read().await.get_session_sender(
-                                tenant_id.clone(),
-                                packet.payload.client_identifier.to_string(),
+                                &tenant_id,
+                                &packet.payload.client_identifier
                             );
 
                         let (mut session_sender, session_receiver) =
