@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use log::warn;
+use log::{debug, warn};
 use tokio::{select, sync::RwLock};
 
 use crate::{session::session_manager::SessionManager, topic::TopicManager};
@@ -61,7 +61,16 @@ impl Router {
                 let client_identifier = item.client_identifier.clone();
                 let packet = packet.clone();
                 if let MqttPacketV3::Publish(mut publish_packet) = packet {
-                    publish_packet.fix_header.qos = Some(item.qos.into());
+                    debug!("tenant {} session {} send packet max qos {} , body is {:?}", tenant_identifier, client_identifier.clone(), item.qos, publish_packet.payload.payload);
+                    if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
+                        if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
+                            publish_packet.fix_header.qos = Some(0);
+                            publish_packet.variable_header.packet_identifier = None;
+                            publish_packet.fix_header.remaining_length = publish_packet.fix_header.remaining_length - 2;
+                        } else {
+                            publish_packet.fix_header.qos = Some(item.qos.into());
+                        }
+                    }
                     if let Err(error) = session_manager
                         .send_packet(
                             tenant_identifier.clone(),
