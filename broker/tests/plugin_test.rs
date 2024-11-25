@@ -36,7 +36,7 @@ pub fn test_plugin_metadata_load() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_plugin_service_init() {
     let plugin_dir = get_demo_plugins_dir();
-    let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
+    let _manager = PluginManager::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
     assert!(true);
 }
 

@@ -31,14 +31,12 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
             tcp: samoye::settings::Tcp { external: format!("0.0.0.0:{}", tcp_port).to_string() },
             tcp_tls: samoye::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
-                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
             },
             ws: samoye::settings::Ws { external: "0.0.0.0:18090".to_string() },
             wss: samoye::settings::Wss {
                 external: "0.0.0.0:18091".to_string(),
-                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
             }

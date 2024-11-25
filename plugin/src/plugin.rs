@@ -13,6 +13,15 @@ pub enum PluginError {
 
 }
 
+
+pub enum Action {
+
+    Subscribe,
+    
+    Publish
+
+}
+
 pub trait Plugin: Any + Send + Sync {
 
     fn on_activate(&self);
@@ -21,13 +30,11 @@ pub trait Plugin: Any + Send + Sync {
 
     fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult>;
 
-    fn publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool>;
-
-    fn subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<SubscribeAuthorizationResult>;
-
     fn on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
 
     fn on_disconnect(&self, client: &Client);
+
+    fn authorizate_acl_check(&self, client: &Client, topic: &String, action: Action) -> Result<bool>;
 
 }
 
@@ -85,26 +92,5 @@ pub struct TopicFilter {
     pub topic_name: String,
 
     pub qos: u8
-
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum SubscribeReturnCode {
-
-    MaxQosMostOnce,
-
-    MaxQosLeastOnce,
-
-    MaxQosExactlyOnce,
-    
-    Failure,
-
-    Invalid
-
-}
-
-pub struct SubscribeAuthorizationResult {
-
-    pub return_code: Vec<SubscribeReturnCode>
 
 }

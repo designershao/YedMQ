@@ -1,5 +1,5 @@
 use anyhow::Result;
-use samoye_plugin::{plugin::SubscribeReturnCode, register_plugin};
+use samoye_plugin::register_plugin;
 
 pub struct ExamplePlugin {
 
@@ -24,15 +24,8 @@ impl samoye_plugin::plugin::Plugin for ExamplePlugin {
         return Ok(samoye_plugin::plugin::AuthenticationResult::Success("tenant_id".into()))
     }
 
-    fn publish_authorizate(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::publish::PublishPacket) -> Result<bool> {
+    fn authorizate_acl_check(&self, _client: &samoye_plugin::plugin::Client, _topic: &String, _action: samoye_plugin::plugin::Action) -> Result<bool> {
         return Ok(true)
-    }
-
-    fn subscribe_authorizate(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> Result<samoye_plugin::plugin::SubscribeAuthorizationResult> {
-        let return_code = SubscribeReturnCode::MaxQosMostOnce;
-        return Ok(samoye_plugin::plugin::SubscribeAuthorizationResult{
-            return_code: vec![return_code]
-        })
     }
 
     fn on_publish(&self, client: &samoye_plugin::plugin::Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {

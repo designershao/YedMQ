@@ -12,7 +12,7 @@ use samoye_mqtt::{
     },
     MqttPacketV3,
 };
-use samoye_plugin::plugin::{Client, SubscribeReturnCode};
+use samoye_plugin::plugin::Client;
 use thiserror::Error;
 use tokio::{
     select,
@@ -23,7 +23,7 @@ use tokio::{
 };
 
 use crate::{
-    inflight::Inflight, plugin_manager::PluginService, router::RouterCmd, topic::TopicManager,
+    inflight::Inflight, plugin_manager::{PluginService, SubscribeReturnCode}, router::RouterCmd, topic::TopicManager,
 };
 
 use super::WillMessage;
@@ -891,12 +891,12 @@ mod tests {
         subscribe::{SubscribePacketBuilder, TopicFilter},
         unsubscribe::UnsubscribePacketBuilder,
     };
-    use samoye_plugin::plugin::{Client, ClientProperties, SubscribeReturnCode};
+    use samoye_plugin::plugin::{Client, ClientProperties};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 
     use crate::{
         inflight::Inflight,
-        plugin_manager::PluginService,
+        plugin_manager::{PluginService, SubscribeAuthorizationResult, SubscribeReturnCode},
         router::RouterCmd,
         session::session_manager::{
             keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage, SessionWrapper,
@@ -1016,9 +1016,9 @@ mod tests {
             &self,
             _client: &Client,
             packet: &samoye_mqtt::v3::subscribe::SubscribePacket,
-        ) -> anyhow::Result<samoye_plugin::plugin::SubscribeAuthorizationResult> {
+        ) -> anyhow::Result<SubscribeAuthorizationResult> {
             let length = packet.payload.topic_filters.len();
-            return Ok(samoye_plugin::plugin::SubscribeAuthorizationResult {
+            return Ok(SubscribeAuthorizationResult {
                 return_code: vec![SubscribeReturnCode::MaxQosMostOnce; length],
             });
         }

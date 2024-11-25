@@ -2,12 +2,34 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin, SubscribeAuthorizationResult, SubscribeReturnCode};
+use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{debug, info, warn};
 
 pub mod plugin_metadata;
+
+pub struct SubscribeAuthorizationResult {
+
+    pub return_code: Vec<SubscribeReturnCode>
+
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub enum SubscribeReturnCode {
+
+    MaxQosMostOnce,
+
+    MaxQosLeastOnce,
+
+    MaxQosExactlyOnce,
+    
+    Failure,
+
+    Invalid
+
+}
+
 
 #[derive(Error, Debug)]
 pub enum PluginManagerError {
@@ -74,7 +96,7 @@ impl PluginService for PluginManager {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let publish_authorizate_result = plugin.plugin.publish_authorizate(client, packet);
+                let publish_authorizate_result = plugin.plugin.authorizate_acl_check(client, &packet.variable_header.topic_name, samoye_plugin::plugin::Action::Publish);
                 match publish_authorizate_result {
                     core::result::Result::Ok(publish_authorizate_result) => {
                         if publish_authorizate_result {
@@ -99,20 +121,20 @@ impl PluginService for PluginManager {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let subscribe_authorizate_result: Result<SubscribeAuthorizationResult, anyhow::Error> = plugin.plugin.subscribe_authorizate(client, packet);
-                if let core::result::Result::Ok(subscribe_authorizate_result) = subscribe_authorizate_result {
-                    let return_code_from_plugin = subscribe_authorizate_result.return_code;
-                    if return_code_from_plugin.len() != return_code.len() { // plugin not return all topic filter permission
-                        continue;
-                    } else {
-                        for i in 0..return_code.len() {
-                            if return_code[i] != SubscribeReturnCode::Failure {
-                                return_code[i] = return_code_from_plugin[i].clone();
+                let topics = packet.payload.topic_filters.iter().enumerate();
+                for (i, topic) in topics {
+                    let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, samoye_plugin::plugin::Action::Subscribe).map_or_else(|_| false, |r| r);
+                    return_code[i] = match authorizate_result {
+                        true =>  {
+                            match topic.qos {
+                                0 => SubscribeReturnCode::MaxQosLeastOnce,
+                                1 => SubscribeReturnCode::MaxQosMostOnce,
+                                2 => SubscribeReturnCode::MaxQosExactlyOnce,
+                                _ => SubscribeReturnCode::Invalid
                             }
-                        }
-                    }
-                } else {
-                    continue;
+                        },
+                        false => SubscribeReturnCode::Failure
+                    };
                 }
             }
         }
