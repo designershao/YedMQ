@@ -192,13 +192,10 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             },
                         };
 
-                        let username = packet.payload.username.clone();
-
                         let (connection_sender, mut connection_receiver) =
                             tokio::sync::mpsc::channel(100);
 
                         let session_context = SessionContext {
-                            username,
                             connection: connection_sender.clone(),
                             keep_alive: packet.variable_header.keep_alive.into(),
                             clean_session: packet.variable_header.clean_session,

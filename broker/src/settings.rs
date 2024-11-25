@@ -30,7 +30,6 @@ pub struct Listener {
 #[derive(Debug, Deserialize)]
 pub struct TcpTls {
     pub external: String,
-    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String
 }
@@ -43,7 +42,6 @@ pub struct Ws {
 #[derive(Debug, Deserialize)]
 pub struct Wss {
     pub external: String,
-    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String
 }

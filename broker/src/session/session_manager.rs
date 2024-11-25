@@ -69,8 +69,6 @@ pub enum SessionMessage {
 }
 
 pub struct SessionContext {
-    // MQTT Auth Username
-    pub username: Option<String>,
 
     // Current Session Connection
     pub connection: Sender<ConnectionMessage>,
@@ -984,7 +982,6 @@ mod tests {
         client_info: Client,
     ) -> SessionContext {
         SessionContext {
-            username: Some(username.to_string()),
             connection,
             keep_alive,
             client_info,
