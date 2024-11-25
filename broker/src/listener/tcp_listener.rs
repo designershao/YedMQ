@@ -85,14 +85,12 @@ mod tests {
                 tcp: crate::settings::Tcp { external: format!("127.0.0.1:{}", tcp_port).to_string() },
                 tcp_tls: crate::settings::TcpTls {
                     external: "".to_string(),
-                    cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                 },
                 ws: crate::settings::Ws { external: "".to_string() },
                 wss: crate::settings::Wss {
                      external: "".to_string(),
-                    cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                     }
@@ -115,7 +113,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1000)).await; // ensure listener start
 
         let mut writer = tokio::net::TcpStream::connect(format!("0.0.0.0:{}", tcp_port)).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
+        let _connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
@@ -154,14 +152,12 @@ mod tests {
                 tcp: crate::settings::Tcp { external: format!("127.0.0.1:{}", tcp_port).to_string() },
                 tcp_tls: crate::settings::TcpTls {
                     external: "".to_string(),
-                    cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                 },
                 ws: crate::settings::Ws { external: "".to_string() },
                 wss: crate::settings::Wss {
                      external: "".to_string(),
-                    cacert_file: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                     }
