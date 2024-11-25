@@ -20,11 +20,6 @@ pub struct Plugin {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Log {
-    pub level: String // enable log level
-}
-
-#[derive(Debug, Deserialize)]
 pub struct Listener {
     pub tcp: Tcp,
     pub tcp_tls: TcpTls,

@@ -5,7 +5,7 @@ use plugin_metadata::PluginMetadata;
 use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin, SubscribeAuthorizationResult, SubscribeReturnCode};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
-use log::{info, warn};
+use log::{debug, info, warn};
 
 pub mod plugin_metadata;
 
@@ -99,7 +99,7 @@ impl PluginService for PluginManager {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let subscribe_authorizate_result = plugin.plugin.subscribe_authorizate(client, packet);
+                let subscribe_authorizate_result: Result<SubscribeAuthorizationResult, anyhow::Error> = plugin.plugin.subscribe_authorizate(client, packet);
                 if let core::result::Result::Ok(subscribe_authorizate_result) = subscribe_authorizate_result {
                     let return_code_from_plugin = subscribe_authorizate_result.return_code;
                     if return_code_from_plugin.len() != return_code.len() { // plugin not return all topic filter permission
@@ -121,6 +121,9 @@ impl PluginService for PluginManager {
         })
     }
 
+    // Connect authenticate logic
+    // Execute plugins in order of priority from high to low. 
+    // If higher priority plugin returns a success result, then return the result, lower plugin will not be called.
     fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResult> {
         if self.plugin_table.len() > 0 {
             let mut i = 1;
@@ -128,6 +131,7 @@ impl PluginService for PluginManager {
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
                 let authenticate_result = plugin.plugin.connect_authenticate(packet);
+
                 if let core::result::Result::Ok(authenticate_result) = authenticate_result {
                     match authenticate_result {
                         AuthenticationResult::Success(tenant_id) => {
@@ -142,8 +146,16 @@ impl PluginService for PluginManager {
                         },
                     }
                 } else {
-                    let err = authenticate_result.err().unwrap();
-                    warn!("plugin {} on_connect_auth error: {}", plugin.plugin_metadata.name, err);
+
+                    match authenticate_result.err().unwrap().downcast_ref() {
+                        Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement(hook)) => {
+                            debug!("plugin {} hho {} not implement skip!", plugin.plugin_metadata.name, hook);
+                        }
+                        Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(err)) => {
+                            warn!("plugin {} on_connect_auth error: {}, fobiden connection", plugin.plugin_metadata.name, err);
+                        }
+                        None => {}
+                    }
                 }
                 i+=1;
             }
