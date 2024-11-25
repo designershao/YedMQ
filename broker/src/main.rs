@@ -1,6 +1,6 @@
 use std::{sync::Arc, collections::HashMap};
 
-use log::info;
+use log::{info, warn};
 use plugin_manager::PluginManager;
 use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
 use settings::Settings;
@@ -77,7 +77,9 @@ async fn main() {
     let settings_clone = settings.clone();
     let tcp_listener_join = tokio::spawn(async move {
         info!("start tcp listener on {}", settings_clone.listener.tcp.external);
-        listener.run().await.unwrap();
+        if let Err(e) = listener.run().await {
+            warn!("tcp listener can`t run, error: {}", e);
+        }
     });
 
     let mut tcp_tls_listener = MqttTcpTlsListener {
@@ -92,7 +94,9 @@ async fn main() {
     let tcp_tls_listener_join = tokio::spawn(async move {
         let settings = settings_clone.clone();
         info!("start tls listener on {}", settings.listener.tcp_tls.external);
-        tcp_tls_listener.run().await.unwrap();
+        if let Err(e) = tcp_tls_listener.run().await {
+            warn!("tls listener can`t run, error: {}", e);
+        }
     });
 
 
@@ -107,7 +111,9 @@ async fn main() {
     let mqtt_ws_listener_join = tokio::spawn(async move {
         let settings = settings_clone.clone();
         info!("start ws listener on {}", settings.listener.ws.external);
-        ws_listener.run().await.unwrap();
+        if let Err(e) = ws_listener.run().await {
+            warn!("ws listener can`t run, error: {}", e);
+        };
     });
 
     let wss_listener = MqttWssListener {
@@ -121,7 +127,9 @@ async fn main() {
     let mqtt_wss_listener_join = tokio::spawn(async move {
         let settings = settings_clone.clone();
         info!("start wss listener on {}", settings.listener.wss.external);
-        wss_listener.run().await.unwrap();
+        if let Err(e) = wss_listener.run().await {
+            warn!("wss listener can`t run, error: {}", e);
+        }
     });
 
     tcp_listener_join.await.unwrap();
