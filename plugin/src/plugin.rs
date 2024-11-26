@@ -5,8 +5,8 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum PluginError {
 
-    #[error("plugin hook `{0}` not implement")]
-    PluginHookNotImplement(String),
+    #[error("plugin hook not implement")]
+    PluginHookNotImplement(),
 
     #[error("plugin hook error: {0}")]
     PluginHookExecutionError(#[from] anyhow::Error)

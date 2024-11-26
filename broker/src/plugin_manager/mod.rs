@@ -106,7 +106,15 @@ impl PluginService for PluginManager {
                         }
                     }
                     Err(e) => {
-                        warn!("plugin {} publish_authorizate error: {}", plugin.plugin_metadata.name, e);
+                        match e.downcast_ref() {
+                            Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                                info!("plugin {} hook publish_authorizate not implement skip!", plugin.plugin_metadata.name);
+                            }
+                            Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
+                                warn!("plugin {} publish_authorizate error: {}", plugin.plugin_metadata.name, e);
+                            }
+                            None => {}
+                        }
                         continue;
                     }
                 }
@@ -170,8 +178,8 @@ impl PluginService for PluginManager {
                 } else {
 
                     match authenticate_result.err().unwrap().downcast_ref() {
-                        Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement(hook)) => {
-                            debug!("plugin {} hho {} not implement skip!", plugin.plugin_metadata.name, hook);
+                        Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                            debug!("plugin {} on_connect_auth not implement skip!", plugin.plugin_metadata.name);
                         }
                         Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(err)) => {
                             warn!("plugin {} on_connect_auth error: {}, fobiden connection", plugin.plugin_metadata.name, err);

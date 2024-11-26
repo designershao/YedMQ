@@ -37,4 +37,10 @@ impl samoye_plugin::plugin::Plugin for ExamplePlugin {
     }
 }
 
+impl Drop for ExamplePlugin {
+    fn drop(&mut self) {
+        println!("example plugin drop");
+    }
+}
+
 register_plugin!(ExamplePlugin, ExamplePlugin::new);
