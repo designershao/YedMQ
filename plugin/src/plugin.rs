@@ -34,7 +34,7 @@ pub trait Plugin: Any + Send + Sync {
 
     fn on_disconnect(&self, client: &Client);
 
-    fn authorizate_acl_check(&self, client: &Client, topic: &String, action: Action) -> Result<bool>;
+    fn authorizate_acl_check(&self, client: &Client, topic: &String, action: Action) -> Result<AuthorizationResult>;
 
 }
 
@@ -79,11 +79,27 @@ pub enum ConnectReturnCode {
 
 }
 
+pub enum AuthenticationResultValue {
+
+    Success(String), // Allow connect with tenant id
+
+    Fail(ConnectReturnCode) // Deny connect with connect return code
+
+}
+
 pub enum AuthenticationResult {
 
-    Success(String),
+    Result(AuthenticationResultValue), // Direct return the authorization value
 
-    Fail(ConnectReturnCode)
+    Next() // Call next plugin which ordered by priority
+
+}
+
+pub enum AuthorizationResult {
+
+    Result(bool), // direct return the authorization value
+
+    Next(), // Call next plugin which ordered by priority
 
 }
 

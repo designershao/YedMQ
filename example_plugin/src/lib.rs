@@ -1,5 +1,5 @@
 use anyhow::Result;
-use samoye_plugin::register_plugin;
+use samoye_plugin::{plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult}, register_plugin};
 
 pub struct ExamplePlugin {
 
@@ -20,12 +20,12 @@ impl samoye_plugin::plugin::Plugin for ExamplePlugin {
         println!("example plugin on_deactivate");
     }
 
-    fn connect_authenticate(&self, _packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<samoye_plugin::plugin::AuthenticationResult> {
-        return Ok(samoye_plugin::plugin::AuthenticationResult::Success("tenant_id".into()))
+    fn connect_authenticate(&self, _packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult> {
+        return Ok(AuthenticationResult::Result(AuthenticationResultValue::Success("tenant_id".into())));
     }
 
-    fn authorizate_acl_check(&self, _client: &samoye_plugin::plugin::Client, _topic: &String, _action: samoye_plugin::plugin::Action) -> Result<bool> {
-        return Ok(true)
+    fn authorizate_acl_check(&self, _client: &samoye_plugin::plugin::Client, _topic: &String, _action: samoye_plugin::plugin::Action) -> Result<AuthorizationResult> {
+        return Ok(AuthorizationResult::Result(true));
     }
 
     fn on_publish(&self, client: &samoye_plugin::plugin::Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {

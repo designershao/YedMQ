@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use log::{debug, error, warn};
-use samoye_plugin::plugin::{AuthenticationResult, Client, ClientProperties};
+use samoye_plugin::plugin::{AuthenticationResultValue, Client, ClientProperties};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     select,
@@ -110,7 +110,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
             match r {
                 Ok(auth_result) => match auth_result {
-                    AuthenticationResult::Success(tenant_id) => {
+                    AuthenticationResultValue::Success(tenant_id) => {
                         let mut connack_packet_builder = ConnAckPacketBuilder::new()
                             .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet);
 
@@ -328,7 +328,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             }
                         }
                     }
-                    AuthenticationResult::Fail(return_code) => {
+                    AuthenticationResultValue::Fail(return_code) => {
                         println!("forbidden");
                         let connect_ack_return_code =match return_code {
                                 samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,

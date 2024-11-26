@@ -1026,8 +1026,8 @@ mod tests {
         fn do_connect_authenticate(
             &self,
             _packet: &samoye_mqtt::v3::connect::ConnectPacket,
-        ) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResult> {
-            return Ok(samoye_plugin::plugin::AuthenticationResult::Success(
+        ) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResultValue> {
+            return Ok(samoye_plugin::plugin::AuthenticationResultValue::Success(
                 "tenant_a".into(),
             ));
         }

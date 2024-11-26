@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use samoye_plugin::plugin::{AuthenticationResult, Client, Plugin};
+use samoye_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{debug, info, warn};
@@ -66,7 +66,7 @@ pub trait PluginService: Send + Sync {
 
     fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult>;
 
-    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResult>;
+    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue>;
 }
 
 impl PluginService for PluginManager {
@@ -99,10 +99,14 @@ impl PluginService for PluginManager {
                 let publish_authorizate_result = plugin.plugin.authorizate_acl_check(client, &packet.variable_header.topic_name, samoye_plugin::plugin::Action::Publish);
                 match publish_authorizate_result {
                     core::result::Result::Ok(publish_authorizate_result) => {
-                        if publish_authorizate_result {
-                            continue;
-                        } else {
-                            return Ok(false);
+                        match publish_authorizate_result {
+                            AuthorizationResult::Result(result) => {
+                                return Ok(result)
+                            },
+                            AuthorizationResult::Next() => {
+                                info!("plugin {} authorizate_acl_check return next(), continue", plugin.plugin_metadata.name);
+                                continue
+                            },
                         }
                     }
                     Err(e) => {
@@ -131,18 +135,41 @@ impl PluginService for PluginManager {
                 let plugin = plugin.1.clone();
                 let topics = packet.payload.topic_filters.iter().enumerate();
                 for (i, topic) in topics {
-                    let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, samoye_plugin::plugin::Action::Subscribe).map_or_else(|_| false, |r| r);
-                    return_code[i] = match authorizate_result {
-                        true =>  {
-                            match topic.qos {
-                                0 => SubscribeReturnCode::MaxQosLeastOnce,
-                                1 => SubscribeReturnCode::MaxQosMostOnce,
-                                2 => SubscribeReturnCode::MaxQosExactlyOnce,
-                                _ => SubscribeReturnCode::Invalid
+                    let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, samoye_plugin::plugin::Action::Subscribe);
+                    match authorizate_result {
+                        core::result::Result::Ok(authorizate_result) => {
+                            match authorizate_result {
+                                AuthorizationResult::Result(result) => {
+                                    return_code[i] = match result {
+                                        true =>  {
+                                            match topic.qos {
+                                                0 => SubscribeReturnCode::MaxQosLeastOnce,
+                                                1 => SubscribeReturnCode::MaxQosMostOnce,
+                                                2 => SubscribeReturnCode::MaxQosExactlyOnce,
+                                                _ => SubscribeReturnCode::Invalid
+                                            }
+                                        },
+                                        false => SubscribeReturnCode::Failure
+                                    };
+                                },
+                                AuthorizationResult::Next() => {
+                                    info!("plugin {} authorizate_acl_check return next(), continue", plugin.plugin_metadata.name);
+                                    continue
+                                },
                             }
-                        },
-                        false => SubscribeReturnCode::Failure
-                    };
+                        }
+                        Err(e) => {
+                            match e.downcast_ref() {
+                                Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                                    info!("plugin {} hook subscribe_authorizate not implement skip!", plugin.plugin_metadata.name);
+                                }
+                                Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
+                                    warn!("plugin {} subscribe_authorizate error: {}", plugin.plugin_metadata.name, e);
+                                }
+                                None => {}
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -154,7 +181,7 @@ impl PluginService for PluginManager {
     // Connect authenticate logic
     // Execute plugins in order of priority from high to low. 
     // If higher priority plugin returns a success result, then return the result, lower plugin will not be called.
-    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResult> {
+    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue> {
         if self.plugin_table.len() > 0 {
             let mut i = 1;
             let mut iter = self.plugin_table.iter();
@@ -164,15 +191,23 @@ impl PluginService for PluginManager {
 
                 if let core::result::Result::Ok(authenticate_result) = authenticate_result {
                     match authenticate_result {
-                        AuthenticationResult::Success(tenant_id) => {
-                            return Ok(AuthenticationResult::Success(tenant_id));
-                        },
-                        AuthenticationResult::Fail(connect_return_code) => {
-                            info!("plugin {} on_connect_auth failed, not the last plugin, continue", plugin.plugin_metadata.name);
-                            if i >= self.plugin_table.len() { // the lowest priority plugin
-                                info!("plugin {} on_connect_auth failed, the last plugin", plugin.plugin_metadata.name);
-                                return Ok(AuthenticationResult::Fail(connect_return_code));
+                        AuthenticationResult::Result(authentication_result_value) => {
+                            match authentication_result_value {
+                                AuthenticationResultValue::Success(tenant_id) => {
+                                    return Ok(AuthenticationResultValue::Success(tenant_id));
+                                },
+                                AuthenticationResultValue::Fail(connect_return_code) => {
+                                    info!("plugin {} on_connect_auth failed, not the last plugin, continue", plugin.plugin_metadata.name);
+                                    if i >= self.plugin_table.len() { // the lowest priority plugin
+                                        info!("plugin {} on_connect_auth failed, the last plugin", plugin.plugin_metadata.name);
+                                        return Ok(AuthenticationResultValue::Fail(connect_return_code));
+                                    }
+                                },
                             }
+                        },
+                        AuthenticationResult::Next() => {
+                            info!("plugin {} on_connect_auth return next(), continue", plugin.plugin_metadata.name);
+                            continue;
                         },
                     }
                 } else {
@@ -189,11 +224,11 @@ impl PluginService for PluginManager {
                 }
                 i+=1;
             }
-            Ok(AuthenticationResult::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth))
+            Ok(AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth))
         } else {
             info!("no plugin loaded, pass anonymous");
             Ok(
-                AuthenticationResult::Success("public".into())
+                AuthenticationResultValue::Success("public".into())
             )
         }
     }
