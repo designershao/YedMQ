@@ -43,6 +43,12 @@ impl Inflight {
         }
     }
 
+    pub async fn get_state(&self, packet_identifier: u16) -> Option<InflightState> {
+        let inner = self.inner.read().await;
+        inner.get(&packet_identifier).map(|item| item.state.clone())
+        
+    }
+
     pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
@@ -192,7 +198,7 @@ impl InflightItem {
             InflightState::WaitPubrec => 
                 (InflightState::WaitPubcomp, Some(MqttPacketV3::Pubrel(PubRelPacket::new(self.packet_identifier)))),
             InflightState::WaitPuback => 
-                (InflightState::Finish, Some(MqttPacketV3::Puback(PubAckPacket::new(self.packet_identifier)))),
+                (InflightState::Finish, None),
             InflightState::Finish => (InflightState::Finish, None)
         };
         self.state = next_state;
@@ -208,4 +214,184 @@ impl InflightItem {
         }
     }
 
+}
+
+mod tests {
+
+    use std::time::Duration;
+    use super::Inflight;
+
+
+    #[tokio::test()]
+    async fn when_get_next_state_after_register_tx_qos_1_publish_packet_inflight_should_return_correct_state() {
+        let mut inflight = Inflight::new(Duration::from_secs(10));
+        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+
+        let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
+
+        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        inflight.register_with_tx_packet(&packet).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::WaitPuback);
+
+        inflight.next_state(packet_identifier).await;
+
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_none());
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::Finish);
+
+    }
+
+
+    #[tokio::test()]
+    async fn when_get_next_state_after_register_rx_qos_1_publish_packet_inflight_should_return_correct_state() {
+
+        let inflight = Inflight::new(Duration::from_secs(10));
+        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+
+        let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
+
+        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        inflight.register_with_rx_packet(&packet).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::Finish);
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_some());
+        match packet.unwrap() {
+            samoye_mqtt::MqttPacketV3::Puback(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            _ => assert!(false)
+        }
+
+    }
+
+    #[tokio::test()]
+    async fn when_get_next_state_after_register_rx_qos_2_publish_packet_inflight_should_return_correct_state() {
+        let mut inflight = Inflight::new(Duration::from_secs(10));
+        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+
+        let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
+
+        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        inflight.register_with_rx_packet(&packet).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::WaitPubrel);
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_some());
+        match packet.unwrap() {
+            samoye_mqtt::MqttPacketV3::Pubrec(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            _ => assert!(false)
+        }
+
+        inflight.next_state(packet_identifier).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::Finish);
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_some());
+        match packet.unwrap() {
+            samoye_mqtt::MqttPacketV3::Pubcomp(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            _ => assert!(false)
+        }
+
+        inflight.next_state(packet_identifier).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::Finish);
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_none());
+
+
+    }
+
+    #[tokio::test()]
+    async fn when_get_next_state_after_register_tx_qos_2_publish_packet_inflight_should_return_correct_state() {
+        let mut inflight = Inflight::new(Duration::from_secs(10));
+        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+
+        let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
+
+        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        inflight.register_with_tx_packet(&packet).await;
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::WaitPubrec);
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_some());
+        match packet.unwrap() {
+            samoye_mqtt::MqttPacketV3::Publish(p) => assert_eq!(p.variable_header.packet_identifier.unwrap(), packet_identifier),
+            _ => assert!(false)
+        }
+
+        inflight.next_state(packet_identifier).await;        
+
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::WaitPubcomp);
+
+        let packet = inflight.get_current_packet(packet_identifier).await;
+
+        assert!(packet.is_some());
+        match packet.unwrap() {
+            samoye_mqtt::MqttPacketV3::Pubrel(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            _ => assert!(false)
+        }
+
+        inflight.next_state(packet_identifier).await;        
+
+        let state = inflight.get_state(packet_identifier).await;
+        assert!(state.is_some());
+
+        let state = state.unwrap();
+
+        assert_eq!(state, super::InflightState::Finish);
+
+    }
 }
