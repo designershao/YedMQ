@@ -43,12 +43,6 @@ impl Inflight {
         }
     }
 
-    pub async fn get_state(&self, packet_identifier: u16) -> Option<InflightState> {
-        let inner = self.inner.read().await;
-        inner.get(&packet_identifier).map(|item| item.state.clone())
-        
-    }
-
     pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
@@ -216,11 +210,18 @@ impl InflightItem {
 
 }
 
+#[cfg(test)]
 mod tests {
 
     use std::time::Duration;
-    use super::Inflight;
 
+    use super::{Inflight, InflightState};
+
+    async fn get_state(inflight: &Inflight, packet_identifier: u16) -> Option<InflightState> {
+        let inner = inflight.inner.read().await;
+        inner.get(&packet_identifier).map(|item| item.state.clone())
+        
+    }
 
     #[tokio::test()]
     async fn when_get_next_state_after_register_tx_qos_1_publish_packet_inflight_should_return_correct_state() {
@@ -232,7 +233,7 @@ mod tests {
         let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_tx_packet(&packet).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -246,7 +247,7 @@ mod tests {
 
         assert!(packet.is_none());
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -267,7 +268,8 @@ mod tests {
         let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_rx_packet(&packet).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -293,7 +295,8 @@ mod tests {
         let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_rx_packet(&packet).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -310,7 +313,8 @@ mod tests {
 
         inflight.next_state(packet_identifier).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -327,7 +331,8 @@ mod tests {
 
         inflight.next_state(packet_identifier).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -351,7 +356,8 @@ mod tests {
         let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_tx_packet(&packet).await;
 
-        let state = inflight.get_state(packet_identifier).await;
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -368,8 +374,8 @@ mod tests {
 
         inflight.next_state(packet_identifier).await;        
 
+        let state = get_state(&inflight, packet_identifier).await;
 
-        let state = inflight.get_state(packet_identifier).await;
         assert!(state.is_some());
 
         let state = state.unwrap();
@@ -386,7 +392,9 @@ mod tests {
 
         inflight.next_state(packet_identifier).await;        
 
-        let state = inflight.get_state(packet_identifier).await;
+
+        let state = get_state(&inflight, packet_identifier).await;
+
         assert!(state.is_some());
 
         let state = state.unwrap();
