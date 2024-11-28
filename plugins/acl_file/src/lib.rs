@@ -130,6 +130,7 @@ impl AclFile {
 
 impl Plugin for AclFile {
     fn on_activate(&self) {
+        env_logger::init();
         info!("acl_file plugin on activate, start loading the default acl file");
     }
 
