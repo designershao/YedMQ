@@ -3,7 +3,8 @@ members = [
     "broker", 
     "example_plugin", 
     "mqtt",
-    "plugin"
+    "plugin",
+    "plugins/acl_file"
 ]
 
 [workspace.dependencies]
