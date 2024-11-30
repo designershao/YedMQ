@@ -4,7 +4,7 @@ use anyhow::Result;
 use tokio::{net::TcpListener, sync::RwLock};
 
 use crate::{
-     plugin_manager::PluginManager,  router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
+     metric::Metric, plugin_manager::PluginManager, router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
 };
 
 
@@ -16,6 +16,7 @@ pub struct MqttTcpListener {
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     pub settings: Arc<Settings>,
+    pub metric: Arc<Metric>,
 }
 
 impl MqttTcpListener
@@ -33,7 +34,7 @@ impl MqttTcpListener
             let settings = self.settings.clone();
 
             tokio::spawn(
-                accept_connection(stream, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+                accept_connection(stream, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr, self.metric.clone())
             );
         }
     }
@@ -98,12 +99,15 @@ mod tests {
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
 
+        let metric = Arc::new(Metric::new());
+
         let listener = MqttTcpListener {
             plugin_manager,
             session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
             settings: Arc::new(settings),
+            metric: metric.clone(),
         };
 
         tokio::spawn(async move {
@@ -165,12 +169,15 @@ mod tests {
             plugin: crate::settings::Plugin { dir: "test".to_string() }
         };
 
+        let metric = Arc::new(Metric::new());
+
         let listener = MqttTcpListener {
             plugin_manager,
             session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
             settings: Arc::new(settings),
+            metric: metric.clone(),
         };
 
         tokio::spawn(async move {

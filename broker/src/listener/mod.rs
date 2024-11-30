@@ -10,16 +10,10 @@ use tokio::{
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
 use crate::{
-    connection::Connection,
-    inflight::Inflight,
-    plugin_manager::{PluginManager, PluginService},
-    router::RouterCmd,
-    session::{session_manager::{
+    connection::Connection, inflight::Inflight, metric::Metric, plugin_manager::{PluginManager, PluginService}, router::RouterCmd, session::{session_manager::{
         ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager, SessionMessage,
         SessionWrapper,
-    }, WillMessage},
-    settings::Settings,
-    topic::TopicManager,
+    }, WillMessage}, settings::Settings, topic::TopicManager
 };
 
 use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
@@ -66,6 +60,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     router_sender: Sender<RouterCmd>,
     settings: Arc<Settings>,
     peer_addr: SocketAddr,
+    metric: Arc<Metric>,
 ) {
     let mut connection: Connection<T> = Connection::new(stream);
     // wait the first connect packet, if the packet is not correct, the connection will be closed.
@@ -270,11 +265,16 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                             "session {} connected from {}",
                             packet.payload.client_identifier, peer_addr);
 
+                        metric.increase_clients_connected();
+
                         loop {
                             select! {
                                 read_packet_result = connection.read_packet() => {
                                     match read_packet_result {
                                         Ok(packet) => {
+
+                                            metric.increase_bytes_received(packet.to_bytes().len() as u64);  
+
                                             if let Err(e) = session_sender
                                                 .send(SessionMessage::ReceiveFromClient(packet))
                                                 .await {
@@ -308,9 +308,12 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                                     return;
                                                 }
                                                 ConnectionMessage::WritePacket(msg) => {
+
                                                     if let Err(e) = connection.write_packet(&msg).await {
                                                         warn!("write packet error: {}", e);
                                                     }
+
+                                                    metric.increase_bytes_sent(msg.to_bytes().len() as u64);  
                                                 }
                                             }
                                         }
@@ -320,6 +323,9 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                                                 .send(SessionMessage::InActivate).await {
                                                     warn!("send packet error: {}", e);
                                                 }
+
+                                            metric.decrease_clients_connected();
+
                                             return;
                                         }
                                     }

@@ -17,6 +17,7 @@ mod topic;
 mod settings;
 mod listener;
 mod plugin_manager;
+mod metric;
 
 #[tokio::main]
 async fn main() {
@@ -66,12 +67,15 @@ async fn main() {
     //
 
 
+    let metric = Arc::new(metric::Metric::new());
+
     let listener = MqttTcpListener {
         plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
         settings: settings.clone(),
+        metric: metric.clone(),
     };
 
     let settings_clone = settings.clone();
@@ -88,6 +92,7 @@ async fn main() {
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
         settings: settings.clone(),
+        metric: metric.clone(),
     };
 
     let settings_clone = settings.clone();
@@ -106,6 +111,7 @@ async fn main() {
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
         settings: settings.clone(),
+        metric: metric.clone(),
     };
     let settings_clone = settings.clone();
     let mqtt_ws_listener_join = tokio::spawn(async move {
@@ -122,6 +128,7 @@ async fn main() {
         topic_manager: topic_manager.clone(),
         router_sender: router_sender.clone(),
         settings: settings.clone(),
+        metric: metric.clone(),
     };
     let settings_clone = settings.clone();
     let mqtt_wss_listener_join = tokio::spawn(async move {

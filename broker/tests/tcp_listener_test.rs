@@ -1,5 +1,6 @@
 use std::{thread, time};
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
+use samoye::metric::Metric;
 use samoye::plugin_manager::PluginManager;
 use samoye::session::session_manager::SessionMessage;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
@@ -62,12 +63,15 @@ pub async fn test_tcp_listener_connect() {
 
     let connect_address = settings.listener.tcp.external.clone();
 
+    let metric = Arc::new(Metric::new());
+
     let listener = MqttTcpListener {
         plugin_manager,
         session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
         topic_manager: Arc::new(RwLock::new(TopicManager::new())),
         router_sender: router_sender,
         settings: Arc::new(settings),
+        metric: metric.clone()
     };
 
     tokio::spawn(async move {
@@ -136,12 +140,15 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     let connect_address = settings.listener.tcp.external.clone();
     let connect_address_cloned = connect_address.clone();
 
+    let metric = Arc::new(Metric::new());
+
     let listener = MqttTcpListener {
         plugin_manager,
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
         settings: Arc::new(settings),
+        metric: metric.clone()
     };
 
     tokio::spawn(async move {
@@ -291,6 +298,8 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let settings = get_test_settings(2, resend_duration_secs);
     let connect_address = settings.listener.tcp.external.clone();
+    
+    let metric = Arc::new(Metric::new());
 
     let listener = MqttTcpListener {
         plugin_manager,
@@ -298,6 +307,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
         settings: Arc::new(settings),
+        metric: metric.clone(),
     };
 
     tokio::spawn(async move {
@@ -385,12 +395,15 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let connect_address = settings.listener.tcp.external.clone();
 
+    let metric = Arc::new(Metric::new());
+
     let listener = MqttTcpListener {
         plugin_manager,
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
         settings: Arc::new(settings),
+        metric: metric.clone(),
     };
 
     tokio::spawn(async move {

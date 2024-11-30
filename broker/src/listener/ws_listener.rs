@@ -6,7 +6,7 @@ use tokio::{net::TcpListener, sync::RwLock};
 use tokio_util::io::StreamReader;
 
 use crate::{
-    plugin_manager::PluginManager,  router::RouterCmd, session::session_manager::SessionManager,settings::Settings, topic::TopicManager
+    metric::Metric, plugin_manager::PluginManager, router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
 };
 
 
@@ -17,6 +17,7 @@ pub struct MqttWsListener {
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     pub settings: Arc<Settings>,
+    pub metric: Arc<Metric>,
 }
 
 
@@ -49,7 +50,7 @@ impl MqttWsListener {
                 };
 
                 tokio::spawn(
-                    accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+                    accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr, self.metric.clone())
                 );
             } else {
                 warn!("Failed to accept WebSocket connection from {}, err {}", remote_addr, ws_stream.err().unwrap());

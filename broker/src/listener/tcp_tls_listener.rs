@@ -5,7 +5,7 @@ use tokio::{net::TcpListener, sync::RwLock};
 use tokio_native_tls::native_tls::{Identity, self};
 
 use crate::{
-    plugin_manager::PluginManager,  router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
+    metric::Metric, plugin_manager::PluginManager, router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
 };
 
 
@@ -17,6 +17,7 @@ pub struct MqttTcpTlsListener {
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     pub settings: Arc<Settings>,
+    pub metric: Arc<Metric>,
 }
 
 
@@ -52,7 +53,7 @@ impl MqttTcpTlsListener
 
             let tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
-            tokio::spawn(accept_connection(tls_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, remote_addr));
+            tokio::spawn(accept_connection(tls_stream, plugin_manager, session_manager, topic_manager, router_sender, settings, remote_addr, self.metric.clone()));
         }
     }
 }

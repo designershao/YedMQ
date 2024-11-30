@@ -7,7 +7,7 @@ use tokio_native_tls::native_tls::{Identity, self};
 use tokio_util::io::StreamReader;
 
 use crate::{
-    plugin_manager::PluginManager,router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
+    metric::Metric, plugin_manager::PluginManager, router::RouterCmd, session::session_manager::SessionManager, settings::Settings, topic::TopicManager
 };
 
 
@@ -19,6 +19,7 @@ pub struct MqttWssListener {
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_sender: tokio::sync::mpsc::Sender<RouterCmd>,
     pub settings: Arc<Settings>,
+    pub metric: Arc<Metric>,
 }
 
 impl MqttWssListener {
@@ -64,7 +65,7 @@ impl MqttWssListener {
                     ),
                 };
                 tokio::spawn(
-                accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr)
+                accept_connection(websocket_tunnel, plugin_manager, session_manager, topic_manager, router_sender, settings, peer_addr, self.metric.clone())
                 );
                 
             } else {
