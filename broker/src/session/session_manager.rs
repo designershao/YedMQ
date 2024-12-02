@@ -1369,7 +1369,8 @@ mod tests {
                     }
                     _ => assert!(false),
                 }
-            }
+            },
+            _ => assert!(false),
         }
     }
 

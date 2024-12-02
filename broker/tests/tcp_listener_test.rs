@@ -42,7 +42,8 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
                 key_file: "".to_string()
             }
         },
-        plugin: samoye::settings::Plugin { dir: "test".to_string() }
+        plugin: samoye::settings::Plugin { dir: "test".to_string() },
+        mqtt: samoye::settings::Mqtt { sys_topic_interval_secs: 10 }
     };
     settings
 }

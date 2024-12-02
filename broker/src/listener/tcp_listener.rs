@@ -96,7 +96,8 @@ mod tests {
                     key_file: "".to_string()
                     }
             },
-            plugin: crate::settings::Plugin { dir: "test".to_string() }
+            plugin: crate::settings::Plugin { dir: "test".to_string() },
+            mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }
         };
 
         let metric = Arc::new(Metric::new());
@@ -166,7 +167,8 @@ mod tests {
                     key_file: "".to_string()
                     }
             },
-            plugin: crate::settings::Plugin { dir: "test".to_string() }
+            plugin: crate::settings::Plugin { dir: "test".to_string() },
+            mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }
         };
 
         let metric = Arc::new(Metric::new());

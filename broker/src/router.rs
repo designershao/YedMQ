@@ -13,6 +13,9 @@ pub enum RouterCmd {
     // struct:
     // tenant_identifier: String, packet: MqttPacketV3
     RoutePacket(String, MqttPacketV3),
+
+    // Route packet to all tenants
+    RoutePacketToAllTenants(MqttPacketV3),
 }
 
 pub struct Router {
@@ -36,11 +39,28 @@ impl Router {
                                 }
                             }
                         },
+                        Some(RouterCmd::RoutePacketToAllTenants(packet_)) => {
+                            match self.route_to_all_tenants(&packet_).await {
+                                Ok(_) => {
+                                }
+                                Err(e) => {
+                                    warn!("route packet to all tenants error: {}", e);
+                                }
+                            }
+                        }
                         None => todo!()
                     }
                 }
             }
         }
+    }
+
+    pub async fn route_to_all_tenants(&self, packet: &MqttPacketV3) -> Result<()> {
+        let tenants = self.topic_manager.read().await.get_tenant_names();
+        for tenant in tenants.iter() {
+            self.route(tenant, packet).await?;
+        }
+        Ok(())
     }
 
     pub async fn route(&self, tenant_identifier: &String, packet: &MqttPacketV3) -> Result<()> {

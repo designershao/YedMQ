@@ -280,6 +280,13 @@ impl TopicManager {
         }
     }
 
+    // get all tenant names
+    pub fn get_tenant_names(&self) -> Vec<String> {
+        let map = self.topic_tree.clone();
+        let tenant_topic_root_rwlock = map.read().unwrap();
+        tenant_topic_root_rwlock.keys().map(String::from).collect()
+    }
+
 }
 
 #[derive(Debug)]

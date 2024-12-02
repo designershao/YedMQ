@@ -69,6 +69,15 @@ async fn main() {
 
     let metric = Arc::new(metric::Metric::new());
 
+    // sys topic task
+    info!("start sys topic task");
+    let sys_topic_task = metric::SysTopicTask::new(metric.clone(), settings.mqtt.sys_topic_interval_secs, router_sender.clone());
+    tokio::spawn(async move {
+        sys_topic_task.run().await;
+    });
+    info!("start sys topic task succeed");
+    //
+
     let listener = MqttTcpListener {
         plugin_manager: plugin_manager.clone(),
         session_manager: session_manager.clone(),

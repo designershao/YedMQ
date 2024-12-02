@@ -6,6 +6,12 @@ pub struct Settings {
     pub session: Session,
     pub plugin: Plugin,
     pub listener: Listener,
+    pub mqtt: Mqtt,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Mqtt {
+    pub sys_topic_interval_secs: u64, // system topic interval seconds
 }
 
 #[derive(Debug,Deserialize)]
