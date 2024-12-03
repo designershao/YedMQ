@@ -109,3 +109,28 @@ impl SysTopicTask {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test()]
+    async fn test_sys_topic() {
+        let metric = Arc::new(Metric::new());
+        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(1000);
+
+        tokio::task::spawn(async move {
+            let sys_topic_task = SysTopicTask::new(metric.clone(), 3, router_sender);
+            sys_topic_task.run().await;
+        });
+
+        let msg = router_receiver.recv().await.unwrap();
+
+        if let RouterCmd::RoutePacketToAllTenants(_) = msg {
+            assert!(true)
+        } else{
+            assert!(false)
+        }
+    }
+}
