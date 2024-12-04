@@ -24,9 +24,9 @@ pub enum Action {
 
 pub trait Plugin: Any + Send + Sync {
 
-    fn on_activate(&self);
+    fn on_activate(&self) -> Result<()>;
 
-    fn on_deactivate(&self);
+    fn on_deactivate(&self) -> Result<()>;
 
     fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult>;
 

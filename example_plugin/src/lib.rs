@@ -12,12 +12,14 @@ impl ExamplePlugin {
 }
 
 impl samoye_plugin::plugin::Plugin for ExamplePlugin {
-    fn on_activate(&self) {
+    fn on_activate(&self) -> Result<()> {
         println!("example plugin on_activate");
+        Ok(())
     }
 
-    fn on_deactivate(&self) {
+    fn on_deactivate(&self) -> Result<()> {
         println!("example plugin on_deactivate");
+        Ok(())
     }
 
     fn connect_authenticate(&self, _packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult> {

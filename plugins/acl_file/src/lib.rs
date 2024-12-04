@@ -155,13 +155,15 @@ impl AclFile {
 }
 
 impl Plugin for AclFile {
-    fn on_activate(&self) {
+    fn on_activate(&self) -> Result<()> {
         env_logger::init();
         info!("acl_file plugin on activate, start loading the default acl file");
+        Ok(())
     }
 
-    fn on_deactivate(&self) {
+    fn on_deactivate(&self) -> Result<()> {
         info!("acl_file plugin on_deactivate");
+        Ok(())
     }
 
     fn connect_authenticate(

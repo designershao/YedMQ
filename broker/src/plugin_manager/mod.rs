@@ -249,13 +249,15 @@ impl PluginManager {
             info!("plugin {} loaded, version: {}, author: {}, description: {} ", metadata.name, metadata.version, metadata.author, metadata.description);
 
             // after plugin load call on activate hook
-            plugin.on_activate();
+            if let std::result::Result::Err(e) = plugin.on_activate(){
+                warn!("plugin {} on_activate error: {}, skip this plugin", metadata.name, e);
+            } else {
+                self.plugin_table.insert(metadata.priority, Arc::new(PluginWrapper{
+                    plugin_metadata: metadata,
+                    plugin
+                }));
+            }
             //
-
-            self.plugin_table.insert(metadata.priority, Arc::new(PluginWrapper{
-                plugin_metadata: metadata,
-                plugin
-            }));
 
             Ok(())
         }
