@@ -244,7 +244,7 @@ impl PluginManager {
             let lib = Library::new(entry_path).or(Err(PluginManagerError::PluginLoadError("Failed to load plugin library.".into())))?;
             let constructor: Symbol<PluginRegister> = lib.get(b"_plugin_register").or(Err(PluginManagerError::PluginLoadError("The `_plugin_register` symbol was`t found.".into())))?;
             let boxed_raw = constructor();
-            let plugin = Box::from_raw(boxed_raw);
+            let mut plugin = Box::from_raw(boxed_raw);
 
             info!("plugin {} loaded, version: {}, author: {}, description: {} ", metadata.name, metadata.version, metadata.author, metadata.description);
 

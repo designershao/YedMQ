@@ -24,7 +24,7 @@ pub enum Action {
 
 pub trait Plugin: Any + Send + Sync {
 
-    fn on_activate(&self) -> Result<()>;
+    fn on_activate(&mut self) -> Result<()>;
 
     fn on_deactivate(&self) -> Result<()>;
 

@@ -1,0 +1,17 @@
+[package]
+name = "samoye-plugins-acl-mysql"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+samoye-plugin = { path = "../../plugin" }
+samoye-mqtt = { path = "../../mqtt" }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10.1"
+mysql = "*"
+toml = "0.8.6"
+serde = { version = "1.0", features = ["derive"] }

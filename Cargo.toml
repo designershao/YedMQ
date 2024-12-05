@@ -4,7 +4,8 @@ members = [
     "example_plugin", 
     "mqtt",
     "plugin",
-    "plugins/acl_file"
+    "plugins/acl_file",
+    "plugins/acl_mysql",
 ]
 
 [workspace.dependencies]

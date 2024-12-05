@@ -12,7 +12,7 @@ impl ExamplePlugin {
 }
 
 impl samoye_plugin::plugin::Plugin for ExamplePlugin {
-    fn on_activate(&self) -> Result<()> {
+    fn on_activate(&mut self) -> Result<()> {
         println!("example plugin on_activate");
         Ok(())
     }
