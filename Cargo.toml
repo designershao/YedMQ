@@ -6,6 +6,7 @@ members = [
     "plugin",
     "plugins/acl_file",
     "plugins/acl_mysql",
+    "plugins/acl_postgresql"
 ]
 
 [workspace.dependencies]

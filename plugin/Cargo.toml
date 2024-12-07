@@ -6,4 +6,5 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 thiserror = { workspace = true }
+async-trait = "0.1.83"
 samoye-mqtt = { path = "../mqtt" }
