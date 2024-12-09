@@ -29,6 +29,7 @@ impl AclPostgresql {
 
 impl Plugin for AclPostgresql {
     fn on_activate(&mut self) -> anyhow::Result<()> {
+        env_logger::init();
         let config_content = fs::read_to_string("./plugins/acl_postgresql/acl_postgresql.toml");
         if let Err(e) = config_content {
             return Err(anyhow!("load acl rule file error: {}", e));
@@ -59,9 +60,10 @@ impl Plugin for AclPostgresql {
         let mut db = self.db.lock().unwrap();
         if db.is_some() {
             let client:&mut Client = db.as_mut().unwrap();
+            let empty_string = String::from("");
             let select_query = client.query_one(
                 "SELECT id, username, password, tenant FROM users WHERE username = $1 AND password = $2",
-                &[&packet.payload.username.as_ref().unwrap(), &packet.payload.password.as_ref().unwrap()],
+                &[&packet.payload.username.as_ref().unwrap_or_else(|| &empty_string), &packet.payload.password.as_ref().unwrap_or_else(|| &empty_string)],
             );
             if let Err(e) = select_query {
                 return Err(anyhow!("query user error: {}", e));
@@ -98,9 +100,10 @@ impl Plugin for AclPostgresql {
             let mut db = self.db.lock().unwrap();
             if db.is_some() {
                 let db_client:&mut Client = db.as_mut().unwrap();
+                let empty_string = String::from("");
                 let select_query = db_client.query_one(
                     "SELECT result FROM acls WHERE username = $1 AND topic = $2 AND action = $3",
-                    &[&client.properties.username.as_ref().unwrap(), &topic, &action_params],
+                    &[&client.properties.username.as_ref().unwrap_or_else(|| &empty_string), &topic, &action_params],
                 );
                 if let Err(e) = select_query {
                     return Err(anyhow!("query acl error: {}", e));

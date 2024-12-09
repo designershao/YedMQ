@@ -1,6 +1,6 @@
 use std::fs;
 
-use log::info;
+use log::{debug, info, warn};
 use mysql::{params, prelude::Queryable, Pool};
 use samoye_plugin::{plugin::{AuthenticationResult, AuthenticationResultValue, Plugin}, register_plugin};
 use anyhow::{Result, anyhow};
@@ -39,19 +39,23 @@ struct User {
 
 impl Plugin for AclMySql {
     fn on_activate(&mut self) -> Result<()> {
+        env_logger::init();
         let config_content = fs::read_to_string("./plugins/acl_mysql/acl_mysql.toml");
         if let Err(e) = config_content {
+            warn!("load acl rule file error: {}", e);
             return Err(anyhow!("load acl rule file error: {}", e));
         } else {
             let config = toml::from_str::<Config>(config_content.unwrap().as_str());
 
             if let Err(e) = config {
+                warn!("load acl rule file error: {}", e);
                 return Err(anyhow!("load acl rule file error: {}", e));
             } else {
                 let config = config.unwrap();
                 let pool = mysql::Pool::new(config.mysql.db_url.as_str()).unwrap();
                 self.connection_pool = Some(pool);
             }
+            info!("acl_mysql plugin on_activate init succeed");
         }
         Ok(())
     }
@@ -66,11 +70,13 @@ impl Plugin for AclMySql {
         if let Some(pool) = &self.connection_pool {
             let mut conn = pool.get_conn().unwrap();
 
+            let empty_string = String::from("");
+
             let select_query=  conn.exec_first(
                 "SELECT id, username, password, tenant FROM users WHERE username = :username AND password = :password",
                 params! {
-                    "username" => packet.payload.username.as_ref().unwrap(),
-                    "password" => packet.payload.password.as_ref().unwrap(),
+                    "username" => packet.payload.username.as_ref().unwrap_or_else(|| &empty_string),
+                    "password" => packet.payload.password.as_ref().unwrap_or_else(|| &empty_string),
                 }
             )
             .map(|row| {
@@ -88,6 +94,7 @@ impl Plugin for AclMySql {
             } else {
                 let users_option = select_query.unwrap();
                 if users_option.is_none(){
+                    debug!("user not found, skip to next plugin");
                     Ok(AuthenticationResult::Next())
                 } else {
                     let user = users_option.unwrap();
@@ -124,10 +131,12 @@ impl Plugin for AclMySql {
             }
             let mut conn = conn_result.unwrap();
 
+            let empty_string = String::from("");
+
             let select_query=  conn.exec_first(
                 "SELECT result FROM acls WHERE username = :username AND topic = :topic AND action = :action",
                 params! {
-                    "username" => client.properties.username.as_ref().unwrap(),
+                    "username" => client.properties.username.as_ref().unwrap_or_else(|| &empty_string),
                     "topic" => topic,
                     "action" => action_params
                 }
@@ -139,6 +148,7 @@ impl Plugin for AclMySql {
             } else {
                 let result = select_query.unwrap();
                 if result.is_none() {
+                    debug!("acl not found, skip to next plugin");
                     return Ok(samoye_plugin::plugin::AuthorizationResult::Next());
                 } else {
                     let result = result.unwrap();
