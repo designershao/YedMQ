@@ -297,4 +297,13 @@ impl PluginManager {
         }
     }
 
+    // Get all loaded plugin metadatas
+    pub fn get_plugin_metadata_list(&self) -> Vec<&PluginMetadata> {
+        let mut result = Vec::new();
+        for (_, plugin) in self.plugin_table.iter() {
+            result.push(&plugin.plugin_metadata);
+        }
+        result
+    }
+
 }

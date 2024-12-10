@@ -18,6 +18,7 @@ mod settings;
 mod listener;
 mod plugin_manager;
 mod metric;
+mod rest_api;
 
 #[tokio::main]
 async fn main() {
@@ -76,6 +77,18 @@ async fn main() {
         sys_topic_task.run().await;
     });
     info!("start sys topic task succeed");
+    //
+
+    // start api task
+    info!("start api task");
+    let plugin_manager_cloned = plugin_manager.clone();
+    let api_listen_external = settings.listener.api.external.clone();
+    tokio::spawn(async move {
+        if let Err(e) =rest_api::run_rest_api_task(&api_listen_external, plugin_manager_cloned).await {
+            warn!("start api task error: {}", e);
+        }
+    });
+    info!("start api task succeed");
     //
 
     let listener = MqttTcpListener {

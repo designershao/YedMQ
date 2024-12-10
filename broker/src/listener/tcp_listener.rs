@@ -94,7 +94,8 @@ mod tests {
                      external: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
-                    }
+                    },
+                api: crate::settings::Api { external: "".to_string() }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }
@@ -165,7 +166,8 @@ mod tests {
                      external: "".to_string(),
                     cert_file: "".to_string(),
                     key_file: "".to_string()
-                    }
+                    },
+                api: crate::settings::Api { external: "".to_string() }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }

@@ -40,7 +40,8 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
                 external: "0.0.0.0:18091".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
-            }
+            },
+            api: samoye::settings::Api { external: "".to_string() }
         },
         plugin: samoye::settings::Plugin { dir: "test".to_string() },
         mqtt: samoye::settings::Mqtt { sys_topic_interval_secs: 10 }

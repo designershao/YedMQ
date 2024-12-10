@@ -30,7 +30,8 @@ pub struct Listener {
     pub tcp: Tcp,
     pub tcp_tls: TcpTls,
     pub ws: Ws,
-    pub wss: Wss
+    pub wss: Wss,
+    pub api: Api
 }
 
 #[derive(Debug, Deserialize)]
@@ -54,6 +55,11 @@ pub struct Wss {
 
 #[derive(Debug, Deserialize)]
 pub struct Tcp {
+    pub external: String
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Api {
     pub external: String
 }
 
