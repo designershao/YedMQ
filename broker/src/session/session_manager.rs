@@ -66,6 +66,20 @@ pub enum SessionMessage {
     InActivate,
 
     KickOff(KickOffReason), // notify session to disconnect current connection with some reason
+
+    AskSessionInfo(tokio::sync::oneshot::Sender<SessionInfo>),
+}
+
+pub struct SessionInfo {
+
+    pub tenant_identifier: String,
+
+    pub client_identifier: String,
+
+    pub subscription_topics: Vec<String>,
+
+    pub session_state: SessionState
+
 }
 
 pub struct SessionContext {
@@ -684,7 +698,17 @@ impl SessionWrapper {
                                                     }
                                                 }
                                             }
-
+                                        }
+                                        SessionMessage::AskSessionInfo(session_info_sender) => {
+                                            let session_info = SessionInfo {
+                                                client_identifier: self.session.client_identifier.clone(),
+                                                tenant_identifier: self.session.tenant_identifier.clone(),
+                                                session_state: self.state.clone(),
+                                                subscription_topics: self.session.subscription_topics.clone(),
+                                            };
+                                            if let Err(_) = session_info_sender.send(session_info) {
+                                                warn!("session info sender dropped");
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -775,6 +799,7 @@ impl SessionWrapper {
     }
 }
 
+#[derive(Clone)]
 pub enum SessionState {
     Activate,
 
@@ -798,6 +823,31 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+
+    pub async fn get_session_info_list(&self, tenant_identifier: &str) -> Result<Vec<SessionInfo>> {
+        let session_table_option = self.sessions.get(tenant_identifier);
+        if session_table_option.is_none() {
+            return Err(anyhow!(SessionManagerError::TenantHasExisted(
+                tenant_identifier.into()
+            )));
+        }
+        let session_table = session_table_option.unwrap();
+
+        let mut session_info_list = Vec::new();
+        for (_, session_sender) in session_table {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+                
+            if let Err(e) = session_sender.send(SessionMessage::AskSessionInfo(sender)).await {
+                error!("ask session info error: {}", e);
+                continue;
+            } else {
+                let session_info = receiver.await.unwrap();
+                session_info_list.push(session_info);
+            }
+        }
+        Ok(session_info_list)
+    }
+
     // Create a new tenant
     pub fn create_tenant(&mut self, tenant_identifier: &str) -> Result<()> {
         if self.tenant_existed(tenant_identifier) {
