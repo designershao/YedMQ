@@ -8,13 +8,13 @@ use crate::router::{Router, RouterCmd};
 
 pub struct Metric {
 
-    clients_connected: AtomicU64,
+    pub clients_connected: AtomicU64,
 
-    bytes_received: AtomicU64,
+    pub bytes_received: AtomicU64,
 
-    bytes_sent: AtomicU64,
+    pub bytes_sent: AtomicU64,
 
-    start_time: Instant,
+    pub start_time: Instant,
 }
 
 impl Metric {

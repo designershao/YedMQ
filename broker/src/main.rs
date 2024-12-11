@@ -83,12 +83,14 @@ async fn main() {
     info!("start api task");
     let plugin_manager_cloned = plugin_manager.clone();
     let session_manager_cloned = session_manager.clone();
+    let metric_cloned = metric.clone();
     let api_listen_external = settings.listener.api.external.clone();
     tokio::spawn(async move {
         if let Err(e) =rest_api::run_rest_api_task(
             &api_listen_external, 
             plugin_manager_cloned,
-            session_manager_cloned
+            session_manager_cloned,
+            metric_cloned
         ).await {
             warn!("start api task error: {}", e);
         }

@@ -5,32 +5,55 @@ use log::info;
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-use crate::{plugin_manager, session::session_manager::{self, SessionManagerError}};
+use crate::{plugin_manager, session::session_manager::{self, SessionManagerError, SessionState}};
+
+#[derive(Serialize)]
+struct SystemInfo {
+
+    clients_connected: u64,
+
+    bytes_received: u64,
+
+    bytes_sent: u64,
+
+    uptime: u64
+
+}
 
 #[derive(Serialize)]
 struct Plugin {
+
     name: String,
+
     version: String,
+
     description: String,
+
     entry: String,
+
     priority: i64,
+
     author: String,
 }
 
 #[derive(Serialize)]
 struct Client {
+
     tenant_identifier: String,
 
     client_id: String,
 
     subscription_topics: Vec<String>,
 
+    session_state: SessionState
+
 }
 
 #[derive(Clone)]
 struct AppState {
    pub plugin_manager: Arc<crate::plugin_manager::PluginManager>,
-   pub session_manager: Arc<RwLock<crate::session::session_manager::SessionManager>>
+   pub session_manager: Arc<RwLock<crate::session::session_manager::SessionManager>>,
+   pub metric: Arc<crate::metric::Metric>
 }
 
 async fn plugin_list(
@@ -54,6 +77,19 @@ async fn plugin_list(
     (StatusCode::OK, Json(result))
 }
 
+async fn system_info(
+    State(app_state): State<AppState>,
+) -> (StatusCode, Json<SystemInfo>) {
+    let metric = app_state.metric.clone();
+    let system_info = SystemInfo{
+        clients_connected: metric.clients_connected.load(std::sync::atomic::Ordering::SeqCst),
+        bytes_received: metric.bytes_received.load(std::sync::atomic::Ordering::SeqCst),
+        bytes_sent: metric.bytes_sent.load(std::sync::atomic::Ordering::SeqCst),
+        uptime: metric.get_uptime()
+    };
+    (StatusCode::OK, Json(system_info))
+}
+
 async fn client_list(
     State(app_state): State<AppState>,
     Path(tenant_id):Path<String>
@@ -66,9 +102,10 @@ async fn client_list(
 
         for session in session_list {
             let client = Client {
-                tenant_identifier: session.tenant_identifier.clone(),
-                client_id: session.client_identifier.clone(),
+                tenant_identifier: session.tenant_identifier,
+                client_id: session.client_identifier,
                 subscription_topics: session.subscription_topics,
+                session_state: session.session_state
             };
             result.push(client);
         }
@@ -95,15 +132,18 @@ pub async fn run_rest_api_task(
     listen_address: &str,
     plugin_manager: Arc<plugin_manager::PluginManager>,
     session_manager: Arc<RwLock<session_manager::SessionManager>>,
+    metric: Arc<crate::metric::Metric>
 ) -> anyhow::Result<()> {
     let state = AppState {
         plugin_manager,
-        session_manager
+        session_manager,
+        metric
     };
 
     let app= axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin_list))
         .route("/api/v1/:tenant_id/clients", axum::routing::get(client_list))
+        .route("/api/v1/system_info", axum::routing::get(system_info))
         .with_state(state);
 
     info!("start listening on {}", listen_address);
