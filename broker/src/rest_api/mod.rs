@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::{State, Path}, http::StatusCode, Json};
-use log::info;
+use log::{error, info};
 use serde::Serialize;
 use tokio::sync::RwLock;
 
@@ -90,6 +90,38 @@ async fn system_info(
     (StatusCode::OK, Json(system_info))
 }
 
+async fn kickoff_client(
+    State(app_state): State<AppState>,
+    Path((tenant_id, client_id)):Path<(String,String)>,
+) -> (StatusCode, ()) {
+    let session_manager = app_state.session_manager.clone();
+    let (session_quit_sender, mut session_quit_receiver) = tokio::sync::mpsc::channel(1);
+    let kickoff_result = session_manager.read().await.kickoff(&tenant_id, &client_id, &session_quit_sender.clone()).await;
+    if let Err(e) = kickoff_result {
+        let response = match e.downcast_ref::<session_manager::SessionManagerError>() {
+            Some(e) => {
+                match e {
+                    session_manager::SessionManagerError::TenantNotExisted(_) => {
+                        (StatusCode::NOT_FOUND, ())
+                    }
+                    session_manager::SessionManagerError::SessionNotExisted(_) => {
+                        (StatusCode::NOT_FOUND, ())
+                    }
+                    _ => {
+                        error!("kickoff client error: {}", e);
+                        (StatusCode::INTERNAL_SERVER_ERROR, ())
+                    },
+                }
+            },
+            None => (StatusCode::INTERNAL_SERVER_ERROR, ())
+        };
+        response
+    } else {
+        session_quit_receiver.recv().await;
+        (StatusCode::OK, ())
+    }
+}
+
 async fn client_list(
     State(app_state): State<AppState>,
     Path(tenant_id):Path<String>
@@ -143,6 +175,7 @@ pub async fn run_rest_api_task(
     let app= axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin_list))
         .route("/api/v1/:tenant_id/clients", axum::routing::get(client_list))
+        .route("/api/v1/:tenant_id/clients/:client_id/kickoff", axum::routing::post(kickoff_client))
         .route("/api/v1/system_info", axum::routing::get(system_info))
         .with_state(state);
 

@@ -801,10 +801,16 @@ impl SessionWrapper {
             self.session.tenant_identifier.clone(),
             self.session.client_identifier.clone(),
         );
+        debug!(
+            "when exit session event loop, unregister session {} done",
+            self.session.client_identifier
+        );
         //
 
         if let Some(quit_signal_sender) = &self.quit_signal_sender {
-            quit_signal_sender.send(()).await.unwrap();
+            if let Err(e) = quit_signal_sender.send(()).await {
+                warn!("send quit signal error, {}", e);
+            }
             self.quit_signal_sender = None;
         }
 
@@ -917,6 +923,29 @@ impl SessionManager {
         } else {
             let session_table = self.sessions.get_mut(&tenant_identifier).unwrap();
             session_table.remove(&client_identifier);
+        }
+    }
+
+    pub async fn kickoff(
+        &self,
+        tenant_identifier: &String,
+        client_identifier: &String,
+        session_quit_sender: &Sender<()>,
+    ) -> Result<()> {
+        if !self.tenant_existed(tenant_identifier) {
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier.clone())));
+        }else{
+            let session_sender_option = self.get_session_sender(tenant_identifier, client_identifier);
+            if let Some(session_sender) = session_sender_option {
+                if let Err(_) = session_sender.send(SessionMessage::KickOff(KickOffReason::Other("force kickoff".to_string(), session_quit_sender.clone()))).await {
+                    warn!("session receiver dropped, session event loop has exited, do nothing.");
+                    return Ok(());
+                } else {
+                    Ok(())
+                }
+            } else {
+                return Err(anyhow!(SessionManagerError::SessionNotExisted(client_identifier.clone())));
+            }
         }
     }
 
