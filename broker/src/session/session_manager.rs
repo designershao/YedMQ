@@ -13,6 +13,7 @@ use samoye_mqtt::{
     MqttPacketV3,
 };
 use samoye_plugin::plugin::Client;
+use serde::Serialize;
 use thiserror::Error;
 use tokio::{
     select,
@@ -335,9 +336,13 @@ impl SessionWrapper {
                             }
                             _ => {}
                         }
-                        self.session
-                            .subscription_topics
-                            .push(topic.topic_name.clone());
+
+                        if !self.session.subscription_topics.contains(&topic.topic_name) {
+                            self.session
+                                .subscription_topics
+                                .push(topic.topic_name.clone());
+                        }
+
                         let packets = topic_manager.get_retain_publish_packet(
                             self.session.tenant_identifier.clone(),
                             self.session.client_identifier.clone(),
@@ -749,6 +754,17 @@ impl SessionWrapper {
                                                 _ => {}
                                             }
                                         }
+                                        SessionMessage::AskSessionInfo(session_info_sender) => {
+                                            let session_info = SessionInfo {
+                                                client_identifier: self.session.client_identifier.clone(),
+                                                tenant_identifier: self.session.tenant_identifier.clone(),
+                                                session_state: self.state.clone(),
+                                                subscription_topics: self.session.subscription_topics.clone(),
+                                            };
+                                            if let Err(_) = session_info_sender.send(session_info) {
+                                                warn!("session info sender dropped");
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -799,7 +815,7 @@ impl SessionWrapper {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
 pub enum SessionState {
     Activate,
 
