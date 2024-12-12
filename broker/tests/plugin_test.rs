@@ -1,5 +1,6 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
+use rand::seq::index::sample;
 use samoye::plugin_manager::{plugin_metadata::PluginMetadata, PluginManager};
 
 fn get_demo_plugin_path() -> PathBuf {
@@ -36,12 +37,14 @@ pub fn test_plugin_metadata_load() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_plugin_service_init() {
     let plugin_dir = get_demo_plugins_dir();
-    let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
+    let settings = samoye::settings::Settings::default();
+    let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string(), Arc::new(settings)).unwrap();
     assert!(true);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_plugin_service_call_on_connect_auth() {
     let plugin_dir = get_demo_plugins_dir();
-    let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string()).unwrap();
+    let settings = samoye::settings::Settings::default();
+    let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string(), Arc::new(settings)).unwrap();
 }

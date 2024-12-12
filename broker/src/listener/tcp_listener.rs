@@ -58,11 +58,15 @@ mod tests {
         rand::thread_rng().gen_range(1024..=65535)
     }
 
-    async fn get_test_plugin_manager() -> Arc<PluginManager> {
+    async fn get_test_plugin_manager(settings: Arc<crate::settings::Settings>) -> Arc<PluginManager> {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
         let plugin_path = PathBuf::from(crate_root_path).join("tests");
 
-        let plugin_manager = PluginManager::new(plugin_path.to_str().unwrap().to_string())
+
+        let plugin_manager = PluginManager::new(
+            plugin_path.to_str().unwrap().to_string(),
+            settings,
+        )
             .unwrap();
         Arc::new(plugin_manager)
     }
@@ -70,7 +74,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     pub async fn test_invalid_connect_packet_income() {
 
-        let plugin_manager =get_test_plugin_manager().await;
 
         let keep_live_duration_secs = 5;
 
@@ -98,17 +101,23 @@ mod tests {
                 api: crate::settings::Api { external: "".to_string() }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
-            mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }
+            mqtt: crate::settings::Mqtt { 
+                sys_topic_interval_secs: 10, 
+                default_authentication: crate::settings::DefaultAuthenticationValue::Allow, 
+                default_authorization: crate::settings::DefaultAuthorizationValue::Allow 
+            }
         };
 
         let metric = Arc::new(Metric::new());
+        let settings = Arc::new(settings);
+        let plugin_manager =get_test_plugin_manager(settings.clone()).await;
 
         let listener = MqttTcpListener {
             plugin_manager,
             session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
-            settings: Arc::new(settings),
+            settings: settings.clone(),
             metric: metric.clone(),
         };
 
@@ -142,8 +151,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     pub async fn test_tcp_listener_connect() {
 
-        let plugin_manager =get_test_plugin_manager().await;
-
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
@@ -170,17 +177,24 @@ mod tests {
                 api: crate::settings::Api { external: "".to_string() }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
-            mqtt: crate::settings::Mqtt { sys_topic_interval_secs: 10 }
+            mqtt: crate::settings::Mqtt { 
+                sys_topic_interval_secs: 10, 
+                default_authentication: crate::settings::DefaultAuthenticationValue::Allow, 
+                default_authorization: crate::settings::DefaultAuthorizationValue::Allow 
+            }
         };
 
         let metric = Arc::new(Metric::new());
+
+        let settings = Arc::new(settings);
+        let plugin_manager =get_test_plugin_manager(settings.clone()).await;
 
         let listener = MqttTcpListener {
             plugin_manager,
             session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
             topic_manager: Arc::new(RwLock::new(TopicManager::new())),
             router_sender: router_sender,
-            settings: Arc::new(settings),
+            settings: settings.clone(),
             metric: metric.clone(),
         };
 

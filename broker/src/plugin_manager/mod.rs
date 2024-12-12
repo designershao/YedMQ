@@ -7,6 +7,8 @@ use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{debug, info, warn};
 
+use crate::settings::{DefaultAuthorizationValue, Settings};
+
 pub mod plugin_metadata;
 
 pub struct SubscribeAuthorizationResult {
@@ -44,7 +46,9 @@ pub struct PluginManager {
 
     plugin_dir: String,
 
-    plugin_table: BTreeMap<i64, Arc<PluginWrapper>>
+    plugin_table: BTreeMap<i64, Arc<PluginWrapper>>,
+
+    settings: Arc<Settings>
 
 }
 
@@ -124,16 +128,24 @@ impl PluginService for PluginManager {
                 }
             }
         }
-        Ok(true)
+        let default_result = match self.settings.mqtt.default_authorization {
+            DefaultAuthorizationValue::Allow => true,
+            DefaultAuthorizationValue::Deny => false
+        };
+        Ok(default_result)
     }
 
     fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
-        let mut return_code = vec![SubscribeReturnCode::MaxQosLeastOnce; packet.payload.topic_filters.len()];
+        let default_return_code = match self.settings.mqtt.default_authorization {
+            DefaultAuthorizationValue::Allow => SubscribeReturnCode::MaxQosLeastOnce,
+            DefaultAuthorizationValue::Deny => SubscribeReturnCode::Failure
+        };
+        let mut return_code: Vec<SubscribeReturnCode> = vec![default_return_code; packet.payload.topic_filters.len()];
         if self.plugin_table.len() > 0 {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let topics = packet.payload.topic_filters.iter().enumerate();
+                let topics: std::iter::Enumerate<std::slice::Iter<'_, samoye_mqtt::v3::subscribe::TopicFilter>> = packet.payload.topic_filters.iter().enumerate();
                 for (i, topic) in topics {
                     let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, samoye_plugin::plugin::Action::Subscribe);
                     match authorizate_result {
@@ -224,12 +236,23 @@ impl PluginService for PluginManager {
                 }
                 i+=1;
             }
-            Ok(AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth))
+
+            // No other plugins return the default result
+            let result =  match self.settings.mqtt.default_authentication {
+                crate::settings::DefaultAuthenticationValue::Allow => AuthenticationResultValue::Success("public".into()),
+                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
+            };
+            //
+            Ok(result)
         } else {
-            info!("no plugin loaded, pass anonymous");
-            Ok(
-                AuthenticationResultValue::Success("public".into())
-            )
+            info!("no plugin loaded, return the default authenticate result {:?}", self.settings.mqtt.default_authentication);
+            // No other plugins return the default result
+            let result =  match self.settings.mqtt.default_authentication {
+                crate::settings::DefaultAuthenticationValue::Allow => AuthenticationResultValue::Success("public".into()),
+                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
+            };
+            //
+            Ok(result)
         }
     }
 } 
@@ -263,7 +286,7 @@ impl PluginManager {
         }
     }
 
-    pub fn new(plugin_dir: String) -> anyhow::Result<Self> {
+    pub fn new(plugin_dir: String, settings: Arc<crate::settings::Settings>) -> anyhow::Result<Self> {
         let path = PathBuf::from(plugin_dir.clone());
 
         if !path.exists() {
@@ -272,7 +295,8 @@ impl PluginManager {
             let plugin_table = BTreeMap::new();
             let mut manager = PluginManager{
                 plugin_dir,
-                plugin_table
+                plugin_table,
+                settings
             };
             let paths = path.read_dir().unwrap();
             for path in paths {

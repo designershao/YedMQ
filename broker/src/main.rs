@@ -40,7 +40,7 @@ async fn main() {
 
     // init plugin manager
     info!("start load plugin manager");
-    let plugin_manager = PluginManager::new(settings.plugin.dir.clone()).unwrap();
+    let plugin_manager = PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
     let plugin_manager = Arc::new(plugin_manager);
     info!("plugin manager load succeed");
     //

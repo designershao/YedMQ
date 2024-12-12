@@ -15,11 +15,11 @@ fn random_tcp_port() -> u16 {
     rand::thread_rng().gen_range(1024..=65535)
 }
 
-async fn get_test_plugin_manager() -> Arc<PluginManager> {
+async fn get_test_plugin_manager(settings: Arc<Settings>) -> Arc<PluginManager> {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
-    let plugin_service = PluginManager::new(plugin_path.to_str().unwrap().to_string())
+    let plugin_service = PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings)
         .unwrap();
     Arc::new(plugin_service)
 }
@@ -44,7 +44,11 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
             api: samoye::settings::Api { external: "".to_string() }
         },
         plugin: samoye::settings::Plugin { dir: "test".to_string() },
-        mqtt: samoye::settings::Mqtt { sys_topic_interval_secs: 10 }
+        mqtt: samoye::settings::Mqtt { 
+            sys_topic_interval_secs: 10 ,
+            default_authentication: samoye::settings::DefaultAuthenticationValue::Allow,
+            default_authorization: samoye::settings::DefaultAuthorizationValue::Allow
+        }
     };
     settings
 }
@@ -53,15 +57,15 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_listener_connect() {
 
-    let plugin_manager =get_test_plugin_manager().await;
-
     let keep_live_duration_secs = 5;
 
     let resend_duration_secs = 10;
 
     let (router_sender, _) = tokio::sync::mpsc::channel(10);
 
-    let settings = get_test_settings(2, resend_duration_secs);
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
 
     let connect_address = settings.listener.tcp.external.clone();
 
@@ -72,7 +76,7 @@ pub async fn test_tcp_listener_connect() {
         session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
         topic_manager: Arc::new(RwLock::new(TopicManager::new())),
         router_sender: router_sender,
-        settings: Arc::new(settings),
+        settings: settings.clone(),
         metric: metric.clone()
     };
 
@@ -117,7 +121,6 @@ pub async fn test_tcp_listener_connect() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_client_subscribe_and_publish() {
 
-    let plugin_manager =get_test_plugin_manager().await;
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
     let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
 
@@ -137,7 +140,9 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         router.run().await;
     });
 
-    let settings = get_test_settings(2, resend_duration_secs);
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
 
     let connect_address = settings.listener.tcp.external.clone();
     let connect_address_cloned = connect_address.clone();
@@ -149,7 +154,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
-        settings: Arc::new(settings),
+        settings: settings.clone(),
         metric: metric.clone()
     };
 
@@ -278,7 +283,6 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
-    let plugin_manager =get_test_plugin_manager().await;
     let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
 
@@ -298,7 +302,10 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
         router.run().await;
     });
 
-    let settings = get_test_settings(2, resend_duration_secs);
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
+
     let connect_address = settings.listener.tcp.external.clone();
     
     let metric = Arc::new(Metric::new());
@@ -308,7 +315,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
-        settings: Arc::new(settings),
+        settings: settings.clone(),
         metric: metric.clone(),
     };
 
@@ -373,7 +380,6 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_message() {
 
-    let plugin_manager =get_test_plugin_manager().await;
     let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
 
@@ -393,7 +399,9 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         router.run().await;
     });
 
-    let settings = get_test_settings(2, resend_duration_secs);
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
 
     let connect_address = settings.listener.tcp.external.clone();
 
@@ -404,7 +412,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_sender: router_sender,
-        settings: Arc::new(settings),
+        settings: settings.clone(),
         metric: metric.clone(),
     };
 
