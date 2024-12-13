@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use samoye_plugin::plugin::AuthenticationResult;
+use yedmq_plugin::plugin::AuthenticationResult;
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");

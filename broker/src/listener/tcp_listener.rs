@@ -47,7 +47,7 @@ mod tests {
 
     use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::mpsc::Sender};
 
-    use samoye_mqtt::MqttPacketV3;
+    use yedmq_mqtt::MqttPacketV3;
 
     use crate::session::session_manager::SessionMessage;
 
@@ -128,7 +128,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1000)).await; // ensure listener start
 
         let mut writer = tokio::net::TcpStream::connect(format!("0.0.0.0:{}", tcp_port)).await.unwrap();
-        let _connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
+        let _connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
@@ -205,12 +205,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1000)).await; // ensure listener start
 
         let mut writer = tokio::net::TcpStream::connect(format!("0.0.0.0:{}", tcp_port)).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
 
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         writer.write(&connect_packet.to_bytes()).await.unwrap();
         writer.flush().await.unwrap();
 
@@ -219,7 +219,7 @@ mod tests {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);

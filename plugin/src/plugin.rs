@@ -28,9 +28,9 @@ pub trait Plugin: Any + Send + Sync {
 
     fn on_deactivate(&self) -> Result<()>;
 
-    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult>;
+    fn connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult>;
 
-    fn on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
+    fn on_publish(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket);
 
     fn on_disconnect(&self, client: &Client);
 

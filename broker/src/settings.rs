@@ -200,10 +200,10 @@ impl Settings {
             .set_default("listener.wss.key_file", "")?
             .set_default("listener.api.external", "0.0.0.0:3456")?
             .add_source(
-                File::with_name("/etc/samoye/config.toml").required(false)
+                File::with_name("/etc/yedmq/config.toml").required(false)
             )
             .add_source(
-                File::with_name("./samoye.toml")
+                File::with_name("./yedmq.toml")
             )
             .build()?;
         s.try_deserialize()

@@ -5,7 +5,7 @@ use tokio::{select, sync::RwLock};
 
 use crate::{session::session_manager::SessionManager, topic::TopicManager};
 use anyhow::Result;
-use samoye_mqtt::MqttPacketV3;
+use yedmq_mqtt::MqttPacketV3;
 
 // Represent router command
 pub enum RouterCmd {

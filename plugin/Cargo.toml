@@ -1,5 +1,5 @@
 [package]
-name = "samoye-plugin"
+name = "yedmq-plugin"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,4 +7,4 @@ edition = "2021"
 anyhow = "1.0"
 thiserror = { workspace = true }
 async-trait = "0.1.83"
-samoye-mqtt = { path = "../mqtt" }
+yedmq-mqtt = { path = "../mqtt" }

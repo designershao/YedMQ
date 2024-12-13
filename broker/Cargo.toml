@@ -1,5 +1,5 @@
 [package]
-name = "samoye"
+name = "yedmq"
 version = "0.1.0"
 edition = "2021"
 
@@ -23,7 +23,7 @@ env_logger = "0.10.1"
 tokio-native-tls = "0.3.1"
 tokio-tungstenite = { version = "*", features = ["native-tls"] }
 futures = "0.3"
-samoye-mqtt = { path = "../mqtt" }
-samoye-plugin = { path = "../plugin" }
+yedmq-mqtt = { path = "../mqtt" }
+yedmq-plugin = { path = "../plugin" }
 libloading = "0.8.5"
 axum = "0.7.9"

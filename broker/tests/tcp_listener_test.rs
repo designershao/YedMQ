@@ -1,12 +1,12 @@
 use std::{thread, time};
 use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
-use samoye::metric::Metric;
-use samoye::plugin_manager::PluginManager;
-use samoye::session::session_manager::SessionMessage;
+use yedmq::metric::Metric;
+use yedmq::plugin_manager::PluginManager;
+use yedmq::session::session_manager::SessionMessage;
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-use samoye::{listener::tcp_listener::MqttTcpListener, router::Router, session::session_manager::SessionManager, settings::Settings, topic::TopicManager};
-use samoye_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
+use yedmq::{listener::tcp_listener::MqttTcpListener, router::Router, session::session_manager::SessionManager, settings::Settings, topic::TopicManager};
+use yedmq_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
 
@@ -27,27 +27,27 @@ async fn get_test_plugin_manager(settings: Arc<Settings>) -> Arc<PluginManager> 
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
     let tcp_port = random_tcp_port();
     let settings = Settings {
-        session: samoye::settings::Session { qos_expired_secs: qos_expired_secs, packet_resend_interval_secs: resend_duration_sec },
-        listener: samoye::settings::Listener { 
-            tcp: samoye::settings::Tcp { external: format!("0.0.0.0:{}", tcp_port).to_string() },
-            tcp_tls: samoye::settings::TcpTls {
+        session: yedmq::settings::Session { qos_expired_secs: qos_expired_secs, packet_resend_interval_secs: resend_duration_sec },
+        listener: yedmq::settings::Listener { 
+            tcp: yedmq::settings::Tcp { external: format!("0.0.0.0:{}", tcp_port).to_string() },
+            tcp_tls: yedmq::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
             },
-            ws: samoye::settings::Ws { external: "0.0.0.0:18090".to_string() },
-            wss: samoye::settings::Wss {
+            ws: yedmq::settings::Ws { external: "0.0.0.0:18090".to_string() },
+            wss: yedmq::settings::Wss {
                 external: "0.0.0.0:18091".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string()
             },
-            api: samoye::settings::Api { external: "".to_string() }
+            api: yedmq::settings::Api { external: "".to_string() }
         },
-        plugin: samoye::settings::Plugin { dir: "test".to_string() },
-        mqtt: samoye::settings::Mqtt { 
+        plugin: yedmq::settings::Plugin { dir: "test".to_string() },
+        mqtt: yedmq::settings::Mqtt { 
             sys_topic_interval_secs: 10 ,
-            default_authentication: samoye::settings::DefaultAuthenticationValue::Allow,
-            default_authorization: samoye::settings::DefaultAuthorizationValue::Allow
+            default_authentication: yedmq::settings::DefaultAuthenticationValue::Allow,
+            default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow
         }
     };
     settings
@@ -91,12 +91,12 @@ pub async fn test_tcp_listener_connect() {
 
 
     let mut writer = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-    let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
+    let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
         .clean_session(true)
         .keep_alive(keep_live_duration_secs)
         .build();
 
-    let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+    let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
     writer.write(&connect_packet.to_bytes()).await.unwrap();
     writer.flush().await.unwrap();
 
@@ -105,7 +105,7 @@ pub async fn test_tcp_listener_connect() {
     if read_bytes == 0 {
         assert!(false)
     } else {
-        let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+        let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
         match packet {
             MqttPacketV3::Connack(connack_packet) => {
                 assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -170,12 +170,12 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     // subscriber process
     let sub_join = tokio::spawn(async move {
         let mut subscriber = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
 
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         subscriber.write(&connect_packet.to_bytes()).await.unwrap();
         subscriber.flush().await.unwrap();
 
@@ -184,7 +184,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -194,12 +194,12 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         }
 
         // subscribe
-        let subscribe_packet = samoye_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
+        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
             topic_name: "/a/b".to_string(),
             qos: 0
         }).build();
 
-        let subscribe_packet = samoye_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
+        let subscribe_packet = yedmq_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
 
         subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
         subscriber.flush().await.unwrap();
@@ -209,7 +209,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
@@ -225,7 +225,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
                     assert_eq!(publish_packet.payload.payload, vec![0x01, 0x02]);
@@ -245,12 +245,12 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     let pub_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
         let mut publisher = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
 
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         publisher.write(&connect_packet.to_bytes()).await.unwrap();
         publisher.flush().await.unwrap();
 
@@ -259,7 +259,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -268,8 +268,8 @@ pub async fn test_tcp_client_subscribe_and_publish() {
             }
         }
 
-        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02]).build();
-        let publish_packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02]).build();
+        let publish_packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
 
         publisher.write(&publish_packet.to_bytes()).await.unwrap();
     });
@@ -327,7 +327,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
     // subscriber process
     let invalid_connect_join = tokio::spawn(async move {
 
-        let variable_header = samoye_mqtt::v3::connect::VariableHeader {
+        let variable_header = yedmq_mqtt::v3::connect::VariableHeader {
                 protocol_name: "MQT".to_string(), // invalid protocol name
                 protocol_level: 0x04,
                 username_flag: true,
@@ -338,7 +338,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
                 clean_session: true,
                 keep_alive: 0,
             };
-        let payload = samoye_mqtt::v3::connect::Payload {
+        let payload = yedmq_mqtt::v3::connect::Payload {
             client_identifier: "MQTT".to_string(),
             will_topic: Some("MQTT".to_string()),
             will_message: Some("MQTT".to_string()),
@@ -346,22 +346,22 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
             password: Some("MQTT".to_string()),
         };
 
-        let fix_header = samoye_mqtt::v3::fixed_header::FixHeader{
-                packet_type: samoye_mqtt::PacketType::CONNECT,
+        let fix_header = yedmq_mqtt::v3::fixed_header::FixHeader{
+                packet_type: yedmq_mqtt::PacketType::CONNECT,
                 qos: None,
                 retain: None,
                 dup: None,
                 remaining_length: variable_header.get_length() + payload.get_length(),
             };
 
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacket {
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacket {
             fix_header,
             variable_header,
             payload
         };
 
         let mut invalid_connect = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         invalid_connect.write(&connect_packet.to_bytes()).await.unwrap();
         invalid_connect.flush().await.unwrap();
 
@@ -429,13 +429,13 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     let unexpect_disconnect_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
         let mut publisher = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .will_msg("/last_will".to_string(), "good bye".to_string(), 0, false)
             .build();
 
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         publisher.write(&connect_packet.to_bytes()).await.unwrap();
         publisher.flush().await.unwrap();
 
@@ -445,7 +445,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -466,12 +466,12 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     let sub_will_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
         let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
-        let connect_packet = samoye_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
+        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
             .clean_session(true)
             .keep_alive(keep_live_duration_secs)
             .build();
 
-        let connect_packet = samoye_mqtt::MqttPacketV3::Connect(connect_packet);
+        let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         subscriber.write(&connect_packet.to_bytes()).await.unwrap();
         subscriber.flush().await.unwrap();
 
@@ -480,7 +480,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -490,12 +490,12 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         }
 
         // subscribe
-        let subscribe_packet = samoye_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
+        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
             topic_name: "/last_will".to_string(),
             qos: 0
         }).build();
 
-        let subscribe_packet = samoye_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
+        let subscribe_packet = yedmq_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
 
         subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
         subscriber.flush().await.unwrap();
@@ -506,7 +506,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
@@ -522,7 +522,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = samoye_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
                     assert_eq!(std::str::from_utf8(&publish_packet.payload.payload), Ok("good bye"));

@@ -1,6 +1,6 @@
 [plugin]
 name = "demo_plugin"
-author = "Samoye"
+author = "yedmq"
 description = "Just a demo plugin"
 version = "1.0.0"
 entry = "./libexample_plugin.so"

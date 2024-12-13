@@ -2,7 +2,7 @@ use bytes::{BytesMut, Buf};
 use log::error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 
-use samoye_mqtt::MqttPacketV3;
+use yedmq_mqtt::MqttPacketV3;
 use anyhow::Result;
 
 
@@ -36,7 +36,7 @@ where
     // Read a single packet from the underlying stream.
     pub async fn read_packet(&mut self) -> Result<MqttPacketV3, std::io::Error> {
         loop {
-            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = samoye_mqtt::parse(&self.buffer);
+            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = yedmq_mqtt::parse(&self.buffer);
 
             if let Ok((_, (consumed_bytes ,packet))) = packet_result {
                 self.buffer.advance(consumed_bytes.len());
@@ -77,7 +77,7 @@ where
 #[cfg(test)]
 mod tests {
     use nom::AsBytes;
-    use samoye_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
+    use yedmq_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
     use super::Connection;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

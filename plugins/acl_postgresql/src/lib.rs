@@ -2,7 +2,7 @@ use std::{fs, sync::Mutex};
 
 use log::info;
 use postgres::{Client, NoTls};
-use samoye_plugin::{plugin::{AuthenticationResultValue, Plugin}, register_plugin};
+use yedmq_plugin::{plugin::{AuthenticationResultValue, Plugin}, register_plugin};
 use anyhow::anyhow;
 use serde::Deserialize;
 
@@ -56,7 +56,7 @@ impl Plugin for AclPostgresql {
         Ok(())
     }
 
-    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResult> {
+    fn connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResult> {
         let mut db = self.db.lock().unwrap();
         if db.is_some() {
             let client:&mut Client = db.as_mut().unwrap();
@@ -74,28 +74,28 @@ impl Plugin for AclPostgresql {
                 } else {
                     let users_row = users_result.unwrap();
                     if users_row.is_empty() {
-                        return Ok(samoye_plugin::plugin::AuthenticationResult::Next());
+                        return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
                     } else {
                         let tenant:&str = users_row.get(3);
-                        return Ok(samoye_plugin::plugin::AuthenticationResult::Result(AuthenticationResultValue::Success(tenant.to_string())));
+                        return Ok(yedmq_plugin::plugin::AuthenticationResult::Result(AuthenticationResultValue::Success(tenant.to_string())));
                     }
                 }
             }
         } else {
-            return Ok(samoye_plugin::plugin::AuthenticationResult::Next());
+            return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
         }
     }
 
-    fn on_publish(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::publish::PublishPacket) {
+    fn on_publish(&self, _client: &yedmq_plugin::plugin::Client, _packet: &yedmq_mqtt::v3::publish::PublishPacket) {
     }
 
-    fn on_disconnect(&self, _client: &samoye_plugin::plugin::Client) {
+    fn on_disconnect(&self, _client: &yedmq_plugin::plugin::Client) {
     }
 
-    fn authorizate_acl_check(&self, client: &samoye_plugin::plugin::Client, topic: &String, action: samoye_plugin::plugin::Action) -> anyhow::Result<samoye_plugin::plugin::AuthorizationResult> {
+    fn authorizate_acl_check(&self, client: &yedmq_plugin::plugin::Client, topic: &String, action: yedmq_plugin::plugin::Action) -> anyhow::Result<yedmq_plugin::plugin::AuthorizationResult> {
             let action_params = match action {
-                samoye_plugin::plugin::Action::Publish => "publish",
-                samoye_plugin::plugin::Action::Subscribe => "subscribe",
+                yedmq_plugin::plugin::Action::Publish => "publish",
+                yedmq_plugin::plugin::Action::Subscribe => "subscribe",
             };
             let mut db = self.db.lock().unwrap();
             if db.is_some() {
@@ -114,18 +114,18 @@ impl Plugin for AclPostgresql {
                     } 
                     let row = result.unwrap();
                     if row.is_empty() {
-                        return Ok(samoye_plugin::plugin::AuthorizationResult::Next());
+                        return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
                     } else {
                         let result:&str = row.get(0);
                         if result == "allow" {
-                            return Ok(samoye_plugin::plugin::AuthorizationResult::Result(true));
+                            return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(true));
                         } else {
-                            return Ok(samoye_plugin::plugin::AuthorizationResult::Result(false));
+                            return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(false));
                         }
                     }
                 }
             } else {
-                return Ok(samoye_plugin::plugin::AuthorizationResult::Next());
+                return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
             }
     }
 }

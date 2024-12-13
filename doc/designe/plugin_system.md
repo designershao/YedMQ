@@ -21,7 +21,7 @@ example:
 ```Toml
 [plugin]
 name = "demo_plugin"
-author = "Samoye"
+author = "yedmq"
 description = "Just a demo plugin"
 version = "1.0.0"
 entry = "./lib_plugin.so"
@@ -61,7 +61,7 @@ impl ExamplePlugin {
     }
 }
 
-impl samoye_plugin::plugin::Plugin for ExamplePlugin {
+impl yedmq_plugin::plugin::Plugin for ExamplePlugin {
     // implement the plugin trait
 }
 

@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use tokio::sync::RwLock;
 
-use samoye_mqtt::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
+use yedmq_mqtt::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
 
 pub struct Inflight {
     inner: RwLock<HashMap<u16, InflightItem>>,
@@ -226,11 +226,11 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_tx_qos_1_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
-        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_tx_packet(&packet).await;
 
         let state = get_state(&inflight, packet_identifier).await;
@@ -261,11 +261,11 @@ mod tests {
     async fn when_get_next_state_after_register_rx_qos_1_publish_packet_inflight_should_return_correct_state() {
 
         let inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
-        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_rx_packet(&packet).await;
 
         let state = get_state(&inflight, packet_identifier).await;
@@ -279,7 +279,7 @@ mod tests {
 
         assert!(packet.is_some());
         match packet.unwrap() {
-            samoye_mqtt::MqttPacketV3::Puback(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            yedmq_mqtt::MqttPacketV3::Puback(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
             _ => assert!(false)
         }
 
@@ -288,11 +288,11 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_rx_qos_2_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
-        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_rx_packet(&packet).await;
 
         let state = get_state(&inflight, packet_identifier).await;
@@ -307,7 +307,7 @@ mod tests {
 
         assert!(packet.is_some());
         match packet.unwrap() {
-            samoye_mqtt::MqttPacketV3::Pubrec(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            yedmq_mqtt::MqttPacketV3::Pubrec(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
             _ => assert!(false)
         }
 
@@ -325,7 +325,7 @@ mod tests {
 
         assert!(packet.is_some());
         match packet.unwrap() {
-            samoye_mqtt::MqttPacketV3::Pubcomp(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            yedmq_mqtt::MqttPacketV3::Pubcomp(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
             _ => assert!(false)
         }
 
@@ -349,11 +349,11 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_tx_qos_2_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = samoye_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
-        let packet = samoye_mqtt::MqttPacketV3::Publish(publish_packet);
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
         inflight.register_with_tx_packet(&packet).await;
 
         let state = get_state(&inflight, packet_identifier).await;
@@ -368,7 +368,7 @@ mod tests {
 
         assert!(packet.is_some());
         match packet.unwrap() {
-            samoye_mqtt::MqttPacketV3::Publish(p) => assert_eq!(p.variable_header.packet_identifier.unwrap(), packet_identifier),
+            yedmq_mqtt::MqttPacketV3::Publish(p) => assert_eq!(p.variable_header.packet_identifier.unwrap(), packet_identifier),
             _ => assert!(false)
         }
 
@@ -386,7 +386,7 @@ mod tests {
 
         assert!(packet.is_some());
         match packet.unwrap() {
-            samoye_mqtt::MqttPacketV3::Pubrel(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
+            yedmq_mqtt::MqttPacketV3::Pubrel(p) => assert_eq!(p.variable_header.packet_identifier, packet_identifier),
             _ => assert!(false)
         }
 

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use rand::seq::index::sample;
-use samoye::plugin_manager::{plugin_metadata::PluginMetadata, PluginManager};
+use yedmq::plugin_manager::{plugin_metadata::PluginMetadata, PluginManager};
 
 fn get_demo_plugin_path() -> PathBuf {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
@@ -26,7 +26,7 @@ pub fn test_plugin_metadata_load() {
     let plugin_metadata = PluginMetadata::new(plugin_path).unwrap();
 
     assert!(plugin_metadata.name == "demo_plugin");
-    assert!(plugin_metadata.author == "Samoye");
+    assert!(plugin_metadata.author == "yedmq");
     assert!(plugin_metadata.description == "Just a demo plugin");
     assert!(plugin_metadata.version == "1.0.0");
     assert!(plugin_metadata.entry == "./libexample_plugin.so");
@@ -37,7 +37,7 @@ pub fn test_plugin_metadata_load() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_plugin_service_init() {
     let plugin_dir = get_demo_plugins_dir();
-    let settings = samoye::settings::Settings::default();
+    let settings = yedmq::settings::Settings::default();
     let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string(), Arc::new(settings)).unwrap();
     assert!(true);
 }
@@ -45,6 +45,6 @@ pub async fn test_plugin_service_init() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_plugin_service_call_on_connect_auth() {
     let plugin_dir = get_demo_plugins_dir();
-    let settings = samoye::settings::Settings::default();
+    let settings = yedmq::settings::Settings::default();
     let _ = PluginManager::new(plugin_dir.to_str().unwrap().to_string(), Arc::new(settings)).unwrap();
 }

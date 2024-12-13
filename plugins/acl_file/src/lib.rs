@@ -2,7 +2,7 @@ use std::fs;
 
 use anyhow::{anyhow, Result};
 use log::info;
-use samoye_plugin::{
+use yedmq_plugin::{
     plugin::{Action, AuthenticationResult, AuthorizationResult, Plugin, PluginError},
     register_plugin,
 };
@@ -168,28 +168,28 @@ impl Plugin for AclFile {
 
     fn connect_authenticate(
         &self,
-        _packet: &samoye_mqtt::v3::connect::ConnectPacket,
+        _packet: &yedmq_mqtt::v3::connect::ConnectPacket,
     ) -> Result<AuthenticationResult> {
         return Err(PluginError::PluginHookNotImplement().into());
     }
 
     fn on_publish(
         &self,
-        _client: &samoye_plugin::plugin::Client,
-        _packet: &samoye_mqtt::v3::publish::PublishPacket,
+        _client: &yedmq_plugin::plugin::Client,
+        _packet: &yedmq_mqtt::v3::publish::PublishPacket,
     ) {
         // Do Nothing
     }
 
-    fn on_disconnect(&self, _client: &samoye_plugin::plugin::Client) {
+    fn on_disconnect(&self, _client: &yedmq_plugin::plugin::Client) {
         // Do Nothing
     }
 
     fn authorizate_acl_check(
         &self,
-        client: &samoye_plugin::plugin::Client,
+        client: &yedmq_plugin::plugin::Client,
         topic: &String,
-        action: samoye_plugin::plugin::Action,
+        action: yedmq_plugin::plugin::Action,
     ) -> Result<AuthorizationResult> {
         let match_rule = self.acl_rules.get_match_rule(
             &client.tenant_id.as_str(),
@@ -240,7 +240,7 @@ mod tests {
                 &Some("user".to_string()),
                 "127.0.0.1",
                 "/a/b",
-                &samoye_plugin::plugin::Action::Subscribe
+                &yedmq_plugin::plugin::Action::Subscribe
             ),
             Some(AclAction::Allow)
         );

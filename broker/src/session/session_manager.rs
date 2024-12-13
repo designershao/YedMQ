@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
-use samoye_mqtt::{
+use yedmq_mqtt::{
     v3::{
         pingresp::PingrespPacket,
         publish::{PublishPacket, PublishPacketBuilder},
@@ -12,7 +12,7 @@ use samoye_mqtt::{
     },
     MqttPacketV3,
 };
-use samoye_plugin::plugin::Client;
+use yedmq_plugin::plugin::Client;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::{
@@ -281,7 +281,7 @@ impl SessionWrapper {
                 );
             }
         }
-        let unsub_ack = MqttPacketV3::Unsuback(samoye_mqtt::v3::unsuback::UnSubackPacket::new(
+        let unsub_ack = MqttPacketV3::Unsuback(yedmq_mqtt::v3::unsuback::UnSubackPacket::new(
             unsubscribe_packet.variable_header.packet_identifier,
         ));
 
@@ -310,7 +310,7 @@ impl SessionWrapper {
             &subscribe_packet,
         );
 
-        let mut return_code: Vec<samoye_mqtt::v3::suback::ReturnCode> = vec![];
+        let mut return_code: Vec<yedmq_mqtt::v3::suback::ReturnCode> = vec![];
         if let Ok(topic_authorizate_result) = topic_authorizate_result {
             let plugin_return_code = topic_authorizate_result.return_code;
             for i in 0..subscriptions.len() {
@@ -326,13 +326,13 @@ impl SessionWrapper {
                     if let Ok(_) = sub_result {
                         match plugin_return_code[i] {
                             SubscribeReturnCode::MaxQosMostOnce => {
-                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos0);
+                                return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos0);
                             }
                             SubscribeReturnCode::MaxQosLeastOnce => {
-                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos1);
+                                return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos1);
                             }
                             SubscribeReturnCode::MaxQosExactlyOnce => {
-                                return_code.push(samoye_mqtt::v3::suback::ReturnCode::MaxQos2);
+                                return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos2);
                             }
                             _ => {}
                         }
@@ -355,7 +355,7 @@ impl SessionWrapper {
                         }
                     }
                 } else {
-                    return_code.push(samoye_mqtt::v3::suback::ReturnCode::Failure);
+                    return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
                 }
             }
         } else {
@@ -978,7 +978,7 @@ impl SessionManager {
 mod tests {
     use std::{collections::HashMap, sync::Arc, time::Duration, vec};
 
-    use samoye_mqtt::v3::{
+    use yedmq_mqtt::v3::{
         pingreq::PingreqPacketBuilder,
         publish::PublishPacketBuilder,
         pubrel::PubRelPacket,
@@ -986,7 +986,7 @@ mod tests {
         subscribe::{SubscribePacketBuilder, TopicFilter},
         unsubscribe::UnsubscribePacketBuilder,
     };
-    use samoye_plugin::plugin::{Client, ClientProperties};
+    use yedmq_plugin::plugin::{Client, ClientProperties};
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 
     use crate::{
@@ -1094,7 +1094,7 @@ mod tests {
         fn do_on_publish(
             &self,
             _client: &Client,
-            _packet: &samoye_mqtt::v3::publish::PublishPacket,
+            _packet: &yedmq_mqtt::v3::publish::PublishPacket,
         ) {
             println!("on_publish")
         }
@@ -1102,7 +1102,7 @@ mod tests {
         fn do_publish_authorizate(
             &self,
             _client: &Client,
-            _packet: &samoye_mqtt::v3::publish::PublishPacket,
+            _packet: &yedmq_mqtt::v3::publish::PublishPacket,
         ) -> anyhow::Result<bool> {
             return Ok(true);
         }
@@ -1110,7 +1110,7 @@ mod tests {
         fn do_subscribe_authorizate(
             &self,
             _client: &Client,
-            packet: &samoye_mqtt::v3::subscribe::SubscribePacket,
+            packet: &yedmq_mqtt::v3::subscribe::SubscribePacket,
         ) -> anyhow::Result<SubscribeAuthorizationResult> {
             let length = packet.payload.topic_filters.len();
             return Ok(SubscribeAuthorizationResult {
@@ -1120,9 +1120,9 @@ mod tests {
 
         fn do_connect_authenticate(
             &self,
-            _packet: &samoye_mqtt::v3::connect::ConnectPacket,
-        ) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResultValue> {
-            return Ok(samoye_plugin::plugin::AuthenticationResultValue::Success(
+            _packet: &yedmq_mqtt::v3::connect::ConnectPacket,
+        ) -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResultValue> {
+            return Ok(yedmq_plugin::plugin::AuthenticationResultValue::Success(
                 "tenant_a".into(),
             ));
         }
@@ -1447,7 +1447,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Publish(packet),
+                yedmq_mqtt::MqttPacketV3::Publish(packet),
             ))
             .await
             .unwrap();
@@ -1457,7 +1457,7 @@ mod tests {
             RouterCmd::RoutePacket(tenant_identifier, packet) => {
                 assert!(tenant_identifier == "tenant_a");
                 match packet {
-                    samoye_mqtt::MqttPacketV3::Publish(p) => {
+                    yedmq_mqtt::MqttPacketV3::Publish(p) => {
                         assert!(p.variable_header.topic_name == "/a/b");
                         assert!(p.payload.payload.len() == 1);
                         assert!(p.payload.payload[0] == 0x01);
@@ -1535,7 +1535,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+                yedmq_mqtt::MqttPacketV3::Subscribe(packet),
             ))
             .await
             .unwrap();
@@ -1616,7 +1616,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+                yedmq_mqtt::MqttPacketV3::Subscribe(packet),
             ))
             .await
             .unwrap();
@@ -1625,7 +1625,7 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Suback(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Suback(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, 123);
             assert_eq!(packet.payload.return_code[0], ReturnCode::MaxQos0);
         }
@@ -1697,7 +1697,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Subscribe(packet),
+                yedmq_mqtt::MqttPacketV3::Subscribe(packet),
             ))
             .await
             .unwrap();
@@ -1706,20 +1706,20 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Suback(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Suback(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, 123);
             assert_eq!(packet.payload.return_code[0], ReturnCode::MaxQos0);
         }
 
         let unsubscribe_packet = UnsubscribePacketBuilder::new(123)
-            .add_topic_filter(samoye_mqtt::v3::unsubscribe::TopicFilter {
+            .add_topic_filter(yedmq_mqtt::v3::unsubscribe::TopicFilter {
                 topic_name: "/a/b".to_string(),
             })
             .build();
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Unsubscribe(unsubscribe_packet),
+                yedmq_mqtt::MqttPacketV3::Unsubscribe(unsubscribe_packet),
             ))
             .await
             .unwrap();
@@ -1728,7 +1728,7 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Unsuback(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Unsuback(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, 123);
         }
     }
@@ -1787,7 +1787,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Pingreq(pingreq_packet),
+                yedmq_mqtt::MqttPacketV3::Pingreq(pingreq_packet),
             ))
             .await
             .unwrap();
@@ -1796,7 +1796,7 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pingresp(_)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Pingresp(_)) = msg {
             assert!(true)
         } else {
             assert!(false)
@@ -1867,14 +1867,14 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Publish(qos_1_publish_packet),
+                yedmq_mqtt::MqttPacketV3::Publish(qos_1_publish_packet),
             ))
             .await
             .unwrap();
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Puback(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Puback(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, 123);
         }
     }
@@ -1944,14 +1944,14 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
+                yedmq_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
             ))
             .await
             .unwrap();
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, packet_id);
         }
 
@@ -1959,7 +1959,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
+                yedmq_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
             ))
             .await
             .unwrap();
@@ -2036,7 +2036,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
+                yedmq_mqtt::MqttPacketV3::Publish(qos_2_publish_packet),
             ))
             .await
             .unwrap();
@@ -2074,7 +2074,7 @@ mod tests {
 
         let msg = connection_receiver.recv().await.unwrap();
 
-        if let ConnectionMessage::WritePacket(samoye_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
+        if let ConnectionMessage::WritePacket(yedmq_mqtt::MqttPacketV3::Pubrec(packet)) = msg {
             assert_eq!(packet.variable_header.packet_identifier, packet_id);
         } else {
             assert!(false);
@@ -2084,7 +2084,7 @@ mod tests {
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
-                samoye_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
+                yedmq_mqtt::MqttPacketV3::Pubrel(qos_2_pubrel_packet),
             ))
             .await
             .unwrap();

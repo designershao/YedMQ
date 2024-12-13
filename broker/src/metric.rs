@@ -1,7 +1,7 @@
 use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
 use log::warn;
-use samoye_mqtt::v3::publish::PublishPacketBuilder;
+use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 use tokio::sync::mpsc::Sender;
 
 use crate::router::{Router, RouterCmd};
@@ -94,16 +94,16 @@ impl SysTopicTask {
             let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(), vec![metric.get_uptime().to_le_bytes()[0]]).build();
 
                 
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(samoye_mqtt::MqttPacketV3::Publish(clients_connected_packet))).await {
+            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(clients_connected_packet))).await {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(samoye_mqtt::MqttPacketV3::Publish(bytes_received_packet))).await {
+            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(bytes_received_packet))).await {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(samoye_mqtt::MqttPacketV3::Publish(bytes_sent_packet))).await {
+            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(bytes_sent_packet))).await {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(samoye_mqtt::MqttPacketV3::Publish(uptime_packet))).await {
+            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(uptime_packet))).await {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
         }

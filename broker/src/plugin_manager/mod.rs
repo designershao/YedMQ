@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use samoye_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin};
+use yedmq_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{debug, info, warn};
@@ -64,13 +64,13 @@ pub trait PluginService: Send + Sync {
 
     fn do_on_disconnect(&self, client: &Client);
 
-    fn do_on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket);
+    fn do_on_publish(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket);
 
-    fn do_publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool>;
+    fn do_publish_authorizate(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool>;
 
-    fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult>;
+    fn do_subscribe_authorizate(&self, client: &Client, packet: &yedmq_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult>;
 
-    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue>;
+    fn do_connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue>;
 }
 
 impl PluginService for PluginManager {
@@ -85,7 +85,7 @@ impl PluginService for PluginManager {
         }
     }
 
-    fn do_on_publish(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) {
+    fn do_on_publish(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket) {
         if self.plugin_table.len() > 0 {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
@@ -95,12 +95,12 @@ impl PluginService for PluginManager {
         }
     }
 
-    fn do_publish_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool> {
+    fn do_publish_authorizate(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket) -> anyhow::Result<bool> {
         if self.plugin_table.len() > 0 {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let publish_authorizate_result = plugin.plugin.authorizate_acl_check(client, &packet.variable_header.topic_name, samoye_plugin::plugin::Action::Publish);
+                let publish_authorizate_result = plugin.plugin.authorizate_acl_check(client, &packet.variable_header.topic_name, yedmq_plugin::plugin::Action::Publish);
                 match publish_authorizate_result {
                     core::result::Result::Ok(publish_authorizate_result) => {
                         match publish_authorizate_result {
@@ -115,10 +115,10 @@ impl PluginService for PluginManager {
                     }
                     Err(e) => {
                         match e.downcast_ref() {
-                            Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                            Some(yedmq_plugin::plugin::PluginError::PluginHookNotImplement()) => {
                                 info!("plugin {} hook publish_authorizate not implement skip!", plugin.plugin_metadata.name);
                             }
-                            Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
+                            Some(yedmq_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
                                 warn!("plugin {} publish_authorizate error: {}", plugin.plugin_metadata.name, e);
                             }
                             None => {}
@@ -135,7 +135,7 @@ impl PluginService for PluginManager {
         Ok(default_result)
     }
 
-    fn do_subscribe_authorizate(&self, client: &Client, packet: &samoye_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
+    fn do_subscribe_authorizate(&self, client: &Client, packet: &yedmq_mqtt::v3::subscribe::SubscribePacket) -> anyhow::Result<SubscribeAuthorizationResult> {
         let default_return_code = match self.settings.mqtt.default_authorization {
             DefaultAuthorizationValue::Allow => SubscribeReturnCode::MaxQosLeastOnce,
             DefaultAuthorizationValue::Deny => SubscribeReturnCode::Failure
@@ -145,9 +145,9 @@ impl PluginService for PluginManager {
             let mut iter = self.plugin_table.iter();
             while let Some(plugin) = iter.next_back() {
                 let plugin = plugin.1.clone();
-                let topics: std::iter::Enumerate<std::slice::Iter<'_, samoye_mqtt::v3::subscribe::TopicFilter>> = packet.payload.topic_filters.iter().enumerate();
+                let topics: std::iter::Enumerate<std::slice::Iter<'_, yedmq_mqtt::v3::subscribe::TopicFilter>> = packet.payload.topic_filters.iter().enumerate();
                 for (i, topic) in topics {
-                    let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, samoye_plugin::plugin::Action::Subscribe);
+                    let authorizate_result = plugin.plugin.authorizate_acl_check(client, &topic.topic_name, yedmq_plugin::plugin::Action::Subscribe);
                     match authorizate_result {
                         core::result::Result::Ok(authorizate_result) => {
                             match authorizate_result {
@@ -172,10 +172,10 @@ impl PluginService for PluginManager {
                         }
                         Err(e) => {
                             match e.downcast_ref() {
-                                Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                                Some(yedmq_plugin::plugin::PluginError::PluginHookNotImplement()) => {
                                     info!("plugin {} hook subscribe_authorizate not implement skip!", plugin.plugin_metadata.name);
                                 }
-                                Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
+                                Some(yedmq_plugin::plugin::PluginError::PluginHookExecutionError(e)) => {
                                     warn!("plugin {} subscribe_authorizate error: {}", plugin.plugin_metadata.name, e);
                                 }
                                 None => {}
@@ -193,7 +193,7 @@ impl PluginService for PluginManager {
     // Connect authenticate logic
     // Execute plugins in order of priority from high to low. 
     // If higher priority plugin returns a success result, then return the result, lower plugin will not be called.
-    fn do_connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue> {
+    fn do_connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<AuthenticationResultValue> {
         if self.plugin_table.len() > 0 {
             let mut i = 1;
             let mut iter = self.plugin_table.iter();
@@ -225,10 +225,10 @@ impl PluginService for PluginManager {
                 } else {
 
                     match authenticate_result.err().unwrap().downcast_ref() {
-                        Some(samoye_plugin::plugin::PluginError::PluginHookNotImplement()) => {
+                        Some(yedmq_plugin::plugin::PluginError::PluginHookNotImplement()) => {
                             debug!("plugin {} on_connect_auth not implement skip!", plugin.plugin_metadata.name);
                         }
-                        Some(samoye_plugin::plugin::PluginError::PluginHookExecutionError(err)) => {
+                        Some(yedmq_plugin::plugin::PluginError::PluginHookExecutionError(err)) => {
                             warn!("plugin {} on_connect_auth error: {}, fobiden connection", plugin.plugin_metadata.name, err);
                         }
                         None => {}
@@ -240,7 +240,7 @@ impl PluginService for PluginManager {
             // No other plugins return the default result
             let result =  match self.settings.mqtt.default_authentication {
                 crate::settings::DefaultAuthenticationValue::Allow => AuthenticationResultValue::Success("public".into()),
-                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
+                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
             };
             //
             Ok(result)
@@ -249,7 +249,7 @@ impl PluginService for PluginManager {
             // No other plugins return the default result
             let result =  match self.settings.mqtt.default_authentication {
                 crate::settings::DefaultAuthenticationValue::Allow => AuthenticationResultValue::Success("public".into()),
-                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
+                crate::settings::DefaultAuthenticationValue::Deny => AuthenticationResultValue::Fail(yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth),
             };
             //
             Ok(result)
@@ -260,7 +260,7 @@ impl PluginService for PluginManager {
 impl PluginManager {
 
     fn load_plugin(&mut self, metadata: PluginMetadata) -> anyhow::Result<()> {
-        type PluginRegister = unsafe fn() -> *mut dyn samoye_plugin::plugin::Plugin;
+        type PluginRegister = unsafe fn() -> *mut dyn yedmq_plugin::plugin::Plugin;
         unsafe {
             let path = metadata.get_entry_absolute_path();
             let entry_path = path.to_str().unwrap();

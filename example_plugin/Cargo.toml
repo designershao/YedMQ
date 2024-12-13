@@ -7,6 +7,6 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-samoye-plugin = { path = "../plugin" }
-samoye-mqtt = { path = "../mqtt" }
+yedmq-plugin = { path = "../plugin" }
+yedmq-mqtt = { path = "../mqtt" }
 anyhow = "1.0"

@@ -1,5 +1,5 @@
 [package]
-name = "samoye-plugins-acl-mysql"
+name = "yedmq-plugins-acl-mysql"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,8 +7,8 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-samoye-plugin = { path = "../../plugin" }
-samoye-mqtt = { path = "../../mqtt" }
+yedmq-plugin = { path = "../../plugin" }
+yedmq-mqtt = { path = "../../mqtt" }
 anyhow = "1.0"
 log = "0.4"
 env_logger = "0.10.1"

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use log::{debug, error, warn};
-use samoye_plugin::plugin::{AuthenticationResultValue, Client, ClientProperties};
+use yedmq_plugin::plugin::{AuthenticationResultValue, Client, ClientProperties};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     select,
@@ -16,7 +16,7 @@ use crate::{
     }, WillMessage}, settings::Settings, topic::TopicManager
 };
 
-use samoye_mqtt::v3::connack::ConnAckPacketBuilder;
+use yedmq_mqtt::v3::connack::ConnAckPacketBuilder;
 
 pub mod tcp_listener;
 pub mod tcp_tls_listener;
@@ -72,7 +72,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     }
 
     match first_packet.unwrap() {
-        samoye_mqtt::MqttPacketV3::Connect(packet) => {
+        yedmq_mqtt::MqttPacketV3::Connect(packet) => {
             // invalid mqtt protocol name
             if packet.variable_header.protocol_name != "MQTT" {
                 warn!("invalid mqtt protocol name");
@@ -85,11 +85,11 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
             if packet.variable_header.protocol_level != 4 {
                 let connack_packet = ConnAckPacketBuilder::new()
                     .set_return_code(
-                        samoye_mqtt::v3::connack::ConnackReturnCode::UnsupportedProtocolVersion,
+                        yedmq_mqtt::v3::connack::ConnackReturnCode::UnsupportedProtocolVersion,
                     )
                     .build();
                 if let Err(e) = connection
-                    .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
+                    .write_packet(&yedmq_mqtt::MqttPacketV3::Connack(connack_packet))
                     .await
                 {
                     warn!("write connack packet error: {}", e);
@@ -107,7 +107,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                 Ok(auth_result) => match auth_result {
                     AuthenticationResultValue::Success(tenant_id) => {
                         let mut connack_packet_builder = ConnAckPacketBuilder::new()
-                            .set_return_code(samoye_mqtt::v3::connack::ConnackReturnCode::Accpet);
+                            .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::Accpet);
 
                         //
 
@@ -136,7 +136,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                         let connack_packet = connack_packet_builder.build();
                         if let Err(e) = connection
-                            .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
+                            .write_packet(&yedmq_mqtt::MqttPacketV3::Connack(connack_packet))
                             .await
                         {
                             warn!("write connack packet error: {}", e);
@@ -337,16 +337,16 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
                     AuthenticationResultValue::Fail(return_code) => {
                         println!("forbidden");
                         let connect_ack_return_code =match return_code {
-                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
-                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenInvalidClientIdentifier => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidClientIdentifier,
-                                samoye_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnsupportUsernameOrPasswordFormat => samoye_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
-                                _ => samoye_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable
+                                yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => yedmq_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
+                                yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenInvalidClientIdentifier => yedmq_mqtt::v3::connack::ConnackReturnCode::InvalidClientIdentifier,
+                                yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnsupportUsernameOrPasswordFormat => yedmq_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
+                                _ => yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable
                             };
                         let connack_packet = ConnAckPacketBuilder::new()
                             .set_return_code(connect_ack_return_code)
                             .build();
                         if let Err(e) = connection
-                            .write_packet(&samoye_mqtt::MqttPacketV3::Connack(connack_packet))
+                            .write_packet(&yedmq_mqtt::MqttPacketV3::Connack(connack_packet))
                             .await
                         {
                             warn!("write connack packet error: {}", e);

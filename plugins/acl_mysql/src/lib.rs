@@ -2,7 +2,7 @@ use std::fs;
 
 use log::{debug, info, warn};
 use mysql::{params, prelude::Queryable, Pool};
-use samoye_plugin::{plugin::{AuthenticationResult, AuthenticationResultValue, Plugin}, register_plugin};
+use yedmq_plugin::{plugin::{AuthenticationResult, AuthenticationResultValue, Plugin}, register_plugin};
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
@@ -65,7 +65,7 @@ impl Plugin for AclMySql {
         Ok(())
     }
 
-    fn connect_authenticate(&self, packet: &samoye_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<samoye_plugin::plugin::AuthenticationResult> {
+    fn connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResult> {
 
         if let Some(pool) = &self.connection_pool {
             let mut conn = pool.get_conn().unwrap();
@@ -110,19 +110,19 @@ impl Plugin for AclMySql {
         }
     }
 
-    fn on_publish(&self, _client: &samoye_plugin::plugin::Client, _packet: &samoye_mqtt::v3::publish::PublishPacket) {
+    fn on_publish(&self, _client: &yedmq_plugin::plugin::Client, _packet: &yedmq_mqtt::v3::publish::PublishPacket) {
         // Do nothing
     }
 
-    fn on_disconnect(&self, _client: &samoye_plugin::plugin::Client) {
+    fn on_disconnect(&self, _client: &yedmq_plugin::plugin::Client) {
         // Do nothing
     }
 
-    fn authorizate_acl_check(&self, client: &samoye_plugin::plugin::Client, topic: &String, action: samoye_plugin::plugin::Action) -> anyhow::Result<samoye_plugin::plugin::AuthorizationResult> {
+    fn authorizate_acl_check(&self, client: &yedmq_plugin::plugin::Client, topic: &String, action: yedmq_plugin::plugin::Action) -> anyhow::Result<yedmq_plugin::plugin::AuthorizationResult> {
         if let Some(pool) = &self.connection_pool {
             let action_params = match action {
-                samoye_plugin::plugin::Action::Publish => "publish",
-                samoye_plugin::plugin::Action::Subscribe => "subscribe",
+                yedmq_plugin::plugin::Action::Publish => "publish",
+                yedmq_plugin::plugin::Action::Subscribe => "subscribe",
             };
             let conn_result = pool.get_conn();
 
@@ -149,18 +149,18 @@ impl Plugin for AclMySql {
                 let result = select_query.unwrap();
                 if result.is_none() {
                     debug!("acl not found, skip to next plugin");
-                    return Ok(samoye_plugin::plugin::AuthorizationResult::Next());
+                    return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
                 } else {
                     let result = result.unwrap();
                     if result == "allow" {
-                        return Ok(samoye_plugin::plugin::AuthorizationResult::Result(true));
+                        return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(true));
                     } else {
-                        return Ok(samoye_plugin::plugin::AuthorizationResult::Result(false));
+                        return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(false));
                     }
                 }
             }
         }else {
-            return Ok(samoye_plugin::plugin::AuthorizationResult::Next());
+            return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
         }
     }
 }
