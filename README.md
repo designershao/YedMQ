@@ -1,4 +1,4 @@
-<img alt="YedMQ logo" src="https://github.com/designershao/YedMQ/blob/main/assets/logo.png?raw=true" style="max-width: 200px;"/>
+<img alt="YedMQ logo" src="https://github.com/designershao/YedMQ/blob/main/assets/logo.png?raw=true"/>
 
 # YedMQ
 
