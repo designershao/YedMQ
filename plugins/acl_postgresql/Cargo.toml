@@ -12,6 +12,6 @@ yedmq-mqtt = { path = "../../mqtt" }
 anyhow = "1.0"
 log = "0.4"
 env_logger = "0.10.1"
-postgres = "0.19.9"
+r2d2_postgres = "0.18.1"
 toml = "0.8.6"
 serde = { version = "1.0", features = ["derive"] }
