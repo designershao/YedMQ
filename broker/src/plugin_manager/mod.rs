@@ -1,8 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, ffi::{c_char, CStr, CString}, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;
-use yedmq_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin};
+use yedmq_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin, RegisterPluginResult};
 use anyhow::{anyhow, Ok};
 use thiserror::Error;
 use log::{debug, info, warn};
@@ -260,14 +260,18 @@ impl PluginService for PluginManager {
 impl PluginManager {
 
     fn load_plugin(&mut self, metadata: PluginMetadata) -> anyhow::Result<()> {
-        type PluginRegister = unsafe fn() -> *mut dyn yedmq_plugin::plugin::Plugin;
+        type PluginRegister = unsafe fn() -> RegisterPluginResult;
         unsafe {
             let path = metadata.get_entry_absolute_path();
             let entry_path = path.to_str().unwrap();
             let lib = Library::new(entry_path).or(Err(PluginManagerError::PluginLoadError("Failed to load plugin library.".into())))?;
             let constructor: Symbol<PluginRegister> = lib.get(b"_plugin_register").or(Err(PluginManagerError::PluginLoadError("The `_plugin_register` symbol was`t found.".into())))?;
-            let boxed_raw = constructor();
-            let mut plugin = Box::from_raw(boxed_raw);
+            let plugin_constructor_result = constructor();
+            if plugin_constructor_result.error_code != 0 {
+                warn!("plugin {} constructor error, skip this plugin, error: {}", metadata.name, String::from_utf8_lossy(CStr::from_ptr(plugin_constructor_result.error_msg).to_bytes()).to_string());
+                return Ok(());
+            }
+            let mut plugin = Box::from_raw(plugin_constructor_result.plugin);
 
             info!("plugin {} loaded, version: {}, author: {}, description: {} ", metadata.name, metadata.version, metadata.author, metadata.description);
 

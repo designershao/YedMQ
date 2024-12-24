@@ -1,6 +1,7 @@
-use std::any::Any;
+use std::{any::Any, ffi::c_int};
 use anyhow::Result;
 use thiserror::Error;
+
 
 #[derive(Error, Debug)]
 pub enum PluginError {
@@ -36,6 +37,43 @@ pub trait Plugin: Any + Send + Sync {
 
     fn authorizate_acl_check(&self, client: &Client, topic: &String, action: Action) -> Result<AuthorizationResult>;
 
+}
+
+#[repr(C)]
+pub struct RegisterPluginResult {
+
+    pub plugin: *mut dyn Plugin,
+
+    pub error_code: c_int,
+
+    pub error_msg: *mut std::os::raw::c_char
+
+}
+
+pub struct NullPlugin {}
+
+impl Plugin for NullPlugin {
+    fn on_activate(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn on_deactivate(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn connect_authenticate(&self, packet: &yedmq_mqtt::v3::connect::ConnectPacket) -> Result<AuthenticationResult> {
+        Err(PluginError::PluginHookNotImplement().into())
+    }
+
+    fn on_publish(&self, client: &Client, packet: &yedmq_mqtt::v3::publish::PublishPacket) {
+    }
+
+    fn on_disconnect(&self, client: &Client) {
+    }
+
+    fn authorizate_acl_check(&self, client: &Client, topic: &String, action: Action) -> Result<AuthorizationResult> {
+        Err(PluginError::PluginHookNotImplement().into())
+    }
 }
 
 pub struct Client {

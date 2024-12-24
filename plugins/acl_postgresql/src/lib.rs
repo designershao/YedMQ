@@ -25,10 +25,12 @@ struct PostgresqlConfig {
 }
 
 impl AclPostgresql {
-    pub fn new() -> AclPostgresql {
-        AclPostgresql {
-            connection_pool: None,
-        }
+    pub fn new() -> std::result::Result<AclPostgresql, anyhow::Error> {
+        Ok(
+            AclPostgresql {
+                connection_pool: None,
+            }
+        )
     }
 }
 

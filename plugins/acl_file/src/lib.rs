@@ -1,22 +1,24 @@
 use std::fs;
 
 use anyhow::{anyhow, Result};
-use log::info;
+use log::{error, info};
 use yedmq_plugin::{
     plugin::{Action, AuthenticationResult, AuthorizationResult, Plugin, PluginError},
     register_plugin,
 };
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug)]
 pub struct AclFile {
     acl_rules: AclRules,
 }
 
+#[derive(Debug)]
 pub struct AclRules {
     rules: Vec<AclRuleItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct AclRuleItem {
     tenant: Vec<String>,
     action: String,
@@ -148,9 +150,16 @@ impl AclRules {
 }
 
 impl AclFile {
-    pub fn new() -> AclFile {
-        let acl_rules = AclRules::new().unwrap();
-        AclFile { acl_rules }
+    pub fn new() -> std::result::Result<AclFile, anyhow::Error> {
+        let acl_rules = AclRules::new();
+        if let Err(e) = acl_rules {
+            println!("load acl file error: {}", e);
+            return Err(e);
+        } else {
+            Ok(
+                AclFile { acl_rules:acl_rules.unwrap() }
+            )
+        }
     }
 }
 

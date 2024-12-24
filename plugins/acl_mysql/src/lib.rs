@@ -22,10 +22,12 @@ struct MySqlConfig {
 
 impl AclMySql{
 
-    pub fn new() -> AclMySql {
-        AclMySql {
-            connection_pool: None
-        }
+    pub fn new() -> std::result::Result<AclMySql,anyhow::Error> {
+        Ok(
+            AclMySql {
+                connection_pool: None
+            }
+        )
     }
 }
 

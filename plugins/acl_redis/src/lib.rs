@@ -23,10 +23,11 @@ struct RedisConfig {
 }
 
 impl AclRedis {
-    pub fn new() -> AclRedis {
+    pub fn new() -> std::result::Result<AclRedis, anyhow::Error> {
+        Ok(
         AclRedis {
             connection_pool: None,
-        }
+        })
     }
 }
 
