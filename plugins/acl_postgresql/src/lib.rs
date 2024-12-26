@@ -10,7 +10,7 @@ use yedmq_plugin::{
 };
 
 pub struct AclPostgresql {
-    pub connection_pool: Option<r2d2_postgres::r2d2::Pool<PostgresConnectionManager<NoTls>>>,
+    pub connection_pool: r2d2_postgres::r2d2::Pool<PostgresConnectionManager<NoTls>>,
 }
 
 #[derive(Deserialize)]
@@ -26,16 +26,6 @@ struct PostgresqlConfig {
 
 impl AclPostgresql {
     pub fn new() -> std::result::Result<AclPostgresql, anyhow::Error> {
-        Ok(
-            AclPostgresql {
-                connection_pool: None,
-            }
-        )
-    }
-}
-
-impl Plugin for AclPostgresql {
-    fn on_activate(&mut self) -> anyhow::Result<()> {
         env_logger::init();
         let config_content = fs::read_to_string("./plugins/acl_postgresql/acl_postgresql.toml");
         if let Err(e) = config_content {
@@ -56,9 +46,16 @@ impl Plugin for AclPostgresql {
                     tls_mode,
                 );
                 let pool = r2d2::Pool::new(manager).unwrap();
-                self.connection_pool = Some(pool);
+                Ok(AclPostgresql {
+                    connection_pool: pool,
+                })
             }
         }
+    }
+}
+
+impl Plugin for AclPostgresql {
+    fn on_activate(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -71,41 +68,37 @@ impl Plugin for AclPostgresql {
         &self,
         packet: &yedmq_mqtt::v3::connect::ConnectPacket,
     ) -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResult> {
-        if self.connection_pool.is_some() {
-            let client_option = self.connection_pool.clone().unwrap().get();
-            if client_option.is_err() {
-                warn!(
-                    "get postgresql connection from pool error: {}",
-                    client_option.err().unwrap()
-                );
-                return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
-            }
-            let mut client = client_option.unwrap();
-            let empty_string = String::from("");
-            let select_query = client.query_one(
+        let client_option = self.connection_pool.get();
+        if client_option.is_err() {
+            warn!(
+                "get postgresql connection from pool error: {}",
+                client_option.err().unwrap()
+            );
+            return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
+        }
+        let mut client = client_option.unwrap();
+        let empty_string = String::from("");
+        let select_query = client.query_one(
                 "SELECT id, username, password, tenant FROM users WHERE username = $1 AND password = $2",
                 &[&packet.payload.username.as_ref().unwrap_or_else(|| &empty_string), &packet.payload.password.as_ref().unwrap_or_else(|| &empty_string)],
             );
-            if let Err(e) = select_query {
+        if let Err(e) = select_query {
+            return Err(anyhow!("query user error: {}", e));
+        } else {
+            let users_result = select_query;
+            if let Err(e) = users_result {
                 return Err(anyhow!("query user error: {}", e));
             } else {
-                let users_result = select_query;
-                if let Err(e) = users_result {
-                    return Err(anyhow!("query user error: {}", e));
+                let users_row = users_result.unwrap();
+                if users_row.is_empty() {
+                    return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
                 } else {
-                    let users_row = users_result.unwrap();
-                    if users_row.is_empty() {
-                        return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
-                    } else {
-                        let tenant: &str = users_row.get(3);
-                        return Ok(yedmq_plugin::plugin::AuthenticationResult::Result(
-                            AuthenticationResultValue::Success(tenant.to_string()),
-                        ));
-                    }
+                    let tenant: &str = users_row.get(3);
+                    return Ok(yedmq_plugin::plugin::AuthenticationResult::Result(
+                        AuthenticationResultValue::Success(tenant.to_string()),
+                    ));
                 }
             }
-        } else {
-            return Ok(yedmq_plugin::plugin::AuthenticationResult::Next());
         }
     }
 
@@ -128,50 +121,46 @@ impl Plugin for AclPostgresql {
             yedmq_plugin::plugin::Action::Publish => "publish",
             yedmq_plugin::plugin::Action::Subscribe => "subscribe",
         };
-        if self.connection_pool.is_some() {
-            let client_option = self.connection_pool.clone().unwrap().get();
-            if client_option.is_err() {
-                warn!(
-                    "get postgresql connection from pool error: {}",
-                    client_option.err().unwrap()
-                );
-                return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
-            }
-            let mut db_client = client_option.unwrap();
-            let empty_string = String::from("");
-            let select_query = db_client.query_one(
-                "SELECT result FROM acls WHERE username = $1 AND topic = $2 AND action = $3",
-                &[
-                    &client
-                        .properties
-                        .username
-                        .as_ref()
-                        .unwrap_or_else(|| &empty_string),
-                    &topic,
-                    &action_params,
-                ],
+        let client_option = self.connection_pool.get();
+        if client_option.is_err() {
+            warn!(
+                "get postgresql connection from pool error: {}",
+                client_option.err().unwrap()
             );
-            if let Err(e) = select_query {
+            return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
+        }
+        let mut db_client = client_option.unwrap();
+        let empty_string = String::from("");
+        let select_query = db_client.query_one(
+            "SELECT result FROM acls WHERE username = $1 AND topic = $2 AND action = $3",
+            &[
+                &client
+                    .properties
+                    .username
+                    .as_ref()
+                    .unwrap_or_else(|| &empty_string),
+                &topic,
+                &action_params,
+            ],
+        );
+        if let Err(e) = select_query {
+            return Err(anyhow!("query acl error: {}", e));
+        } else {
+            let result = select_query;
+            if let Err(e) = result {
                 return Err(anyhow!("query acl error: {}", e));
+            }
+            let row = result.unwrap();
+            if row.is_empty() {
+                return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
             } else {
-                let result = select_query;
-                if let Err(e) = result {
-                    return Err(anyhow!("query acl error: {}", e));
-                }
-                let row = result.unwrap();
-                if row.is_empty() {
-                    return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
+                let result: &str = row.get(0);
+                if result == "allow" {
+                    return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(true));
                 } else {
-                    let result: &str = row.get(0);
-                    if result == "allow" {
-                        return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(true));
-                    } else {
-                        return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(false));
-                    }
+                    return Ok(yedmq_plugin::plugin::AuthorizationResult::Result(false));
                 }
             }
-        } else {
-            return Ok(yedmq_plugin::plugin::AuthorizationResult::Next());
         }
     }
 }
