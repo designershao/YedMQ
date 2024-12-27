@@ -1,10 +1,9 @@
-use std::fs;
+use std::{fs, path::{Path, PathBuf}};
 
 use anyhow::{anyhow, Result};
-use log::{error, info};
+use log::info;
 use yedmq_plugin::{
-    plugin::{Action, AuthenticationResult, AuthorizationResult, Plugin, PluginError},
-    register_plugin,
+    context, plugin::{Action, AuthenticationResult, AuthorizationResult, Plugin, PluginError}, register_plugin
 };
 use serde::{Deserialize, Serialize};
 
@@ -115,8 +114,12 @@ impl AclRuleItem {
 }
 
 impl AclRules {
-    pub fn new() -> Result<AclRules> {
-        let rule_content = fs::read_to_string("./plugins/acl_file/acl_rule.json");
+    pub fn new(path: &PathBuf) -> Result<AclRules> {
+        if !path.exists() {
+            return Err(anyhow!("acl rule file not exist"));
+        }
+
+        let rule_content = fs::read_to_string(path);
 
         match rule_content {
             Ok(content) => {
@@ -150,8 +153,14 @@ impl AclRules {
 }
 
 impl AclFile {
-    pub fn new() -> std::result::Result<AclFile, anyhow::Error> {
-        let acl_rules = AclRules::new();
+    pub fn new(context: context::Context) -> std::result::Result<AclFile, anyhow::Error> {
+        env_logger::init();
+        let root_path = Path::new(context.get_current_plugin_dir());
+        let acl_file_path = root_path.join("acl.json");
+        if !acl_file_path.exists() {
+            return Err(anyhow!("acl file not exist"));
+        }
+        let acl_rules = AclRules::new(&acl_file_path);
         if let Err(e) = acl_rules {
             println!("load acl file error: {}", e);
             return Err(e);

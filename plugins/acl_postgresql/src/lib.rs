@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::anyhow;
 use log::{info, warn};
@@ -25,9 +25,14 @@ struct PostgresqlConfig {
 }
 
 impl AclPostgresql {
-    pub fn new() -> std::result::Result<AclPostgresql, anyhow::Error> {
+    pub fn new(context: yedmq_plugin::context::Context) -> std::result::Result<AclPostgresql, anyhow::Error> {
         env_logger::init();
-        let config_content = fs::read_to_string("./plugins/acl_postgresql/acl_postgresql.toml");
+        let root_path = Path::new(context.get_current_plugin_dir());
+        let postgresql_config_file = root_path.join("acl_postgresql.toml");
+        if !postgresql_config_file.exists() {
+            return Err(anyhow!("acl_postgresql.toml config file not exist"));
+        }
+        let config_content = fs::read_to_string(&postgresql_config_file);
         if let Err(e) = config_content {
             return Err(anyhow!("load acl rule file error: {}", e));
         } else {
@@ -45,10 +50,15 @@ impl AclPostgresql {
                     config.postgresql.db_url.as_str().parse().unwrap(),
                     tls_mode,
                 );
-                let pool = r2d2::Pool::new(manager).unwrap();
-                Ok(AclPostgresql {
-                    connection_pool: pool,
-                })
+                let pool_result = r2d2::Pool::new(manager);
+                if let Err(e) = pool_result {
+                    warn!("create postgresql pool error: {}", e);
+                    return Err(anyhow!("create postgresql pool error: {}", e));
+                } else {
+                    Ok(AclPostgresql {
+                        connection_pool: pool_result.unwrap(),
+                    })
+                }
             }
         }
     }

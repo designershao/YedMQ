@@ -6,7 +6,7 @@ pub struct ExamplePlugin {
 }
 
 impl ExamplePlugin {
-    pub fn new() -> Result<ExamplePlugin, anyhow::Error> {
+    pub fn new(_context: yedmq_plugin::context::Context) -> Result<ExamplePlugin, anyhow::Error> {
         Ok(
             ExamplePlugin {}
         )

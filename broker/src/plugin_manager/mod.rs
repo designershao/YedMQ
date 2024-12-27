@@ -260,13 +260,14 @@ impl PluginService for PluginManager {
 impl PluginManager {
 
     fn load_plugin(&mut self, metadata: PluginMetadata) -> anyhow::Result<()> {
-        type PluginRegister = unsafe fn() -> RegisterPluginResult;
+        type PluginRegister = unsafe fn(yedmq_plugin::context::Context) -> RegisterPluginResult;
         unsafe {
             let path = metadata.get_entry_absolute_path();
             let entry_path = path.to_str().unwrap();
             let lib = Library::new(entry_path).or(Err(PluginManagerError::PluginLoadError("Failed to load plugin library.".into())))?;
             let constructor: Symbol<PluginRegister> = lib.get(b"_plugin_register").or(Err(PluginManagerError::PluginLoadError("The `_plugin_register` symbol was`t found.".into())))?;
-            let plugin_constructor_result = constructor();
+            let context = yedmq_plugin::context::Context::new(metadata.plugin_absolute_path.to_string_lossy().to_string().as_str());
+            let plugin_constructor_result = constructor(context);
             if plugin_constructor_result.error_code != 0 {
                 warn!("plugin {} constructor error, skip this plugin, error: {}", metadata.name, String::from_utf8_lossy(CStr::from_ptr(plugin_constructor_result.error_msg).to_bytes()).to_string());
                 return Ok(());

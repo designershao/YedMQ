@@ -4,11 +4,11 @@ macro_rules! register_plugin {
     ($app:ty, $constructor:path) => {
 
         #[no_mangle]
-        pub extern "C" fn _plugin_register() -> $crate::plugin::RegisterPluginResult {
+        pub extern "C" fn _plugin_register(ctx:$crate::context::Context) -> $crate::plugin::RegisterPluginResult {
 
-            let constructor: fn() -> std::result::Result<$app, anyhow::Error> = $constructor;
+            let constructor: fn($crate::context::Context) -> std::result::Result<$app, anyhow::Error> = $constructor;
 
-            let object = constructor();
+            let object = constructor(ctx);
             if object.is_err() {
                 let null_plugin = $crate::plugin::NullPlugin{};
                 let null_plugin_boxed: Box<dyn $crate::plugin::Plugin> = Box::new(null_plugin);

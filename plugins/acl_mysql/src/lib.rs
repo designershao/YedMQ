@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, path::Path};
 
 use anyhow::{anyhow, Result};
 use log::{debug, info, warn};
@@ -24,9 +24,15 @@ struct MySqlConfig {
 }
 
 impl AclMySql {
-    pub fn new() -> std::result::Result<AclMySql, anyhow::Error> {
+    pub fn new(context: yedmq_plugin::context::Context) -> std::result::Result<AclMySql, anyhow::Error> {
         env_logger::init();
-        let config_content = fs::read_to_string("./plugins/acl_mysql/acl_mysql.toml");
+        let root_path = Path::new(context.get_current_plugin_dir());
+        let mysql_config_file = root_path.join("acl_mysql.toml");
+        if !mysql_config_file.exists() {
+            return Err(anyhow!("acl_mysql.toml config file not exist"));
+        }
+        
+        let config_content = fs::read_to_string(&mysql_config_file);
         if let Err(e) = config_content {
             warn!("load acl rule file error: {}", e);
             return Err(anyhow!("load acl rule file error: {}", e));
@@ -38,10 +44,15 @@ impl AclMySql {
                 return Err(anyhow!("load acl rule file error: {}", e));
             } else {
                 let config = config.unwrap();
-                let pool = mysql::Pool::new(config.mysql.db_url.as_str()).unwrap();
-                Ok(AclMySql {
-                    connection_pool: pool,
-                })
+                let pool_result = mysql::Pool::new(config.mysql.db_url.as_str());
+                if let Err(e) = pool_result {
+                    warn!("create mysql pool error: {}", e);
+                    return Err(anyhow!("create mysql pool error: {}", e));
+                } else {
+                    Ok(AclMySql {
+                        connection_pool: pool_result.unwrap(),
+                    })
+                }
             }
         }
     }
