@@ -43,8 +43,19 @@ impl AclRedis {
                 return Err(anyhow!("load plugin config file error: {}", e));
             } else {
                 let config = config.unwrap();
+                let clinet_result = redis::Client::open(config.redis.db_url.as_str());
+                if let Err(e) = clinet_result  {
+                   warn!("create redis client error: {}", e);
+                   return Err(anyhow!("create redis client error: {}", e)); 
+                }
+                let connection_result = clinet_result.as_ref().unwrap().get_connection();
+                if let Err(e) = connection_result {
+                    warn!("create redis connection error: {}", e);
+                    return Err(anyhow!("create redis connection error: {}", e));
+                }
+            
                 let connection_pool =
-                    r2d2::Pool::new(redis::Client::open(config.redis.db_url.as_str()).unwrap());
+                    r2d2::Pool::new(clinet_result.unwrap());
                 if let Err(e) = connection_pool {
                     warn!("create redis pool error: {}", e);
                     return Err(anyhow!("create redis pool error: {}", e));
