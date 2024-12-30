@@ -8,7 +8,7 @@ qos_expired_secs = 10
 packet_resend_interval_secs = 10
 
 [plugin]
-dir = "/etc/yedmq/plugins"
+dir = "./plugins"
 
 [log]
 level = "warning"

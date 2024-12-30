@@ -34,14 +34,14 @@ impl AclMySql {
         
         let config_content = fs::read_to_string(&mysql_config_file);
         if let Err(e) = config_content {
-            warn!("load acl rule file error: {}", e);
-            return Err(anyhow!("load acl rule file error: {}", e));
+            warn!("load plugin config file error: {}", e);
+            return Err(anyhow!("load plugin config file error: {}", e));
         } else {
             let config = toml::from_str::<Config>(config_content.unwrap().as_str());
 
             if let Err(e) = config {
-                warn!("load acl rule file error: {}", e);
-                return Err(anyhow!("load acl rule file error: {}", e));
+                warn!("load plugin config file error: {}", e);
+                return Err(anyhow!("load plugin config file error: {}", e));
             } else {
                 let config = config.unwrap();
                 let pool_result = mysql::Pool::new(config.mysql.db_url.as_str());

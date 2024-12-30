@@ -36,11 +36,11 @@ impl AclRedis {
 
         let config_content = fs::read_to_string(&redis_config_file);
         if let Err(e) = config_content {
-            return Err(anyhow!("load acl rule file error: {}", e));
+            return Err(anyhow!("load plugin config file error: {}", e));
         } else {
             let config = toml::from_str::<Config>(config_content.unwrap().as_str());
             if let Err(e) = config {
-                return Err(anyhow!("load acl rule file error: {}", e));
+                return Err(anyhow!("load plugin config file error: {}", e));
             } else {
                 let config = config.unwrap();
                 let connection_pool =

@@ -1,0 +1,7 @@
+[plugin]
+name = "YedMQ_Acl_Redis_Plugin"
+author = "yedmq"
+description = "This plugin provides Redis database-based ACL (Access Control List) management."
+version = "0.0.1"
+entry = "./libyedmq_plugins_acl_redis.so"
+priority = 1000
