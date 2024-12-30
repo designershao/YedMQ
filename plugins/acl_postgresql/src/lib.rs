@@ -2,7 +2,10 @@ use std::{fs, path::Path};
 
 use anyhow::anyhow;
 use log::{info, warn};
-use r2d2_postgres::{postgres::NoTls, r2d2, PostgresConnectionManager};
+use r2d2_postgres::{
+    postgres::{Error, NoTls},
+    r2d2, PostgresConnectionManager,
+};
 use serde::Deserialize;
 use yedmq_plugin::{
     plugin::{AuthenticationResultValue, Plugin},
@@ -25,7 +28,9 @@ struct PostgresqlConfig {
 }
 
 impl AclPostgresql {
-    pub fn new(context: yedmq_plugin::context::Context) -> std::result::Result<AclPostgresql, anyhow::Error> {
+    pub fn new(
+        context: yedmq_plugin::context::Context,
+    ) -> std::result::Result<AclPostgresql, anyhow::Error> {
         env_logger::init();
         let root_path = Path::new(context.get_current_plugin_dir());
         let postgresql_config_file = root_path.join("acl_postgresql.toml");
@@ -34,22 +39,32 @@ impl AclPostgresql {
         }
         let config_content = fs::read_to_string(&postgresql_config_file);
         if let Err(e) = config_content {
-            return Err(anyhow!("load acl rule file error: {}", e));
+            return Err(anyhow!("load plugin config file error: {}", e));
         } else {
             let config = toml::from_str::<Config>(config_content.unwrap().as_str());
 
             if let Err(e) = config {
-                return Err(anyhow!("load acl rule file error: {}", e));
+                return Err(anyhow!("load plugin config file error: {}", e));
             } else {
                 let config = config.unwrap();
                 let tls_mode = match config.postgresql.tls_mode {
                     true => NoTls,
                     false => NoTls,
                 };
-                let manager = PostgresConnectionManager::new(
-                    config.postgresql.db_url.as_str().parse().unwrap(),
-                    tls_mode,
-                );
+                let pg_config: std::result::Result<r2d2_postgres::postgres::Config, Error> =
+                    config.postgresql.db_url.as_str().parse();
+
+                if let Err(e) = pg_config {
+                    warn!("load postgresql config error: {}", e);
+                    return Err(anyhow!("load postgresql config error: {}", e));
+                }
+
+                if pg_config.as_ref().unwrap().get_password().is_none() {
+                    warn!("postgresql config has no password");
+                    return Err(anyhow!("postgresql config has no password"));
+                }
+
+                let manager = PostgresConnectionManager::new(pg_config.unwrap(), tls_mode);
                 let pool_result = r2d2::Pool::new(manager);
                 if let Err(e) = pool_result {
                     warn!("create postgresql pool error: {}", e);
