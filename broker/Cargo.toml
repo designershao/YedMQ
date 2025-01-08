@@ -23,7 +23,7 @@ env_logger = "0.10.1"
 tokio-native-tls = "0.3.1"
 tokio-tungstenite = { version = "*", features = ["native-tls"] }
 futures = "0.3"
-yedmq-mqtt = { path = "../mqtt" }
-yedmq-plugin = { path = "../plugin" }
+yedmq-mqtt = { version = "0.1.0", path = "../mqtt" }
+yedmq-plugin = { version = "0.1.0", path = "../plugin" }
 libloading = "0.8.5"
 axum = "0.7.9"
