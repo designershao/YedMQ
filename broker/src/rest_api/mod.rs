@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use axum::{extract::{State, Path}, http::StatusCode, Json};
+use axum::{body::Body, extract::{Path, State}, http::{Request,  StatusCode}, middleware::Next, response::Response, Json};
 use log::{error, info};
 use serde::Serialize;
 use tokio::sync::RwLock;
+use base64::{Engine as _, engine::general_purpose};
 
-use crate::{plugin_manager, session::session_manager::{self, SessionManagerError, SessionState}};
+use crate::{plugin_manager, session::session_manager::{self, SessionManagerError, SessionState}, settings::{self, Settings}};
 
 #[derive(Serialize)]
 struct SystemInfo {
@@ -53,7 +54,8 @@ struct Client {
 struct AppState {
    pub plugin_manager: Arc<crate::plugin_manager::PluginManager>,
    pub session_manager: Arc<RwLock<crate::session::session_manager::SessionManager>>,
-   pub metric: Arc<crate::metric::Metric>
+   pub metric: Arc<crate::metric::Metric>,
+   pub settings: Arc<Settings>
 }
 
 async fn plugin_list(
@@ -160,23 +162,74 @@ async fn client_list(
     }
 }
 
+async fn basic_auth_middleware(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> Result<Response, (StatusCode, String)> {
+    let auth_header = req.headers().get("Authorization");
+
+    match auth_header {
+        Some(value) => {
+            // Extract basic auth value from the header
+            if let Some(auth_value) = value.to_str().ok() {
+                if let Some(credentials) = auth_value.strip_prefix("Basic ") {
+                    let decoded = general_purpose::STANDARD.decode(credentials).map_err(|_| {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            "Invalid authorization header".to_string(),
+                        )
+                    })?;
+
+                    if let Ok(decoded_str) = std::str::from_utf8(&decoded) {
+                        let parts: Vec<&str> = decoded_str.split(":").collect();
+                        if parts.len() == 2 {
+                            let username = parts[0];
+                            let password = parts[1];
+
+                            if state.settings.listener.api.auth.users.iter().any(|user| {
+                               user.username == username && user.password == password 
+                            }) {
+                                return Ok(next.run(req).await);
+                            }
+                        }
+                    }
+                }
+            }
+            Err((
+                StatusCode::UNAUTHORIZED,
+                "Invalid credentials".to_string(),
+            ))
+        }
+        None => Err((
+            StatusCode::UNAUTHORIZED,
+            "Authorization header missing".to_string(),
+        )),
+    }
+}
+
 pub async fn run_rest_api_task(
     listen_address: &str,
     plugin_manager: Arc<plugin_manager::PluginManager>,
     session_manager: Arc<RwLock<session_manager::SessionManager>>,
-    metric: Arc<crate::metric::Metric>
+    metric: Arc<crate::metric::Metric>,
+    settings: Arc<Settings>
 ) -> anyhow::Result<()> {
     let state = AppState {
         plugin_manager,
         session_manager,
-        metric
+        metric,
+        settings
     };
 
+    let state_for_basic_auth = state.clone();
+    
     let app= axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin_list))
         .route("/api/v1/:tenant_id/clients", axum::routing::get(client_list))
         .route("/api/v1/:tenant_id/clients/:client_id/kickoff", axum::routing::post(kickoff_client))
         .route("/api/v1/system_info", axum::routing::get(system_info))
+        .layer(axum::middleware::from_fn_with_state(state_for_basic_auth, basic_auth_middleware))
         .with_state(state);
 
     info!("start listening on {}", listen_address);

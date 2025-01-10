@@ -98,7 +98,7 @@ mod tests {
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                     },
-                api: crate::settings::Api { external: "".to_string() }
+                api: crate::settings::Api { external: "".to_string(), auth: crate::settings::AuthConfig { users: vec![] } }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { 
@@ -174,7 +174,7 @@ mod tests {
                     cert_file: "".to_string(),
                     key_file: "".to_string()
                     },
-                api: crate::settings::Api { external: "".to_string() }
+                api: crate::settings::Api { external: "".to_string(), auth: crate::settings::AuthConfig { users: vec![] } }
             },
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { 

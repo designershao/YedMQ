@@ -41,7 +41,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
                 cert_file: "".to_string(),
                 key_file: "".to_string()
             },
-            api: yedmq::settings::Api { external: "".to_string() }
+            api: yedmq::settings::Api { external: "".to_string(), auth: yedmq::settings::AuthConfig { users: vec![] } }
         },
         plugin: yedmq::settings::Plugin { dir: "test".to_string() },
         mqtt: yedmq::settings::Mqtt { 

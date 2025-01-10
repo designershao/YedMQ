@@ -168,13 +168,39 @@ impl Default for Tcp {
 
 #[derive(Debug, Deserialize)]
 pub struct Api {
-    pub external: String
+
+    pub external: String,
+
+    pub auth: AuthConfig
+
 }
+
+
+#[derive(Debug, Deserialize)]
+pub struct AuthConfig {
+    pub users: Vec<User>
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            users: vec![]
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct User {
+    pub username: String,
+    pub password: String,
+}
+
 
 impl Default for Api {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:3456".to_string()
+            external: "0.0.0.0:3456".to_string(),
+            auth: AuthConfig::default()
         }
     }
 }

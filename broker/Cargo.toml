@@ -27,3 +27,4 @@ yedmq-mqtt = { version = "0.1.0", path = "../mqtt" }
 yedmq-plugin = { version = "0.1.0", path = "../plugin" }
 libloading = "0.8.5"
 axum = "0.7.9"
+base64 = "0.22.1"
