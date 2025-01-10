@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, ffi::{c_char, CStr, CString}, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, ffi::CStr, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
 use plugin_metadata::PluginMetadata;

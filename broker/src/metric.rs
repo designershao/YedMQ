@@ -4,7 +4,7 @@ use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 use tokio::sync::mpsc::Sender;
 
-use crate::router::{Router, RouterCmd};
+use crate::router::RouterCmd;
 
 pub struct Metric {
 
