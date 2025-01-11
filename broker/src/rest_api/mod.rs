@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use axum::{body::Body, extract::{Path, State}, http::{Request,  StatusCode}, middleware::Next, response::Response, Json};
+use axum::{body::Body, extract::{Path, Query, State}, http::{Request,  StatusCode}, middleware::Next, response::Response, Json};
 use log::{error, info};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use base64::{Engine as _, engine::general_purpose};
 
-use crate::{plugin_manager, session::session_manager::{self, SessionManagerError, SessionState}, settings::{self, Settings}};
+use crate::{plugin_manager, session::session_manager::{self, SessionManagerError, SessionState}, settings::Settings};
 
 #[derive(Serialize)]
 struct SystemInfo {
@@ -50,6 +50,13 @@ struct Client {
 
 }
 
+#[derive(Deserialize, Debug)]
+struct Pagination {
+    offset: Option<u64>,
+
+    limit: Option<u64>
+}
+
 #[derive(Clone)]
 struct AppState {
    pub plugin_manager: Arc<crate::plugin_manager::PluginManager>,
@@ -58,13 +65,30 @@ struct AppState {
    pub settings: Arc<Settings>
 }
 
+#[derive(Serialize)]
+pub struct PaginationMeta {
+    pub offset: u64,
+    pub limit: u64,
+    pub total: u64
+}
+
+#[derive(Serialize)]
+pub struct PaginationListResult<T> {
+    pub meta: PaginationMeta,
+    pub data: Vec<T>
+}
+
+
 async fn plugin_list(
     State(app_state): State<AppState>,
-) -> (StatusCode, Json<Vec<Plugin>>) {
-    let plugin_metadata_list = app_state.plugin_manager.get_plugin_metadata_list();
+    pagination: Query<Pagination>
+) -> (StatusCode, Json<PaginationListResult<Plugin>>) {
+    let offset_param = pagination.offset.unwrap_or(0);
+    let limit_param = pagination.limit.unwrap_or(10);
+    let plugin_metadata_list = app_state.plugin_manager.get_plugin_metadata_list_with_pagination(offset_param, limit_param);
     let mut result = Vec::<Plugin>::new();
 
-    for plugin_metadata in plugin_metadata_list {
+    for plugin_metadata in plugin_metadata_list.1 {
         let plugin = Plugin {
             name: plugin_metadata.name.clone(),
             version: plugin_metadata.version.clone(),
@@ -75,6 +99,17 @@ async fn plugin_list(
         };
         result.push(plugin);
     }
+
+    let meta = PaginationMeta {
+        offset: offset_param,
+        limit: limit_param,
+        total: plugin_metadata_list.0
+    };
+
+    let result = PaginationListResult {
+        meta,
+        data: result
+    };
 
     (StatusCode::OK, Json(result))
 }
@@ -126,15 +161,18 @@ async fn kickoff_client(
 
 async fn client_list(
     State(app_state): State<AppState>,
-    Path(tenant_id):Path<String>
-) -> (StatusCode, Json<Vec<Client>>) {
+    Path(tenant_id):Path<String>,
+    pagination: Query<Pagination>
+) -> (StatusCode, Json<PaginationListResult<Client>>) {
+    let offset_param = pagination.offset.unwrap_or(0);
+    let limit_param = pagination.limit.unwrap_or(10);
 
     let session_manager = app_state.session_manager.clone();
-    let session_list_result = session_manager.read().await.get_session_info_list(&tenant_id).await;
+    let session_list_result = session_manager.read().await.get_session_info_list_with_pagination(&tenant_id, offset_param, limit_param).await;
     if let Ok(session_list) = session_list_result {
         let mut result = Vec::<Client>::new();
 
-        for session in session_list {
+        for session in session_list.1 {
             let client = Client {
                 tenant_identifier: session.tenant_identifier,
                 client_id: session.client_identifier,
@@ -143,20 +181,31 @@ async fn client_list(
             };
             result.push(client);
         }
+
+        let meta = PaginationMeta {
+            offset: offset_param,
+            limit: limit_param,
+            total: session_list.0
+        };
+
+        let result = PaginationListResult {
+            meta,
+            data: result
+        };
         (StatusCode::OK, Json(result))
     } else {
         let response = match session_list_result.err().unwrap().downcast_ref::<SessionManagerError>() {
             Some(e) => {
                 match e {
                     SessionManagerError::TenantNotExisted(_) => {
-                        (StatusCode::NOT_FOUND, Json(Vec::new()))
+                        (StatusCode::NOT_FOUND, Json(PaginationListResult { meta: PaginationMeta { offset: 0, limit: 0, total: 0 }, data: Vec::new() }))
                     }
                     _ => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(PaginationListResult { meta: PaginationMeta { offset: 0, limit: 0, total: 0 }, data: Vec::new() }))
                     },
                 }
             },
-            None => (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+            None => (StatusCode::INTERNAL_SERVER_ERROR, Json(PaginationListResult { meta: PaginationMeta { offset: 0, limit: 0, total: 0 }, data: Vec::new() }))
         };
         response
     }

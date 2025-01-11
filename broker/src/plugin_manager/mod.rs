@@ -326,13 +326,14 @@ impl PluginManager {
         }
     }
 
-    // Get all loaded plugin metadatas
-    pub fn get_plugin_metadata_list(&self) -> Vec<&PluginMetadata> {
+    pub fn get_plugin_metadata_list_with_pagination(&self, offset: u64, limit: u64) -> (u64,Vec<&PluginMetadata>) {
+        let plugin_iter = self.plugin_table.iter();
         let mut result = Vec::new();
-        for (_, plugin) in self.plugin_table.iter() {
+        plugin_iter.skip(offset as usize).take(limit as usize).for_each(|(_, plugin)| {
             result.push(&plugin.plugin_metadata);
-        }
-        result
+        });
+        let total = self.plugin_table.len() as u64;
+        (total, result)
     }
 
 }

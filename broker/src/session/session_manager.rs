@@ -845,8 +845,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-
-    pub async fn get_session_info_list(&self, tenant_identifier: &str) -> Result<Vec<SessionInfo>> {
+    pub async fn get_session_info_list_with_pagination(&self, 
+        tenant_identifier: &str,
+        offset: u64,
+        limit: u64
+    ) -> Result<(u64, Vec<SessionInfo>)> {
         let session_table_option = self.sessions.get(tenant_identifier);
         if session_table_option.is_none() {
             return Err(anyhow!(SessionManagerError::TenantHasExisted(
@@ -855,8 +858,11 @@ impl SessionManager {
         }
         let session_table = session_table_option.unwrap();
 
+        let total = session_table.len() as u64;
+
         let mut session_info_list = Vec::new();
-        for (_, session_sender) in session_table {
+
+        for (_, session_sender) in session_table.iter().skip(offset as usize).take(limit as usize) {
             let (sender, receiver) = tokio::sync::oneshot::channel();
                 
             if let Err(e) = session_sender.send(SessionMessage::AskSessionInfo(sender)).await {
@@ -867,7 +873,7 @@ impl SessionManager {
                 session_info_list.push(session_info);
             }
         }
-        Ok(session_info_list)
+        Ok((total, session_info_list))
     }
 
     // Create a new tenant
