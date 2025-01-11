@@ -174,7 +174,6 @@ impl AclFile {
 
 impl Plugin for AclFile {
     fn on_activate(&mut self) -> Result<()> {
-        env_logger::init();
         info!("acl_file plugin on activate, start loading the default acl file");
         Ok(())
     }
