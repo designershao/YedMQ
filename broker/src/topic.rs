@@ -1,6 +1,7 @@
 use core::fmt;
-use std::{sync::{Arc, RwLock}, collections::HashMap};
+use std::{collections::HashMap, sync::{Arc, RwLock}};
 
+use base64::{engine::general_purpose, Engine};
 use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Debug, PartialEq)]
@@ -43,29 +44,121 @@ fn test_topic(topic: &String) -> bool {
 }
 
 
+/// Generates a key string that can be used to store subscriptions in a `SubscriptionMap`.
+///
+/// The key is formatted as "encoded_client_id:encoded_topic:qos", where:
+///
+/// - `encoded_client_id` is the Base64-encoded client ID.
+/// - `encoded_topic` is the Base64-encoded topic.
+/// - `qos` is the QoS level.
+///
+/// # Arguments
+///
+/// * `client_id` - The client ID.
+/// * `topic` - The topic.
+/// * `qos` - The QoS level.
+///
+/// # Returns
+///
+/// A string slice that can be used as a key in a `SubscriptionMap`.
+fn generate_key(client_id: &str, topic: &str) -> String {
+    let encoded_client_id = general_purpose::STANDARD.encode(client_id);
+    let encoded_topic = general_purpose::STANDARD.encode(topic);
+    format!("{}:{}", encoded_client_id, encoded_topic)
+}
+
+/// Extracts and decodes information from a key.
+///
+/// This function takes a key string formatted as "encoded_client_id:encoded_topic:qos",
+/// splits it into parts, and decodes the client ID and topic using Base64 decoding.
+/// It returns a tuple containing the decoded client ID, decoded topic, and the QoS level.
+///
+/// # Arguments
+///
+/// * `key` - A string slice that holds the key in the format "encoded_client_id:encoded_topic:qos"
+///
+/// # Returns
+///
+/// * A tuple containing:
+///   - `String`: Decoded client ID
+///   - `String`: Decoded topic
+///   - `u8`: QoS level
+///
+/// # Panics
+///
+/// This function will panic if the Base64 decoding fails or if the QoS level cannot be parsed as a `u8`.
+fn extract_info_from_key(key: &str) -> (String, String) {
+    let i = key.split(":");
+    let mut index = 0;
+    let mut encoded_client_id = String::new();
+    let mut encoded_topic = String::new();
+    for s in i {
+        index += 1;
+        if index == 1 {
+            encoded_client_id = s.to_string();
+        } else if index == 2 {
+            encoded_topic = s.to_string();
+        }
+    }
+    let binding = general_purpose::STANDARD.decode(&encoded_client_id).unwrap();
+    let client_id = std::str::from_utf8(&binding).unwrap();
+    let binding = general_purpose::STANDARD.decode(&encoded_topic).unwrap();
+    let topic = std::str::from_utf8(&binding).unwrap();
+    (client_id.to_string(), topic.to_string())
+}
+
+
 pub struct TopicManager {
+
+    topic_info_recorder: RwLock<HashMap<String, HashMap<String, u8>>>,
 
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicNode>>>>>,
 
 }
 
 impl TopicManager {
-    // generate mqtt topic test regex
+    // generate mqtt topic test 
 
 
     pub fn new() -> Self {
         Self {
+            topic_info_recorder: RwLock::new(HashMap::new()),
+
             topic_tree: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub fn get_topic_list_with_pagination(&self, tenant_id:String, offset: u64, limit: u64) -> anyhow::Result<(u64,Vec<(String,String, u8)>)> {
+      let topic_info_recorder = self.topic_info_recorder.read().unwrap();  
+      if topic_info_recorder.contains_key(&tenant_id) {
+        let items = topic_info_recorder.get(&tenant_id).unwrap();
+        let mut result_items = Vec::new();
+        for (key, qos) in items.iter().skip(offset as usize).take(limit as usize) {
+            let (client_id, topic) = extract_info_from_key(key);
+            result_items.push((client_id, topic, *qos));
+        }
+        let total = items.len();
+        return Ok((total as u64, result_items));
+      } else {
+          return Err(anyhow::anyhow!(Error::TenantNotFound(tenant_id)));
+      }
     }
 
     pub fn create_tenant(&mut self, tenant:String) {
         let topic_tree = self.topic_tree.clone();
         let mut topic_tree = topic_tree.write().unwrap();
-        if !topic_tree.contains_key(&tenant) {
-            topic_tree.insert(tenant, Arc::new(RwLock::new(TopicNode::new("/".to_string()))));
+        let tenant_ref = &tenant;
+        if !topic_tree.contains_key(tenant_ref) {
+            topic_tree.insert(tenant_ref.clone(), Arc::new(RwLock::new(TopicNode::new("/".to_string()))));
         }
+
+        let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+        if !topic_info_recorder.contains_key(tenant_ref) {
+            topic_info_recorder.insert(tenant_ref.clone(), HashMap::new());
+        }
+
     }
+
 
     pub fn subscription(&mut self, tenant_id:String, client_identifier:String, topic_filter: String, qos: u8) -> Result<(), Error> {
 
@@ -81,11 +174,28 @@ impl TopicManager {
             Err(Error::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Self::recursion_subscription(tenant_topic_root, topic_patterns, client_identifier, qos)
+            let result = Self::recursion_subscription(tenant_topic_root, topic_patterns, client_identifier.clone(), qos);
+            if result.is_err() {
+                return Err(result.err().unwrap());
+            } else {
+                // Update the topic_info_recorder
+                let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+                let topic_info_recorder_optional = topic_info_recorder.get_mut(&tenant_id);
+
+                let key = generate_key(&client_identifier, &topic_filter);
+
+                let topic_info_state_item = topic_info_recorder_optional.unwrap();
+                if !topic_info_state_item.contains_key(&key) {
+                    topic_info_state_item.insert(key, qos);
+                }
+                //
+                Ok(())
+            }
+
         }
     }
 
-    fn recursion_subscription(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier:String, qos: u8) -> Result<(), Error> {
+    fn recursion_subscription(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier: String, qos: u8) -> Result<(), Error> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().unwrap().find_or_create_leaf(topic_pattern.to_string());
@@ -106,11 +216,25 @@ impl TopicManager {
             Err(Error::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Self::recursion_unsubscription(tenant_topic_root, topic_patterns, client_identifier)
+            let result = Self::recursion_unsubscription(tenant_topic_root, topic_patterns, &client_identifier);
+            if result.is_err() {
+                return Err(result.err().unwrap());
+            } else {
+                // Update the topic_info_recorder
+                let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+                let topic_info_state_optional = topic_info_recorder.get_mut(&tenant_id);
+                let key = generate_key(&client_identifier, &topic_filter);
+                let topic_info_state_item = topic_info_state_optional.unwrap();
+                if topic_info_state_item.contains_key(&key) {
+                    topic_info_state_item.remove(&key);
+                }
+                //
+                Ok(())
+            }
         }
     }
 
-    fn recursion_unsubscription(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier:String) -> Result<(), Error> {
+    fn recursion_unsubscription(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier:&String) -> Result<(), Error> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().unwrap().get_leaf(topic_pattern.to_string());
@@ -341,7 +465,7 @@ impl TopicNode {
         }
     }
 
-    pub fn remove_subscription(&mut self, client_identifier:String) {
+    pub fn remove_subscription(&mut self, client_identifier:&String) {
 
         let find_result = self.subscriptions.read().unwrap().binary_search_by(|subscribtion| {
             subscribtion.client_identifier.cmp(&client_identifier)
@@ -414,7 +538,7 @@ mod tests {
     use yedmq_mqtt::{v3::{fixed_header::FixHeader, publish::{Payload, PublishPacket, VariableHeader}}, PacketType};
 
     use super::*;
-    use std::{thread, borrow::BorrowMut, cell::RefCell};
+    use std::thread;
 
     #[test]
     fn test_add_subscription_and_get_subscriptions() {
@@ -473,35 +597,45 @@ mod tests {
             assert_eq!(new_topic_node.read().unwrap().topic_parttern, "c");
         });
 
-        thread_1.join();
-        thread_2.join();
-        thread_3.join();
+        let _ = thread_1.join();
+        let _ = thread_2.join();
+        let _ = thread_3.join();
     }
 
     #[test]
     fn test_subscribe_topic() {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
+        let topic_info_recorder = topic_manager.topic_info_recorder.read().unwrap();
+        assert_eq!(topic_info_recorder.len(), 1);
+
+        assert_eq!(topic_info_recorder.get("hello").unwrap().contains_key(&generate_key(&"clientA".to_string(), "a/b/c")), true);
+        assert_eq!(topic_info_recorder.get("hello").unwrap().get(&generate_key(&"clientA".to_string(), "a/b/c")).unwrap(), &(0 as u8));
     }
 
     #[test]
     fn test_unsubscribe_topic() {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
-        topic_manager.unsubscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string());
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.unsubscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string());
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);
+
+        let topic_info_recorder = topic_manager.topic_info_recorder.read().unwrap();
+        assert_eq!(topic_info_recorder.len(), 1);
+
+        assert_eq!(topic_info_recorder.get("hello").unwrap().contains_key(&generate_key(&"clientA".to_string(), "a/b/c")), false);
     }
 
     #[test]
     fn test_sharp_wildcard_subscriptions() {
         let mut topic_manager = TopicManager::new();
-        topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/#".to_string(), 0);
+        let _ = topic_manager.create_tenant("hello".to_string());
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/#".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
     }
@@ -509,8 +643,8 @@ mod tests {
     #[test]
     fn test_plus_wildcard_subscriptions() {
         let mut topic_manager = TopicManager::new();
-        topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/+/c".to_string(), 0);
+        let _ = topic_manager.create_tenant("hello".to_string());
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/+/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
     }
@@ -519,9 +653,9 @@ mod tests {
     fn test_multiple_subscription() {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/b/#".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/b/#".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 3);
     }
@@ -530,12 +664,12 @@ mod tests {
     fn test_mix_wildcard_subscription() {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
         let clients = clients.unwrap();
         assert_eq!(clients.len(), 2);
@@ -560,34 +694,25 @@ mod tests {
     fn test_topic_subscription_multiple_thread() {
         let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
         topic_manager.write().unwrap().create_tenant("hello".to_string());
-        let mut topic_manager_t_1 = topic_manager.clone();
-        let mut topic_manager_t_2 = topic_manager.clone();
-        let mut topic_manager_t_3 = topic_manager.clone();
+        let topic_manager_t_1 = topic_manager.clone();
+        let topic_manager_t_2 = topic_manager.clone();
+        let topic_manager_t_3 = topic_manager.clone();
         let thread_1 = thread::spawn(move || {
-            print!("1");
-            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
-            print!("2");
-            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
-            print!("3");
-            topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
-            print!("4");
+            let _ = topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+            let _ = topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientB".to_string(), "a/+/#".to_string(), 0);
+            let _ = topic_manager_t_1.write().unwrap().subscription("hello".to_string(), "clientC".to_string(), "a/+/+".to_string(), 0);
         });
         let thread_3 = thread::spawn(move || {
-            print!("5");
-            topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
-            print!("6");
-            topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
-            print!("7");
+            let _ = topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientD".to_string(), "a/+/+/+".to_string(), 0);
+            let _ = topic_manager_t_2.write().unwrap().subscription("hello".to_string(), "clientE".to_string(), "a/+".to_string(), 0);
         });
         let thread_2 = thread::spawn(move || {
-            print!("8");
-            topic_manager_t_3.write().unwrap().subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
-            print!("9");
+            let _ = topic_manager_t_3.write().unwrap().subscription("hello".to_string(), "clientF".to_string(), "a/+/c".to_string(), 0);
         });
 
-        thread_1.join();
-        thread_2.join();
-        thread_3.join();
+        let _ = thread_1.join();
+        let _ = thread_2.join();
+        let _ = thread_3.join();
 
         let clients = topic_manager.write().unwrap().get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
         let clients = clients.unwrap();
@@ -600,8 +725,8 @@ mod tests {
     fn test_mutiple_subscription_the_same_topic_only_one_subscription() {
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
-        topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
+        let _ = topic_manager.subscription("hello".to_string(), "clientA".to_string(), "a/b/c".to_string(), 0);
         let clients = topic_manager.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
     }

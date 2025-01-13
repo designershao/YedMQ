@@ -86,11 +86,13 @@ async fn main() {
     let metric_cloned = metric.clone();
     let api_listen_external = settings.listener.api.external.clone();
     let settings_cloned = settings.clone();
+    let topic_manager_cloned = topic_manager.clone();
     tokio::spawn(async move {
         if let Err(e) =rest_api::run_rest_api_task(
             &api_listen_external, 
             plugin_manager_cloned,
             session_manager_cloned,
+            topic_manager_cloned,
             metric_cloned,
             settings_cloned.clone()
         ).await {
