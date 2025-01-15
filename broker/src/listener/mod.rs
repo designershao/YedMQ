@@ -62,9 +62,10 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     peer_addr: SocketAddr,
     metric: Arc<Metric>,
 ) {
+    let publish_packet_max_message_size = settings.mqtt.max_message_size;
     let mut connection: Connection<T> = Connection::new(stream);
     // wait the first connect packet, if the packet is not correct, the connection will be closed.
-    let first_packet = connection.read_packet().await;
+    let first_packet = connection.read_packet(publish_packet_max_message_size).await;
 
     if first_packet.is_err() {
         warn!("read first packet error: {}", first_packet.unwrap_err());
@@ -269,7 +270,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
 
                         loop {
                             select! {
-                                read_packet_result = connection.read_packet() => {
+                                read_packet_result = connection.read_packet(publish_packet_max_message_size) => {
                                     match read_packet_result {
                                         Ok(packet) => {
 

@@ -54,6 +54,7 @@ impl<'de> Deserialize<'de> for DefaultAuthorizationValue {
 #[derive(Debug, Deserialize)]
 pub struct Mqtt {
     pub sys_topic_interval_secs: u64, // system topic interval seconds
+    pub max_message_size: u32,
     pub default_authentication: DefaultAuthenticationValue,
     pub default_authorization: DefaultAuthorizationValue,
 }
@@ -62,6 +63,7 @@ impl Default for Mqtt {
     fn default() -> Self {
         Self {
             sys_topic_interval_secs: 10,
+            max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE, // The maximum allowed message size is 256 MB
             default_authentication: DefaultAuthenticationValue::default(),
             default_authorization: DefaultAuthorizationValue::default()
         }

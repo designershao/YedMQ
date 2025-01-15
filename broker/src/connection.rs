@@ -1,5 +1,5 @@
 use bytes::{BytesMut, Buf};
-use log::error;
+use log::{error, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 
 use yedmq_mqtt::MqttPacketV3;
@@ -34,9 +34,9 @@ where
     }
 
     // Read a single packet from the underlying stream.
-    pub async fn read_packet(&mut self) -> Result<MqttPacketV3, std::io::Error> {
+    pub async fn read_packet(&mut self, max_message_size: u32) -> Result<MqttPacketV3, std::io::Error> {
         loop {
-            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = yedmq_mqtt::parse(&self.buffer);
+            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = yedmq_mqtt::parse(&self.buffer, max_message_size);
 
             if let Ok((_, (consumed_bytes ,packet))) = packet_result {
                 self.buffer.advance(consumed_bytes.len());
@@ -54,6 +54,15 @@ where
                                 return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
                             }
                         } 
+                    }
+                    nom::Err::Error(err_inner)  => {
+                        if err_inner.code == nom::error::ErrorKind::Verify {
+                            warn!("Message size exceeds maximum allowed size of the system.");
+                            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Message size exceeds maximum allowed size of the system."));
+                        } else {
+                            error!("read packet error: {:?}", err_inner);
+                            return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid MQTT Packet"));
+                        }
                     }
                     _ => {
                         error!("read packet error: {:?}", err);
@@ -90,7 +99,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let packet = connection.read_packet().await;
+        let packet = connection.read_packet(yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).await;
         if let Ok(packet) = packet {
             if let MqttPacketV3::Publish(publish_packet) = packet {
                 assert_eq!(publish_packet.variable_header.topic_name, "a/b/c"); 
@@ -111,7 +120,7 @@ mod tests {
 
         let mut connection = Connection::new(mock_io); 
 
-        let packet = connection.read_packet().await;
+        let packet = connection.read_packet(yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).await;
         if let Err(_) = packet {
             assert!(true)
         } else {

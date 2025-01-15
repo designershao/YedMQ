@@ -103,6 +103,7 @@ mod tests {
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { 
                 sys_topic_interval_secs: 10, 
+                max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow, 
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow 
             }
@@ -179,6 +180,7 @@ mod tests {
             plugin: crate::settings::Plugin { dir: "test".to_string() },
             mqtt: crate::settings::Mqtt { 
                 sys_topic_interval_secs: 10, 
+                max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow, 
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow 
             }
@@ -219,7 +221,7 @@ mod tests {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);

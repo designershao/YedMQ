@@ -46,6 +46,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
         plugin: yedmq::settings::Plugin { dir: "test".to_string() },
         mqtt: yedmq::settings::Mqtt { 
             sys_topic_interval_secs: 10 ,
+            max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
             default_authentication: yedmq::settings::DefaultAuthenticationValue::Allow,
             default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow
         }
@@ -105,7 +106,7 @@ pub async fn test_tcp_listener_connect() {
     if read_bytes == 0 {
         assert!(false)
     } else {
-        let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+        let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
         match packet {
             MqttPacketV3::Connack(connack_packet) => {
                 assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -184,7 +185,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -209,7 +210,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
@@ -225,7 +226,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
                     assert_eq!(publish_packet.payload.payload, vec![0x01, 0x02]);
@@ -259,7 +260,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -445,7 +446,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -480,7 +481,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
@@ -506,7 +507,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
@@ -522,7 +523,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
                     assert_eq!(std::str::from_utf8(&publish_packet.payload.payload), Ok("good bye"));

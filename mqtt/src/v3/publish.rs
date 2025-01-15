@@ -1,5 +1,5 @@
 use bytes::{BytesMut, BufMut};
-use nom::{IResult, combinator::{map_res, flat_map, map, rest}, sequence::tuple};
+use nom::{combinator::{fail, flat_map, map, map_res, rest, verify}, sequence::tuple, IResult, Parser};
 use crate::{MqttPacket, PacketType};
 use rand::{Rng, thread_rng};
 
@@ -179,7 +179,53 @@ fn variable_header(qos_1_or_2:bool) -> impl Fn(&[u8]) -> IResult<&[u8], Variable
     }
 }
 
+pub fn parse_with_max_message_size_limit(input: &[u8], max_message_size: usize) -> IResult<&[u8], PublishPacket> {
+    verify(
+        fixed_header::parse,
+        |fixed_header| fixed_header.remaining_length <= max_message_size
+    )(input).and_then(|(input, fixed_header)| {
+        map(
+            map_res(
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                tuple((variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),rest))
+            ),
+            move |(_, (variable_header, payload_bytes))| {
+                let cloned_fixed_header = fixed_header.clone();
+                let payload = Payload {
+                    payload: payload_bytes.to_vec()
+                };
+                PublishPacket {
+                    fix_header: cloned_fixed_header,
+                    variable_header,
+                    payload
+                }
+            })(input)
+    })
+}
+
 pub fn parse(input: &[u8]) -> IResult<&[u8], PublishPacket> {
+    verify(
+        fixed_header::parse,
+        |fixed_header| fixed_header.remaining_length <= 1000
+    )(input).and_then(|(input, fixed_header)| {
+        map(
+            map_res(
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                tuple((variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),rest))
+            ),
+            move |(_, (variable_header, payload_bytes))| {
+                let cloned_fixed_header = fixed_header.clone();
+                let payload = Payload {
+                    payload: payload_bytes.to_vec()
+                };
+                PublishPacket {
+                    fix_header: cloned_fixed_header,
+                    variable_header,
+                    payload
+                }
+            })(input)
+    })
+    /*
     flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
@@ -198,6 +244,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PublishPacket> {
                 }
             })
     })(input)
+    */
 }
 
 impl MqttPacket for PublishPacket {
@@ -253,6 +300,12 @@ mod tests {
         assert_eq!(out.1.variable_header.topic_name, "a/b".to_string());
         assert_eq!(out.1.fix_header.qos, Some(1));
 
+    }
+    #[test]
+    fn test_parse_with_max_message_size_limit() {
+        let input = &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01];
+        let out = parse_with_max_message_size_limit(input,2);
+        assert!(out.is_err());
     }
 
     #[test]

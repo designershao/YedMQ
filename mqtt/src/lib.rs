@@ -5,6 +5,8 @@ use self::v3::fixed_header;
 
 pub mod v3;
 
+pub const MQTT_MAX_MESSAGE_SIZE:u32 = 268435456;
+
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum PacketType {
     CONNECT,
@@ -122,7 +124,7 @@ impl MqttPacketV3 {
 
 }
 
-pub fn parse(input: &[u8]) -> IResult<&[u8], (&[u8],MqttPacketV3)> {
+pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8],MqttPacketV3)> {
     let fix_header = fixed_header::parse(input);
     match fix_header {
         Ok((_, fix_header)) => {
@@ -139,7 +141,11 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], (&[u8],MqttPacketV3)> {
                     }))(input)
                 },
                 PacketType::PUBLISH => {
-                    consumed(map(v3::publish::parse, |p|{
+                    let dest_parse = |input| {
+                        let max_message_size = max_message_size as usize;
+                        return v3::publish::parse_with_max_message_size_limit(input, max_message_size)
+                    };
+                    consumed(map(dest_parse, |p|{
                         MqttPacketV3::Publish(p)
                     }))(input)
                 },
