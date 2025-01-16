@@ -69,8 +69,16 @@ impl Router {
             if publish_packet.fix_header.retain == Some(true) {
                 // register retain publish packet
                 let mut topic_manager = self.topic_manager.write().await;
-                let _ =
-                    topic_manager.register_retain_publish_packet(tenant_identifier.clone(), packet);
+
+                // if publish packet paloyd is empty , clean retained publish packet
+                if publish_packet.payload.payload.is_empty() {
+                    let _ = topic_manager
+                        .clean_retain_publish_packet(tenant_identifier.clone(), &topic);
+                } else {
+                    let _ = topic_manager
+                        .register_retain_publish_packet(tenant_identifier.clone(), packet);
+                }
+                //
             }
             let topic_manager = self.topic_manager.read().await;
             let subscriptions = topic_manager
@@ -81,12 +89,19 @@ impl Router {
                 let client_identifier = item.client_identifier.clone();
                 let packet = packet.clone();
                 if let MqttPacketV3::Publish(mut publish_packet) = packet {
-                    debug!("tenant {} session {} send packet max qos {} , body is {:?}", tenant_identifier, client_identifier.clone(), item.qos, publish_packet.payload.payload);
+                    debug!(
+                        "tenant {} session {} send packet max qos {} , body is {:?}",
+                        tenant_identifier,
+                        client_identifier.clone(),
+                        item.qos,
+                        publish_packet.payload.payload
+                    );
                     if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
                         if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
                             publish_packet.fix_header.qos = Some(0);
                             publish_packet.variable_header.packet_identifier = None;
-                            publish_packet.fix_header.remaining_length = publish_packet.fix_header.remaining_length - 2;
+                            publish_packet.fix_header.remaining_length =
+                                publish_packet.fix_header.remaining_length - 2;
                         } else {
                             publish_packet.fix_header.qos = Some(item.qos.into());
                         }

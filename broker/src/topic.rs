@@ -307,7 +307,7 @@ impl TopicManager {
         }
     }
 
-    fn recursion_clean_retain_publish_packet(topic_node:Arc<RwLock<TopicNode>>,mut topic_partterns:Vec<String>, client_identifier:String)  -> Result<(), Error> {
+    fn recursion_clean_retain_publish_packet(topic_node:Arc<RwLock<TopicNode>>,mut topic_partterns:Vec<String>)  -> Result<(), Error> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().unwrap().get_leaf(topic_pattern.to_string());
@@ -315,7 +315,7 @@ impl TopicManager {
                 Err(Error::TopicNotFound(topic_pattern.to_string()))
             } else {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
-                Self::recursion_clean_retain_publish_packet(topic_node_next.unwrap(), topic_patterns_rest, client_identifier)
+                Self::recursion_clean_retain_publish_packet(topic_node_next.unwrap(), topic_patterns_rest)
             }
         } else {
             topic_node.write().unwrap().clean_retain_publish_message();
@@ -324,7 +324,7 @@ impl TopicManager {
     }
 
     // clean retain publish packet from the topic tree
-    pub fn clean_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String,topic_filter:&String) -> Result<(), Error> {
+    pub fn clean_retain_publish_packet(&mut self, tenant_id:String, topic_filter:&String) -> Result<(), Error> {
         let topic_patterns:Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
@@ -333,7 +333,7 @@ impl TopicManager {
             Err(Error::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns,client_identifier)
+            Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns)
         }
     }
 

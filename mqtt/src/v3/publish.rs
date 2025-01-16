@@ -1,5 +1,5 @@
 use bytes::{BytesMut, BufMut};
-use nom::{combinator::{fail, flat_map, map, map_res, rest, verify}, sequence::tuple, IResult, Parser};
+use nom::{combinator::{map, map_res, rest, verify}, sequence::tuple, IResult};
 use crate::{MqttPacket, PacketType};
 use rand::{Rng, thread_rng};
 
