@@ -2,6 +2,15 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
+use serde::Serialize;
+use thiserror::Error;
+use tokio::{
+    select,
+    sync::{
+        mpsc::{Receiver, Sender},
+        Mutex, RwLock,
+    },
+};
 use yedmq_mqtt::{
     v3::{
         pingresp::PingrespPacket,
@@ -13,18 +22,12 @@ use yedmq_mqtt::{
     MqttPacketV3,
 };
 use yedmq_plugin::plugin::Client;
-use serde::Serialize;
-use thiserror::Error;
-use tokio::{
-    select,
-    sync::{
-        mpsc::{Receiver, Sender},
-        Mutex, RwLock,
-    },
-};
 
 use crate::{
-    inflight::Inflight, plugin_manager::{PluginService, SubscribeReturnCode}, router::RouterCmd, topic::TopicManager,
+    inflight::Inflight,
+    plugin_manager::{PluginService, SubscribeReturnCode},
+    router::RouterCmd,
+    topic::TopicManager,
 };
 
 use super::WillMessage;
@@ -72,19 +75,16 @@ pub enum SessionMessage {
 }
 
 pub struct SessionInfo {
-
     pub tenant_identifier: String,
 
     pub client_identifier: String,
 
     pub subscription_topics: Vec<String>,
 
-    pub session_state: SessionState
-
+    pub session_state: SessionState,
 }
 
 pub struct SessionContext {
-
     // Current Session Connection
     pub connection: Sender<ConnectionMessage>,
 
@@ -113,7 +113,6 @@ pub struct Session {
 
     // The inflight , track all in flights qos packet.
     pub inflight: Arc<Mutex<Inflight>>,
-
 }
 
 impl Session {
@@ -145,8 +144,7 @@ pub struct SessionWrapper {
 
     topic_manager: Arc<RwLock<TopicManager>>,
 
-    quit_signal_sender: Option<Sender<()>>
-
+    quit_signal_sender: Option<Sender<()>>,
 }
 
 // Run keep alive task, when not received pingresp in keep alive time, send kick off to current session
@@ -261,7 +259,7 @@ impl SessionWrapper {
             inflight_resend_task_sender: None,
             plugin_manager,
             topic_manager,
-            quit_signal_sender: None
+            quit_signal_sender: None,
         }
     }
 
@@ -345,7 +343,6 @@ impl SessionWrapper {
 
                         let packets = topic_manager.get_retain_publish_packet(
                             self.session.tenant_identifier.clone(),
-                            self.session.client_identifier.clone(),
                             topic.topic_name.clone(),
                         );
                         if let Ok(packets) = packets {
@@ -425,6 +422,29 @@ impl SessionWrapper {
                     return Err(anyhow::format_err!("write packet error: {}", e));
                 }
             }
+
+            // process retain messages
+            if packet.fix_header.retain == Some(true) {
+                // register retain publish packet
+                let mut topic_manager = self.topic_manager.write().await;
+
+                // if publish packet paloyd is empty , clean retained publish packet
+                if packet.payload.payload.is_empty() {
+                    let _ = topic_manager.clean_retain_publish_packet(
+                        self.session.tenant_identifier.clone(),
+                        &packet.variable_header.topic_name,
+                    );
+                } else {
+                    let _ = topic_manager.register_retain_publish_packet(
+                        self.session.tenant_identifier.clone(),
+                        self.session.client_identifier.clone(),
+                        &MqttPacketV3::Publish(packet.clone()),
+                    );
+                }
+                //
+            }
+            //
+
             router_sender
                 .send(RouterCmd::RoutePacket(
                     self.session.tenant_identifier.clone(),
@@ -494,7 +514,7 @@ impl SessionWrapper {
         session_sender: Sender<SessionMessage>,
         router_sender: Sender<RouterCmd>,
         session_manager: Arc<RwLock<SessionManager>>,
-        inflight_resend_duration_secs: u64
+        inflight_resend_duration_secs: u64,
     ) {
         loop {
             match self.state {
@@ -776,7 +796,10 @@ impl SessionWrapper {
             }
         }
 
-        debug!("session {} break out the loop, start clean resources", self.session.client_identifier);
+        debug!(
+            "session {} break out the loop, start clean resources",
+            self.session.client_identifier
+        );
 
         // unsubscribe all topics
         for topic in &self.session.subscription_topics {
@@ -796,7 +819,9 @@ impl SessionWrapper {
 
         // unregister session from session manager
         debug!(
-            "when exit session event loop, unregister session {}",self.session.client_identifier);
+            "when exit session event loop, unregister session {}",
+            self.session.client_identifier
+        );
         session_manager.write().await.unregister(
             self.session.tenant_identifier.clone(),
             self.session.client_identifier.clone(),
@@ -845,10 +870,11 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
-    pub async fn get_session_info_list_with_pagination(&self, 
+    pub async fn get_session_info_list_with_pagination(
+        &self,
         tenant_identifier: &str,
         offset: u64,
-        limit: u64
+        limit: u64,
     ) -> Result<(u64, Vec<SessionInfo>)> {
         let session_table_option = self.sessions.get(tenant_identifier);
         if session_table_option.is_none() {
@@ -862,10 +888,17 @@ impl SessionManager {
 
         let mut session_info_list = Vec::new();
 
-        for (_, session_sender) in session_table.iter().skip(offset as usize).take(limit as usize) {
+        for (_, session_sender) in session_table
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+        {
             let (sender, receiver) = tokio::sync::oneshot::channel();
-                
-            if let Err(e) = session_sender.send(SessionMessage::AskSessionInfo(sender)).await {
+
+            if let Err(e) = session_sender
+                .send(SessionMessage::AskSessionInfo(sender))
+                .await
+            {
                 error!("ask session info error: {}", e);
                 continue;
             } else {
@@ -939,18 +972,29 @@ impl SessionManager {
         session_quit_sender: &Sender<()>,
     ) -> Result<()> {
         if !self.tenant_existed(tenant_identifier) {
-            return Err(anyhow!(SessionManagerError::TenantNotExisted(tenant_identifier.clone())));
-        }else{
-            let session_sender_option = self.get_session_sender(tenant_identifier, client_identifier);
+            return Err(anyhow!(SessionManagerError::TenantNotExisted(
+                tenant_identifier.clone()
+            )));
+        } else {
+            let session_sender_option =
+                self.get_session_sender(tenant_identifier, client_identifier);
             if let Some(session_sender) = session_sender_option {
-                if let Err(_) = session_sender.send(SessionMessage::KickOff(KickOffReason::Other("force kickoff".to_string(), session_quit_sender.clone()))).await {
+                if let Err(_) = session_sender
+                    .send(SessionMessage::KickOff(KickOffReason::Other(
+                        "force kickoff".to_string(),
+                        session_quit_sender.clone(),
+                    )))
+                    .await
+                {
                     warn!("session receiver dropped, session event loop has exited, do nothing.");
                     return Ok(());
                 } else {
                     Ok(())
                 }
             } else {
-                return Err(anyhow!(SessionManagerError::SessionNotExisted(client_identifier.clone())));
+                return Err(anyhow!(SessionManagerError::SessionNotExisted(
+                    client_identifier.clone()
+                )));
             }
         }
     }
@@ -984,6 +1028,7 @@ impl SessionManager {
 mod tests {
     use std::{collections::HashMap, sync::Arc, time::Duration, vec};
 
+    use tokio::sync::{mpsc::Sender, Mutex, RwLock};
     use yedmq_mqtt::v3::{
         pingreq::PingreqPacketBuilder,
         publish::PublishPacketBuilder,
@@ -993,7 +1038,6 @@ mod tests {
         unsubscribe::UnsubscribePacketBuilder,
     };
     use yedmq_plugin::plugin::{Client, ClientProperties};
-    use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 
     use crate::{
         inflight::Inflight,
@@ -1168,7 +1212,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1231,7 +1280,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1303,7 +1357,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1374,7 +1433,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1397,6 +1461,174 @@ mod tests {
                 assert!(false)
             }
         }
+    }
+
+    #[tokio::test]
+    pub async fn when_receive_publish_packet_with_retain_flag_and_empty_payload_should_unset_reatin_message_in_topic_manager() {
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut _connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+        topic_manager.write().await.create_tenant("tenant_a".into());
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            topic_manager.clone()
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01]).retain(true).build();
+
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                yedmq_mqtt::MqttPacketV3::Publish(packet),
+            ))
+            .await
+            .unwrap();
+
+        let _ = router_receiver.recv().await.unwrap();
+
+        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+
+        assert_eq!(1, result.len());
+
+        let clean_retain_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![]).retain(true).build();
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                yedmq_mqtt::MqttPacketV3::Publish(clean_retain_packet),
+            ))
+            .await
+            .unwrap();
+
+        let _ = router_receiver.recv().await.unwrap();
+
+        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+
+        assert_eq!(0, result.len());
+
+    }
+
+
+    #[tokio::test]
+    pub async fn when_receive_publish_packet_with_retain_flag_should_set_reatin_message_in_topic_manager() {
+        let keep_alive_expired_secs = 5;
+
+        let session_mock = mock_session("client_a", "tenant_a");
+
+        let (session_sender, session_receiver) = tokio::sync::mpsc::channel(100);
+        let (connection_sender, mut _connection_receiver) = tokio::sync::mpsc::channel(100);
+        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(100);
+
+        let client_info = Client {
+            tenant_id: "tenant_a".into(),
+            client_identifier: "client_a".into(),
+            socket_addr: "127.0.0.1:1234".parse().unwrap(),
+            properties: ClientProperties {
+                username: Some("username_a".to_string()),
+                clean_session: true,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+
+        let session_context = mock_session_context(
+            "username_a",
+            connection_sender,
+            keep_alive_expired_secs,
+            true,
+            client_info,
+        );
+
+        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+        topic_manager.write().await.create_tenant("tenant_a".into());
+
+        let mut session_wrapper = SessionWrapper::new(
+            session_mock,
+            session_receiver,
+            Arc::new(MockPluginManager),
+            topic_manager.clone()
+        );
+
+        let session_sender_clone = session_sender.clone();
+        let _join_handle = tokio::task::spawn(async move {
+            session_wrapper
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
+                .await;
+        });
+
+        session_sender
+            .send(SessionMessage::Activate(session_context))
+            .await
+            .unwrap();
+
+        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01]).retain(true).build();
+
+
+        session_sender
+            .send(SessionMessage::ReceiveFromClient(
+                yedmq_mqtt::MqttPacketV3::Publish(packet),
+            ))
+            .await
+            .unwrap();
+
+        let _ = router_receiver.recv().await.unwrap();
+
+        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+
+        assert_eq!(1, result.len());
+
     }
 
     #[tokio::test]
@@ -1440,7 +1672,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1470,7 +1707,7 @@ mod tests {
                     }
                     _ => assert!(false),
                 }
-            },
+            }
             _ => assert!(false),
         }
     }
@@ -1523,7 +1760,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1604,7 +1846,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1685,7 +1932,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1780,7 +2032,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1857,7 +2114,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1932,7 +2194,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(),20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 
@@ -1972,9 +2239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    pub async fn when_session_exsited_session_wrapper_should_set_connack_present_flag() {
-        
-    }
+    pub async fn when_session_exsited_session_wrapper_should_set_connack_present_flag() {}
 
     #[tokio::test]
     pub async fn when_reactivate_not_clean_session_session_wrapper_should_finish_qos2_whole_loop() {
@@ -2024,7 +2289,12 @@ mod tests {
         let session_sender_clone = session_sender.clone();
         let _join_handle = tokio::task::spawn(async move {
             session_wrapper
-                .run_event_loop(session_sender_clone, router_sender, mock_session_manager(), 20)
+                .run_event_loop(
+                    session_sender_clone,
+                    router_sender,
+                    mock_session_manager(),
+                    20,
+                )
                 .await;
         });
 

@@ -12,7 +12,7 @@ pub enum RouterCmd {
     // Route publish packet to the subscribtion session
     // struct:
     // tenant_identifier: String, packet: MqttPacketV3
-    RoutePacket(String, MqttPacketV3),
+    RoutePacket(String,MqttPacketV3),
 
     // Route packet to all tenants
     RoutePacketToAllTenants(MqttPacketV3),
@@ -30,7 +30,7 @@ impl Router {
             select! {
                 cmd = self.router_receiver.recv() => {
                     match cmd {
-                        Some(RouterCmd::RoutePacket(tenant_identifier, packet_)) => {
+                        Some(RouterCmd::RoutePacket(tenant_identifier,  packet_)) => {
                             match self.route(&tenant_identifier, &packet_).await {
                                 Ok(_) => {
                                 },
@@ -63,23 +63,9 @@ impl Router {
         Ok(())
     }
 
-    pub async fn route(&self, tenant_identifier: &String, packet: &MqttPacketV3) -> Result<()> {
+    pub async fn route(&self, tenant_identifier: &String,  packet: &MqttPacketV3) -> Result<()> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = publish_packet.variable_header.topic_name.clone();
-            if publish_packet.fix_header.retain == Some(true) {
-                // register retain publish packet
-                let mut topic_manager = self.topic_manager.write().await;
-
-                // if publish packet paloyd is empty , clean retained publish packet
-                if publish_packet.payload.payload.is_empty() {
-                    let _ = topic_manager
-                        .clean_retain_publish_packet(tenant_identifier.clone(), &topic);
-                } else {
-                    let _ = topic_manager
-                        .register_retain_publish_packet(tenant_identifier.clone(), packet);
-                }
-                //
-            }
             let topic_manager = self.topic_manager.read().await;
             let subscriptions = topic_manager
                 .get_subscriptions(tenant_identifier.clone(), topic)

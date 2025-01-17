@@ -2,7 +2,9 @@ use core::fmt;
 use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use base64::{engine::general_purpose, Engine};
-use yedmq_mqtt::MqttPacketV3;
+use log::warn;
+use nom::Err;
+use yedmq_mqtt::{v3::publish::PublishPacket, MqttPacketV3};
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
@@ -110,6 +112,8 @@ fn extract_info_from_key(key: &str) -> (String, String) {
 
 pub struct TopicManager {
 
+    retain_message_recorder: RwLock<HashMap<String, HashMap<String, (String, u8)>>>,
+
     topic_info_recorder: RwLock<HashMap<String, HashMap<String, u8>>>,
 
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicNode>>>>>,
@@ -122,6 +126,8 @@ impl TopicManager {
 
     pub fn new() -> Self {
         Self {
+            retain_message_recorder: RwLock::new(HashMap::new()),
+
             topic_info_recorder: RwLock::new(HashMap::new()),
 
             topic_tree: Arc::new(RwLock::new(HashMap::new())),
@@ -157,6 +163,10 @@ impl TopicManager {
             topic_info_recorder.insert(tenant_ref.clone(), HashMap::new());
         }
 
+        let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+        if !retain_message_recorder.contains_key(tenant_ref) {
+            retain_message_recorder.insert(tenant_ref.clone(), HashMap::new());
+        }
     }
 
 
@@ -307,6 +317,26 @@ impl TopicManager {
         }
     }
 
+    pub fn get_retain_message_list_with_pagination(
+        &self, 
+        tenant_identifier: &str,
+        offset: u64,
+        limit: u64,
+    ) -> anyhow::Result<(u64,Vec<(String, String,u8)>)> {
+        if !self.retain_message_recorder.read().unwrap().contains_key(tenant_identifier) {
+            Err(anyhow::anyhow!(Error::TenantNotFound(tenant_identifier.to_string())))
+        } else {
+            let retain_message_recorder = self.retain_message_recorder.read().unwrap();
+            let retain_message_list = retain_message_recorder.get(tenant_identifier).unwrap();
+            let total = retain_message_list.len() as u64;
+            let mut result = vec![];
+            for (topic_filter, (client_id, qos)) in retain_message_list.iter().skip(offset as usize).take(limit as usize) {
+                result.push((topic_filter.clone(), client_id.clone(), *qos));
+            }  
+            Ok((total, result))
+        }
+    }
+
     fn recursion_clean_retain_publish_packet(topic_node:Arc<RwLock<TopicNode>>,mut topic_partterns:Vec<String>)  -> Result<(), Error> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
@@ -333,25 +363,34 @@ impl TopicManager {
             Err(Error::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns)
+            let result = Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns);
+            if let Err(err) = result  {
+                warn!("clean retain publish packet from the topic tree error: {}", err);
+                Err(err)
+            } else {
+                let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+                let retain_message_recorder_optional = retain_message_recorder.get_mut(&tenant_id);
+                retain_message_recorder_optional.unwrap().remove(topic_filter);
+                Ok(())
+            }
         }
     }
 
-    fn recursion_get_retain_packet(topic_node:Arc<RwLock<TopicNode>>, mut topic_patterns:Vec<String>, client_identifier:String) -> Vec<Arc<MqttPacketV3>> {
+    fn recursion_get_retain_packet(topic_node:Arc<RwLock<TopicNode>>, mut topic_patterns:Vec<String>) -> Vec<Arc<MqttPacketV3>> {
         let mut result:Vec<Arc<MqttPacketV3>> = vec![];
         if topic_patterns.len() > 0 {
             let topic_pattern = &topic_patterns[0];
             if topic_pattern == &"+".to_string() || topic_pattern == &"#".to_string() {
                 for sub in topic_node.write().unwrap().leaves.read().unwrap().iter() {
                     let topic_patterns_rest = topic_patterns.clone().drain(1..).collect();
-                    result.append(&mut Self::recursion_get_retain_packet(sub.clone(), topic_patterns_rest, client_identifier.clone()));
+                    result.append(&mut Self::recursion_get_retain_packet(sub.clone(), topic_patterns_rest));
                 }
             } else {
                 let topic_node_next = topic_node.write().unwrap().get_leaf(topic_pattern.to_string());
                 if !topic_node_next.is_none() {
                     let topic_patterns_rest = topic_patterns.drain(1..).collect();
                     result.append(
-                        &mut Self::recursion_get_retain_packet(topic_node_next.unwrap(), topic_patterns_rest, client_identifier)
+                        &mut Self::recursion_get_retain_packet(topic_node_next.unwrap(), topic_patterns_rest)
                     );
                 }
             }
@@ -364,7 +403,7 @@ impl TopicManager {
         result
     }
 
-    pub fn get_retain_publish_packet(&mut self, tenant_id:String, client_identifier:String, topic_filter: String) -> Result<Vec<Arc<MqttPacketV3>>, Error> {
+    pub fn get_retain_publish_packet(&mut self, tenant_id:String, topic_filter: String) -> Result<Vec<Arc<MqttPacketV3>>, Error> {
         if !test_topic(&topic_filter) {
             return Err(Error::InvalidTopicFilter(topic_filter));
         }
@@ -377,12 +416,12 @@ impl TopicManager {
             Err(Error::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Ok(Self::recursion_get_retain_packet(tenant_topic_root, topic_patterns, client_identifier))
+            Ok(Self::recursion_get_retain_packet(tenant_topic_root, topic_patterns))
         }
     }
 
     // register retain publish packet to the topic tree
-    pub fn register_retain_publish_packet(&mut self, tenant_id:String, publish_packet:&MqttPacketV3) -> Result<(), Error> {
+    pub fn register_retain_publish_packet(&mut self, tenant_id:String, source_client_identifier:String, publish_packet:&MqttPacketV3) -> Result<(), Error> {
         if let MqttPacketV3::Publish(publish_packet) = publish_packet {
             let topic_filter = publish_packet.variable_header.topic_name.clone();
             if !test_topic(&publish_packet.variable_header.topic_name) {
@@ -397,7 +436,19 @@ impl TopicManager {
                 Err(Error::TenantNotFound(tenant_id))
             } else {
                 let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-                Self::recursion_retain_publish_packet(tenant_topic_root, topic_patterns,MqttPacketV3::Publish(publish_packet.clone()))
+                let result = Self::recursion_retain_publish_packet(tenant_topic_root, topic_patterns,MqttPacketV3::Publish(publish_packet.clone()));
+                if let Err(e) = result  {
+                    Err(e)
+                } else {
+                    // Update retain recorder
+                    let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+                    let retain_message_recorder_optional = retain_message_recorder.get_mut(&tenant_id);
+                    let retain_message_recorder_item = retain_message_recorder_optional.unwrap();
+                    let qos = publish_packet.fix_header.qos.unwrap_or(0);
+                    retain_message_recorder_item.insert(publish_packet.variable_header.topic_name.clone(), (source_client_identifier, qos as u8));
+                    //
+                    Ok(())
+                }
             }
         } else {
             Ok(())
@@ -757,17 +808,17 @@ mod tests {
 
         let mut topic_manager = TopicManager::new();
         topic_manager.create_tenant("hello".to_string());
-        topic_manager.register_retain_publish_packet("hello".to_string(), &MqttPacketV3::Publish(publish_packet)).unwrap();
-        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/b".to_string());
+        topic_manager.register_retain_publish_packet("hello".to_string(), "client_a".to_string(), &MqttPacketV3::Publish(publish_packet)).unwrap();
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "a/b".to_string());
         assert_eq!(1, retain_packet.unwrap().len());
 
-        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/+".to_string());
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "a/+".to_string());
         assert_eq!(1, retain_packet.unwrap().len());
 
-        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a/#".to_string());
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(),  "a/#".to_string());
         assert_eq!(1, retain_packet.unwrap().len());
 
-        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "clientA".to_string(), "a".to_string());
+        let retain_packet = topic_manager.get_retain_publish_packet("hello".to_string(), "a".to_string());
         assert_eq!(0, retain_packet.unwrap().len());
 
     }
