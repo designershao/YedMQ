@@ -100,6 +100,11 @@ pub struct RetainMessage {
     pub client_identifier: String,
 }
 
+#[derive(Deserialize)]
+pub struct CleanRetainMessage {
+    pub topic: String
+}
+
 async fn topic_list(
     State(app_state): State<AppState>,
     Path(tenant_id): Path<String>,
@@ -149,6 +154,22 @@ async fn topic_list(
 
         (StatusCode::OK, Json(result))
     }
+}
+
+async fn clean_retain_message(
+    State(app_state): State<AppState>,
+    Path((tenant_id,topic_filter)): Path<(String,String)>,
+) -> (StatusCode, ()) {
+    let r = app_state
+        .topic_manager
+        .write()
+        .await
+        .clean_retain_publish_packet(tenant_id, &topic_filter);
+    if let Err(err) = r {
+        error!("clean retain message error: {}", err);
+        return (StatusCode::INTERNAL_SERVER_ERROR, ());
+    }
+    (StatusCode::OK, ())
 }
 
 async fn retain_message_list(
@@ -436,6 +457,7 @@ pub async fn run_rest_api_task(
         .route("/api/v1/plugins", axum::routing::get(plugin_list))
         .route("/api/v1/:tenant_id/topics", axum::routing::get(topic_list))
         .route("/api/v1/:tenant_id/messages/retained", axum::routing::get(retain_message_list))
+        .route("/api/v1/:tenant_id/messages/retained/*topic_filter", axum::routing::delete(clean_retain_message))
         .route(
             "/api/v1/:tenant_id/clients",
             axum::routing::get(client_list),
