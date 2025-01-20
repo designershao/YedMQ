@@ -3,8 +3,7 @@ use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use base64::{engine::general_purpose, Engine};
 use log::warn;
-use nom::Err;
-use yedmq_mqtt::{v3::publish::PublishPacket, MqttPacketV3};
+use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Debug, PartialEq)]
 pub enum Error {
