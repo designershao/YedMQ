@@ -49,7 +49,7 @@ pub struct PaginationMeta {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
-    pub code: String,
+    pub code: i32,
     pub message: String,
 }
 

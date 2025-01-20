@@ -133,10 +133,10 @@ impl TopicManager {
         }
     }
 
-    pub fn get_topic_list_with_pagination(&self, tenant_id:String, offset: u64, limit: u64) -> anyhow::Result<(u64,Vec<(String,String, u8)>)> {
+    pub fn get_topic_list_with_pagination(&self, tenant_id:&String, offset: u64, limit: u64) -> anyhow::Result<(u64,Vec<(String,String, u8)>)> {
       let topic_info_recorder = self.topic_info_recorder.read().unwrap();  
-      if topic_info_recorder.contains_key(&tenant_id) {
-        let items = topic_info_recorder.get(&tenant_id).unwrap();
+      if topic_info_recorder.contains_key(tenant_id) {
+        let items = topic_info_recorder.get(tenant_id).unwrap();
         let mut result_items = Vec::new();
         for (key, qos) in items.iter().skip(offset as usize).take(limit as usize) {
             let (client_id, topic) = extract_info_from_key(key);
@@ -145,7 +145,7 @@ impl TopicManager {
         let total = items.len();
         return Ok((total as u64, result_items));
       } else {
-          return Err(anyhow::anyhow!(Error::TenantNotFound(tenant_id)));
+          return Err(anyhow::anyhow!(Error::TenantNotFound(tenant_id.to_string())));
       }
     }
 

@@ -1,7 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    Json,
+    extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
 };
 use log::error;
 use serde::Serialize;
@@ -24,7 +22,7 @@ pub struct Client {
 pub async fn kickoff_client(
     State(app_state): State<AppState>,
     Path((tenant_id, client_id)): Path<(String, String)>,
-) -> (StatusCode, ()) {
+) -> impl IntoResponse {
     let session_manager = app_state.session_manager.clone();
     let (session_quit_sender, mut session_quit_receiver) = tokio::sync::mpsc::channel(1);
     let kickoff_result = session_manager
@@ -33,25 +31,43 @@ pub async fn kickoff_client(
         .kickoff(&tenant_id, &client_id, &session_quit_sender.clone())
         .await;
     if let Err(e) = kickoff_result {
-        let response = match e.downcast_ref::<session_manager::SessionManagerError>() {
-            Some(e) => match e {
+        if let Some(session_err) = e.downcast_ref::<SessionManagerError>() {
+            let response = match session_err {
                 session_manager::SessionManagerError::TenantNotExisted(_) => {
-                    (StatusCode::NOT_FOUND, ())
+                    let error_response = super::ErrorResponse {
+                        code: 3,
+                        message: format!("tenant {} not existed", tenant_id),
+                    };
+                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
                 }
                 session_manager::SessionManagerError::SessionNotExisted(_) => {
-                    (StatusCode::NOT_FOUND, ())
+                    let error_response = super::ErrorResponse {
+                        code: 4,
+                        message: format!("session {} not existed", client_id),
+                    };
+                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
                 }
                 _ => {
+                    let error_response = super::ErrorResponse {
+                        code: 101,
+                        message: "Internal server error".to_string(),
+                    };
                     error!("kickoff client error: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, ())
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
                 }
-            },
-            None => (StatusCode::INTERNAL_SERVER_ERROR, ()),
-        };
-        response
+            };
+            return response
+        } else {
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal server error".to_string(),
+            };
+            error!("kickoff client error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+        }
     } else {
         session_quit_receiver.recv().await;
-        (StatusCode::OK, ())
+        axum::http::StatusCode::OK.into_response()
     }
 }
 
@@ -59,7 +75,7 @@ pub async fn client_list(
     State(app_state): State<AppState>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
-) -> (StatusCode, Json<PaginationListResult<Client>>) {
+) -> impl IntoResponse {
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
@@ -89,49 +105,35 @@ pub async fn client_list(
         };
 
         let result = PaginationListResult { meta, data: result };
-        (StatusCode::OK, Json(result))
+        (StatusCode::OK, Json(result)).into_response()
     } else {
-        let response = match session_list_result
-            .err()
-            .unwrap()
-            .downcast_ref::<SessionManagerError>()
-        {
-            Some(e) => match e {
-                SessionManagerError::TenantNotExisted(_) => (
-                    StatusCode::NOT_FOUND,
-                    Json(PaginationListResult {
-                        meta: PaginationMeta {
-                            offset: 0,
-                            limit: 0,
-                            total: 0,
-                        },
-                        data: Vec::new(),
-                    }),
-                ),
-                _ => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(PaginationListResult {
-                        meta: PaginationMeta {
-                            offset: 0,
-                            limit: 0,
-                            total: 0,
-                        },
-                        data: Vec::new(),
-                    }),
-                ),
-            },
-            None => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(PaginationListResult {
-                    meta: PaginationMeta {
-                        offset: 0,
-                        limit: 0,
-                        total: 0,
-                    },
-                    data: Vec::new(),
-                }),
-            ),
-        };
-        response
+        let error = session_list_result.err().unwrap();
+        if let Some(session_error) = error.downcast_ref::<SessionManagerError>() {
+            let response = match session_error {
+                SessionManagerError::TenantNotExisted(_) => {
+                    let error_response = super::ErrorResponse {
+                        code: 3,
+                        message: format!("tenant {} not existed", tenant_id),
+                    };
+                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
+                }
+                _ =>{
+                    let error_response = super::ErrorResponse {
+                        code: 101,
+                        message: "Internal server error".to_string(),
+                    };
+                    error!("get session list error: {}", session_error);
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+                }
+            };
+            return response;
+        } else {
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal server error".to_string(),
+            };
+            error!("get session list error: {}", error);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+        }
     }
 }

@@ -1,7 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
-    Json,
+    extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
 };
 use log::error;
 use serde::Serialize;
@@ -19,7 +17,7 @@ pub async fn topic_list(
     State(app_state): State<AppState>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
-) -> (StatusCode, Json<PaginationListResult<Topic>>) {
+) -> impl IntoResponse {
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
@@ -27,21 +25,38 @@ pub async fn topic_list(
         .topic_manager
         .read()
         .await
-        .get_topic_list_with_pagination(tenant_id, offset_param, limit_param);
+        .get_topic_list_with_pagination(&tenant_id, offset_param, limit_param);
 
     if let Err(err) = topic_list_result {
-        error!("get topic list error: {}", err);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(PaginationListResult {
-                meta: PaginationMeta {
-                    offset: offset_param,
-                    limit: limit_param,
-                    total: 0,
+
+        let error = err.downcast_ref::<crate::topic::Error>();
+        if let Some(topic_error) = error {
+            let error_response = match topic_error {
+                crate::topic::Error::TenantNotFound(_) => {
+                    let error_response = super::ErrorResponse {
+                        code: 3,
+                        message: format!("tenant {} not existed", tenant_id),
+                    };
+                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
                 },
-                data: Vec::new(),
-            }),
-        );
+                _ => {
+                    error!("get retain message list error: {}", topic_error);
+                    let error_response = super::ErrorResponse {
+                        code: 101,
+                        message: "Internal Server Error".to_string(),
+                    };
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+                }
+            };
+            return error_response;
+        } else {
+            error!("get topic list error: {}", err);
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal Server Error".to_string(),
+            };
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+        }
     } else {
         let topic_list = topic_list_result.unwrap();
         let mut result = Vec::<Topic>::new();
@@ -62,6 +77,6 @@ pub async fn topic_list(
 
         let result = PaginationListResult { meta, data: result };
 
-        (StatusCode::OK, Json(result))
+        (StatusCode::OK, Json(result)).into_response()
     }
 }
