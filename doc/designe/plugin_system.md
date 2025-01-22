@@ -56,7 +56,7 @@ pub struct ExamplePlugin {
 }
 
 impl ExamplePlugin {
-    pub fn new() -> Self {
+    pub fn new() -> Result<ExamplePlugin, anyhow::Error> {
         ExamplePlugin {}
     }
 }

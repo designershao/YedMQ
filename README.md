@@ -25,3 +25,19 @@ YedMQ is a fully compliant MQTT broker server written in Rust, designed for inte
 	* ACL_Postgresql: Integrate with Postgresql, security plugin.
 	* ACL_FILE: Integrate with local file, security plugin。
 * CPU Architecture Support：X86/X64, AARCH64
+
+# Get Started
+
+Compile from source code
+
+```bash
+git clone https://github.com/designershao/YedMQ.git
+cd YedMQ
+make build-all
+```
+
+Run the binary file
+```bash
+cd target/debug
+RUST_LOG=INFO ./yedmq
+```
