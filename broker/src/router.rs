@@ -10,9 +10,7 @@ use yedmq_mqtt::MqttPacketV3;
 // Represent router command
 pub enum RouterCmd {
     // Route publish packet to the subscribtion session
-    // struct:
-    // tenant_identifier: String, packet: MqttPacketV3
-    RoutePacket(String,MqttPacketV3),
+    RoutePacket{ tenant_identifier: String, packet: MqttPacketV3 },
 
     // Route packet to all tenants
     RoutePacketToAllTenants(MqttPacketV3),
@@ -30,8 +28,8 @@ impl Router {
             select! {
                 cmd = self.router_receiver.recv() => {
                     match cmd {
-                        Some(RouterCmd::RoutePacket(tenant_identifier,  packet_)) => {
-                            match self.route(&tenant_identifier, &packet_).await {
+                        Some(RouterCmd::RoutePacket{tenant_identifier,packet }) => {
+                            match self.route(&tenant_identifier, &packet).await {
                                 Ok(_) => {
                                 },
                                 Err(e) => {

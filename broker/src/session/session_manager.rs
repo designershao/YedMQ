@@ -446,10 +446,10 @@ impl SessionWrapper {
             //
 
             router_sender
-                .send(RouterCmd::RoutePacket(
-                    self.session.tenant_identifier.clone(),
-                    MqttPacketV3::Publish(packet.clone()),
-                ))
+                .send(RouterCmd::RoutePacket {
+                    tenant_identifier: self.session.tenant_identifier.clone(),
+                    packet: MqttPacketV3::Publish(packet.clone()),
+                })
                 .await
                 .unwrap();
         }
@@ -501,10 +501,10 @@ impl SessionWrapper {
             .qos(will_message.will_qos)
             .build();
             let _ = router_sender
-                .send(RouterCmd::RoutePacket(
-                    self.session.tenant_identifier.clone(),
-                    MqttPacketV3::Publish(publish_packet),
-                ))
+                .send(RouterCmd::RoutePacket{
+                    tenant_identifier: self.session.tenant_identifier.clone(),
+                    packet: MqttPacketV3::Publish(publish_packet),
+                })
                 .await;
         }
     }
@@ -1697,7 +1697,7 @@ mod tests {
 
         let msg = router_receiver.recv().await.unwrap();
         match msg {
-            RouterCmd::RoutePacket(tenant_identifier, packet) => {
+            RouterCmd::RoutePacket{tenant_identifier, packet} => {
                 assert!(tenant_identifier == "tenant_a");
                 match packet {
                     yedmq_mqtt::MqttPacketV3::Publish(p) => {
