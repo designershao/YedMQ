@@ -19,6 +19,7 @@ mod listener;
 mod plugin_manager;
 mod metric;
 mod rest_api;
+mod raft;
 
 #[tokio::main]
 async fn main() {

@@ -28,3 +28,5 @@ yedmq-plugin = { version = "0.1.0", path = "../plugin" }
 libloading = "0.8.5"
 axum = "0.7.9"
 base64 = "0.22.1"
+openraft = "0.9.17"
+rocksdb = "0.22.0"

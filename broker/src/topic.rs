@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::{Arc, RwLock}};
 
 use base64::{engine::general_purpose, Engine};
 use log::warn;
+use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Debug, PartialEq)]
@@ -576,7 +577,7 @@ impl TopicNode {
     
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Subscription {
     pub client_identifier: String,
     pub qos: u8,
