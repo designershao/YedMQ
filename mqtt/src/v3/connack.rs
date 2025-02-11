@@ -2,12 +2,13 @@ use bytes::BufMut;
 use nom::{IResult, combinator::{map_res, flat_map, map}, sequence::tuple, error::Error};
 use nom::bytes::streaming::take;
 use ::bytes::BytesMut;
+use serde::{Deserialize, Serialize};
 
 use crate::{MqttPacket, PacketType};
 
 use super::fixed_header::{FixHeader, self};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnAckPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -70,7 +71,7 @@ impl ConnAckPacketBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableHeader {
     pub session_present: bool,
     pub connect_return_code: u8,

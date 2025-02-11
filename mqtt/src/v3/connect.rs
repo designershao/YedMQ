@@ -1,10 +1,11 @@
 use nom::{IResult, Parser, number::streaming::{be_u16, be_u8}, combinator::{map_res, flat_map, map}, sequence::tuple, bits, error::Error};
+use serde::{Deserialize, Serialize};
 use crate::{v3::common::parse_utf8, MqttPacket, PacketType};
 use nom::bits::{streaming::take};
 use super::fixed_header::{FixHeader, self};
 use ::bytes::{BytesMut, BufMut};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -108,7 +109,7 @@ impl ConnectPacketBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableHeader {
     pub protocol_name: String,
     pub protocol_level: u8,
@@ -122,7 +123,7 @@ pub struct VariableHeader {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
     pub client_identifier: String,
     pub will_topic: Option<String>,

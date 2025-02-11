@@ -1,5 +1,6 @@
 use bytes::BytesMut;
 use nom::{combinator::{map, consumed}, IResult};
+use serde::{Deserialize, Serialize};
 
 use self::v3::fixed_header;
 
@@ -7,7 +8,7 @@ pub mod v3;
 
 pub const MQTT_MAX_MESSAGE_SIZE:u32 = 268435456;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum PacketType {
     CONNECT,
     CONNACK,
@@ -36,7 +37,7 @@ trait MqttPacket {
 
 }
 
-#[derive(Debug,Clone)]
+#[derive(Debug,Clone, Serialize, Deserialize)]
 pub enum MqttPacketV3 {
     Connect(v3::connect::ConnectPacket),
     Connack(v3::connack::ConnAckPacket),

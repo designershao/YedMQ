@@ -110,6 +110,7 @@ fn extract_info_from_key(key: &str) -> (String, String) {
 }
 
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TopicManager {
 
     retain_message_recorder: RwLock<HashMap<String, HashMap<String, (String, u8)>>>,
@@ -242,6 +243,12 @@ impl TopicManager {
                 Ok(())
             }
         }
+    }
+
+    pub fn contains_tenant(&self, tenant_id:&String) -> bool {
+        let topic_tree = self.topic_tree.clone();
+        let topic_tree = topic_tree.read().unwrap();
+        topic_tree.contains_key(tenant_id)
     }
 
     fn recursion_unsubscription(topic_node:Arc<RwLock<TopicNode>>, mut topic_partterns: Vec<String>, client_identifier:&String) -> Result<(), Error> {
@@ -464,7 +471,7 @@ impl TopicManager {
 
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TopicNode {
 
     pub topic_parttern: String,

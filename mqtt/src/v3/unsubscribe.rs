@@ -1,9 +1,10 @@
 use bytes::{BytesMut, BufMut};
 use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, sequence::tuple, multi::many0};
+use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsubscribePacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -57,7 +58,7 @@ impl UnsubscribePacketBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableHeader {
     pub packet_identifier: u16,
 }
@@ -71,7 +72,7 @@ impl VariableHeader {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicFilter {
     pub topic_name: String,
 }
@@ -89,7 +90,7 @@ impl TopicFilter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
     pub topic_filters: Vec<TopicFilter>,
 }

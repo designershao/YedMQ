@@ -3,9 +3,10 @@ use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
 use nom::{IResult, error::Error};
 use ::bytes::{BytesMut, BufMut};
+use serde::{Deserialize, Serialize};
 use crate::PacketType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FixHeader {
     pub packet_type: PacketType,
     pub qos: Option<i32>,

@@ -1,11 +1,12 @@
 use bytes::{BytesMut, BufMut};
 use nom::{combinator::{map, map_res, rest, verify}, sequence::tuple, IResult};
+use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
 use rand::{Rng, thread_rng};
 
 use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -112,7 +113,7 @@ impl PublishPacketBuilder {
 
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableHeader {
     pub topic_name: String,
     pub packet_identifier: Option<u16>,
@@ -140,7 +141,7 @@ impl VariableHeader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
     pub payload: Vec<u8>,
 }

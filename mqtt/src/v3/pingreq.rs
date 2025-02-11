@@ -1,12 +1,13 @@
 use bytes::BytesMut;
 use nom::{IResult, combinator::map};
+use serde::{Deserialize, Serialize};
 
 use crate::MqttPacket;
 
 use super::fixed_header::{FixHeader, self};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingreqPacket {
     pub fix_header: FixHeader,
 }

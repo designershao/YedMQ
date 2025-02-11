@@ -1,10 +1,11 @@
 use bytes::{BytesMut, BufMut};
 use nom::{IResult,  number::streaming::be_u16, combinator::{map_res, flat_map, map}, sequence::tuple, multi::many0};
+use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
 
 use super::fixed_header::{FixHeader, self};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubackPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -31,7 +32,7 @@ impl SubackPacket {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariableHeader {
     pub packet_identifier: u16,
 }
@@ -45,7 +46,7 @@ impl VariableHeader {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
     pub return_code: Vec<ReturnCode>,
 }
@@ -95,7 +96,7 @@ fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
     })(input)
 }
 
-#[derive(Debug,PartialEq, Clone)]
+#[derive(Debug,PartialEq, Clone, Serialize, Deserialize)]
 pub enum ReturnCode {
     MaxQos0,
     MaxQos1,
