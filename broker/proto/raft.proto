@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package openraftpb;
+
+service RaftService {
+
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  rpc Vote(VoteRequest) returns (VoteResponse);
+
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+
+}
+
+message AppendEntriesRequest {
+  string data = 1;
+}
+
+message AppendEntriesResponse {
+  string data = 1;
+  string error = 2;
+}
+
+message VoteRequest {
+  string data = 1;
+}
+
+message VoteResponse {
+  string data = 1;
+  string error = 2;
+}
+
+message InstallSnapshotRequest {
+  string data = 1;
+}
+
+message InstallSnapshotResponse {
+  string data = 1;
+  string error = 2;
+}

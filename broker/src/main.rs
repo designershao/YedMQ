@@ -21,6 +21,10 @@ mod metric;
 mod rest_api;
 mod raft;
 
+pub mod protobuf {
+    tonic::include_proto!("openraftpb");
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();

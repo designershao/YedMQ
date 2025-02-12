@@ -31,3 +31,10 @@ axum = "0.7.9"
 base64 = "0.22.1"
 openraft = { version = "0.9.17", features = ["serde", "storage-v2"] }
 rocksdb = "0.22.0"
+prost = "0.13.4"
+tonic = "0.12.3"
+tonic-build = "0.12.3"
+
+[build-dependencies]
+prost-build = "0.13.4"
+tonic-build = "0.12.3"
