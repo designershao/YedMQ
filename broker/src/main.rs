@@ -1,7 +1,7 @@
 use std::{sync::Arc, collections::HashMap};
 
+use app::YedMQApp;
 use log::{info, warn};
-use plugin_manager::PluginManager;
 use crate::listener::{ws_listener::MqttWsListener, wss_listener::MqttWssListener};
 use settings::Settings;
 use tokio::{sync::mpsc::Sender, sync::RwLock};
@@ -9,6 +9,7 @@ use topic::TopicManager;
 
 use crate::{session::session_manager::{SessionMessage, SessionManager}, listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener}, router::Router};
 
+mod app;
 mod connection;
 mod session;
 mod inflight;
@@ -39,67 +40,17 @@ async fn main() {
     let settings =Arc::new(s.unwrap());
     //
 
-    // init session manager
-    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
-    //
-
-    // init plugin manager
-    info!("start load plugin manager");
-    let plugin_manager = PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
-    let plugin_manager = Arc::new(plugin_manager);
-    info!("plugin manager load succeed");
-    //
-
-    // init topic manager
-    info!("start load topic manager");
-    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-    info!("topic manager load succeed");
-    //
-
-    //
-    info!("start router task");
-    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
-
-    let mut router = Router {
-        topic_manager: topic_manager.clone(),
-        session_manager: session_manager.clone(),
-        router_receiver: router_receiver,
-    };
-
-    tokio::spawn(async move {
-        router.run().await;
-    });
-    info!("start router task succeed");
-    //
-
-
-    let metric = Arc::new(metric::Metric::new());
-
-    // sys topic task
-    info!("start sys topic task");
-    let sys_topic_task = metric::SysTopicTask::new(metric.clone(), settings.mqtt.sys_topic_interval_secs, router_sender.clone());
-    tokio::spawn(async move {
-        sys_topic_task.run().await;
-    });
-    info!("start sys topic task succeed");
-    //
+    let app = Arc::new(YedMQApp::new(settings.clone()));
 
     // start api task
-    info!("start api task");
-    let plugin_manager_cloned = plugin_manager.clone();
-    let session_manager_cloned = session_manager.clone();
-    let metric_cloned = metric.clone();
     let api_listen_external = settings.listener.api.external.clone();
-    let settings_cloned = settings.clone();
-    let topic_manager_cloned = topic_manager.clone();
+
+    info!("start api task");
+    let app_ = app.clone();
     tokio::spawn(async move {
         if let Err(e) =rest_api::run_rest_api_task(
             &api_listen_external, 
-            plugin_manager_cloned,
-            session_manager_cloned,
-            topic_manager_cloned,
-            metric_cloned,
-            settings_cloned.clone()
+            app_
         ).await {
             warn!("start api task error: {}", e);
         }
@@ -108,12 +59,7 @@ async fn main() {
     //
 
     let listener = MqttTcpListener {
-        plugin_manager: plugin_manager.clone(),
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender.clone(),
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone()
     };
 
     let settings_clone = settings.clone();
@@ -125,12 +71,7 @@ async fn main() {
     });
 
     let mut tcp_tls_listener = MqttTcpTlsListener {
-        plugin_manager: plugin_manager.clone(),
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender.clone(),
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone()
     };
 
     let settings_clone = settings.clone();
@@ -144,12 +85,7 @@ async fn main() {
 
 
     let ws_listener = MqttWsListener {
-        plugin_manager: plugin_manager.clone(),
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender.clone(),
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone()
     };
     let settings_clone = settings.clone();
     let mqtt_ws_listener_join = tokio::spawn(async move {
@@ -161,12 +97,7 @@ async fn main() {
     });
 
     let wss_listener = MqttWssListener {
-        plugin_manager: plugin_manager.clone(),
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender.clone(),
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone()
     };
     let settings_clone = settings.clone();
     let mqtt_wss_listener_join = tokio::spawn(async move {

@@ -8,3 +8,4 @@ pub mod listener;
 pub mod plugin_manager;
 pub mod metric;
 pub mod rest_api;
+pub mod app;

@@ -110,18 +110,14 @@ async fn basic_auth_middleware(
 
 pub async fn run_rest_api_task(
     listen_address: &str,
-    plugin_manager: Arc<plugin_manager::PluginManager>,
-    session_manager: Arc<RwLock<session_manager::SessionManager>>,
-    topic_manager: Arc<RwLock<crate::topic::TopicManager>>,
-    metric: Arc<crate::metric::Metric>,
-    settings: Arc<Settings>,
+    app: Arc<crate::app::YedMQApp>,
 ) -> anyhow::Result<()> {
     let state = AppState {
-        plugin_manager,
-        session_manager,
-        topic_manager,
-        metric,
-        settings,
+        plugin_manager:app.plugin_manager.clone(),
+        session_manager: app.session_manager.clone(),
+        topic_manager: app.topic_manager.clone(),
+        metric: app.metric.clone(),
+        settings: app.settings.clone(),
     };
 
     let state_for_basic_auth = state.clone();

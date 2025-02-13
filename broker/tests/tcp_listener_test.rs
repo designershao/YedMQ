@@ -1,84 +1,112 @@
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use std::{thread, time};
-use std::{path::PathBuf, sync::Arc, collections::HashMap, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use yedmq::app::YedMQApp;
 use yedmq::metric::Metric;
 use yedmq::plugin_manager::PluginManager;
 use yedmq::session::session_manager::SessionMessage;
-use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
-use yedmq::{listener::tcp_listener::MqttTcpListener, router::Router, session::session_manager::SessionManager, settings::Settings, topic::TopicManager};
-use yedmq_mqtt::{MqttPacketV3, v3::subscribe::TopicFilter};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::RwLock;
+use yedmq::{
+    listener::tcp_listener::MqttTcpListener, router::Router,
+    session::session_manager::SessionManager, settings::Settings, topic::TopicManager,
+};
+use yedmq_mqtt::{v3::subscribe::TopicFilter, MqttPacketV3};
 
 fn random_tcp_port() -> u16 {
     use rand::Rng;
     rand::thread_rng().gen_range(1024..=65535)
 }
 
-async fn get_test_plugin_manager(settings: Arc<Settings>) -> Arc<PluginManager> {
+fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
-    let plugin_service = PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings)
-        .unwrap();
-    Arc::new(plugin_service)
-}
+    let plugin_manager =
+        PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone()).unwrap();
+    let plugin_manager = Arc::new(plugin_manager);
+    let session_manager = Arc::new(RwLock::new(SessionManager {
+        sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
+    }));
+    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
+    let mut router = Router {
+        session_manager: session_manager.clone(),
+        topic_manager: topic_manager.clone(),
+        router_receiver: router_receiver,
+    };
+
+    tokio::spawn(async move {
+        router.run().await;
+    });
+
+    YedMQApp {
+        settings,
+        plugin_manager,
+        session_manager,
+        topic_manager,
+        router_sender,
+        metric: Arc::new(Metric::new()),
+    }
+}
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
     let tcp_port = random_tcp_port();
     let settings = Settings {
-        session: yedmq::settings::Session { qos_expired_secs: qos_expired_secs, packet_resend_interval_secs: resend_duration_sec },
-        listener: yedmq::settings::Listener { 
-            tcp: yedmq::settings::Tcp { external: format!("0.0.0.0:{}", tcp_port).to_string() },
+        session: yedmq::settings::Session {
+            qos_expired_secs: qos_expired_secs,
+            packet_resend_interval_secs: resend_duration_sec,
+        },
+        listener: yedmq::settings::Listener {
+            tcp: yedmq::settings::Tcp {
+                external: format!("0.0.0.0:{}", tcp_port).to_string(),
+            },
             tcp_tls: yedmq::settings::TcpTls {
                 external: "0.0.0.0:18089".to_string(),
                 cert_file: "".to_string(),
-                key_file: "".to_string()
+                key_file: "".to_string(),
             },
-            ws: yedmq::settings::Ws { external: "0.0.0.0:18090".to_string() },
+            ws: yedmq::settings::Ws {
+                external: "0.0.0.0:18090".to_string(),
+            },
             wss: yedmq::settings::Wss {
                 external: "0.0.0.0:18091".to_string(),
                 cert_file: "".to_string(),
-                key_file: "".to_string()
+                key_file: "".to_string(),
             },
-            api: yedmq::settings::Api { external: "".to_string(), auth: yedmq::settings::AuthConfig { users: vec![] } }
+            api: yedmq::settings::Api {
+                external: "".to_string(),
+                auth: yedmq::settings::AuthConfig { users: vec![] },
+            },
         },
-        plugin: yedmq::settings::Plugin { dir: "test".to_string() },
-        mqtt: yedmq::settings::Mqtt { 
-            sys_topic_interval_secs: 10 ,
+        plugin: yedmq::settings::Plugin {
+            dir: "test".to_string(),
+        },
+        mqtt: yedmq::settings::Mqtt {
+            sys_topic_interval_secs: 10,
             max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
             default_authentication: yedmq::settings::DefaultAuthenticationValue::Allow,
-            default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow
-        }
+            default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow,
+        },
     };
     settings
 }
 
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_listener_connect() {
-
     let keep_live_duration_secs = 5;
 
     let resend_duration_secs = 10;
 
-    let (router_sender, _) = tokio::sync::mpsc::channel(10);
-
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
+    let app = Arc::new(mock_app(settings.clone()));
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let metric = Arc::new(Metric::new());
-
     let listener = MqttTcpListener {
-        plugin_manager,
-        session_manager: Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()})),
-        topic_manager: Arc::new(RwLock::new(TopicManager::new())),
-        router_sender: router_sender,
-        settings: settings.clone(),
-        metric: metric.clone()
+        app: app.clone(),
     };
 
     tokio::spawn(async move {
@@ -90,8 +118,9 @@ pub async fn test_tcp_listener_connect() {
     thread::sleep(sleep_duration);
     //
 
-
-    let mut writer = tokio::net::TcpStream::connect(connect_address).await.unwrap();
+    let mut writer = tokio::net::TcpStream::connect(connect_address)
+        .await
+        .unwrap();
     let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test".to_string())
         .clean_session(true)
         .keep_alive(keep_live_duration_secs)
@@ -106,57 +135,35 @@ pub async fn test_tcp_listener_connect() {
     if read_bytes == 0 {
         assert!(false)
     } else {
-        let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+        let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+            .unwrap()
+            .1
+             .1;
         match packet {
             MqttPacketV3::Connack(connack_packet) => {
                 assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
             }
-            _ => assert!(false)
+            _ => assert!(false),
         }
     }
-
 }
-
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_client_subscribe_and_publish() {
-
-    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
 
     let keep_live_duration_secs = 5;
 
     let resend_duration_secs = 10;
 
-    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
-
-    let mut router = Router {
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_receiver: router_receiver,
-    };
-
-    tokio::spawn(async move {
-        router.run().await;
-    });
-
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
+    let app = Arc::new(mock_app(settings.clone()));
 
     let connect_address = settings.listener.tcp.external.clone();
     let connect_address_cloned = connect_address.clone();
 
-    let metric = Arc::new(Metric::new());
-
     let listener = MqttTcpListener {
-        plugin_manager,
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender,
-        settings: settings.clone(),
-        metric: metric.clone()
+        app: app.clone(),
     };
 
     tokio::spawn(async move {
@@ -170,11 +177,14 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     // subscriber process
     let sub_join = tokio::spawn(async move {
-        let mut subscriber = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
-            .clean_session(true)
-            .keep_alive(keep_live_duration_secs)
-            .build();
+        let mut subscriber = tokio::net::TcpStream::connect(connect_address)
+            .await
+            .unwrap();
+        let connect_packet =
+            yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
+                .clean_session(true)
+                .keep_alive(keep_live_duration_secs)
+                .build();
 
         let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         subscriber.write(&connect_packet.to_bytes()).await.unwrap();
@@ -185,24 +195,32 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
 
         // subscribe
-        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
-            topic_name: "/a/b".to_string(),
-            qos: 0
-        }).build();
+        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/a/b".to_string(),
+                qos: 0,
+            })
+            .build();
 
         let subscribe_packet = yedmq_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
 
-        subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
+        subscriber
+            .write(&subscribe_packet.to_bytes())
+            .await
+            .unwrap();
         subscriber.flush().await.unwrap();
 
         let mut buf = Vec::new();
@@ -210,12 +228,15 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
         //
@@ -226,12 +247,15 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
                     assert_eq!(publish_packet.payload.payload, vec![0x01, 0x02]);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
         //
@@ -245,11 +269,14 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     // publisher process
     let pub_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut publisher = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
-        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
-            .clean_session(true)
-            .keep_alive(keep_live_duration_secs)
-            .build();
+        let mut publisher = tokio::net::TcpStream::connect(connect_address_cloned)
+            .await
+            .unwrap();
+        let connect_packet =
+            yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
+                .clean_session(true)
+                .keep_alive(keep_live_duration_secs)
+                .build();
 
         let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         publisher.write(&connect_packet.to_bytes()).await.unwrap();
@@ -260,85 +287,63 @@ pub async fn test_tcp_client_subscribe_and_publish() {
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
 
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("/a/b".to_string(), vec![0x01,0x02]).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new(
+            "/a/b".to_string(),
+            vec![0x01, 0x02],
+        )
+        .build();
         let publish_packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
 
         publisher.write(&publish_packet.to_bytes()).await.unwrap();
     });
 
-
     sub_join.await.unwrap();
     pub_join.await.unwrap();
-
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
-
-    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
-    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-
-    let keep_live_duration_secs = 5;
-
     let resend_duration_secs = 10;
-
-    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
-
-    let mut router = Router {
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_receiver: router_receiver,
-    };
-
-    tokio::spawn(async move {
-        router.run().await;
-    });
 
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
+    let app = Arc::new(mock_app(settings.clone()));
 
     let connect_address = settings.listener.tcp.external.clone();
-    
-    let metric = Arc::new(Metric::new());
 
     let listener = MqttTcpListener {
-        plugin_manager,
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender,
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone(),
     };
 
     tokio::spawn(async move {
         listener.run().await.unwrap();
     });
 
-
     // subscriber process
     let invalid_connect_join = tokio::spawn(async move {
-
         let variable_header = yedmq_mqtt::v3::connect::VariableHeader {
-                protocol_name: "MQT".to_string(), // invalid protocol name
-                protocol_level: 0x04,
-                username_flag: true,
-                password_flag: true,
-                will_retain: true,
-                will_qos: 1,
-                will_flag: true,
-                clean_session: true,
-                keep_alive: 0,
-            };
+            protocol_name: "MQT".to_string(), // invalid protocol name
+            protocol_level: 0x04,
+            username_flag: true,
+            password_flag: true,
+            will_retain: true,
+            will_qos: 1,
+            will_flag: true,
+            clean_session: true,
+            keep_alive: 0,
+        };
         let payload = yedmq_mqtt::v3::connect::Payload {
             client_identifier: "MQTT".to_string(),
             will_topic: Some("MQTT".to_string()),
@@ -347,23 +352,28 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
             password: Some("MQTT".to_string()),
         };
 
-        let fix_header = yedmq_mqtt::v3::fixed_header::FixHeader{
-                packet_type: yedmq_mqtt::PacketType::CONNECT,
-                qos: None,
-                retain: None,
-                dup: None,
-                remaining_length: variable_header.get_length() + payload.get_length(),
-            };
+        let fix_header = yedmq_mqtt::v3::fixed_header::FixHeader {
+            packet_type: yedmq_mqtt::PacketType::CONNECT,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: variable_header.get_length() + payload.get_length(),
+        };
 
         let connect_packet = yedmq_mqtt::v3::connect::ConnectPacket {
             fix_header,
             variable_header,
-            payload
+            payload,
         };
 
-        let mut invalid_connect = tokio::net::TcpStream::connect(connect_address).await.unwrap();
+        let mut invalid_connect = tokio::net::TcpStream::connect(connect_address)
+            .await
+            .unwrap();
         let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
-        invalid_connect.write(&connect_packet.to_bytes()).await.unwrap();
+        invalid_connect
+            .write(&connect_packet.to_bytes())
+            .await
+            .unwrap();
         invalid_connect.flush().await.unwrap();
 
         let mut buf = Vec::new();
@@ -380,41 +390,18 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_message() {
-
-    let session_manager = Arc::new(RwLock::new(SessionManager{ sessions:  HashMap::<String,HashMap<String, Sender<SessionMessage>>>::new()}));
-    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-
     let keep_live_duration_secs = 5;
 
     let resend_duration_secs = 10;
 
-    let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
-
-    let mut router = Router {
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_receiver: router_receiver,
-    };
-
-    tokio::spawn(async move {
-        router.run().await;
-    });
-
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let plugin_manager =get_test_plugin_manager(settings.clone()).await;
+    let app = Arc::new(mock_app(settings.clone()));
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let metric = Arc::new(Metric::new());
-
     let listener = MqttTcpListener {
-        plugin_manager,
-        session_manager: session_manager.clone(),
-        topic_manager: topic_manager.clone(),
-        router_sender: router_sender,
-        settings: settings.clone(),
-        metric: metric.clone(),
+        app: app.clone(),
     };
 
     tokio::spawn(async move {
@@ -429,12 +416,15 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     let connect_address_cloned = connect_address.clone();
     let unexpect_disconnect_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
-        let mut publisher = tokio::net::TcpStream::connect(connect_address).await.unwrap();
-        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
-            .clean_session(true)
-            .keep_alive(keep_live_duration_secs)
-            .will_msg("/last_will".to_string(), "good bye".to_string(), 0, false)
-            .build();
+        let mut publisher = tokio::net::TcpStream::connect(connect_address)
+            .await
+            .unwrap();
+        let connect_packet =
+            yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_pub".to_string())
+                .clean_session(true)
+                .keep_alive(keep_live_duration_secs)
+                .will_msg("/last_will".to_string(), "good bye".to_string(), 0, false)
+                .build();
 
         let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         publisher.write(&connect_packet.to_bytes()).await.unwrap();
@@ -446,12 +436,15 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
         //
@@ -466,11 +459,14 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let sub_will_join = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
-        let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned).await.unwrap();
-        let connect_packet = yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
-            .clean_session(true)
-            .keep_alive(keep_live_duration_secs)
-            .build();
+        let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned)
+            .await
+            .unwrap();
+        let connect_packet =
+            yedmq_mqtt::v3::connect::ConnectPacketBuilder::new("test_sub".to_string())
+                .clean_session(true)
+                .keep_alive(keep_live_duration_secs)
+                .build();
 
         let connect_packet = yedmq_mqtt::MqttPacketV3::Connect(connect_packet);
         subscriber.write(&connect_packet.to_bytes()).await.unwrap();
@@ -481,38 +477,48 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
 
         // subscribe
-        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10).add_topic_filter(TopicFilter{
-            topic_name: "/last_will".to_string(),
-            qos: 0
-        }).build();
+        let subscribe_packet = yedmq_mqtt::v3::subscribe::SubscribePacketBuilder::new(0x10)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/last_will".to_string(),
+                qos: 0,
+            })
+            .build();
 
         let subscribe_packet = yedmq_mqtt::MqttPacketV3::Subscribe(subscribe_packet);
 
-        subscriber.write(&subscribe_packet.to_bytes()).await.unwrap();
+        subscriber
+            .write(&subscribe_packet.to_bytes())
+            .await
+            .unwrap();
         subscriber.flush().await.unwrap();
-
 
         let mut buf = Vec::new();
         let read_bytes = subscriber.read_buf(&mut buf).await.unwrap();
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Suback(suback_packet) => {
                     assert_eq!(suback_packet.variable_header.packet_identifier, 0x10);
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
         //
@@ -523,12 +529,18 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         if read_bytes == 0 {
             assert!(false)
         } else {
-            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE).unwrap().1.1;
+            let packet = yedmq_mqtt::parse(&buf, yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)
+                .unwrap()
+                .1
+                 .1;
             match packet {
                 MqttPacketV3::Publish(publish_packet) => {
-                    assert_eq!(std::str::from_utf8(&publish_packet.payload.payload), Ok("good bye"));
+                    assert_eq!(
+                        std::str::from_utf8(&publish_packet.payload.payload),
+                        Ok("good bye")
+                    );
                 }
-                _ => assert!(false)
+                _ => assert!(false),
             }
         }
         //
@@ -536,5 +548,4 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     unexpect_disconnect_join.await.unwrap();
     sub_will_join.await.unwrap();
-
 }
