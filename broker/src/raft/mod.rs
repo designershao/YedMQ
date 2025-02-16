@@ -7,6 +7,7 @@ mod app;
 pub mod network;
 pub mod service;
 pub mod store;
+pub mod raft_node;
 
 pub type NodeId = u64;
 
@@ -72,3 +73,4 @@ pub mod typ {
         }
     }
 }
+
