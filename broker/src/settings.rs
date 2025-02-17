@@ -7,6 +7,7 @@ pub struct Settings {
     pub plugin: Plugin,
     pub listener: Listener,
     pub mqtt: Mqtt,
+    pub cluster: Cluster
 }
 
 #[derive(Debug, PartialEq, Default)]
@@ -169,6 +170,41 @@ impl Default for Tcp {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Cluster {
+
+    pub cluster_name: String,
+
+    pub heartbeat_interval: u32,
+
+    pub rpc: RPC
+
+}
+
+impl Default for Cluster {
+    fn default() -> Self {
+        Self {
+            cluster_name: "YedMQ".to_string(),
+            heartbeat_interval: 10,
+            rpc: RPC::default()
+        }
+    }
+}
+
+
+#[derive(Debug, Deserialize)]
+pub struct RPC {
+    pub external: String
+}
+
+impl Default for RPC  {
+    fn default() -> Self {
+        Self {
+            external: "0.0.0.0:3457".to_string()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Api {
 
     pub external: String,
@@ -227,6 +263,9 @@ impl Settings {
             .set_default("listener.wss.cert_file", "")?
             .set_default("listener.wss.key_file", "")?
             .set_default("listener.api.external", "0.0.0.0:3456")?
+            .set_default("cluster.cluster_name", "YedMQ")?  
+            .set_default("cluster.heartbeat_interval", 10)?
+            .set_default("cluster.rpc.external", "0.0.0.0:3457")?
             .add_source(
                 File::with_name("/etc/yedmq/config.toml").required(false)
             )

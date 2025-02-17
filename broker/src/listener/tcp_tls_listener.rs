@@ -40,7 +40,7 @@ impl MqttTcpTlsListener {
             let plugin_manager = self.app.plugin_manager.clone();
             let session_manager = self.app.session_manager.clone();
             let topic_manager = self.app.topic_manager.clone();
-            let router_sender = self.app.router_sender.clone();
+            let router_sender = self.app.router_sender.get().unwrap().clone();
             let settings = self.app.settings.clone();
             let tls_acceptor = tls_acceptor.clone();
 

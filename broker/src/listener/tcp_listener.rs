@@ -19,7 +19,7 @@ impl MqttTcpListener {
             let plugin_manager = self.app.plugin_manager.clone();
             let session_manager = self.app.session_manager.clone();
             let topic_manager = self.app.topic_manager.clone();
-            let router_sender = self.app.router_sender.clone();
+            let router_sender = self.app.router_sender.get().unwrap().clone();
             let settings = self.app.settings.clone();
 
             tokio::spawn(accept_connection(
@@ -42,7 +42,7 @@ mod tests {
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        sync::{mpsc::Sender, RwLock},
+        sync::{mpsc::Sender, Mutex, OnceCell, RwLock},
     };
 
     use yedmq_mqtt::MqttPacketV3;
@@ -71,13 +71,17 @@ mod tests {
         let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
         let (router_sender, _) = tokio::sync::mpsc::channel(10);
 
+        let router_sender_once_cell = OnceCell::new();
+        let _ = router_sender_once_cell.set(router_sender);
+
         crate::app::YedMQApp {
             settings,
             plugin_manager,
             session_manager,
             topic_manager,
-            router_sender,
+            router_sender: router_sender_once_cell,
             metric: Arc::new(crate::metric::Metric::new()),
+            join_handles: Mutex::new(vec![])
         }
     }
 
@@ -126,6 +130,7 @@ mod tests {
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
             },
+            cluster: crate::settings::Cluster::default()
         };
 
         let settings = Arc::new(settings);
@@ -211,6 +216,7 @@ mod tests {
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
             },
+            cluster: crate::settings::Cluster::default()
         };
 
         let settings = Arc::new(settings);

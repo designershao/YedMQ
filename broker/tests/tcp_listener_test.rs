@@ -7,7 +7,7 @@ use yedmq::plugin_manager::PluginManager;
 use yedmq::session::session_manager::SessionMessage;
 
 use tokio::sync::mpsc::Sender;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OnceCell, RwLock};
 use yedmq::{
     listener::tcp_listener::MqttTcpListener, router::Router,
     session::session_manager::SessionManager, settings::Settings, topic::TopicManager,
@@ -32,6 +32,9 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
     let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
+    let router_sender_once_cell = OnceCell::new();
+    let _ = router_sender_once_cell.set(router_sender);
+
     let mut router = Router {
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
@@ -47,8 +50,9 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         plugin_manager,
         session_manager,
         topic_manager,
-        router_sender,
+        router_sender: router_sender_once_cell,
         metric: Arc::new(Metric::new()),
+        join_handles: Mutex::new(vec![])
     }
 }
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
@@ -89,6 +93,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
             default_authentication: yedmq::settings::DefaultAuthenticationValue::Allow,
             default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow,
         },
+        cluster: yedmq::settings::Cluster::default(),
     };
     settings
 }

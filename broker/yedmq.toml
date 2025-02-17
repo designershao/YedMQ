@@ -39,3 +39,10 @@ key_file = ""
 users = [
     { username = "admin", password = "password" }
 ]
+
+[cluster]
+cluster_name = "YedMQ"
+heartbeat_interval = 10
+
+[cluster.rpc]
+external = "0.0.0.0:3457"

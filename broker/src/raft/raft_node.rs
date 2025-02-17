@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use log::info;
-use tokio::sync::watch;
+use tokio::sync::{watch, RwLock};
 
 use super::{app::App, service::raft_service::RaftServiceImpl};
 use crate::protobuf::raft_service_server::RaftServiceServer;
 
 pub struct YedMQNode {
     pub running_rx: watch::Receiver<()>,
-    pub app: Arc<App>
+    pub app: Arc<App>,
+    pub raft_joinhandle: RwLock<tokio::task::JoinHandle<std::result::Result<(), anyhow::Error>>>,
 }
 
 impl YedMQNode {
@@ -39,6 +40,10 @@ impl YedMQNode {
             }).await.map_err(|e| anyhow::anyhow!(e))?;
             Ok::<(), anyhow::Error>(())
         });
+
+        let mut jh = yedmq_node.raft_joinhandle.write().await;
+
+        *jh = h;
 
         Ok(())
     }
