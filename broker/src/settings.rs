@@ -176,6 +176,10 @@ pub struct Cluster {
 
     pub heartbeat_interval: u32,
 
+    pub node_id: u64,
+
+    pub store_dir: String,
+
     pub rpc: RPC
 
 }
@@ -185,6 +189,8 @@ impl Default for Cluster {
         Self {
             cluster_name: "YedMQ".to_string(),
             heartbeat_interval: 10,
+            store_dir: "./store".to_string(),
+            node_id: 1,
             rpc: RPC::default()
         }
     }

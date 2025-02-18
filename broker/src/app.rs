@@ -1,10 +1,16 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
 use crate::{
-    listener::{tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener, ws_listener::MqttWsListener, wss_listener::MqttWssListener}, metric, plugin_manager::PluginManager, rest_api, router::{Router, RouterCmd}, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager
+    listener::{
+        tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
+        ws_listener::MqttWsListener, wss_listener::MqttWssListener,
+    }, metric, plugin_manager::PluginManager, raft::Node, rest_api, router::{Router, RouterCmd}, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager
 };
 
 // Representation of the application state.This struct can be shared around to share.
@@ -15,19 +21,21 @@ pub struct YedMQApp {
 
     pub topic_manager: Arc<RwLock<TopicManager>>,
 
+    pub topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>,
+
     pub metric: Arc<metric::Metric>,
 
     pub settings: Arc<Settings>,
 
-    pub join_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
     pub router_sender: OnceCell<Sender<RouterCmd>>,
 
+    pub raft_grpc_running_tx: OnceCell<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl YedMQApp {
     pub async fn start(app: Arc<YedMQApp>) {
-
         let settings = app.settings.clone();
 
         let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
@@ -43,12 +51,12 @@ impl YedMQApp {
 
         let router_join_handle = tokio::spawn(async move {
             router.run().await;
+            Ok(())
         });
         info!("start router task succeed");
 
         app.router_sender.set(router_sender.clone()).unwrap();
         //
-
 
         // sys topic task
         info!("start sys topic task");
@@ -59,6 +67,7 @@ impl YedMQApp {
         );
         let sys_topic_task_join_handle = tokio::spawn(async move {
             sys_topic_task.run().await;
+            Ok(())
         });
         info!("start sys topic task succeed");
         //
@@ -77,7 +86,7 @@ impl YedMQApp {
         });
         info!("start api task succeed");
         //
-        
+
         let listener = MqttTcpListener { app: app.clone() };
 
         let settings_clone = settings.clone();
@@ -89,6 +98,7 @@ impl YedMQApp {
             if let Err(e) = listener.run().await {
                 warn!("tcp listener can`t run, error: {}", e);
             }
+            Ok(())
         });
 
         let mut tcp_tls_listener = MqttTcpTlsListener { app: app.clone() };
@@ -103,6 +113,7 @@ impl YedMQApp {
             if let Err(e) = tcp_tls_listener.run().await {
                 warn!("tls listener can`t run, error: {}", e);
             }
+            Ok(())
         });
 
         let ws_listener = MqttWsListener { app: app.clone() };
@@ -113,6 +124,7 @@ impl YedMQApp {
             if let Err(e) = ws_listener.run().await {
                 warn!("ws listener can`t run, error: {}", e);
             };
+            Ok(())
         });
 
         let wss_listener = MqttWssListener { app: app.clone() };
@@ -123,6 +135,7 @@ impl YedMQApp {
             if let Err(e) = wss_listener.run().await {
                 warn!("wss listener can`t run, error: {}", e);
             }
+            Ok(())
         });
 
         let mut hn = app.join_handles.lock().await;
@@ -133,11 +146,9 @@ impl YedMQApp {
         hn.push(tcp_tls_listener_join);
         hn.push(mqtt_ws_listener_join);
         hn.push(mqtt_wss_listener_join);
-
     }
 
     pub fn new(settings: Arc<Settings>) -> Self {
-
         // init session manager
         let session_manager = Arc::new(RwLock::new(SessionManager {
             sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
@@ -170,6 +181,8 @@ impl YedMQApp {
             settings,
             metric,
             join_handles,
+            topic_router: Arc::new(RwLock::new(BTreeMap::new())),
+            raft_grpc_running_tx: OnceCell::new(),
         }
     }
 }

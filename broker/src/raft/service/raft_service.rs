@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use crate::protobuf::raft_service_server::RaftService;
 use crate::protobuf::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse};
-use crate::raft::app::App;
+use crate::raft::app::RaftApp;
 
 pub struct RaftServiceImpl {
-    pub app: Arc<App>
+    pub app: Arc<RaftApp>
 }
 
 #[tonic::async_trait]

@@ -38,7 +38,7 @@ impl MqttTcpListener {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf, time::Duration};
+    use std::{collections::{BTreeMap, HashMap}, path::PathBuf, time::Duration};
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -81,7 +81,9 @@ mod tests {
             topic_manager,
             router_sender: router_sender_once_cell,
             metric: Arc::new(crate::metric::Metric::new()),
-            join_handles: Mutex::new(vec![])
+            join_handles: Mutex::new(vec![]),
+            topic_router: Arc::new(RwLock::new(BTreeMap::new())),
+            raft_grpc_running_tx: OnceCell::new()
         }
     }
 

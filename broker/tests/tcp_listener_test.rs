@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 use std::{thread, time};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -52,7 +53,9 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         topic_manager,
         router_sender: router_sender_once_cell,
         metric: Arc::new(Metric::new()),
-        join_handles: Mutex::new(vec![])
+        join_handles: Mutex::new(vec![]),
+        raft_grpc_running_tx: OnceCell::new(),
+        topic_router: Arc::new(RwLock::new(BTreeMap::new())),
     }
 }
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {

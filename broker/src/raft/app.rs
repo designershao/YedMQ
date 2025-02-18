@@ -4,7 +4,7 @@ use openraft::Config;
 
 use super::{NodeId, YedMQRaft};
 
-pub struct App {
+pub struct RaftApp {
     pub id: NodeId,
     pub api_addr: String,
     pub rpc_addr: String,

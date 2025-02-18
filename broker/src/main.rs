@@ -1,26 +1,8 @@
 use std::sync::Arc;
 
-use app::YedMQApp;
 use log::{info, warn};
-use settings::Settings;
 use tokio::signal;
-
-mod app;
-mod connection;
-mod session;
-mod inflight;
-mod router;
-mod topic;
-mod settings;
-mod listener;
-mod plugin_manager;
-mod metric;
-mod rest_api;
-mod raft;
-
-pub mod protobuf {
-    tonic::include_proto!("openraftpb");
-}
+use yedmq::{app::YedMQApp, settings::Settings};
 
 #[tokio::main]
 async fn main() {
