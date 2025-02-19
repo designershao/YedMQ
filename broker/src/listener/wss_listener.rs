@@ -2,14 +2,10 @@ use std::{fs::File, io::Read, sync::Arc};
 
 use anyhow::Result;
 use log::warn;
-use tokio::{net::TcpListener, sync::RwLock};
+use tokio::net::TcpListener;
 use tokio_native_tls::native_tls::{self, Identity};
 use tokio_util::io::StreamReader;
 
-use crate::{
-    metric::Metric, plugin_manager::PluginManager, router::RouterCmd,
-    session::session_manager::SessionManager, settings::Settings, topic::TopicManager,
-};
 
 use super::{
     accept_connection,

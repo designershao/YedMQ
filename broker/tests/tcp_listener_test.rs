@@ -56,6 +56,8 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         join_handles: Mutex::new(vec![]),
         raft_grpc_running_tx: OnceCell::new(),
         topic_router: Arc::new(RwLock::new(BTreeMap::new())),
+        raft: OnceCell::new(),
+        config: OnceCell::new(),
     }
 }
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {

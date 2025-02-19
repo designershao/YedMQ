@@ -1,6 +1,5 @@
 use std::{path::PathBuf, sync::Arc};
 
-use rand::seq::index::sample;
 use yedmq::plugin_manager::{plugin_metadata::PluginMetadata, PluginManager};
 
 fn get_demo_plugin_path() -> PathBuf {

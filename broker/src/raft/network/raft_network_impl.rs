@@ -1,6 +1,4 @@
-use std::sync::Arc;
 
-use axum::async_trait;
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError};
 use openraft::network::RPCOption;
 use openraft::raft::{
@@ -20,7 +18,7 @@ pub struct Network {}
 impl RaftNetworkFactory<TypeConfig> for Network {
     type Network = NetworkConnection;
 
-    async fn new_client(&mut self, target: NodeId, node: &Node) -> Self::Network {
+    async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         let addr = format!("http://{}", node.rpc_addr);
 
         let client = RaftServiceClient::connect(addr.clone()).await.unwrap();

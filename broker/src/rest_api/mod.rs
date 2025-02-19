@@ -10,11 +10,7 @@ use base64::{engine::general_purpose, Engine as _};
 use log::info;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use crate::{
-    plugin_manager,
-    session::session_manager::{self},
-    settings::Settings,
-};
+use crate::settings::Settings;
 
 mod topic;
 mod plugin;

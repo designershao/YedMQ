@@ -9,7 +9,6 @@ use store::{new_storage, Request, Response};
 
 use crate::{app::YedMQApp, protobuf::raft_service_server::RaftServiceServer};
 
-mod app;
 pub mod network;
 pub mod raft_node;
 pub mod service;
@@ -112,18 +111,11 @@ pub async fn start_raft_node(app: Arc<YedMQApp>) -> anyhow::Result<()> {
     .await
     .unwrap();
 
-    let raft_app_state = crate::raft::app::RaftApp {
-        id: app.settings.cluster.node_id,
-        api_addr: app.settings.cluster.rpc.external.clone(),
-        rpc_addr: app.settings.cluster.rpc.external.clone(),
-        raft,
-        config,
-    };
-
-    let raft_app_state = Arc::new(raft_app_state);
+    let _ = app.raft.set(raft);
+    let _ = app.config.set(config.clone());
 
     let raft_service = RaftServiceImpl {
-        app: raft_app_state.clone(),
+        app: app.clone(),
     };
 
     let addr_str = app.settings.cluster.rpc.external.to_string();

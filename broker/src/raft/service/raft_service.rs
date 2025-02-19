@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 
+use crate::app::YedMQApp;
 use crate::protobuf::raft_service_server::RaftService;
 use crate::protobuf::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse};
-use crate::raft::app::RaftApp;
 
 pub struct RaftServiceImpl {
-    pub app: Arc<RaftApp>
+    pub app: Arc<YedMQApp>
 }
 
 #[tonic::async_trait]
@@ -19,7 +19,7 @@ impl RaftService for RaftServiceImpl {
 
         let append_req = serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self.app.raft.append_entries(append_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let resp = self.app.raft.get().unwrap().append_entries(append_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = AppendEntriesResponse {
@@ -38,7 +38,7 @@ impl RaftService for RaftServiceImpl {
 
         let install_req = serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self.app.raft.install_snapshot(install_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let resp = self.app.raft.get().unwrap().install_snapshot(install_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = InstallSnapshotResponse {
@@ -57,7 +57,7 @@ impl RaftService for RaftServiceImpl {
 
         let vote_req = serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self.app.raft.vote(vote_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let resp = self.app.raft.get().unwrap().vote(vote_req).await.map_err(|x| tonic::Status::internal(x.to_string()))?;
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = VoteResponse {

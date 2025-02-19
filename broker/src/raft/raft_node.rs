@@ -3,12 +3,12 @@ use std::sync::Arc;
 use log::info;
 use tokio::sync::{watch, RwLock};
 
-use super::{app::RaftApp, service::raft_service::RaftServiceImpl};
-use crate::protobuf::raft_service_server::RaftServiceServer;
+use super::service::raft_service::RaftServiceImpl;
+use crate::{app::YedMQApp, protobuf::raft_service_server::RaftServiceServer};
 
 pub struct YedMQNode {
     pub running_rx: watch::Receiver<()>,
-    pub app: Arc<RaftApp>,
+    pub app: Arc<YedMQApp>,
     pub raft_joinhandle: RwLock<tokio::task::JoinHandle<std::result::Result<(), anyhow::Error>>>,
 }
 

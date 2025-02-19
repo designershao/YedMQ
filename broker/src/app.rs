@@ -4,13 +4,14 @@ use std::{
 };
 
 use log::{info, warn};
+use openraft::Config;
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, plugin_manager::PluginManager, raft::Node, rest_api, router::{Router, RouterCmd}, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager
+    }, metric, plugin_manager::PluginManager, raft::{start_raft_node, Node, YedMQRaft}, rest_api, router::{Router, RouterCmd}, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager
 };
 
 // Representation of the application state.This struct can be shared around to share.
@@ -28,6 +29,10 @@ pub struct YedMQApp {
     pub settings: Arc<Settings>,
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
+
+    pub raft: OnceCell<YedMQRaft>,
+
+    pub config: OnceCell<Arc<Config>>,
 
     pub router_sender: OnceCell<Sender<RouterCmd>>,
 
@@ -138,6 +143,13 @@ impl YedMQApp {
             Ok(())
         });
 
+        //
+
+
+        // start raft rpc service
+        start_raft_node(app.clone()).await.unwrap();
+        //
+
         let mut hn = app.join_handles.lock().await;
 
         hn.push(router_join_handle);
@@ -183,6 +195,8 @@ impl YedMQApp {
             join_handles,
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
             raft_grpc_running_tx: OnceCell::new(),
+            raft: OnceCell::new(),
+            config: OnceCell::new(),
         }
     }
 }

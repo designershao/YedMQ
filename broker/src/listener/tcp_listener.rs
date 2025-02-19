@@ -83,7 +83,9 @@ mod tests {
             metric: Arc::new(crate::metric::Metric::new()),
             join_handles: Mutex::new(vec![]),
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
-            raft_grpc_running_tx: OnceCell::new()
+            raft_grpc_running_tx: OnceCell::new(),
+            raft: OnceCell::new(),
+            config: OnceCell::new()
         }
     }
 
