@@ -6,6 +6,8 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 
+pub mod topic_storage;
+
 #[derive(Debug, PartialEq)]
 pub enum Error {
     TopicNotFound(String),
@@ -108,7 +110,6 @@ fn extract_info_from_key(key: &str) -> (String, String) {
     let topic = std::str::from_utf8(&binding).unwrap();
     (client_id.to_string(), topic.to_string())
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TopicManager {
