@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
 };
 use log::error;
 use serde::Serialize;
-use crate::session::session_manager::{self, SessionManagerError, SessionState};
-use super::{AppState, Pagination, PaginationListResult, PaginationMeta};
+use crate::{app::YedMQApp, session::session_manager::{self, SessionManagerError, SessionState}};
+use super::{Pagination, PaginationListResult, PaginationMeta};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +22,7 @@ pub struct Client {
 
 
 pub async fn kickoff_client(
-    State(app_state): State<AppState>,
+    State(app_state): State<Arc<YedMQApp>>,
     Path((tenant_id, client_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let session_manager = app_state.session_manager.clone();
@@ -72,7 +74,7 @@ pub async fn kickoff_client(
 }
 
 pub async fn client_list(
-    State(app_state): State<AppState>,
+    State(app_state): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
 ) -> impl IntoResponse {

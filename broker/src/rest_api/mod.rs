@@ -9,29 +9,20 @@ use axum::{
 use base64::{engine::general_purpose, Engine as _};
 use log::info;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
-use crate::settings::Settings;
+use crate::app::YedMQApp;
 
 mod topic;
 mod plugin;
 mod message;
 mod client;
 mod system;
+mod cluster;
 
 #[derive(Deserialize, Debug)]
 struct Pagination {
     offset: Option<u64>,
 
     limit: Option<u64>,
-}
-
-#[derive(Clone)]
-struct AppState {
-    pub plugin_manager: Arc<crate::plugin_manager::PluginManager>,
-    pub session_manager: Arc<RwLock<crate::session::session_manager::SessionManager>>,
-    pub topic_manager: Arc<RwLock<crate::topic::TopicManager>>,
-    pub metric: Arc<crate::metric::Metric>,
-    pub settings: Arc<Settings>,
 }
 
 #[derive(Serialize)]
@@ -56,7 +47,7 @@ pub struct PaginationListResult<T> {
 }
 
 async fn basic_auth_middleware(
-    State(state): State<AppState>,
+    State(state): State<Arc<YedMQApp>>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
@@ -108,15 +99,8 @@ pub async fn run_rest_api_task(
     listen_address: &str,
     app: Arc<crate::app::YedMQApp>,
 ) -> anyhow::Result<()> {
-    let state = AppState {
-        plugin_manager:app.plugin_manager.clone(),
-        session_manager: app.session_manager.clone(),
-        topic_manager: app.topic_manager.clone(),
-        metric: app.metric.clone(),
-        settings: app.settings.clone(),
-    };
-
-    let state_for_basic_auth = state.clone();
+    let state = app.clone();
+    let state_for_basic_auth = app.clone();
 
     let app = axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin::plugin_list))
@@ -132,6 +116,7 @@ pub async fn run_rest_api_task(
             axum::routing::post(client::kickoff_client),
         )
         .route("/api/v1/system_info", axum::routing::get(system::system_info))
+        .route("/api/v1/cluster/metrics", axum::routing::get(cluster::metrics))
         .layer(axum::middleware::from_fn_with_state(
             state_for_basic_auth,
             basic_auth_middleware,

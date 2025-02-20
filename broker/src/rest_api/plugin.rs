@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
 };
 use serde::Serialize;
-use super::{AppState, Pagination, PaginationListResult, PaginationMeta};
+use crate::app::YedMQApp;
+
+use super::{Pagination, PaginationListResult, PaginationMeta};
 
 #[derive(Serialize)]
 pub struct Plugin {
@@ -22,7 +26,7 @@ pub struct Plugin {
 }
 
 pub async fn plugin_list(
-    State(app_state): State<AppState>,
+    State(app_state): State<Arc<YedMQApp>>,
     pagination: Query<Pagination>,
 ) -> (StatusCode, Json<PaginationListResult<Plugin>>) {
     let offset_param = pagination.offset.unwrap_or(0);

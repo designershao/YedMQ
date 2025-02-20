@@ -1,9 +1,13 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
 };
 use log::error;
 use serde::Serialize;
-use super::{AppState, Pagination, PaginationListResult, PaginationMeta};
+use crate::app::YedMQApp;
+
+use super::{Pagination, PaginationListResult, PaginationMeta};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,7 +18,7 @@ pub struct Topic {
 }
 
 pub async fn topic_list(
-    State(app_state): State<AppState>,
+    State(app_state): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
 ) -> impl IntoResponse {

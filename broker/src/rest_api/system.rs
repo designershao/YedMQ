@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use axum::{
     extract::State,
     http::StatusCode,
     Json,
 };
 use serde::Serialize;
-use super::AppState;
+
+use crate::app::YedMQApp;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +22,7 @@ pub struct SystemInfo {
 }
 
 
-pub async fn system_info(State(app_state): State<AppState>) -> (StatusCode, Json<SystemInfo>) {
+pub async fn system_info(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode, Json<SystemInfo>) {
     let metric = app_state.metric.clone();
     let system_info = SystemInfo {
         clients_connected: metric
