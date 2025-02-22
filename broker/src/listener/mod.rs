@@ -13,7 +13,7 @@ use crate::{
     connection::Connection, inflight::Inflight, metric::Metric, plugin_manager::{PluginManager, PluginService}, router::RouterCmd, session::{session_manager::{
         ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager, SessionMessage,
         SessionWrapper,
-    }, WillMessage}, settings::Settings, topic::TopicManager
+    }, WillMessage}, settings::Settings, topic::topic_manager::TopicManager
 };
 
 use yedmq_mqtt::v3::connack::ConnAckPacketBuilder;

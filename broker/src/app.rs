@@ -4,14 +4,24 @@ use std::{
 };
 
 use log::{info, warn};
-use openraft::Config;
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, plugin_manager::PluginManager, raft::{start_raft_node, Node, YedMQRaft}, rest_api, router::{Router, RouterCmd}, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager
+    },
+    metric,
+    plugin_manager::PluginManager,
+    raft::Node,
+    rest_api,
+    router::{Router, RouterCmd},
+    session::session_manager::{SessionManager, SessionMessage},
+    settings::Settings,
+    topic::{
+        topic_manager::TopicManager,
+        topic_storage::{self, TopicStorage},
+    },
 };
 
 // Representation of the application state.This struct can be shared around to share.
@@ -22,6 +32,8 @@ pub struct YedMQApp {
 
     pub topic_manager: Arc<RwLock<TopicManager>>,
 
+    pub topic_storage: Arc<RwLock<TopicStorage>>,
+
     pub topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>,
 
     pub metric: Arc<metric::Metric>,
@@ -30,13 +42,9 @@ pub struct YedMQApp {
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
-    pub raft: OnceCell<YedMQRaft>,
-
-    pub config: OnceCell<Arc<Config>>,
-
     pub router_sender: OnceCell<Sender<RouterCmd>>,
 
-    pub raft_grpc_running_tx: OnceCell<tokio::sync::oneshot::Sender<()>>,
+    pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
 }
 
 impl YedMQApp {
@@ -145,11 +153,6 @@ impl YedMQApp {
 
         //
 
-
-        // start raft rpc service
-        start_raft_node(app.clone()).await.unwrap();
-        //
-
         let mut hn = app.join_handles.lock().await;
 
         hn.push(router_join_handle);
@@ -160,7 +163,7 @@ impl YedMQApp {
         hn.push(mqtt_wss_listener_join);
     }
 
-    pub fn new(settings: Arc<Settings>) -> Self {
+    pub async fn new(settings: Arc<Settings>) -> Self {
         // init session manager
         let session_manager = Arc::new(RwLock::new(SessionManager {
             sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
@@ -175,28 +178,40 @@ impl YedMQApp {
         info!("plugin manager load succeed");
         //
 
-        // init topic manager
-        info!("start load topic manager");
-        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-        info!("topic manager load succeed");
-        //
-
         let metric = Arc::new(metric::Metric::new());
 
         let join_handles = Mutex::new(vec![]);
+
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+
+        // init raft manager
+        let raft_manager = Arc::new(
+            crate::raft::raft_manager::RaftManager::new(settings.clone(), topic_storage.clone())
+                .await,
+        );
+        //
+
+        // init topic manager
+        info!("start load topic manager");
+        let topic_manager = Arc::new(RwLock::new(TopicManager::new(
+            topic_storage.clone(),
+            raft_manager.clone(),
+            settings.cluster.node_id,
+        )));
+        info!("topic manager load succeed");
+        //
 
         YedMQApp {
             session_manager,
             plugin_manager,
             topic_manager,
+            raft_manager,
             router_sender: OnceCell::new(),
             settings,
             metric,
             join_handles,
+            topic_storage,
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
-            raft_grpc_running_tx: OnceCell::new(),
-            raft: OnceCell::new(),
-            config: OnceCell::new(),
         }
     }
 }

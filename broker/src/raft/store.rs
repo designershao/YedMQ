@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::topic::topic_storage::Subscription;
+use crate::topic::topic_storage::TopicStorage;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
@@ -36,8 +37,7 @@ use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
-use crate::topic::Subscription;
-use crate::topic::TopicManager;
+use yedmq_mqtt::MqttPacketV3;
 
 use super::typ;
 use super::SnapshotData;
@@ -50,7 +50,7 @@ type StorageResult<T> = Result<T, StorageError<NodeId>>;
 pub enum Request {
     // Subscribe topic
     SubscribeTopic {
-        node: Node,
+        node_id: NodeId,
         tenant_id: String,
         client_identifier: String,
         topic: String,
@@ -58,11 +58,23 @@ pub enum Request {
     },
     // Unsubscribe topic
     UnsubscribeTopic {
-        node: Node,
+        node_id: NodeId,
         tenant_id: String,
         client_identifier: String,
         topic: String,
     },
+    RegisterRetainPublishPacket {
+        tenant_id: String,
+        source_client_identifier: String,
+        publish_packet: MqttPacketV3,
+    },
+    CleanRetainPublishPacket {
+        tenant_id: String,
+        topic_filter: String,
+    },
+    CreateTenant {
+        tenant_id: String,
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -81,16 +93,12 @@ pub struct StoredSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotWrapper {
-    pub topic_manager_snapshot: Vec<u8>,
-
-    pub topic_router_snapshot: Vec<u8>,
+    pub topic_storage_snapshot: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
 pub struct State {
-    pub topic_manager: Arc<RwLock<TopicManager>>,
-
-    pub topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>,
+    pub topic_storage: Arc<RwLock<TopicStorage>>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,16 +125,8 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
         let last_membership = self.data.last_membership.clone();
 
         let snapshot_json = {
-            let topic_manager = self.data.state.topic_manager.read().await;
-            let topic_manager_serialized = serde_json::to_vec(&*topic_manager)
-                .map_err(|e| StorageIOError::read_state_machine(&e))?;
-            let topic_router = self.data.state.topic_router.read().await;
-            let topic_router_serialized = serde_json::to_vec(&*topic_router)
-                .map_err(|e| StorageIOError::read_state_machine(&e))?;
-
             let snapshot_data = SnapshotWrapper {
-                topic_manager_snapshot: topic_manager_serialized,
-                topic_router_snapshot: topic_router_serialized,
+                topic_storage_snapshot: self.data.state.topic_storage.read().await.to_snapshot(),
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -157,16 +157,15 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
 }
 
 impl StateMachineStore {
-
-    async fn new(db: Arc<DB>, topic_manager: Arc<RwLock<TopicManager>>, topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>) -> Result<StateMachineStore, StorageError<NodeId>> {
+    async fn new(
+        db: Arc<DB>,
+        topic_storage: Arc<RwLock<TopicStorage>>,
+    ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
                 last_applied_log_id: None,
                 last_membership: Default::default(),
-                state: State {
-                    topic_manager,
-                    topic_router
-                },
+                state: State { topic_storage },
             },
             snapshot_idx: 0,
             db,
@@ -207,13 +206,9 @@ impl StateMachineStore {
         self.data.last_applied_log_id = snapshot.meta.last_log_id;
         self.data.last_membership = snapshot.meta.last_membership.clone();
 
-        let mut topic_manager = self.data.state.topic_manager.write().await;
-        let mut topic_router = self.data.state.topic_router.write().await;
+        let mut topic_storage = self.data.state.topic_storage.write().await;
 
-        *topic_router = serde_json::from_slice(&state.topic_router_snapshot)
-            .map_err(|e| StorageIOError::read_snapshot(Some(snapshot.meta.signature()), &e))?;
-        *topic_manager = serde_json::from_slice(&state.topic_manager_snapshot)
-            .map_err(|e| StorageIOError::read_snapshot(Some(snapshot.meta.signature()), &e))?;
+        *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot);
 
         Ok(())
     }
@@ -273,50 +268,62 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 EntryPayload::Blank => {}
                 EntryPayload::Normal(req) => match req {
                     Request::SubscribeTopic {
-                        node,
+                        node_id,
                         tenant_id,
                         client_identifier,
                         topic,
                         qos,
                     } => {
-                        let mut topic_manager = self.data.state.topic_manager.write().await;
-                        if !topic_manager.contains_tenant(&tenant_id) {
-                            topic_manager.create_tenant(tenant_id.clone());
+                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        if !topic_storage.contains_tenant(&tenant_id) {
+                            topic_storage.create_tenant(&tenant_id);
                         }
-                        let _ = topic_manager.subscription(
+                        let _ = topic_storage.subscribe(
                             tenant_id,
                             client_identifier,
                             topic.clone(),
                             qos,
+                            node_id,
                         );
-
-                        let mut topic_router = self.data.state.topic_router.write().await;
-                        if topic_router.contains_key(&topic) {
-                            let nodes = topic_router.get_mut(&topic).unwrap();
-                            nodes.push(node);
-                        } else {
-                            topic_router.insert(topic.clone(), vec![node]);
-                        }
                     }
                     Request::UnsubscribeTopic {
-                        node,
+                        node_id,
                         tenant_id,
                         client_identifier,
                         topic,
                     } => {
-                        let mut topic_manager = self.data.state.topic_manager.write().await;
+                        let mut topic_storage = self.data.state.topic_storage.write().await;
 
-                        let _ = topic_manager.unsubscription(
-                            tenant_id,
-                            client_identifier,
-                            topic.clone(),
+                        let _ = topic_storage.unsubscribe(
+                            &tenant_id,
+                            &client_identifier,
+                            &topic,
+                            node_id,
                         );
+                    }
+                    Request::RegisterRetainPublishPacket {
+                        tenant_id,
+                        source_client_identifier,
+                        publish_packet,
+                    } => {
+                        let mut topic_storage = self.data.state.topic_storage.write().await;
 
-                        let mut topic_router = self.data.state.topic_router.write().await;
-                        if topic_router.contains_key(&topic) {
-                            let nodes = topic_router.get_mut(&topic).unwrap();
-                            nodes.retain(|x| *x != node);
-                        }
+                        let _ = topic_storage.register_retain_publish_packet(
+                            tenant_id,
+                            source_client_identifier,
+                            &publish_packet,
+                        );
+                    },
+                    Request::CleanRetainPublishPacket {
+                        tenant_id,
+                        topic_filter,
+                    } => {
+                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let _ = topic_storage.clean_retain_publish_packet(tenant_id, &topic_filter);
+                    },
+                    Request::CreateTenant { tenant_id } => {
+                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        topic_storage.create_tenant(&tenant_id);
                     }
                 },
                 EntryPayload::Membership(mem) => {
@@ -598,7 +605,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 }
 
-pub(crate) async fn new_storage<P: AsRef<Path>>(db_path: P, topic_manager: Arc<RwLock<TopicManager>>, topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>) -> (LogStore, StateMachineStore) {
+pub(crate) async fn new_storage<P: AsRef<Path>>(
+    db_path: P,
+    topic_storage: Arc<RwLock<TopicStorage>>,
+) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
     db_opts.create_if_missing(true);
@@ -610,7 +620,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(db_path: P, topic_manager: Arc<R
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };
-    let sm_store = StateMachineStore::new(db, topic_manager, topic_router).await.unwrap();
+    let sm_store = StateMachineStore::new(db, topic_storage).await.unwrap();
 
     (log_store, sm_store)
 }

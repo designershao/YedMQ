@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
+use crate::app::YedMQApp;
 use axum::{
-    extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
 };
 use log::error;
 use serde::Serialize;
-use crate::app::YedMQApp;
 
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
@@ -19,7 +22,7 @@ pub struct RetainMessage {
 
 pub async fn clean_retain_message(
     State(app_state): State<Arc<YedMQApp>>,
-    Path((tenant_id,topic_filter)): Path<(String,String)>,
+    Path((tenant_id, topic_filter)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let r = app_state
         .topic_manager
@@ -49,18 +52,19 @@ pub async fn retain_message_list(
         .topic_manager
         .read()
         .await
-        .get_retain_message_list_with_pagination(tenant_id.as_str(), offset_param, limit_param);
+        .get_retain_message_list_with_pagination(tenant_id.as_str(), offset_param, limit_param)
+        .await;
 
     if let Err(err) = r {
-        if let Some(topic_error) = err.downcast_ref::<crate::topic::Error>() {
+        if let Some(topic_error) = err.downcast_ref::<crate::topic::topic_storage::Error>() {
             let error_response = match topic_error {
-                crate::topic::Error::TenantNotFound(_) => {
+                crate::topic::topic_storage::Error::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
                         code: 3,
                         message: format!("tenant {} not existed", tenant_id),
                     };
                     (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                },
+                }
                 _ => {
                     error!("get retain message list error: {}", topic_error);
                     let error_response = super::ErrorResponse {

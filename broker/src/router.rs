@@ -3,7 +3,7 @@ use std::sync::Arc;
 use log::{debug, warn};
 use tokio::{select, sync::RwLock};
 
-use crate::{session::session_manager::SessionManager, topic::TopicManager};
+use crate::{session::session_manager::SessionManager, topic::topic_manager::TopicManager};
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
 
@@ -54,7 +54,7 @@ impl Router {
     }
 
     pub async fn route_to_all_tenants(&self, packet: &MqttPacketV3) -> Result<()> {
-        let tenants = self.topic_manager.read().await.get_tenant_names();
+        let tenants = self.topic_manager.read().await.get_tenant_names().await;
         for tenant in tenants.iter() {
             self.route(tenant, packet).await?;
         }
@@ -66,7 +66,7 @@ impl Router {
             let topic = publish_packet.variable_header.topic_name.clone();
             let topic_manager = self.topic_manager.read().await;
             let subscriptions = topic_manager
-                .get_subscriptions(tenant_identifier.clone(), topic)
+                .get_subscribers(tenant_identifier.clone(), topic).await
                 .unwrap();
             let session_manager = self.session_manager.read().await;
             for item in subscriptions.iter() {

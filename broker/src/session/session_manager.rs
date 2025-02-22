@@ -27,7 +27,7 @@ use crate::{
     inflight::Inflight,
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
-    topic::TopicManager,
+    topic::topic_manager::TopicManager,
 };
 
 use super::WillMessage;
@@ -272,7 +272,7 @@ impl SessionWrapper {
         {
             let mut topic_manager = self.topic_manager.write().await;
             for topic in unsub_topic_filters {
-                let _ = topic_manager.unsubscription(
+                let _ = topic_manager.handle_unsubscribe(
                     self.session.tenant_identifier.clone(),
                     self.session.client_identifier.clone(),
                     topic.topic_name.clone(),
@@ -315,12 +315,12 @@ impl SessionWrapper {
                 let mut topic_manager = self.topic_manager.write().await;
                 let topic = subscribe_packet.payload.topic_filters[i].clone();
                 if is_allowd_subscribe(&plugin_return_code[i]) {
-                    let sub_result = topic_manager.subscription(
+                    let sub_result = topic_manager.handle_subscribe(
                         self.session.tenant_identifier.clone(),
                         self.session.client_identifier.clone(),
                         topic.topic_name.clone(),
                         topic.qos,
-                    );
+                    ).await;
                     if let Ok(_) = sub_result {
                         match plugin_return_code[i] {
                             SubscribeReturnCode::MaxQosMostOnce => {
@@ -344,7 +344,7 @@ impl SessionWrapper {
                         let packets = topic_manager.get_retain_publish_packet(
                             self.session.tenant_identifier.clone(),
                             topic.topic_name.clone(),
-                        );
+                        ).await;
                         if let Ok(packets) = packets {
                             for packet in packets {
                                 retain_messages.push(packet);
@@ -804,11 +804,11 @@ impl SessionWrapper {
         // unsubscribe all topics
         for topic in &self.session.subscription_topics {
             debug!("unsubscribe topic {}", topic);
-            if let Err(e) = self.topic_manager.write().await.unsubscription(
+            if let Err(e) = self.topic_manager.write().await.handle_unsubscribe(
                 self.session.tenant_identifier.clone(),
                 self.session.client_identifier.clone(),
                 topic.clone(),
-            ) {
+            ).await {
                 error!(
                     "when exit session event loop, unsubscribe topic {} error: {}",
                     topic, e

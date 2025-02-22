@@ -29,14 +29,14 @@ pub async fn topic_list(
         .topic_manager
         .read()
         .await
-        .get_topic_list_with_pagination(&tenant_id, offset_param, limit_param);
+        .get_topic_list_with_pagination(&tenant_id, offset_param, limit_param).await;
 
     if let Err(err) = topic_list_result {
 
-        let error = err.downcast_ref::<crate::topic::Error>();
+        let error = err.downcast_ref::<crate::topic::topic_storage::Error>();
         if let Some(topic_error) = error {
             let error_response = match topic_error {
-                crate::topic::Error::TenantNotFound(_) => {
+                crate::topic::topic_storage::Error::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
                         code: 3,
                         message: format!("tenant {} not existed", tenant_id),

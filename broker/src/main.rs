@@ -17,7 +17,7 @@ async fn main() {
 
     let settings =Arc::new(s.unwrap());
 
-    let app = Arc::new(YedMQApp::new(settings.clone()));
+    let app = Arc::new(YedMQApp::new(settings.clone()).await);
 
     YedMQApp::start(app).await;
 
