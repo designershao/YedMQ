@@ -437,13 +437,13 @@ impl SessionWrapper {
                     let _ = topic_manager.clean_retain_publish_packet(
                         self.session.tenant_identifier.clone(),
                         &packet.variable_header.topic_name,
-                    );
+                    ).await;
                 } else {
                     let _ = topic_manager.register_retain_publish_packet(
                         self.session.tenant_identifier.clone(),
                         self.session.client_identifier.clone(),
                         &MqttPacketV3::Publish(packet.clone()),
-                    );
+                    ).await;
                 }
                 //
             }
@@ -1038,6 +1038,7 @@ impl SessionManager {
 mod tests {
     use std::{collections::HashMap, env, fs, path::Path, sync::Arc, time::Duration, vec};
 
+    use portpicker::pick_unused_port;
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
     use yedmq_mqtt::v3::{
         pingreq::PingreqPacketBuilder,
@@ -1137,13 +1138,15 @@ mod tests {
 
         let test_node_id = 1;
 
+        let port = pick_unused_port().unwrap();
+
         let test_cluster_cfg = Cluster {
             cluster_name: "test_cluster".to_string(),
             heartbeat_interval: 10,
             node_id: 1,
             store_dir: test_temp_store_dir.clone(),
             rpc: RPC {
-                external: "127.0.0.1:4321".to_string(),
+                external: format!("127.0.0.1:{}", port).to_string(),
             }
         };
 
@@ -1588,6 +1591,7 @@ mod tests {
             .unwrap();
 
         let _ = router_receiver.recv().await.unwrap();
+
 
         let result = topic_manager
             .write()

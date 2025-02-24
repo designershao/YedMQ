@@ -312,11 +312,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     } => {
                         let mut topic_storage = self.data.state.topic_storage.write().await;
 
-                        let _ = topic_storage.register_retain_publish_packet(
+                        topic_storage.register_retain_publish_packet(
                             tenant_id,
                             source_client_identifier,
                             &publish_packet,
-                        );
+                        ).unwrap();
                         replies.push(Response::None);
                     },
                     Request::CleanRetainPublishPacket {

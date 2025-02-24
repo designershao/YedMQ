@@ -28,7 +28,7 @@ pub async fn clean_retain_message(
         .topic_manager
         .write()
         .await
-        .clean_retain_publish_packet(tenant_id, &topic_filter);
+        .clean_retain_publish_packet(tenant_id, &topic_filter).await;
     if let Err(err) = r {
         error!("clean retain message error: {}", err);
         let error_response = super::ErrorResponse {

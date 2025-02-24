@@ -89,7 +89,7 @@ impl TopicManager {
         inner_storage.get_subscriptions(tenant_id, msg_topic)
     }
 
-    pub fn clean_retain_publish_packet(
+    pub async fn clean_retain_publish_packet(
         &mut self,
         tenant_id: String,
         topic_filter: &String,
@@ -99,7 +99,7 @@ impl TopicManager {
             .execute_command(Request::CleanRetainPublishPacket {
                 tenant_id,
                 topic_filter: topic_filter.to_string(),
-            });
+            }).await.unwrap();
         Ok(())
     }
 
@@ -108,19 +108,19 @@ impl TopicManager {
         inner_storage.get_tenant_names()
     }
 
-    pub fn register_retain_publish_packet(
+    pub async fn register_retain_publish_packet(
         &mut self,
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
     ) -> Result<(), Error> {
-        let _ = self
+        self
             .raft_manager
             .execute_command(Request::RegisterRetainPublishPacket {
                 tenant_id,
                 source_client_identifier,
                 publish_packet: publish_packet.clone(),
-            });
+            }).await.unwrap();
         Ok(())
     }
 
