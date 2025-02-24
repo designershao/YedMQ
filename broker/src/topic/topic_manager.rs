@@ -134,9 +134,9 @@ impl TopicManager {
     }
 
     pub async fn create_tenant(&mut self, tenant_id: String) -> Result<(), Error> {
-        let _ = self
+        self
             .raft_manager
-            .execute_command(Request::CreateTenant { tenant_id });
+            .execute_command(Request::CreateTenant { tenant_id }).await.unwrap();
         Ok(())
     }
 }

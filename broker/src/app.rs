@@ -186,8 +186,11 @@ impl YedMQApp {
 
         // init raft manager
         let raft_manager = Arc::new(
-            crate::raft::raft_manager::RaftManager::new(settings.clone(), topic_storage.clone())
-                .await,
+            crate::raft::raft_manager::RaftManager::new(
+                settings.cluster.clone(),
+                topic_storage.clone(),
+            )
+            .await,
         );
         //
 

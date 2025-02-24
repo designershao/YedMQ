@@ -38,7 +38,12 @@ impl MqttTcpListener {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::{BTreeMap, HashMap}, path::PathBuf, time::Duration};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        env, fs,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
 
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -47,7 +52,13 @@ mod tests {
 
     use yedmq_mqtt::MqttPacketV3;
 
-    use crate::{plugin_manager::PluginManager, session::session_manager::{SessionManager, SessionMessage}, settings::Settings, topic::TopicManager};
+    use crate::{
+        plugin_manager::PluginManager,
+        raft::raft_manager::RaftManager,
+        session::session_manager::{SessionManager, SessionMessage},
+        settings::{Cluster, Settings, RPC},
+        topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
+    };
 
     use super::*;
 
@@ -56,19 +67,59 @@ mod tests {
         rand::thread_rng().gen_range(1024..=65535)
     }
 
-    fn mock_app(
-        settings: Arc<crate::settings::Settings>,
-    ) -> crate::app::YedMQApp {
+    async fn mock_raft_manager() -> RaftManager {
+        // Generate a random temporary directory
+        let tmp_dir = env::temp_dir();
+        let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&random_dir).unwrap();
+        let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
+
+        let test_cluster_cfg = Cluster {
+            cluster_name: "test_cluster".to_string(),
+            heartbeat_interval: 10,
+            node_id: 1,
+            store_dir: test_temp_store_dir.clone(),
+            rpc: RPC {
+                external: "127.0.0.1:4321".to_string(),
+            }
+        };
+
+        RaftManager::new(
+            test_cluster_cfg,
+            Arc::new(RwLock::new(TopicStorage::new())),
+        )
+        .await
+    }
+
+    async fn mock_topic_manager(
+        topic_storage: Arc<RwLock<TopicStorage>>,
+        raft_manager: Arc<RaftManager>,
+        test_node_id: u64,
+    ) -> TopicManager {
+        TopicManager::new(
+            topic_storage.clone(),
+            raft_manager.clone(),
+            test_node_id,
+        )
+    }
+
+    async fn mock_app(settings: Arc<crate::settings::Settings>) -> crate::app::YedMQApp {
         let crate_root_path = env!("CARGO_MANIFEST_DIR");
         let plugin_path = PathBuf::from(crate_root_path).join("tests");
 
         let plugin_manager =
-            PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone()).unwrap();
+            PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone())
+                .unwrap();
         let plugin_manager = Arc::new(plugin_manager);
         let session_manager = Arc::new(RwLock::new(SessionManager {
-            sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new()
+            sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
         }));
-        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        let raft_manager = Arc::new(mock_raft_manager().await);
+
+        let topic_manager = Arc::new(RwLock::new(
+            mock_topic_manager(topic_storage.clone(), raft_manager.clone(), 1).await,
+        ));
         let (router_sender, _) = tokio::sync::mpsc::channel(10);
 
         let router_sender_once_cell = OnceCell::new();
@@ -83,9 +134,8 @@ mod tests {
             metric: Arc::new(crate::metric::Metric::new()),
             join_handles: Mutex::new(vec![]),
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
-            raft_grpc_running_tx: OnceCell::new(),
-            raft: OnceCell::new(),
-            config: OnceCell::new()
+            topic_storage: topic_storage,
+            raft_manager: raft_manager,
         }
     }
 
@@ -94,7 +144,6 @@ mod tests {
         let keep_live_duration_secs = 5;
 
         let resend_duration_secs = 10;
-
 
         let tcp_port = random_tcp_port();
 
@@ -134,15 +183,13 @@ mod tests {
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
             },
-            cluster: crate::settings::Cluster::default()
+            cluster: crate::settings::Cluster::default(),
         };
 
         let settings = Arc::new(settings);
-        let app = Arc::new(mock_app(settings.clone()));
+        let app = Arc::new(mock_app(settings.clone()).await);
 
-        let listener = MqttTcpListener {
-            app,
-        };
+        let listener = MqttTcpListener { app };
 
         tokio::spawn(async move {
             listener.run().await.unwrap();
@@ -220,15 +267,13 @@ mod tests {
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
             },
-            cluster: crate::settings::Cluster::default()
+            cluster: crate::settings::Cluster::default(),
         };
 
         let settings = Arc::new(settings);
-        let app = Arc::new(mock_app(settings.clone()));
+        let app = Arc::new(mock_app(settings.clone()).await);
 
-        let listener = MqttTcpListener {
-            app,
-        };
+        let listener = MqttTcpListener { app };
 
         tokio::spawn(async move {
             listener.run().await.unwrap();

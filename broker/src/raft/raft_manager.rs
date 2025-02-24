@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
 
 use log::info;
 use openraft::Config;
@@ -9,7 +9,7 @@ use crate::{
         raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
         AppendEntriesRequest,
     },
-    settings::Settings,
+    settings::{Cluster, Settings},
     topic::topic_storage::TopicStorage,
 };
 
@@ -21,7 +21,6 @@ use super::{
 };
 
 pub struct RaftManager {
-
     pub raft: YedMQRaft,
 
     current_leader: Arc<RwLock<Option<NodeId>>>,
@@ -30,17 +29,52 @@ pub struct RaftManager {
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
+    cluster_cfg: Cluster,
+
     running_rx: watch::Receiver<()>,
 
     running_tx: watch::Sender<()>,
+}
 
+impl Drop for RaftManager {
+    fn drop(&mut self) {
+        println!("Raft drop: id={}", self.cluster_cfg.node_id);
+    }
 }
 
 impl RaftManager {
-    pub async fn new(settings: Arc<Settings>, topic_storage: Arc<RwLock<TopicStorage>>) -> Self {
-        let raft_config = Self::get_raft_config(settings.clone()).await;
+    pub async fn stop(&self) -> Result<(), anyhow::Error> {
+        let mut rx = self.raft.metrics();
 
-        let dir = Path::new(&settings.cluster.store_dir);
+        self.raft
+            .shutdown()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to shutdown raft, {}", e))?;
+
+        self.running_tx.send(()).unwrap();
+
+        loop {
+            let r = rx.changed().await;
+            if r.is_err() {
+                break;
+            }
+        }
+
+        for j in self.join_handles.lock().await.iter_mut() {
+            let _rst = j.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+        }
+
+        info!("Raft shutdown: id={}", self.cluster_cfg.node_id);
+        Ok(())
+    }
+
+    pub async fn new(
+        cluster_cfg: Cluster,
+        topic_storage: Arc<RwLock<TopicStorage>>,
+    ) -> Self {
+        let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
+
+        let dir = Path::new(&cluster_cfg.store_dir);
 
         let config = Arc::new(raft_config.validate().unwrap());
 
@@ -49,7 +83,7 @@ impl RaftManager {
         let network = Network {};
 
         let raft = openraft::Raft::new(
-            settings.cluster.node_id,
+            cluster_cfg.node_id,
             config.clone(),
             network,
             log_store,
@@ -66,6 +100,7 @@ impl RaftManager {
             join_handles: Mutex::new(vec![]),
             running_rx: rx,
             running_tx: tx,
+            cluster_cfg
         };
 
         manager.start_monitor_raft_metrics();
@@ -83,6 +118,19 @@ impl RaftManager {
                 *state = rx.borrow().current_leader;
             }
         });
+    }
+
+    pub async fn init_cluster(&self) -> Result<(), anyhow::Error> {
+        let mut cluster_nodes = BTreeMap::new();
+        cluster_nodes.insert(
+            self.cluster_cfg.node_id, 
+            Node {
+                rpc_addr: self.cluster_cfg.rpc.external.to_string(),
+                api_addr: self.cluster_cfg.rpc.external.to_string(),
+            }
+        );
+
+        self.raft.initialize(cluster_nodes).await.map_err(|e| anyhow::anyhow!("Failed to initialize cluster, {:?}", e))
     }
 
     pub async fn is_leader(&self) -> bool {
@@ -121,26 +169,27 @@ impl RaftManager {
             // current node is leader
             let res = self.raft.client_write(command).await;
             if res.is_err() {
-                return Err(anyhow::anyhow!("ClientWrite failed"));
+                return Err(anyhow::anyhow!("ClientWrite failed: {:?}", res));
             }
         }
         Ok(())
     }
 
-    async fn get_raft_config(settings: Arc<Settings>) -> Config {
-        let heartbeat_interval = settings.cluster.heartbeat_interval as u64;
-        let election_timeout_min = heartbeat_interval * 2;
+    async fn get_raft_config(heartbeat_interval: u64) -> Config {
+        let election_timeout_min = heartbeat_interval * 1000 * 8;
+        let election_timeout_max = heartbeat_interval * 1000 * 12;
+        let heartbeat_interval = heartbeat_interval * 1000;
 
         Config {
             heartbeat_interval,
             election_timeout_min,
+            election_timeout_max,
             ..Default::default()
         }
     }
 
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
-        settings: Arc<Settings>,
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
@@ -148,7 +197,7 @@ impl RaftManager {
             raft_manager: raft_manager.clone(),
         };
 
-        let addr_str = settings.cluster.rpc.external.to_string();
+        let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();
         let ret = addr_str.parse::<std::net::SocketAddr>();
 
         let addr = match ret {
@@ -161,10 +210,14 @@ impl RaftManager {
         let svc = RaftServiceServer::new(raft_service);
         let srv = tonic::transport::server::Server::builder().add_service(svc);
 
+        info!("about to start raft grpc on resolved addr {}", addr);
+
+        let node_id = raft_manager.cluster_cfg.node_id;
+
         let h = tokio::spawn(async move {
             srv.serve_with_shutdown(addr, async move {
                 let _ = rx.changed().await;
-                info!("signal receivbed, shutting down: id={} {}", addr, addr_str);
+                info!("signal receivbed, shutting down: id={} {}", addr, node_id);
             })
             .await
             .map_err(|e| anyhow::anyhow!(e))?;

@@ -82,6 +82,8 @@ pub enum Response {
     get_topic_subscriptions_response { subscriptions: Vec<Subscription> },
 
     get_topic_router_response { nodes: Vec<Node> },
+
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,7 +259,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter();
-        let replies = Vec::with_capacity(entries.size_hint().0);
+        let mut replies = Vec::with_capacity(entries.size_hint().0);
 
         for ent in entries {
             self.data.last_applied_log_id = Some(ent.log_id);
@@ -265,7 +267,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             //let mut resp_value = None;
 
             match ent.payload {
-                EntryPayload::Blank => {}
+                EntryPayload::Blank => {
+                    replies.push(Response::None);
+                },
                 EntryPayload::Normal(req) => match req {
                     Request::SubscribeTopic {
                         node_id,
@@ -313,6 +317,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             source_client_identifier,
                             &publish_packet,
                         );
+                        replies.push(Response::None);
                     },
                     Request::CleanRetainPublishPacket {
                         tenant_id,
@@ -320,14 +325,17 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     } => {
                         let mut topic_storage = self.data.state.topic_storage.write().await;
                         let _ = topic_storage.clean_retain_publish_packet(tenant_id, &topic_filter);
+                        replies.push(Response::None);
                     },
                     Request::CreateTenant { tenant_id } => {
                         let mut topic_storage = self.data.state.topic_storage.write().await;
                         topic_storage.create_tenant(&tenant_id);
+                        replies.push(Response::None);
                     }
                 },
                 EntryPayload::Membership(mem) => {
                     self.data.last_membership = StoredMembership::new(Some(ent.log_id), mem);
+                    replies.push(Response::None);
                 }
             }
         }

@@ -270,7 +270,7 @@ impl SessionWrapper {
     ) -> Result<()> {
         let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
         {
-            let mut topic_manager = self.topic_manager.write().await;
+            let topic_manager = self.topic_manager.write().await;
             for topic in unsub_topic_filters {
                 let _ = topic_manager.handle_unsubscribe(
                     self.session.tenant_identifier.clone(),
@@ -315,12 +315,14 @@ impl SessionWrapper {
                 let mut topic_manager = self.topic_manager.write().await;
                 let topic = subscribe_packet.payload.topic_filters[i].clone();
                 if is_allowd_subscribe(&plugin_return_code[i]) {
-                    let sub_result = topic_manager.handle_subscribe(
-                        self.session.tenant_identifier.clone(),
-                        self.session.client_identifier.clone(),
-                        topic.topic_name.clone(),
-                        topic.qos,
-                    ).await;
+                    let sub_result = topic_manager
+                        .handle_subscribe(
+                            self.session.tenant_identifier.clone(),
+                            self.session.client_identifier.clone(),
+                            topic.topic_name.clone(),
+                            topic.qos,
+                        )
+                        .await;
                     if let Ok(_) = sub_result {
                         match plugin_return_code[i] {
                             SubscribeReturnCode::MaxQosMostOnce => {
@@ -341,10 +343,12 @@ impl SessionWrapper {
                                 .push(topic.topic_name.clone());
                         }
 
-                        let packets = topic_manager.get_retain_publish_packet(
-                            self.session.tenant_identifier.clone(),
-                            topic.topic_name.clone(),
-                        ).await;
+                        let packets = topic_manager
+                            .get_retain_publish_packet(
+                                self.session.tenant_identifier.clone(),
+                                topic.topic_name.clone(),
+                            )
+                            .await;
                         if let Ok(packets) = packets {
                             for packet in packets {
                                 retain_messages.push(packet);
@@ -501,7 +505,7 @@ impl SessionWrapper {
             .qos(will_message.will_qos)
             .build();
             let _ = router_sender
-                .send(RouterCmd::RoutePacket{
+                .send(RouterCmd::RoutePacket {
                     tenant_identifier: self.session.tenant_identifier.clone(),
                     packet: MqttPacketV3::Publish(publish_packet),
                 })
@@ -804,11 +808,17 @@ impl SessionWrapper {
         // unsubscribe all topics
         for topic in &self.session.subscription_topics {
             debug!("unsubscribe topic {}", topic);
-            if let Err(e) = self.topic_manager.write().await.handle_unsubscribe(
-                self.session.tenant_identifier.clone(),
-                self.session.client_identifier.clone(),
-                topic.clone(),
-            ).await {
+            if let Err(e) = self
+                .topic_manager
+                .write()
+                .await
+                .handle_unsubscribe(
+                    self.session.tenant_identifier.clone(),
+                    self.session.client_identifier.clone(),
+                    topic.clone(),
+                )
+                .await
+            {
                 error!(
                     "when exit session event loop, unsubscribe topic {} error: {}",
                     topic, e
@@ -1026,7 +1036,7 @@ impl SessionManager {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, time::Duration, vec};
+    use std::{collections::HashMap, env, fs, path::Path, sync::Arc, time::Duration, vec};
 
     use tokio::sync::{mpsc::Sender, Mutex, RwLock};
     use yedmq_mqtt::v3::{
@@ -1040,13 +1050,12 @@ mod tests {
     use yedmq_plugin::plugin::{Client, ClientProperties};
 
     use crate::{
-        inflight::Inflight,
-        plugin_manager::{PluginService, SubscribeAuthorizationResult, SubscribeReturnCode},
-        router::RouterCmd,
-        session::session_manager::{
+        inflight::Inflight, plugin_manager::{PluginService, SubscribeAuthorizationResult, SubscribeReturnCode}, raft::raft_manager::RaftManager, router::RouterCmd, session::session_manager::{
             keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage, SessionWrapper,
-        },
-        topic::TopicManager,
+        }, settings::{Cluster, RPC}, topic::{
+            topic_manager::{self, TopicManager},
+            topic_storage::TopicStorage,
+        }
     };
 
     use super::{ConnectionMessage, Session, SessionContext, SessionManager};
@@ -1117,6 +1126,44 @@ mod tests {
             subscription_topics: vec![],
             inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(10)))),
         }
+    }
+
+    async fn mock_topic_manager() -> TopicManager {
+        // Generate a random temporary directory
+        let tmp_dir = env::temp_dir();
+        let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&random_dir).unwrap();
+        let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
+
+        let test_node_id = 1;
+
+        let test_cluster_cfg = Cluster {
+            cluster_name: "test_cluster".to_string(),
+            heartbeat_interval: 10,
+            node_id: 1,
+            store_dir: test_temp_store_dir.clone(),
+            rpc: RPC {
+                external: "127.0.0.1:4321".to_string(),
+            }
+        };
+
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+
+        let raft_manager = Arc::new(RaftManager::new(
+            test_cluster_cfg,
+            topic_storage.clone(),
+        )
+        .await);
+
+        RaftManager::start_grpc(raft_manager.clone()).await.unwrap();
+
+        raft_manager.init_cluster().await.unwrap();
+
+        TopicManager::new(
+            topic_storage.clone(), 
+            raft_manager.clone(), 
+            test_node_id
+        )
     }
 
     fn mock_session_context(
@@ -1202,11 +1249,13 @@ mod tests {
         let session_context =
             mock_session_context("username_a", connection_sender, 5, false, client_info);
 
+        let topic_manager = mock_topic_manager().await;
+
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(topic_manager)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1270,11 +1319,13 @@ mod tests {
             client_info,
         );
 
+        let topic_manager = mock_topic_manager().await;
+
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(topic_manager)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1347,11 +1398,13 @@ mod tests {
             client_info,
         );
 
+        let topic_manager = mock_topic_manager().await;
+
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(topic_manager)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1423,11 +1476,13 @@ mod tests {
             client_info,
         );
 
+        let topic_manager = mock_topic_manager().await;
+
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(topic_manager)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1464,7 +1519,8 @@ mod tests {
     }
 
     #[tokio::test]
-    pub async fn when_receive_publish_packet_with_retain_flag_and_empty_payload_should_unset_reatin_message_in_topic_manager() {
+    pub async fn when_receive_publish_packet_with_retain_flag_and_empty_payload_should_unset_reatin_message_in_topic_manager(
+    ) {
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1493,15 +1549,14 @@ mod tests {
             true,
             client_info,
         );
-
-        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-        topic_manager.write().await.create_tenant("tenant_a".into());
+        let topic_manager = Arc::new(RwLock::new(mock_topic_manager().await));
+        topic_manager.write().await.create_tenant("tenant_a".into()).await.unwrap();
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            topic_manager.clone()
+            topic_manager.clone(),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1521,8 +1576,9 @@ mod tests {
             .await
             .unwrap();
 
-        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01]).retain(true).build();
-
+        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01])
+            .retain(true)
+            .build();
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
@@ -1533,11 +1589,18 @@ mod tests {
 
         let _ = router_receiver.recv().await.unwrap();
 
-        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+        let result = topic_manager
+            .write()
+            .await
+            .get_retain_publish_packet("tenant_a".into(), "/a/b".into())
+            .await
+            .unwrap();
 
         assert_eq!(1, result.len());
 
-        let clean_retain_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![]).retain(true).build();
+        let clean_retain_packet = PublishPacketBuilder::new("/a/b".to_string(), vec![])
+            .retain(true)
+            .build();
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
@@ -1548,15 +1611,20 @@ mod tests {
 
         let _ = router_receiver.recv().await.unwrap();
 
-        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+        let result = topic_manager
+            .write()
+            .await
+            .get_retain_publish_packet("tenant_a".into(), "/a/b".into())
+            .await
+            .unwrap();
+        
 
         assert_eq!(0, result.len());
-
     }
 
-
     #[tokio::test]
-    pub async fn when_receive_publish_packet_with_retain_flag_should_set_reatin_message_in_topic_manager() {
+    pub async fn when_receive_publish_packet_with_retain_flag_should_set_reatin_message_in_topic_manager(
+    ) {
         let keep_alive_expired_secs = 5;
 
         let session_mock = mock_session("client_a", "tenant_a");
@@ -1586,14 +1654,14 @@ mod tests {
             client_info,
         );
 
-        let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
-        topic_manager.write().await.create_tenant("tenant_a".into());
+        let topic_manager = Arc::new(RwLock::new(mock_topic_manager().await));
+        topic_manager.write().await.create_tenant("tenant_a".into()).await;
 
         let mut session_wrapper = SessionWrapper::new(
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            topic_manager.clone()
+            topic_manager.clone(),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1613,8 +1681,9 @@ mod tests {
             .await
             .unwrap();
 
-        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01]).retain(true).build();
-
+        let packet = PublishPacketBuilder::new("/a/b".to_string(), vec![0x01])
+            .retain(true)
+            .build();
 
         session_sender
             .send(SessionMessage::ReceiveFromClient(
@@ -1625,10 +1694,14 @@ mod tests {
 
         let _ = router_receiver.recv().await.unwrap();
 
-        let result = topic_manager.write().await.get_retain_publish_packet("tenant_a".into(), "/a/b".into()).unwrap();
+        let result = topic_manager
+            .write()
+            .await
+            .get_retain_publish_packet("tenant_a".into(), "/a/b".into())
+            .await
+            .unwrap();
 
         assert_eq!(1, result.len());
-
     }
 
     #[tokio::test]
@@ -1666,7 +1739,7 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -1697,7 +1770,10 @@ mod tests {
 
         let msg = router_receiver.recv().await.unwrap();
         match msg {
-            RouterCmd::RoutePacket{tenant_identifier, packet} => {
+            RouterCmd::RoutePacket {
+                tenant_identifier,
+                packet,
+            } => {
                 assert!(tenant_identifier == "tenant_a");
                 match packet {
                     yedmq_mqtt::MqttPacketV3::Publish(p) => {
@@ -1747,14 +1823,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await;
         }
 
         let session_sender_clone = session_sender.clone();
@@ -1793,7 +1869,8 @@ mod tests {
         let topic_manger = topic_manger_arc.read().await;
 
         let topics = topic_manger
-            .get_subscriptions("tenant_a".to_string(), "/a/b".to_string())
+            .get_subscribers("tenant_a".to_string(), "/a/b".to_string())
+            .await
             .unwrap();
         assert!(topics.len() == 1);
     }
@@ -1833,14 +1910,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await;
         }
 
         let session_sender_clone = session_sender.clone();
@@ -1919,14 +1996,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await;
         }
 
         let session_sender_clone = session_sender.clone();
@@ -2026,7 +2103,7 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let session_sender_clone = session_sender.clone();
@@ -2101,14 +2178,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await;
         }
 
         let session_sender_clone = session_sender.clone();
@@ -2181,14 +2258,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await.unwrap();
         }
 
         let session_sender_clone = session_sender.clone();
@@ -2276,14 +2353,14 @@ mod tests {
             session_mock,
             session_receiver,
             Arc::new(MockPluginManager),
-            Arc::new(RwLock::new(TopicManager::new())),
+            Arc::new(RwLock::new(mock_topic_manager().await)),
         );
 
         let topic_manger_arc = session_wrapper.topic_manager.clone();
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string());
+            topic_manager.create_tenant("tenant_a".to_string()).await.unwrap();
         }
 
         let session_sender_clone = session_sender.clone();

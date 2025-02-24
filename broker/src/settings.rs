@@ -169,7 +169,7 @@ impl Default for Tcp {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Cluster {
 
     pub cluster_name: String,
@@ -197,7 +197,7 @@ impl Default for Cluster {
 }
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize,Clone)]
 pub struct RPC {
     pub external: String
 }

@@ -1,17 +1,23 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
-use std::{thread, time};
+use std::{env, fs, thread, time};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
 use yedmq::metric::Metric;
 use yedmq::plugin_manager::PluginManager;
+use yedmq::raft::raft_manager::RaftManager;
 use yedmq::session::session_manager::SessionMessage;
 
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, OnceCell, RwLock};
+use yedmq::settings::{Cluster, RPC};
+use yedmq::topic;
+use yedmq::topic::topic_manager::TopicManager;
+use yedmq::topic::topic_storage::TopicStorage;
 use yedmq::{
     listener::tcp_listener::MqttTcpListener, router::Router,
-    session::session_manager::SessionManager, settings::Settings, topic::TopicManager,
+    session::session_manager::SessionManager, settings::Settings,
 };
 use yedmq_mqtt::{v3::subscribe::TopicFilter, MqttPacketV3};
 
@@ -20,7 +26,39 @@ fn random_tcp_port() -> u16 {
     rand::thread_rng().gen_range(1024..=65535)
 }
 
-fn mock_app(settings: Arc<Settings>) -> YedMQApp {
+async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftManager {
+    // Generate a random temporary directory
+    let tmp_dir = env::temp_dir();
+    let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&random_dir).unwrap();
+    let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
+
+    let test_cluster_cfg = Cluster {
+        cluster_name: "test_cluster".to_string(),
+        heartbeat_interval: 10,
+        node_id: 1,
+        store_dir: test_temp_store_dir.clone(),
+        rpc: RPC {
+            external: "127.0.0.1:4321".to_string(),
+        }
+    };
+
+    RaftManager::new(
+        test_cluster_cfg,
+        topic_storage.clone()
+    )
+    .await
+}
+
+async fn mock_topic_manager(
+    topic_storage: Arc<RwLock<TopicStorage>>,
+    raft_manager: Arc<RaftManager>,
+    test_node_id: u64,
+) -> TopicManager {
+    TopicManager::new(topic_storage.clone(), raft_manager.clone(), test_node_id)
+}
+
+async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
@@ -30,7 +68,12 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let session_manager = Arc::new(RwLock::new(SessionManager {
         sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
     }));
-    let topic_manager = Arc::new(RwLock::new(TopicManager::new()));
+    let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+    let raft_manager = Arc::new(mock_raft_manager(topic_storage.clone()).await);
+
+    let topic_manager = Arc::new(RwLock::new(
+        mock_topic_manager(topic_storage.clone(), raft_manager.clone(), 1).await,
+    ));
     let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
     let router_sender_once_cell = OnceCell::new();
@@ -54,10 +97,9 @@ fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         router_sender: router_sender_once_cell,
         metric: Arc::new(Metric::new()),
         join_handles: Mutex::new(vec![]),
-        raft_grpc_running_tx: OnceCell::new(),
         topic_router: Arc::new(RwLock::new(BTreeMap::new())),
-        raft: OnceCell::new(),
-        config: OnceCell::new(),
+        raft_manager,
+        topic_storage
     }
 }
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
@@ -111,13 +153,11 @@ pub async fn test_tcp_listener_connect() {
 
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let app = Arc::new(mock_app(settings.clone()));
+    let app = Arc::new(mock_app(settings.clone()).await);
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let listener = MqttTcpListener {
-        app: app.clone(),
-    };
+    let listener = MqttTcpListener { app: app.clone() };
 
     tokio::spawn(async move {
         listener.run().await.unwrap();
@@ -160,21 +200,18 @@ pub async fn test_tcp_listener_connect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 pub async fn test_tcp_client_subscribe_and_publish() {
-
     let keep_live_duration_secs = 5;
 
     let resend_duration_secs = 10;
 
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let app = Arc::new(mock_app(settings.clone()));
+    let app = Arc::new(mock_app(settings.clone()).await);
 
     let connect_address = settings.listener.tcp.external.clone();
     let connect_address_cloned = connect_address.clone();
 
-    let listener = MqttTcpListener {
-        app: app.clone(),
-    };
+    let listener = MqttTcpListener { app: app.clone() };
 
     tokio::spawn(async move {
         listener.run().await.unwrap();
@@ -329,13 +366,11 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let app = Arc::new(mock_app(settings.clone()));
+    let app = Arc::new(mock_app(settings.clone()).await);
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let listener = MqttTcpListener {
-        app: app.clone(),
-    };
+    let listener = MqttTcpListener { app: app.clone() };
 
     tokio::spawn(async move {
         listener.run().await.unwrap();
@@ -406,13 +441,11 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let settings = Arc::new(get_test_settings(2, resend_duration_secs));
 
-    let app = Arc::new(mock_app(settings.clone()));
+    let app = Arc::new(mock_app(settings.clone()).await);
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let listener = MqttTcpListener {
-        app: app.clone(),
-    };
+    let listener = MqttTcpListener { app: app.clone() };
 
     tokio::spawn(async move {
         listener.run().await.unwrap();
