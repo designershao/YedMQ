@@ -20,7 +20,7 @@ use crate::{
     settings::Settings,
     topic::{
         topic_manager::TopicManager,
-        topic_storage::{self, TopicStorage},
+        topic_storage::TopicStorage,
     },
 };
 

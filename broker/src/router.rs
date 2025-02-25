@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 use tokio::{select, sync::RwLock};
 
 use crate::{session::session_manager::SessionManager, topic::topic_manager::TopicManager};
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
 
+#[derive(Serialize, Deserialize)]
 // Represent router command
 pub enum RouterCmd {
     // Route publish packet to the subscribtion session

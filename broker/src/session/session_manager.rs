@@ -1158,7 +1158,9 @@ mod tests {
         )
         .await);
 
-        RaftManager::start_grpc(raft_manager.clone()).await.unwrap();
+        let (router_tx, _) = tokio::sync::mpsc::channel(100);
+
+        RaftManager::start_grpc(raft_manager.clone(), router_tx).await.unwrap();
 
         raft_manager.init_cluster().await.unwrap();
 
@@ -1834,7 +1836,7 @@ mod tests {
 
         {
             let mut topic_manager = topic_manger_arc.write().await;
-            topic_manager.create_tenant("tenant_a".to_string()).await;
+            topic_manager.create_tenant("tenant_a".to_string()).await.unwrap();
         }
 
         let session_sender_clone = session_sender.clone();

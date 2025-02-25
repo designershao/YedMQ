@@ -289,6 +289,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             qos,
                             node_id,
                         );
+                        replies.push(Response::None);
                     }
                     Request::UnsubscribeTopic {
                         node_id,
@@ -304,6 +305,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             &topic,
                             node_id,
                         );
+                        replies.push(Response::None);
                     }
                     Request::RegisterRetainPublishPacket {
                         tenant_id,

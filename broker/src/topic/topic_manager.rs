@@ -53,13 +53,13 @@ impl TopicManager {
         topic_filter: String,
         qos: u8,
     ) -> Result<(), Error> {
-        let _ = self.raft_manager.execute_command(Request::SubscribeTopic {
+        self.raft_manager.execute_command(Request::SubscribeTopic {
             node_id: self.current_node_id,
             tenant_id,
             client_identifier,
             topic: topic_filter,
             qos,
-        });
+        }).await.unwrap();
         Ok(())
     }
 
@@ -69,14 +69,14 @@ impl TopicManager {
         client_identifier: String,
         topic_filter: String,
     ) -> Result<(), Error> {
-        let _ = self
+        self
             .raft_manager
             .execute_command(Request::UnsubscribeTopic {
                 node_id: self.current_node_id,
                 tenant_id,
                 client_identifier,
                 topic: topic_filter,
-            });
+            }).await.unwrap();
         Ok(())
     }
 

@@ -2,15 +2,13 @@ use std::{collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
 
 use log::info;
 use openraft::Config;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
 
 use crate::{
     protobuf::{
         raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
         AppendEntriesRequest,
-    },
-    settings::{Cluster, Settings},
-    topic::topic_storage::TopicStorage,
+    }, router::RouterCmd, settings::{Cluster, Settings}, topic::topic_storage::TopicStorage
 };
 
 use super::{
@@ -190,11 +188,13 @@ impl RaftManager {
 
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
+        router_sender: Sender<RouterCmd>
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
         let raft_service = RaftServiceImpl {
             raft_manager: raft_manager.clone(),
+            router_sender
         };
 
         let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();

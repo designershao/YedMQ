@@ -10,6 +10,22 @@ service RaftService {
 
   rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
 
+  rpc RoutePacket(RoutePacketRequest) returns (RoutePacketResponse);
+
+}
+
+message RoutePacketRequest {
+
+  string tenant_id = 1;
+
+  string client_id = 2;
+
+  string packet = 3;
+
+}
+
+message RoutePacketResponse {
+  string error = 1;
 }
 
 message AppendEntriesRequest {
