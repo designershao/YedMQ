@@ -1,4 +1,9 @@
-use std::{collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    path::Path,
+    sync::Arc,
+};
 
 use log::info;
 use openraft::Config;
@@ -8,7 +13,10 @@ use crate::{
     protobuf::{
         raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
         AppendEntriesRequest,
-    }, router::RouterCmd, settings::{Cluster, Settings}, topic::topic_storage::TopicStorage
+    },
+    router::RouterCmd,
+    settings::Cluster,
+    topic::topic_storage::TopicStorage,
 };
 
 use super::{
@@ -17,6 +25,31 @@ use super::{
     store::{new_storage, Request},
     Node, NodeId, YedMQRaft,
 };
+
+#[derive(Debug)]
+pub enum RaftManagerError {
+    NodeUnavailable(String),
+    ElectionFailure(String),
+    LogSyncError(String),
+    TimeoutError(String),
+    NetworkError(String),
+    InternalError(String),
+    Unknown(String),
+}
+
+impl fmt::Display for RaftManagerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            RaftManagerError::NodeUnavailable(ref msg) => write!(f, "Node Unavailable: {}", msg),
+            RaftManagerError::ElectionFailure(ref msg) => write!(f, "Election Failure: {}", msg),
+            RaftManagerError::LogSyncError(ref msg) => write!(f, "Log Sync Error: {}", msg),
+            RaftManagerError::TimeoutError(ref msg) => write!(f, "Timeout Error: {}", msg),
+            RaftManagerError::NetworkError(ref msg) => write!(f, "Network Error: {}", msg),
+            RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
+            RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
+        }
+    }
+}
 
 pub struct RaftManager {
     pub raft: YedMQRaft,
@@ -41,15 +74,27 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-    pub async fn stop(&self) -> Result<(), anyhow::Error> {
+    pub fn current_node_id(&self) -> NodeId {
+        self.cluster_cfg.node_id
+    }
+
+    pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
+        self.nodes.read().await.get(&id).cloned()
+    }
+
+    pub async fn stop(&self) -> Result<(), RaftManagerError> {
         let mut rx = self.raft.metrics();
 
         self.raft
             .shutdown()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to shutdown raft, {}", e))?;
+            .map_err(|e| RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e)))?;
 
-        self.running_tx.send(()).unwrap();
+        if let Err(e) = self.running_tx.send(()) {
+            return Err(RaftManagerError::InternalError(
+                format!("Failed to shutdown raft, {}", e),
+            ));
+        }
 
         loop {
             let r = rx.changed().await;
@@ -59,17 +104,16 @@ impl RaftManager {
         }
 
         for j in self.join_handles.lock().await.iter_mut() {
-            let _rst = j.await.map_err(|e| anyhow::anyhow!("{}", e))?;
+            let _rst = j
+                .await
+                .map_err(|e| RaftManagerError::InternalError(format!("{}", e)))?;
         }
 
         info!("Raft shutdown: id={}", self.cluster_cfg.node_id);
         Ok(())
     }
 
-    pub async fn new(
-        cluster_cfg: Cluster,
-        topic_storage: Arc<RwLock<TopicStorage>>,
-    ) -> Self {
+    pub async fn new(cluster_cfg: Cluster, topic_storage: Arc<RwLock<TopicStorage>>) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
         let dir = Path::new(&cluster_cfg.store_dir);
@@ -98,7 +142,7 @@ impl RaftManager {
             join_handles: Mutex::new(vec![]),
             running_rx: rx,
             running_tx: tx,
-            cluster_cfg
+            cluster_cfg,
         };
 
         manager.start_monitor_raft_metrics();
@@ -118,17 +162,19 @@ impl RaftManager {
         });
     }
 
-    pub async fn init_cluster(&self) -> Result<(), anyhow::Error> {
+    pub async fn init_cluster(&self) -> Result<(), RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
-            self.cluster_cfg.node_id, 
+            self.cluster_cfg.node_id,
             Node {
                 rpc_addr: self.cluster_cfg.rpc.external.to_string(),
                 api_addr: self.cluster_cfg.rpc.external.to_string(),
-            }
+            },
         );
 
-        self.raft.initialize(cluster_nodes).await.map_err(|e| anyhow::anyhow!("Failed to initialize cluster, {:?}", e))
+        self.raft.initialize(cluster_nodes).await.map_err(|e| {
+            RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
+        })
     }
 
     pub async fn is_leader(&self) -> bool {
@@ -139,12 +185,14 @@ impl RaftManager {
         self.current_leader.read().await.clone()
     }
 
-    pub async fn execute_command(&self, command: Request) -> Result<(), anyhow::Error> {
+    pub async fn execute_command(&self, command: Request) -> Result<(), RaftManagerError> {
         if !self.is_leader().await {
             let leader_node_id = self.get_leader().await;
 
             if leader_node_id.is_none() {
-                return Err(anyhow::anyhow!("No leader available"));
+                return Err(RaftManagerError::InternalError(
+                    "No leader available".into(),
+                ));
             } else {
                 let nodes = self.nodes.read().await;
 
@@ -160,14 +208,19 @@ impl RaftManager {
 
                 let res = client.append_entries(append_request).await;
                 if res.is_err() {
-                    return Err(anyhow::anyhow!("AppendEntries failed"));
+                    return Err(RaftManagerError::InternalError(
+                        "AppendEntries failed".into(),
+                    ));
                 }
             }
         } else {
             // current node is leader
             let res = self.raft.client_write(command).await;
             if res.is_err() {
-                return Err(anyhow::anyhow!("ClientWrite failed: {:?}", res));
+                return Err(RaftManagerError::InternalError(format!(
+                    "ClientWrite failed: {:?}",
+                    res
+                )));
             }
         }
         Ok(())
@@ -188,13 +241,13 @@ impl RaftManager {
 
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
-        router_sender: Sender<RouterCmd>
+        router_sender: Sender<RouterCmd>,
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
         let raft_service = RaftServiceImpl {
             raft_manager: raft_manager.clone(),
-            router_sender
+            router_sender,
         };
 
         let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();

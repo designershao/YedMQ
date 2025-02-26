@@ -1,14 +1,12 @@
-use tokio::sync::mpsc::Sender;
-use yedmq_mqtt::MqttPacketV3;
-
 use crate::protobuf::raft_service_server::RaftService;
 use crate::protobuf::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
-    RoutePacketRequest, RoutePacketResponse, VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, ErrorCode, ErrorDetail, InstallSnapshotRequest,
+    InstallSnapshotResponse, RoutePacketRequest, RoutePacketResponse, VoteRequest, VoteResponse,
 };
 use crate::raft::raft_manager::RaftManager;
 use crate::router::RouterCmd;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 
 pub struct RaftServiceImpl {
     pub raft_manager: Arc<RaftManager>,
@@ -24,18 +22,29 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<RoutePacketResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        let tenant_id = req.tenant_id;
-        let client_id = req.client_id;
-        let packet:MqttPacketV3 = serde_json::from_str(&req.packet).map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let router_cmd: RouterCmd =
+            serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let res = self.router_sender.send(router_cmd).await;
 
-        let route_cmd = RouterCmd::RoutePacket {tenant_identifier: tenant_id, packet };
-        let _ = self.router_sender.send(route_cmd).await;
-
-        let res = RoutePacketResponse {
-            error: "".to_string(),
-        };
-
-        Ok(tonic::Response::new(res))
+        if let Err(e) = res {
+            let res = RoutePacketResponse {
+                success: false,
+                data: "".to_string(),
+                error: Some(ErrorDetail {
+                    code: ErrorCode::InternalError.into(),
+                    message: e.to_string(),
+                    node: self.raft_manager.current_node_id().to_string(),
+                }),
+            };
+            Ok(tonic::Response::new(res))
+        } else {
+            let res = RoutePacketResponse {
+                success: true,
+                data: "".to_string(),
+                error: None,
+            };
+            Ok(tonic::Response::new(res))
+        }
     }
 
     async fn append_entries(
@@ -56,8 +65,9 @@ impl RaftService for RaftServiceImpl {
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = AppendEntriesResponse {
+            success: true,
             data,
-            error: "".to_string(),
+            error: None,
         };
 
         Ok(tonic::Response::new(mes))
@@ -81,8 +91,9 @@ impl RaftService for RaftServiceImpl {
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = InstallSnapshotResponse {
+            success: true,
             data,
-            error: "".to_string(),
+            error: None,
         };
 
         Ok(tonic::Response::new(mes))
@@ -106,8 +117,9 @@ impl RaftService for RaftServiceImpl {
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = VoteResponse {
+            success: true,
             data,
-            error: "".to_string(),
+            error: None,
         };
 
         Ok(tonic::Response::new(mes))

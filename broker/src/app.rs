@@ -60,6 +60,7 @@ impl YedMQApp {
             topic_manager: app.topic_manager.clone(),
             session_manager: app.session_manager.clone(),
             router_receiver: router_receiver,
+            raft_manager: app.raft_manager.clone(),
         };
 
         let router_join_handle = tokio::spawn(async move {

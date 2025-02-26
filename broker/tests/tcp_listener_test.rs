@@ -83,6 +83,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         session_manager: session_manager.clone(),
         topic_manager: topic_manager.clone(),
         router_receiver: router_receiver,
+        raft_manager: raft_manager.clone(),
     };
 
     tokio::spawn(async move {

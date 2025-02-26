@@ -7,6 +7,7 @@ use tokio::{select, sync::RwLock};
 use crate::{session::session_manager::SessionManager, topic::topic_manager::TopicManager};
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
+use crate::protobuf::raft_service_client::RaftServiceClient;
 
 #[derive(Serialize, Deserialize)]
 // Represent router command
@@ -22,6 +23,7 @@ pub struct Router {
     pub session_manager: Arc<RwLock<SessionManager>>,
     pub topic_manager: Arc<RwLock<TopicManager>>,
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
+    pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
 }
 
 impl Router {
@@ -63,6 +65,21 @@ impl Router {
         Ok(())
     }
 
+    async fn route_to_other_nodes(&self,addr: &String, cmd: RouterCmd) -> Result<()> {
+        let addr = format!("http://{}", addr);
+
+        let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+
+        let route_request = crate::protobuf::RoutePacketRequest {
+            data: serde_json::to_string(&cmd).unwrap(),
+        };
+
+        let _ = client.route_packet(route_request).await;
+
+        Ok(())
+    }
+
+
     pub async fn route(&self, tenant_identifier: &String,  packet: &MqttPacketV3) -> Result<()> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = publish_packet.variable_header.topic_name.clone();
@@ -72,42 +89,58 @@ impl Router {
                 .unwrap();
             let session_manager = self.session_manager.read().await;
             for item in subscriptions.iter() {
-                let client_identifier = item.client_identifier.clone();
-                let packet = packet.clone();
-                if let MqttPacketV3::Publish(mut publish_packet) = packet {
-                    debug!(
-                        "tenant {} session {} send packet max qos {} , body is {:?}",
-                        tenant_identifier,
-                        client_identifier.clone(),
-                        item.qos,
-                        publish_packet.payload.payload
-                    );
-                    if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
-                        if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
-                            publish_packet.fix_header.qos = Some(0);
-                            publish_packet.variable_header.packet_identifier = None;
-                            publish_packet.fix_header.remaining_length =
-                                publish_packet.fix_header.remaining_length - 2;
-                        } else {
-                            publish_packet.fix_header.qos = Some(item.qos.into());
+                if item.node_id != self.raft_manager.current_node_id() {
+                    // not the current node, send to other node
+                    let router_cmd = RouterCmd::RoutePacket{
+                        tenant_identifier: tenant_identifier.clone(),
+                        packet: packet.clone(),
+                    };
+                    let node = self.raft_manager.get_node_by_id(item.node_id).await;
+                    if let Some(node) = node {
+                        if let Err(e) = self.route_to_other_nodes(&node.rpc_addr, router_cmd).await {
+                            warn!("route packet to node {} error: {}", node.rpc_addr, e);
                         }
                     }
-                    if let Err(error) = session_manager
-                        .send_packet(
-                            tenant_identifier.clone(),
-                            client_identifier.clone(),
-                            &MqttPacketV3::Publish(publish_packet),
-                        )
-                        .await
-                    {
-                        warn!(
-                            "tenant {} session {} send packet error, details: {}",
+                    
+                } else {
+                    let client_identifier = item.client_identifier.clone();
+                    let packet = packet.clone();
+                    if let MqttPacketV3::Publish(mut publish_packet) = packet {
+                        debug!(
+                            "tenant {} session {} send packet max qos {} , body is {:?}",
                             tenant_identifier,
                             client_identifier.clone(),
-                            error
+                            item.qos,
+                            publish_packet.payload.payload
                         );
+                        if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
+                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
+                                publish_packet.fix_header.qos = Some(0);
+                                publish_packet.variable_header.packet_identifier = None;
+                                publish_packet.fix_header.remaining_length =
+                                    publish_packet.fix_header.remaining_length - 2;
+                            } else {
+                                publish_packet.fix_header.qos = Some(item.qos.into());
+                            }
+                        }
+                        if let Err(error) = session_manager
+                            .send_packet(
+                                tenant_identifier.clone(),
+                                client_identifier.clone(),
+                                &MqttPacketV3::Publish(publish_packet),
+                            )
+                            .await
+                        {
+                            warn!(
+                                "tenant {} session {} send packet error, details: {}",
+                                tenant_identifier,
+                                client_identifier.clone(),
+                                error
+                            );
+                        }
                     }
                 }
+
             }
         }
 
