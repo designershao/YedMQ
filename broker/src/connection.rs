@@ -5,6 +5,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 use yedmq_mqtt::MqttPacketV3;
 use anyhow::Result;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConnectionError {
+
+    #[error("connection closed")]
+    ConnectionClosed,
+
+    #[error("max message size exceeded {0}")]
+    MaxMessageSizeExceeded(String),
+
+    #[error("packet parse error {0}")]
+    PacketParseError(String),
+
+    #[error("unknown io error {0}")]
+    UnknownIOError(#[from] std::io::Error),
+}
 
 // Represents MQTT connection
 #[derive(Debug)]
@@ -31,6 +46,47 @@ where
     pub async fn shutdown(&mut self) -> Result<()> {
         self.stream.shutdown().await?;
         Ok(())
+    }
+
+    // Read a single packet from the underlying stream.
+    pub async fn read_packet_ex(&mut self, max_message_size: u32) -> Result<MqttPacketV3, ConnectionError> {
+        loop {
+            let packet_result: std::prelude::v1::Result<(&[u8], (&[u8], MqttPacketV3)), nom::Err<nom::error::Error<&[u8]>>> = yedmq_mqtt::parse(&self.buffer, max_message_size);
+
+            if let Ok((_, (consumed_bytes ,packet))) = packet_result {
+                self.buffer.advance(consumed_bytes.len());
+                return Ok(packet);
+            } else {
+                let err = packet_result.err().unwrap();
+                match err {
+                    nom::Err::Incomplete(_) => {
+                        let n= self.stream.read_buf(&mut self.buffer).await?;
+
+                        if 0 == n {
+                            if self.buffer.is_empty() {
+                                return Err(ConnectionError::ConnectionClosed);
+                            } else {
+                                return Err(ConnectionError::ConnectionClosed);
+                            }
+                        } 
+                    }
+                    nom::Err::Error(err_inner)  => {
+                        if err_inner.code == nom::error::ErrorKind::Verify {
+                            warn!("Message size exceeds maximum allowed size of the system.");
+                            return Err(ConnectionError::MaxMessageSizeExceeded("Message size exceeds maximum allowed size of the system.".to_string()));
+                        } else {
+                            error!("read packet error: {:?}", err_inner);
+                            return Err(ConnectionError::PacketParseError("Invalid MQTT Packet".to_string()));
+                        }
+                    }
+                    _ => {
+                        error!("read packet error: {:?}", err);
+                        return Err(ConnectionError::PacketParseError("Invalid MQTT Packet".to_string()));
+                    }
+                }
+            }
+
+        }
     }
 
     // Read a single packet from the underlying stream.
