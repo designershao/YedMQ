@@ -85,6 +85,17 @@ impl Inflight {
         result_vec
     }
 
+    pub async fn get_next_state_packet_by_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
+        let inner = self.inner.read().await;
+        let binding = inner;
+        let ctx = binding.get(&packet_identifier);
+        if let Some(ctx_item) = ctx {
+            ctx_item.next_packet()
+        } else {
+            None
+        }
+    }
+
     pub async fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
         let inner = self.inner.read().await;
         let binding = inner;
@@ -181,6 +192,20 @@ impl InflightItemBuilder {
 }
 
 impl InflightItem {
+
+    pub fn next_packet(&self) -> Option<MqttPacketV3> {
+        match self.state {
+            InflightState::WaitPubrel => 
+                Some(MqttPacketV3::Pubcomp(PubCompPacket::new(self.packet_identifier))),
+            InflightState::WaitPubcomp => 
+                None,
+            InflightState::WaitPubrec => 
+                Some(MqttPacketV3::Pubrel(PubRelPacket::new(self.packet_identifier))),
+            InflightState::WaitPuback => 
+                None,
+            InflightState::Finish => None
+        }       
+    }
 
     // According current state , set the next state and set the next send packet
     pub fn to_next(&mut self) {
