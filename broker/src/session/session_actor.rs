@@ -111,7 +111,10 @@ pub enum SessionState {
     Inactive,
 }
 
-pub struct SessionActor<T>
+#[cfg(not(test))]
+pub type SessionActor<T> = RealSessionActor<T>;
+
+pub struct RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -154,7 +157,7 @@ where
     pending_messages: Vec<MqttPacketV3>,
 }
 
-impl<T> Actor for SessionActor<T>
+impl<T> Actor for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -374,7 +377,7 @@ async fn do_handle_subscribe(
     }
 }
 
-impl<T> SessionActor<T>
+impl<T> RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -389,7 +392,7 @@ where
         will_message: Option<WillMessage>,
         keep_alive: u64,
     ) -> Self {
-        SessionActor {
+        RealSessionActor {
             topic_manager,
             plugin_manager,
             router_sender,
@@ -443,7 +446,7 @@ where
         self.state = state;
     }
 
-    fn clean_up(&mut self, ctx: &mut <SessionActor<T> as Actor>::Context) {
+    fn clean_up(&mut self, ctx: &mut <RealSessionActor<T> as Actor>::Context) {
         if self.clean_session {
             ctx.stop();
         } else {
@@ -466,7 +469,7 @@ where
     fn handle_publish(
         &mut self,
         publish_packet: PublishPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
@@ -498,7 +501,7 @@ where
     fn handle_subscribe(
         &mut self,
         subscribe_packet: SubscribePacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
@@ -531,7 +534,7 @@ where
     fn handle_unsubscribe(
         &mut self,
         unsubscribe_packet: UnsubscribePacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         let client_info = self.get_plugin_client_info();
         let topic_manager = self.topic_manager.clone();
@@ -551,7 +554,7 @@ where
     fn handle_pubrel(
         &mut self,
         pubrel_packet: PubRelPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -586,7 +589,7 @@ where
     fn handle_pubrec(
         &mut self,
         pubrec_packet: PubRecPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -621,7 +624,7 @@ where
     fn handle_puback(
         &mut self,
         puback_packet: PubAckPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -656,7 +659,7 @@ where
     fn handle_pubcomp(
         &mut self,
         pubcomp_packet: PubCompPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -691,7 +694,7 @@ where
     fn handle_disconnect(
         &mut self,
         _disconnect_packet: DisconnectPacket,
-        ctx: &mut <SessionActor<T> as Actor>::Context,
+        ctx: &mut <RealSessionActor<T> as Actor>::Context,
     ) {
         self.clean_will_message();
         self.conn
@@ -711,7 +714,7 @@ where
         self.will_message = None;
     }
 
-    fn send_will_message(&mut self, ctx: &mut <SessionActor<T> as Actor>::Context) {
+    fn send_will_message(&mut self, ctx: &mut <RealSessionActor<T> as Actor>::Context) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
         let router_sender = self.router_sender.clone();
@@ -736,7 +739,7 @@ where
     }
 }
 
-impl<T> Handler<SessionActorMessage> for SessionActor<T>
+impl<T> Handler<SessionActorMessage> for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -823,7 +826,7 @@ where
     }
 }
 
-impl<T> Handler<Reconnect<T>> for SessionActor<T>
+impl<T> Handler<Reconnect<T>> for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -862,7 +865,7 @@ where
     }
 }
 
-impl<T> Handler<ClientDisconnected> for SessionActor<T>
+impl<T> Handler<ClientDisconnected> for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -873,7 +876,7 @@ where
     }
 }
 
-impl<T> Handler<UnexpectClientDisconnected> for SessionActor<T>
+impl<T> Handler<UnexpectClientDisconnected> for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -885,7 +888,7 @@ where
     }
 }
 
-impl<T> Handler<ForceDisconnect> for SessionActor<T>
+impl<T> Handler<ForceDisconnect> for RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -901,3 +904,14 @@ where
         }
     }
 }
+
+// For testing
+#[cfg(test)]
+use actix::actors::mocker::Mocker;
+use actix::prelude::*;
+#[cfg(test)]
+use actix::SystemRegistry;
+
+#[cfg(test)]
+pub type SessionActor<T> = Mocker<RealSessionActor<T>>;
+
