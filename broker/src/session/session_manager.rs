@@ -212,7 +212,7 @@ async fn inflight_resend_task(
                         let mut inflight = inflight.lock().await;
                         let packets = inflight.get_all_expired_packets_and_refresh_expired_time().await;
                         for packet in packets {
-                            if let Err(_) = connection_sender.send(ConnectionMessage::WritePacket(packet.clone())).await {
+                            if let Err(_) = connection_sender.send(ConnectionMessage::WritePacket(packet.1.clone())).await {
                                 warn!("in flight resend task: connection sender dropped");
                             }
                         }

@@ -1,9 +1,9 @@
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler,
-    MailboxError, Message, SpawnHandle, WrapFuture,
+    dev::ContextFutureSpawner, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context,
+    Handler, MailboxError, Message, SpawnHandle, WrapFuture,
 };
 use log::warn;
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::{HashMap, VecDeque}, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -12,13 +12,13 @@ use tokio::{
 use yedmq_mqtt::{
     v3::{
         disconnect::DisconnectPacket, pingresp::PingrespPacket, puback::PubAckPacket,
-        pubcomp::PubCompPacket, publish::PublishPacket, pubrec::PubRecPacket, pubrel::PubRelPacket,
+        pubcomp::PubCompPacket, publish::{PublishPacket, PublishPacketBuilder}, pubrec::PubRecPacket, pubrel::PubRelPacket,
         suback::SubackPacket, subscribe::SubscribePacket, unsuback::UnSubackPacket,
         unsubscribe::UnsubscribePacket,
     },
     MqttPacketV3,
 };
-use yedmq_plugin::plugin::Client;
+use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
     inflight::Inflight,
@@ -27,7 +27,10 @@ use crate::{
     topic::topic_manager::TopicManager,
 };
 
-use super::connection::{ConnectionActor, ConnectionActorMessage};
+use super::{
+    connection::{ConnectionActor, ConnectionActorMessage},
+    WillMessage,
+};
 
 pub enum QoS {
     AtMostOnce,
@@ -61,17 +64,69 @@ pub enum SessionActorError {
 #[derive(Message)]
 #[rtype(result = "()")]
 pub enum SessionActorMessage {
-    ProcessPacket(MqttPacketV3),
+    InboundPacket(MqttPacketV3),
+
+    OutboundMessage(MqttPacketV3),
 
     KeepAliveExpred,
 
     InflightRetry,
 }
 
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct ClientDisconnected {}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct UnexpectClientDisconnected {}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct ForceDisconnect {}
+
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Reconnect<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    pub conn: Addr<ConnectionActor<T>>,
+
+    pub keep_alive: u64,
+
+    pub clean_session: bool,
+
+    pub username: Option<String>,
+
+    pub will_message: Option<WillMessage>,
+
+    pub socket_addr: std::net::SocketAddr,
+}
+
+pub enum SessionState {
+    Active,
+
+    Inactive,
+}
+
 pub struct SessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    tenant_id: String,
+
+    client_id: String,
+
+    clean_session: bool,
+
+    username: Option<String>,
+
+    will_message: Option<WillMessage>,
+
+    state: SessionState,
+
     subscriptions: HashMap<String, QoS>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
@@ -80,11 +135,11 @@ where
 
     conn: Option<Addr<ConnectionActor<T>>>,
 
+    conn_addr: Option<SocketAddr>,
+
     router_sender: Sender<RouterCmd>,
 
     inflight: Arc<Mutex<Inflight>>,
-
-    client_info: Arc<Client>,
 
     keep_alive: u64,
 
@@ -95,6 +150,8 @@ where
     inflight_retry_interval: u64,
 
     inflight_retry_task_handle: Option<SpawnHandle>,
+
+    pending_messages: Vec<MqttPacketV3>,
 }
 
 impl<T> Actor for SessionActor<T>
@@ -159,7 +216,7 @@ impl From<SubscribeReturnCode> for yedmq_mqtt::v3::suback::ReturnCode {
 
 async fn do_handle_unsubscribe(
     unsubscribe_packet: UnsubscribePacket,
-    client_info: Arc<Client>,
+    client_info: Client,
     topic_manager: Arc<RwLock<TopicManager>>,
 ) -> HandleUnSubscribeResult {
     let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
@@ -185,7 +242,7 @@ async fn do_handle_unsubscribe(
 
 async fn do_handle_publish(
     publish_packet: PublishPacket,
-    client_info: Arc<Client>,
+    client_info: Client,
     topic_manager: Arc<RwLock<TopicManager>>,
     plugin_manager: Arc<dyn PluginService>,
     inflight: Arc<Mutex<Inflight>>,
@@ -254,7 +311,7 @@ async fn do_handle_publish(
 
 async fn do_handle_subscribe(
     subscribe_packet: SubscribePacket,
-    client_info: Arc<Client>,
+    client_info: Client,
     topic_manager: Arc<RwLock<TopicManager>>,
     plugin_manager: Arc<dyn PluginService>,
 ) -> HandleSubscribeResult {
@@ -321,8 +378,89 @@ impl<T> SessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    pub fn new(
+        tenant_id: String,
+        client_id: String,
+        clean_session: bool,
+        topic_manager: Arc<RwLock<TopicManager>>,
+        plugin_manager: Arc<dyn PluginService>,
+        router_sender: Sender<RouterCmd>,
+        inflight_retry_duration_secs: u64,
+        will_message: Option<WillMessage>,
+        keep_alive: u64,
+    ) -> Self {
+        SessionActor {
+            topic_manager,
+            plugin_manager,
+            router_sender,
+            conn: None,
+            conn_addr: None,
+            inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
+                inflight_retry_duration_secs,
+            )))),
+            state: SessionState::Inactive,
+            keep_alive_task_handle: None,
+            subscriptions: HashMap::new(),
+            clean_session,
+            keep_alive,
+            keep_alive_expired: false,
+            inflight_retry_interval: inflight_retry_duration_secs,
+            inflight_retry_task_handle: None,
+            tenant_id,
+            client_id,
+            will_message,
+            username: None,
+            pending_messages: vec![],
+        }
+    }
+
+    fn get_plugin_client_info(&self) -> Client {
+        let client_properties = match &self.will_message {
+            Some(will_message) => ClientProperties {
+                username: self.username.clone(),
+                clean_session: self.clean_session,
+                will_retain: will_message.will_retain,
+                will_topic: Some(will_message.will_topic.clone()),
+                will_message: Some(will_message.will_message.clone()),
+            },
+            None => ClientProperties {
+                username: self.username.clone(),
+                clean_session: self.clean_session,
+                will_retain: false,
+                will_topic: None,
+                will_message: None,
+            },
+        };
+        Client {
+            client_identifier: self.client_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            properties: client_properties,
+            socket_addr: self.conn_addr.unwrap(),
+        }
+    }
+
+    fn set_state(&mut self, state: SessionState) {
+        self.state = state;
+    }
+
     fn clean_up(&mut self, ctx: &mut <SessionActor<T> as Actor>::Context) {
-        ctx.cancel_future(self.keep_alive_task_handle.unwrap());
+        if self.clean_session {
+            ctx.stop();
+        } else {
+            self.state = SessionState::Inactive;
+
+            if let Some(handle) = self.keep_alive_task_handle.take() {
+                if ctx.cancel_future(handle) {
+                    self.keep_alive_task_handle = None;
+                }
+            }
+
+            if let Some(handle) = self.inflight_retry_task_handle.take() {
+                if ctx.cancel_future(handle) {
+                    self.inflight_retry_task_handle = None;
+                }
+            }
+        }
     }
 
     fn handle_publish(
@@ -332,7 +470,7 @@ where
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
-        let client_info = self.client_info.clone();
+        let client_info = self.get_plugin_client_info();
         let inflight = self.inflight.clone();
         let router_sender = self.router_sender.clone();
 
@@ -364,7 +502,7 @@ where
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
-        let client_info = self.client_info.clone();
+        let client_info = self.get_plugin_client_info();
         async move {
             do_handle_subscribe(subscribe_packet, client_info, topic_manager, plugin_manager).await
         }
@@ -395,7 +533,7 @@ where
         unsubscribe_packet: UnsubscribePacket,
         ctx: &mut <SessionActor<T> as Actor>::Context,
     ) {
-        let client_info = self.client_info.clone();
+        let client_info = self.get_plugin_client_info();
         let topic_manager = self.topic_manager.clone();
         async move { do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await }
             .into_actor(self)
@@ -426,7 +564,7 @@ where
         async move {
             let mut inflight = infight.lock().await;
             let next_state_packet = inflight
-                .get_next_state_packet_by_packet(pubrel_packet.variable_header.packet_identifier)
+                .get_next_state_packet(pubrel_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
@@ -461,7 +599,7 @@ where
         async move {
             let mut inflight = infight.lock().await;
             let next_state_packet = inflight
-                .get_next_state_packet_by_packet(pubrec_packet.variable_header.packet_identifier)
+                .get_next_state_packet(pubrec_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
@@ -496,7 +634,7 @@ where
         async move {
             let mut inflight = infight.lock().await;
             let next_state_packet = inflight
-                .get_next_state_packet_by_packet(puback_packet.variable_header.packet_identifier)
+                .get_next_state_packet(puback_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
@@ -531,7 +669,7 @@ where
         async move {
             let mut inflight = infight.lock().await;
             let next_state_packet = inflight
-                .get_next_state_packet_by_packet(pubcomp_packet.variable_header.packet_identifier)
+                .get_next_state_packet(pubcomp_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
@@ -555,16 +693,46 @@ where
         _disconnect_packet: DisconnectPacket,
         ctx: &mut <SessionActor<T> as Actor>::Context,
     ) {
+        self.clean_will_message();
         self.conn
             .clone()
             .unwrap()
             .do_send(ConnectionActorMessage::Disconnect);
-        self.plugin_manager.do_on_disconnect(&self.client_info);
+
+        self.plugin_manager.do_on_disconnect(&self.get_plugin_client_info());
         self.clean_up(ctx);
     }
 
     fn reset_keep_alive_expired_flag(&mut self) {
         self.keep_alive_expired = false;
+    }
+
+    fn clean_will_message(&mut self) {
+        self.will_message = None;
+    }
+
+    fn send_will_message(&mut self, ctx: &mut <SessionActor<T> as Actor>::Context) {
+        let tenant_id = self.tenant_id.clone();
+        let will_message = self.will_message.take();
+        let router_sender = self.router_sender.clone();
+        async move {
+            if will_message.is_some() {
+                let will_message = will_message.as_ref().unwrap();
+                let publish_packet = PublishPacketBuilder::new(
+                    will_message.will_topic.clone(),
+                    will_message.will_message.clone(),
+                )
+                .retain(will_message.will_retain)
+                .qos(will_message.will_qos)
+                .build();
+                let _ = router_sender
+                    .send(RouterCmd::RoutePacket {
+                        tenant_identifier: tenant_id,
+                        packet: MqttPacketV3::Publish(publish_packet),
+                    })
+                    .await;
+            }
+        }.into_actor(self).wait(ctx);
     }
 }
 
@@ -575,7 +743,7 @@ where
     type Result = ();
     fn handle(&mut self, msg: SessionActorMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            SessionActorMessage::ProcessPacket(packet) => {
+            SessionActorMessage::InboundPacket(packet) => {
                 self.reset_keep_alive_expired_flag();
                 match packet {
                     MqttPacketV3::Pingreq(_) => {
@@ -608,24 +776,128 @@ where
                     _ => {}
                 }
             }
+            SessionActorMessage::OutboundMessage(packet) => {
+                if matches!(self.state, SessionState::Active) {
+                    if let MqttPacketV3::Publish(packet) = packet {
+                        let conn = self.conn.clone().unwrap();
+                        let inflight = self.inflight.clone();
+                        async move {
+                            if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
+                                inflight.lock().await.register_with_tx_packet(&MqttPacketV3::Publish(packet.clone())).await;
+                            }
+                            conn.do_send(ConnectionActorMessage::WritePacketToClient(yedmq_mqtt::MqttPacketV3::Publish(packet)));
+                        }.into_actor(self).wait(ctx);
+                    }
+                } else {
+                    self.pending_messages.push(packet);
+                }
+            }
             SessionActorMessage::KeepAliveExpred => {
+                // send will message and clean up
+                self.send_will_message(ctx);
                 self.clean_up(ctx);
             }
             SessionActorMessage::InflightRetry => {
                 let inflight = self.inflight.clone();
                 let conn = self.conn.clone().unwrap();
                 async move {
-                    let inflight = inflight.lock().await;
+                    let mut inflight = inflight.lock().await;
                     let packets = inflight
                         .get_all_expired_packets_and_refresh_expired_time()
                         .await;
                     for packet in packets {
-                        conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
+                        let result = conn.send(ConnectionActorMessage::WritePacketToClient(packet.1)).await;
+                        if let Err(e) = result {
+                            warn!("write packet to client error: {}", e);
+                        } else {
+                            // update inflight
+                            inflight.next_state(packet.0).await;
+                        }
+                        //
                     }
                 }
                 .into_actor(self)
                 .wait(ctx);
             }
+        }
+    }
+}
+
+impl<T> Handler<Reconnect<T>> for SessionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+
+    fn handle(&mut self, msg: Reconnect<T>, ctx: &mut Self::Context) -> Self::Result {
+        self.set_state(SessionState::Active);
+        self.conn = Some(msg.conn);
+        self.will_message = msg.will_message;
+        self.clean_session = msg.clean_session;
+        self.keep_alive = msg.keep_alive;
+        self.username = msg.username;
+
+        // Restart the keep-alive and inflight retry tasks
+        let keep_alive_task_handle =
+            ctx.run_interval(Duration::from_secs(self.keep_alive), |act, ctx| {
+                if act.keep_alive_expired {
+                    ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+                }
+            });
+        self.keep_alive_task_handle = Some(keep_alive_task_handle);
+
+        let inflight_retry_task_handle = ctx.run_interval(
+            Duration::from_secs(self.inflight_retry_interval),
+            |_act, ctx| {
+                ctx.address().do_send(SessionActorMessage::InflightRetry);
+            },
+        );
+        self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
+        //
+
+        // start consume pending messages
+        for msg in self.pending_messages.drain(..) {
+            ctx.address().do_send(SessionActorMessage::OutboundMessage(msg));
+        }
+    }
+}
+
+impl<T> Handler<ClientDisconnected> for SessionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+
+    fn handle(&mut self, _msg: ClientDisconnected, ctx: &mut Self::Context) -> Self::Result {
+        self.clean_up(ctx);
+    }
+}
+
+impl<T> Handler<UnexpectClientDisconnected> for SessionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+
+    fn handle(&mut self, _msg: UnexpectClientDisconnected, ctx: &mut Self::Context) -> Self::Result {
+        self.send_will_message(ctx);
+        self.clean_up(ctx);
+    }
+}
+
+impl<T> Handler<ForceDisconnect> for SessionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+    
+    fn handle(&mut self, _msg: ForceDisconnect, ctx: &mut Self::Context) -> Self::Result {
+        if matches!(self.state, SessionState::Active) {
+            let conn = self.conn.clone().unwrap();
+            async move {
+                conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
+            }.into_actor(self).wait(ctx);
+            self.clean_up(ctx);
         }
     }
 }

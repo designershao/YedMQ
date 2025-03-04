@@ -69,15 +69,15 @@ impl Inflight {
     }
 
     // Get all packet which should be resend to the client and refresh expired time
-    pub async fn get_all_expired_packets_and_refresh_expired_time(&self) -> Vec<MqttPacketV3> {
-        let mut result_vec:Vec<MqttPacketV3> = vec![];
+    pub async fn get_all_expired_packets_and_refresh_expired_time(&self) -> Vec<(u16,MqttPacketV3)> {
+        let mut result_vec:Vec<(u16,MqttPacketV3)> = vec![];
         let mut inner = self.inner.write().await;
         for item in inner.values_mut() {
             if item.last_modified + self.expired_duration.as_secs() < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
                 if let Some(packet) = item.current_packet() {
                     let mut packet = packet.clone();
                     packet.set_dup(1); // all expired packet should set dup to true
-                    result_vec.push(packet.clone());
+                    result_vec.push((item.packet_identifier, packet.clone()));
                 }
                 item.last_modified = std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs();
             }
@@ -85,7 +85,7 @@ impl Inflight {
         result_vec
     }
 
-    pub async fn get_next_state_packet_by_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
+    pub async fn get_next_state_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
         let inner = self.inner.read().await;
         let binding = inner;
         let ctx = binding.get(&packet_identifier);
