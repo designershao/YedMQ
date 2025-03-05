@@ -1,14 +1,22 @@
 use std::{collections::HashMap, sync::Arc};
 
-use crate::{plugin_manager::PluginService, router::RouterCmd, session::session_actor::SessionActor, settings::Settings, topic::topic_manager::TopicManager};
-use actix::{Actor, Addr, AsyncContext, Context, Handler, Message, WrapFuture};
+use crate::{
+    plugin_manager::PluginService, router::RouterCmd, session::session_actor::SessionActor,
+    settings::Settings, topic::topic_manager::TopicManager,
+};
+use actix::{
+    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler,
+    Message, WrapFuture,
+};
+use log::error;
+use nom::Err;
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc::Sender, RwLock},
 };
 
-use super::{connection::ConnectionActor, WillMessage};
+use super::{connection::ConnectionActor, session_actor::{ForceDisconnect, Reconnect}, WillMessage};
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -68,9 +76,9 @@ where
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
                 match msg {
-                    SessionLifecycleMessage::SessionStarted => {},
-                    SessionLifecycleMessage::SessionActivate => {},
-                    SessionLifecycleMessage::SessionDeactivate => {},
+                    SessionLifecycleMessage::SessionStarted => {}
+                    SessionLifecycleMessage::SessionActivate => {}
+                    SessionLifecycleMessage::SessionDeactivate => {}
                     SessionLifecycleMessage::SessionStopped {
                         tenant_id,
                         client_id,
@@ -112,27 +120,59 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateSessionMe
         if !self.tenant_existed(&msg.tenant_id) {
             return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
-        let sessions = self.sessions.get_mut(&msg.tenant_id).unwrap();
-        if sessions.contains_key(&msg.client_id) {
-            return Err(SessionManagerError::SessionHasExisted(msg.client_id));
-        }
-        let session_actor = SessionActor::new(
-            msg.tenant_id.clone(),
-            msg.client_id.clone(),
-            msg.clean_session,
-            self.topic_manager.clone(),
-            self.plugin_manager.clone(),
-            self.router_sender.clone(),
-            50,
-            msg.will_message,
-            msg.keep_alive,
-            msg.connection_addr,
-            msg.peer_addr
-        );
 
-        let session_actor_addr = session_actor.start();
-        sessions.insert(msg.client_id.clone(), session_actor_addr.clone());
-        Ok(session_actor_addr)
+        let sessions = self.sessions.get(&msg.tenant_id).unwrap();
+        if sessions.contains_key(&msg.client_id) {
+            // previously session existed, force disconnect the old connection
+            let session_addr = sessions.get(&msg.client_id).unwrap().clone();
+            let session_addr_in_async = session_addr.clone();
+            async move { 
+                let res = session_addr_in_async.send(ForceDisconnect {}).await;
+                if let Err(err) = res {
+                    return Err(err);
+                } else {
+                    let res = session_addr_in_async.send(Reconnect {
+                        conn: msg.connection_addr.clone(),
+                        keep_alive: msg.keep_alive,
+                        clean_session: msg.clean_session,
+                        username: msg.username,
+                        will_message: msg.will_message,
+                        socket_addr: msg.peer_addr,
+                    }).await;
+                    if let Err(err) = res {
+                        return Err(err);
+                    }
+                }
+                Ok(())
+            }
+                .into_actor(self)
+                .map(|res, act, _ctx| {
+                    if let Err(err) = res {
+                        error!("reconnect previeus session error: {}", err);
+                    }
+                })
+                .wait(ctx);
+            return Ok(session_addr);
+        } else {
+            let sessions = self.sessions.get_mut(&msg.tenant_id).unwrap();
+            let session_actor = SessionActor::new(
+                msg.tenant_id.clone(),
+                msg.client_id.clone(),
+                msg.clean_session,
+                self.topic_manager.clone(),
+                self.plugin_manager.clone(),
+                self.router_sender.clone(),
+                50,
+                msg.will_message,
+                msg.keep_alive,
+                msg.connection_addr,
+                msg.peer_addr,
+            );
+
+            let session_actor_addr = session_actor.start();
+            sessions.insert(msg.client_id.clone(), session_actor_addr.clone());
+            return Ok(session_actor_addr);
+        }
     }
 }
 
