@@ -3,7 +3,7 @@ use actix::{
     Handler, MailboxError, Message, SpawnHandle, WrapFuture,
 };
 use log::warn;
-use std::{collections::{HashMap, VecDeque}, net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -381,6 +381,7 @@ impl<T> RealSessionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+
     pub fn new(
         tenant_id: String,
         client_id: String,
@@ -391,13 +392,15 @@ where
         inflight_retry_duration_secs: u64,
         will_message: Option<WillMessage>,
         keep_alive: u64,
+        connection_actor_addr: Addr<ConnectionActor<T>>,
+        peer_addr: SocketAddr,
     ) -> Self {
         RealSessionActor {
             topic_manager,
             plugin_manager,
             router_sender,
-            conn: None,
-            conn_addr: None,
+            conn: Some(connection_actor_addr),
+            conn_addr: Some(peer_addr),
             inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
                 inflight_retry_duration_secs,
             )))),

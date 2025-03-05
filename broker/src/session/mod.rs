@@ -1,6 +1,7 @@
 pub mod session_manager;
 pub mod session_actor;
 pub mod connection;
+pub mod session_manager_actor;
 
 pub struct WillMessage {
     pub will_topic: String,
