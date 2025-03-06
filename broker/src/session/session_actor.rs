@@ -1,6 +1,6 @@
 use actix::{
     dev::ContextFutureSpawner, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context,
-    Handler, MailboxError, Message, SpawnHandle, WrapFuture,
+    Handler, MailboxError, Message, Recipient, SpawnHandle, WrapFuture,
 };
 use log::warn;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
@@ -11,9 +11,16 @@ use tokio::{
 };
 use yedmq_mqtt::{
     v3::{
-        disconnect::DisconnectPacket, pingresp::PingrespPacket, puback::PubAckPacket,
-        pubcomp::PubCompPacket, publish::{PublishPacket, PublishPacketBuilder}, pubrec::PubRecPacket, pubrel::PubRelPacket,
-        suback::SubackPacket, subscribe::SubscribePacket, unsuback::UnSubackPacket,
+        disconnect::DisconnectPacket,
+        pingresp::PingrespPacket,
+        puback::PubAckPacket,
+        pubcomp::PubCompPacket,
+        publish::{PublishPacket, PublishPacketBuilder},
+        pubrec::PubRecPacket,
+        pubrel::PubRelPacket,
+        suback::SubackPacket,
+        subscribe::SubscribePacket,
+        unsuback::UnSubackPacket,
         unsubscribe::UnsubscribePacket,
     },
     MqttPacketV3,
@@ -71,6 +78,22 @@ pub enum SessionActorMessage {
     KeepAliveExpred,
 
     InflightRetry,
+
+    ForceDisconnect,
+
+    Reconnect {
+        conn: Recipient<ConnectionActorMessage>,
+
+        keep_alive: u64,
+
+        clean_session: bool,
+
+        username: Option<String>,
+
+        will_message: Option<WillMessage>,
+
+        socket_addr: std::net::SocketAddr,
+    },
 }
 
 #[derive(Message)]
@@ -81,43 +104,13 @@ pub struct ClientDisconnected {}
 #[rtype(result = "()")]
 pub struct UnexpectClientDisconnected {}
 
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct ForceDisconnect {}
-
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct Reconnect<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    pub conn: Addr<ConnectionActor<T>>,
-
-    pub keep_alive: u64,
-
-    pub clean_session: bool,
-
-    pub username: Option<String>,
-
-    pub will_message: Option<WillMessage>,
-
-    pub socket_addr: std::net::SocketAddr,
-}
-
 pub enum SessionState {
     Active,
 
     Inactive,
 }
 
-#[cfg(not(test))]
-pub type SessionActor<T> = RealSessionActor<T>;
-
-pub struct RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+pub struct SessionActor {
     tenant_id: String,
 
     client_id: String,
@@ -136,7 +129,7 @@ where
 
     topic_manager: Arc<RwLock<TopicManager>>,
 
-    conn: Option<Addr<ConnectionActor<T>>>,
+    conn: Option<Recipient<ConnectionActorMessage>>,
 
     conn_addr: Option<SocketAddr>,
 
@@ -157,10 +150,7 @@ where
     pending_messages: Vec<MqttPacketV3>,
 }
 
-impl<T> Actor for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+impl Actor for SessionActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -377,11 +367,7 @@ async fn do_handle_subscribe(
     }
 }
 
-impl<T> RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-
+impl SessionActor {
     pub fn new(
         tenant_id: String,
         client_id: String,
@@ -392,10 +378,10 @@ where
         inflight_retry_duration_secs: u64,
         will_message: Option<WillMessage>,
         keep_alive: u64,
-        connection_actor_addr: Addr<ConnectionActor<T>>,
+        connection_actor_addr: Recipient<ConnectionActorMessage>,
         peer_addr: SocketAddr,
     ) -> Self {
-        RealSessionActor {
+        SessionActor {
             topic_manager,
             plugin_manager,
             router_sender,
@@ -449,7 +435,7 @@ where
         self.state = state;
     }
 
-    fn clean_up(&mut self, ctx: &mut <RealSessionActor<T> as Actor>::Context) {
+    fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         if self.clean_session {
             ctx.stop();
         } else {
@@ -472,7 +458,7 @@ where
     fn handle_publish(
         &mut self,
         publish_packet: PublishPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
@@ -504,7 +490,7 @@ where
     fn handle_subscribe(
         &mut self,
         subscribe_packet: SubscribePacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
@@ -537,7 +523,7 @@ where
     fn handle_unsubscribe(
         &mut self,
         unsubscribe_packet: UnsubscribePacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let client_info = self.get_plugin_client_info();
         let topic_manager = self.topic_manager.clone();
@@ -557,7 +543,7 @@ where
     fn handle_pubrel(
         &mut self,
         pubrel_packet: PubRelPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -592,7 +578,7 @@ where
     fn handle_pubrec(
         &mut self,
         pubrec_packet: PubRecPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -627,7 +613,7 @@ where
     fn handle_puback(
         &mut self,
         puback_packet: PubAckPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -662,7 +648,7 @@ where
     fn handle_pubcomp(
         &mut self,
         pubcomp_packet: PubCompPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         // To ensure synchronization of inflight information for QoS 1 and QoS 2,
         // the session actor must use the send method to first send the next stage response packet,
@@ -697,7 +683,7 @@ where
     fn handle_disconnect(
         &mut self,
         _disconnect_packet: DisconnectPacket,
-        ctx: &mut <RealSessionActor<T> as Actor>::Context,
+        ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.clean_will_message();
         self.conn
@@ -705,7 +691,8 @@ where
             .unwrap()
             .do_send(ConnectionActorMessage::Disconnect);
 
-        self.plugin_manager.do_on_disconnect(&self.get_plugin_client_info());
+        self.plugin_manager
+            .do_on_disconnect(&self.get_plugin_client_info());
         self.clean_up(ctx);
     }
 
@@ -717,7 +704,7 @@ where
         self.will_message = None;
     }
 
-    fn send_will_message(&mut self, ctx: &mut <RealSessionActor<T> as Actor>::Context) {
+    fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
         let router_sender = self.router_sender.clone();
@@ -738,14 +725,13 @@ where
                     })
                     .await;
             }
-        }.into_actor(self).wait(ctx);
+        }
+        .into_actor(self)
+        .wait(ctx);
     }
 }
 
-impl<T> Handler<SessionActorMessage> for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+impl Handler<SessionActorMessage> for SessionActor {
     type Result = ();
     fn handle(&mut self, msg: SessionActorMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
@@ -789,10 +775,18 @@ where
                         let inflight = self.inflight.clone();
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                inflight.lock().await.register_with_tx_packet(&MqttPacketV3::Publish(packet.clone())).await;
+                                inflight
+                                    .lock()
+                                    .await
+                                    .register_with_tx_packet(&MqttPacketV3::Publish(packet.clone()))
+                                    .await;
                             }
-                            conn.do_send(ConnectionActorMessage::WritePacketToClient(yedmq_mqtt::MqttPacketV3::Publish(packet)));
-                        }.into_actor(self).wait(ctx);
+                            conn.do_send(ConnectionActorMessage::WritePacketToClient(
+                                yedmq_mqtt::MqttPacketV3::Publish(packet),
+                            ));
+                        }
+                        .into_actor(self)
+                        .wait(ctx);
                     }
                 } else {
                     self.pending_messages.push(packet);
@@ -812,7 +806,9 @@ where
                         .get_all_expired_packets_and_refresh_expired_time()
                         .await;
                     for packet in packets {
-                        let result = conn.send(ConnectionActorMessage::WritePacketToClient(packet.1)).await;
+                        let result = conn
+                            .send(ConnectionActorMessage::WritePacketToClient(packet.1))
+                            .await;
                         if let Err(e) = result {
                             warn!("write packet to client error: {}", e);
                         } else {
@@ -825,53 +821,61 @@ where
                 .into_actor(self)
                 .wait(ctx);
             }
-        }
-    }
-}
-
-impl<T> Handler<Reconnect<T>> for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    type Result = ();
-
-    fn handle(&mut self, msg: Reconnect<T>, ctx: &mut Self::Context) -> Self::Result {
-        self.set_state(SessionState::Active);
-        self.conn = Some(msg.conn);
-        self.will_message = msg.will_message;
-        self.clean_session = msg.clean_session;
-        self.keep_alive = msg.keep_alive;
-        self.username = msg.username;
-
-        // Restart the keep-alive and inflight retry tasks
-        let keep_alive_task_handle =
-            ctx.run_interval(Duration::from_secs(self.keep_alive), |act, ctx| {
-                if act.keep_alive_expired {
-                    ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+            SessionActorMessage::ForceDisconnect => {
+                if matches!(self.state, SessionState::Active) {
+                    let conn = self.conn.clone().unwrap();
+                    async move {
+                        conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
+                    }
+                    .into_actor(self)
+                    .wait(ctx);
+                    self.clean_up(ctx);
                 }
-            });
-        self.keep_alive_task_handle = Some(keep_alive_task_handle);
+            }
+            SessionActorMessage::Reconnect {
+                conn,
+                keep_alive,
+                clean_session,
+                username,
+                will_message,
+                socket_addr,
+            } => {
+                self.set_state(SessionState::Active);
+                self.conn = Some(conn);
+                self.will_message = will_message;
+                self.clean_session = clean_session;
+                self.keep_alive = keep_alive;
+                self.username = username;
 
-        let inflight_retry_task_handle = ctx.run_interval(
-            Duration::from_secs(self.inflight_retry_interval),
-            |_act, ctx| {
-                ctx.address().do_send(SessionActorMessage::InflightRetry);
-            },
-        );
-        self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
-        //
+                // Restart the keep-alive and inflight retry tasks
+                let keep_alive_task_handle =
+                    ctx.run_interval(Duration::from_secs(self.keep_alive), |act, ctx| {
+                        if act.keep_alive_expired {
+                            ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+                        }
+                    });
+                self.keep_alive_task_handle = Some(keep_alive_task_handle);
 
-        // start consume pending messages
-        for msg in self.pending_messages.drain(..) {
-            ctx.address().do_send(SessionActorMessage::OutboundMessage(msg));
+                let inflight_retry_task_handle = ctx.run_interval(
+                    Duration::from_secs(self.inflight_retry_interval),
+                    |_act, ctx| {
+                        ctx.address().do_send(SessionActorMessage::InflightRetry);
+                    },
+                );
+                self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
+                //
+
+                // start consume pending messages
+                for msg in self.pending_messages.drain(..) {
+                    ctx.address()
+                        .do_send(SessionActorMessage::OutboundMessage(msg));
+                }
+            }
         }
     }
 }
 
-impl<T> Handler<ClientDisconnected> for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+impl Handler<ClientDisconnected> for SessionActor {
     type Result = ();
 
     fn handle(&mut self, _msg: ClientDisconnected, ctx: &mut Self::Context) -> Self::Result {
@@ -879,42 +883,15 @@ where
     }
 }
 
-impl<T> Handler<UnexpectClientDisconnected> for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+impl Handler<UnexpectClientDisconnected> for SessionActor {
     type Result = ();
 
-    fn handle(&mut self, _msg: UnexpectClientDisconnected, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        _msg: UnexpectClientDisconnected,
+        ctx: &mut Self::Context,
+    ) -> Self::Result {
         self.send_will_message(ctx);
         self.clean_up(ctx);
     }
 }
-
-impl<T> Handler<ForceDisconnect> for RealSessionActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    type Result = ();
-    
-    fn handle(&mut self, _msg: ForceDisconnect, ctx: &mut Self::Context) -> Self::Result {
-        if matches!(self.state, SessionState::Active) {
-            let conn = self.conn.clone().unwrap();
-            async move {
-                conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
-            }.into_actor(self).wait(ctx);
-            self.clean_up(ctx);
-        }
-    }
-}
-
-// For testing
-#[cfg(test)]
-use actix::actors::mocker::Mocker;
-use actix::prelude::*;
-#[cfg(test)]
-use actix::SystemRegistry;
-
-#[cfg(test)]
-pub type SessionActor<T> = Mocker<RealSessionActor<T>>;
-

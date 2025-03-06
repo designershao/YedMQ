@@ -5,18 +5,15 @@ use crate::{
     settings::Settings, topic::topic_manager::TopicManager,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler,
-    Message, WrapFuture,
+    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler, Message, Recipient, WrapFuture
 };
 use log::error;
-use nom::Err;
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::{mpsc::Sender, RwLock},
-};
+use tokio::
+    sync::{mpsc::Sender, RwLock}
+;
 
-use super::{connection::ConnectionActor, session_actor::{ForceDisconnect, Reconnect}, WillMessage};
+use super::{connection::{ConnectionActor, ConnectionActorMessage}, session_actor::{ SessionActorMessage}, WillMessage};
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -46,11 +43,9 @@ pub enum SessionLifecycleMessage {
     },
 }
 
-pub struct SessionManagerActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+pub struct SessionManagerActor
 {
-    pub sessions: HashMap<String, HashMap<String, Addr<SessionActor<T>>>>,
+    pub sessions: HashMap<String, HashMap<String, Recipient<SessionActorMessage>>>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
@@ -63,9 +58,7 @@ where
     settings: Arc<Settings>,
 }
 
-impl<T> Actor for SessionManagerActor<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+impl Actor for SessionManagerActor
 {
     type Context = Context<Self>;
 
@@ -93,30 +86,28 @@ where
     }
 }
 
-pub struct CreateSessionMessage<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+pub struct CreateSessionMessage
 {
     pub tenant_id: String,
     pub client_id: String,
     pub clean_session: bool,
-    pub connection_addr: Addr<ConnectionActor<T>>,
+    pub connection_addr: Recipient<ConnectionActorMessage>,
     pub keep_alive: u64,
     pub will_message: Option<WillMessage>,
     pub username: Option<String>,
     pub peer_addr: std::net::SocketAddr,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Message for CreateSessionMessage<T> {
-    type Result = Result<Addr<SessionActor<T>>, SessionManagerError>;
+impl Message for CreateSessionMessage {
+    type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateSessionMessage<T>>
-    for SessionManagerActor<T>
+impl Handler<CreateSessionMessage>
+    for SessionManagerActor
 {
-    type Result = Result<Addr<SessionActor<T>>, SessionManagerError>;
+    type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
 
-    fn handle(&mut self, msg: CreateSessionMessage<T>, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
         if !self.tenant_existed(&msg.tenant_id) {
             return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
@@ -127,11 +118,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateSessionMe
             let session_addr = sessions.get(&msg.client_id).unwrap().clone();
             let session_addr_in_async = session_addr.clone();
             async move { 
-                let res = session_addr_in_async.send(ForceDisconnect {}).await;
+                let res = session_addr_in_async.send(SessionActorMessage::ForceDisconnect).await;
                 if let Err(err) = res {
                     return Err(err);
                 } else {
-                    let res = session_addr_in_async.send(Reconnect {
+                    let res = session_addr_in_async.send(SessionActorMessage::Reconnect {
                         conn: msg.connection_addr.clone(),
                         keep_alive: msg.keep_alive,
                         clean_session: msg.clean_session,
@@ -170,8 +161,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateSessionMe
             );
 
             let session_actor_addr = session_actor.start();
-            sessions.insert(msg.client_id.clone(), session_actor_addr.clone());
-            return Ok(session_actor_addr);
+            let recipient = session_actor_addr.recipient();
+            sessions.insert(msg.client_id.clone(), recipient.clone());
+            return Ok(recipient);
         }
     }
 }
@@ -182,8 +174,8 @@ struct CreateTenantMessage {
     tenant_id: String,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateTenantMessage>
-    for SessionManagerActor<T>
+impl Handler<CreateTenantMessage>
+    for SessionManagerActor
 {
     type Result = Result<(), SessionManagerError>;
 
@@ -196,7 +188,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<CreateTenantMes
     }
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> SessionManagerActor<T> {
+impl SessionManagerActor {
     fn tenant_existed(&self, tenant_identifier: &str) -> bool {
         return self.sessions.contains_key(tenant_identifier);
     }
@@ -209,8 +201,8 @@ struct RemoveSessionMessage {
     client_id: String,
 }
 
-impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Handler<RemoveSessionMessage>
-    for SessionManagerActor<T>
+impl Handler<RemoveSessionMessage>
+    for SessionManagerActor
 {
     type Result = Result<(), SessionManagerError>;
 
