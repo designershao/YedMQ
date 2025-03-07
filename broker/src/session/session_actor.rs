@@ -887,15 +887,13 @@ impl Handler<SessionActorMessage> for SessionActor {
 
 #[cfg(test)]
 mod tests {
-    use std::mem;
-
     use mockall::predicate::eq;
     use yedmq_mqtt::v3::subscribe::{self, SubscribePacketBuilder, TopicFilter};
 
     use super::*;
     use crate::{
         plugin_manager::{MockPluginService, SubscribeAuthorizationResult},
-        topic::{topic_manager::{MockTopicManagerTrait, TopicManagerTrait}, topic_storage::Subscription},
+        topic::topic_manager::MockTopicManagerTrait,
     };
 
     struct MockConnectionActor {
@@ -923,34 +921,247 @@ mod tests {
     const KEEP_ALIVE: u64 = 5;
     const INFLIGHT_RETRY: u64 = 5;
 
+    
+
+    #[actix::test]
+     pub async fn when_force_disconnect_should_send_disconnect_to_connection() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        session_actor
+            .send(SessionActorMessage::ForceDisconnect)
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::Disconnect => {
+                assert!(true);
+            }
+            _ => {
+                unreachable!()
+            }
+        }
+     }
+
+    #[actix::test]
+    pub async fn when_receive_publish_packet_with_retain_flag_and_empty_payload_should_unset_reatin_message_in_topic_manager(
+    ) {
+        let publish_packet_retain = yedmq_mqtt::MqttPacketV3::Publish(
+            yedmq_mqtt::v3::publish::PublishPacketBuilder::new("/a/b/c".to_string(), vec![])
+                .retain(true)
+                .build(),
+        );
+        let mut mock_topic_manager = MockTopicManagerTrait::new();
+        mock_topic_manager
+            .expect_clean_retain_publish_packet()
+            .times(1)
+            .returning(|_, _| {
+                let future = async { std::result::Result::Ok(()) };
+                Box::pin(future)
+            });
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            Arc::new(RwLock::new(mock_topic_manager)),
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(publish_packet_retain))
+            .await
+            .unwrap();
+
+        router_rx.recv().await.unwrap();
+    }
+
+    #[actix::test]
+    pub async fn when_receive_publish_packet_with_retain_flag_should_set_reatin_message_in_topic_manager(
+    ) {
+        let publish_packet_retain = yedmq_mqtt::MqttPacketV3::Publish(
+            yedmq_mqtt::v3::publish::PublishPacketBuilder::new(
+                "/a/b/c".to_string(),
+                "hello".as_bytes().to_vec(),
+            )
+            .retain(true)
+            .build(),
+        );
+        let mut mock_topic_manager = MockTopicManagerTrait::new();
+        mock_topic_manager
+            .expect_register_retain_publish_packet()
+            .times(1)
+            .returning(|_, _, _| {
+                let future = async { std::result::Result::Ok(()) };
+                Box::pin(future)
+            });
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            Arc::new(RwLock::new(mock_topic_manager)),
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(publish_packet_retain))
+            .await
+            .unwrap();
+
+        router_rx.recv().await.unwrap();
+    }
+
+    #[actix::test]
+    async fn when_receive_disconnect_packet_from_connection_session_actor_should_not_stop_if_clean_session_is_false(
+    ) {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        session_actor
+            .send(SessionActorMessage::ClientDisconnected)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        assert!(session_actor.connected());
+    }
+
     #[actix::test]
     async fn when_receive_subscribe_packet_from_connection_should_subscribe_topic() {
         let mut mock_topic_manager = MockTopicManagerTrait::new();
         mock_topic_manager
             .expect_handle_subscribe()
-            .with(eq("tenant_a".to_string()), eq("client_a".to_string()), eq("/a/b/c".to_string()), eq(0))
+            .with(
+                eq("tenant_a".to_string()),
+                eq("client_a".to_string()),
+                eq("/a/b/c".to_string()),
+                eq(0),
+            )
             .times(1)
             .returning(|_, _, _, _| {
-                let future = async {
-                    std::result::Result::Ok(())
-                };
+                let future = async { std::result::Result::Ok(()) };
                 Box::pin(future)
             });
         mock_topic_manager
             .expect_get_retain_publish_packet()
             .returning(|_, _| {
-                let future = async {std::result::Result::Ok(vec![])};
+                let future = async { std::result::Result::Ok(vec![]) };
                 Box::pin(future)
             });
-        
+
         let mut mock_plugin_service = MockPluginService::new();
         mock_plugin_service
             .expect_do_subscribe_authorizate()
-            .returning(|_, _ | {
-                let subscribe_result = SubscribeAuthorizationResult { return_code: vec![SubscribeReturnCode::MaxQosLeastOnce] };
+            .returning(|_, _| {
+                let subscribe_result = SubscribeAuthorizationResult {
+                    return_code: vec![SubscribeReturnCode::MaxQosLeastOnce],
+                };
                 std::result::Result::Ok(subscribe_result)
             });
-        
+
         let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
         let connection_actor = MockConnectionActor {
             message_sender: message_tx,
@@ -975,27 +1186,35 @@ mod tests {
         )
         .start();
 
-        let subscribe_packet = SubscribePacketBuilder::new(1).add_topic_filter(
-            TopicFilter { topic_name: "/a/b/c".to_string(), qos: 0 }
-        ).build();
+        let subscribe_packet = SubscribePacketBuilder::new(1)
+            .add_topic_filter(TopicFilter {
+                topic_name: "/a/b/c".to_string(),
+                qos: 0,
+            })
+            .build();
 
-        session_actor.send(SessionActorMessage::InboundPacket(MqttPacketV3::Subscribe(subscribe_packet))).await.unwrap();
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Subscribe(
+                subscribe_packet,
+            )))
+            .await
+            .unwrap();
 
         let msg = _message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(packet) => {
-                match packet {
-                    MqttPacketV3::Suback(suback_packet) => {
-                        assert_eq!(suback_packet.variable_header.packet_identifier, 1);
-                        assert_eq!(suback_packet.payload.return_code.len(), 1);
-                        assert_eq!(suback_packet.payload.return_code[0], SubscribeReturnCode::MaxQosLeastOnce.into());
-                    }
-                    _ => assert!(false)
+            ConnectionActorMessage::WritePacketToClient(packet) => match packet {
+                MqttPacketV3::Suback(suback_packet) => {
+                    assert_eq!(suback_packet.variable_header.packet_identifier, 1);
+                    assert_eq!(suback_packet.payload.return_code.len(), 1);
+                    assert_eq!(
+                        suback_packet.payload.return_code[0],
+                        SubscribeReturnCode::MaxQosLeastOnce.into()
+                    );
                 }
-            }
-            _ => assert!(false)
+                _ => assert!(false),
+            },
+            _ => assert!(false),
         }
-
     }
 
     #[actix::test]
