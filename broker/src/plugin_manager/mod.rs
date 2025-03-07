@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, ffi::CStr, path::PathBuf, sync::Arc};
 
 use libloading::{Library, Symbol};
+use mockall::automock;
 use plugin_metadata::PluginMetadata;
 use yedmq_plugin::plugin::{AuthenticationResult, AuthenticationResultValue, AuthorizationResult, Client, Plugin, RegisterPluginResult};
-use anyhow::{anyhow, Ok};
+use anyhow::anyhow;
 use thiserror::Error;
 use log::{debug, info, warn};
 
@@ -60,6 +61,7 @@ pub struct PluginWrapper {
 
 }
 
+#[automock]
 pub trait PluginService: Send + Sync {
 
     fn do_on_disconnect(&self, client: &Client);

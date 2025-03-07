@@ -31,7 +31,7 @@ use crate::{
     inflight::Inflight,
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
-    topic::topic_manager::TopicManager,
+    topic::topic_manager::{TopicManager, TopicManagerTrait},
 };
 
 use super::{
@@ -94,15 +94,15 @@ pub enum SessionActorMessage {
 
         socket_addr: std::net::SocketAddr,
     },
+
+    UnexpectClientDisconnected,
+
+    ClientDisconnected,
 }
 
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct ClientDisconnected {}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct UnexpectClientDisconnected {}
 
 pub enum SessionState {
     Active,
@@ -127,9 +127,9 @@ pub struct SessionActor {
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
 
-    conn: Option<Recipient<ConnectionActorMessage>>,
+    conn_recipient: Option<Recipient<ConnectionActorMessage>>,
 
     conn_addr: Option<SocketAddr>,
 
@@ -210,7 +210,7 @@ impl From<SubscribeReturnCode> for yedmq_mqtt::v3::suback::ReturnCode {
 async fn do_handle_unsubscribe(
     unsubscribe_packet: UnsubscribePacket,
     client_info: Client,
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
 ) -> HandleUnSubscribeResult {
     let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
     let mut succeed_unsubscriptions = vec![];
@@ -236,7 +236,7 @@ async fn do_handle_unsubscribe(
 async fn do_handle_publish(
     publish_packet: PublishPacket,
     client_info: Client,
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     plugin_manager: Arc<dyn PluginService>,
     inflight: Arc<Mutex<Inflight>>,
     router_sender: Sender<RouterCmd>,
@@ -305,7 +305,7 @@ async fn do_handle_publish(
 async fn do_handle_subscribe(
     subscribe_packet: SubscribePacket,
     client_info: Client,
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     plugin_manager: Arc<dyn PluginService>,
 ) -> HandleSubscribeResult {
     let tenant_id = client_info.tenant_id.clone();
@@ -372,7 +372,7 @@ impl SessionActor {
         tenant_id: String,
         client_id: String,
         clean_session: bool,
-        topic_manager: Arc<RwLock<TopicManager>>,
+        topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
         plugin_manager: Arc<dyn PluginService>,
         router_sender: Sender<RouterCmd>,
         inflight_retry_duration_secs: u64,
@@ -385,17 +385,17 @@ impl SessionActor {
             topic_manager,
             plugin_manager,
             router_sender,
-            conn: Some(connection_actor_addr),
+            conn_recipient: Some(connection_actor_addr),
             conn_addr: Some(peer_addr),
             inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
                 inflight_retry_duration_secs,
             )))),
-            state: SessionState::Inactive,
+            state: SessionState::Active,
             keep_alive_task_handle: None,
             subscriptions: HashMap::new(),
             clean_session,
             keep_alive,
-            keep_alive_expired: false,
+            keep_alive_expired: true,
             inflight_retry_interval: inflight_retry_duration_secs,
             inflight_retry_task_handle: None,
             tenant_id,
@@ -480,7 +480,7 @@ impl SessionActor {
         .into_actor(self)
         .map(|res, act, _ctx| {
             if let Some(packet) = res.inflight_packet {
-                let conn = act.conn.clone().unwrap();
+                let conn = act.conn_recipient.clone().unwrap();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
             }
         })
@@ -500,7 +500,7 @@ impl SessionActor {
         }
         .into_actor(self)
         .map(|res, act, _ctx| {
-            let conn = act.conn.clone().unwrap();
+            let conn = act.conn_recipient.clone().unwrap();
             for packet in res.retain_messages {
                 let packet = (*packet).clone();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
@@ -514,7 +514,7 @@ impl SessionActor {
     }
 
     fn handle_pingreq(&mut self) {
-        let conn = self.conn.clone().unwrap();
+        let conn = self.conn_recipient.clone().unwrap();
         conn.do_send(ConnectionActorMessage::WritePacketToClient(
             yedmq_mqtt::MqttPacketV3::Pingresp(PingrespPacket::new()),
         ));
@@ -532,7 +532,7 @@ impl SessionActor {
             .map(|res, act, _ctx| {
                 act.subscriptions
                     .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
-                let conn = act.conn.clone().unwrap();
+                let conn = act.conn_recipient.clone().unwrap();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(
                     yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
                 ));
@@ -551,7 +551,7 @@ impl SessionActor {
         // before updating the inflight status again.
 
         let infight = self.inflight.clone();
-        let conn = self.conn.clone().unwrap();
+        let conn = self.conn_recipient.clone().unwrap();
 
         async move {
             let mut inflight = infight.lock().await;
@@ -586,7 +586,7 @@ impl SessionActor {
         // before updating the inflight status again.
 
         let infight = self.inflight.clone();
-        let conn = self.conn.clone().unwrap();
+        let conn = self.conn_recipient.clone().unwrap();
 
         async move {
             let mut inflight = infight.lock().await;
@@ -621,7 +621,7 @@ impl SessionActor {
         // before updating the inflight status again.
 
         let infight = self.inflight.clone();
-        let conn = self.conn.clone().unwrap();
+        let conn = self.conn_recipient.clone().unwrap();
 
         async move {
             let mut inflight = infight.lock().await;
@@ -656,7 +656,7 @@ impl SessionActor {
         // before updating the inflight status again.
 
         let infight = self.inflight.clone();
-        let conn = self.conn.clone().unwrap();
+        let conn = self.conn_recipient.clone().unwrap();
 
         async move {
             let mut inflight = infight.lock().await;
@@ -686,7 +686,7 @@ impl SessionActor {
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.clean_will_message();
-        self.conn
+        self.conn_recipient
             .clone()
             .unwrap()
             .do_send(ConnectionActorMessage::Disconnect);
@@ -771,7 +771,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             SessionActorMessage::OutboundMessage(packet) => {
                 if matches!(self.state, SessionState::Active) {
                     if let MqttPacketV3::Publish(packet) = packet {
-                        let conn = self.conn.clone().unwrap();
+                        let conn = self.conn_recipient.clone().unwrap();
                         let inflight = self.inflight.clone();
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
@@ -796,10 +796,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                 // send will message and clean up
                 self.send_will_message(ctx);
                 self.clean_up(ctx);
+                if let Some(recipient) = &self.conn_recipient {
+                    recipient.do_send(ConnectionActorMessage::Disconnect);
+                }
             }
             SessionActorMessage::InflightRetry => {
                 let inflight = self.inflight.clone();
-                let conn = self.conn.clone().unwrap();
+                let conn = self.conn_recipient.clone().unwrap();
                 async move {
                     let mut inflight = inflight.lock().await;
                     let packets = inflight
@@ -823,7 +826,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::ForceDisconnect => {
                 if matches!(self.state, SessionState::Active) {
-                    let conn = self.conn.clone().unwrap();
+                    let conn = self.conn_recipient.clone().unwrap();
                     async move {
                         conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
                     }
@@ -831,6 +834,10 @@ impl Handler<SessionActorMessage> for SessionActor {
                     .wait(ctx);
                     self.clean_up(ctx);
                 }
+            }
+            SessionActorMessage::UnexpectClientDisconnected => {
+                self.send_will_message(ctx);
+                self.clean_up(ctx);
             }
             SessionActorMessage::Reconnect {
                 conn,
@@ -841,7 +848,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 socket_addr,
             } => {
                 self.set_state(SessionState::Active);
-                self.conn = Some(conn);
+                self.conn_recipient = Some(conn);
                 self.will_message = will_message;
                 self.clean_session = clean_session;
                 self.keep_alive = keep_alive;
@@ -871,27 +878,287 @@ impl Handler<SessionActorMessage> for SessionActor {
                         .do_send(SessionActorMessage::OutboundMessage(msg));
                 }
             }
+            SessionActorMessage::ClientDisconnected => {
+                self.clean_up(ctx);
+            }
         }
     }
 }
 
-impl Handler<ClientDisconnected> for SessionActor {
-    type Result = ();
+#[cfg(test)]
+mod tests {
+    use std::mem;
 
-    fn handle(&mut self, _msg: ClientDisconnected, ctx: &mut Self::Context) -> Self::Result {
-        self.clean_up(ctx);
+    use mockall::predicate::eq;
+    use yedmq_mqtt::v3::subscribe::{self, SubscribePacketBuilder, TopicFilter};
+
+    use super::*;
+    use crate::{
+        plugin_manager::{MockPluginService, SubscribeAuthorizationResult},
+        topic::{topic_manager::{MockTopicManagerTrait, TopicManagerTrait}, topic_storage::Subscription},
+    };
+
+    struct MockConnectionActor {
+        message_sender: Sender<ConnectionActorMessage>,
     }
-}
 
-impl Handler<UnexpectClientDisconnected> for SessionActor {
-    type Result = ();
+    impl Actor for MockConnectionActor {
+        type Context = Context<Self>;
+    }
 
-    fn handle(
-        &mut self,
-        _msg: UnexpectClientDisconnected,
-        ctx: &mut Self::Context,
-    ) -> Self::Result {
-        self.send_will_message(ctx);
-        self.clean_up(ctx);
+    impl Handler<ConnectionActorMessage> for MockConnectionActor {
+        type Result = ();
+
+        fn handle(&mut self, msg: ConnectionActorMessage, ctx: &mut Self::Context) -> Self::Result {
+            let message_sender = self.message_sender.clone();
+            ctx.spawn(
+                async move {
+                    let _ = message_sender.send(msg).await;
+                }
+                .into_actor(self),
+            );
+        }
+    }
+
+    const KEEP_ALIVE: u64 = 5;
+    const INFLIGHT_RETRY: u64 = 5;
+
+    #[actix::test]
+    async fn when_receive_subscribe_packet_from_connection_should_subscribe_topic() {
+        let mut mock_topic_manager = MockTopicManagerTrait::new();
+        mock_topic_manager
+            .expect_handle_subscribe()
+            .with(eq("tenant_a".to_string()), eq("client_a".to_string()), eq("/a/b/c".to_string()), eq(0))
+            .times(1)
+            .returning(|_, _, _, _| {
+                let future = async {
+                    std::result::Result::Ok(())
+                };
+                Box::pin(future)
+            });
+        mock_topic_manager
+            .expect_get_retain_publish_packet()
+            .returning(|_, _| {
+                let future = async {std::result::Result::Ok(vec![])};
+                Box::pin(future)
+            });
+        
+        let mut mock_plugin_service = MockPluginService::new();
+        mock_plugin_service
+            .expect_do_subscribe_authorizate()
+            .returning(|_, _ | {
+                let subscribe_result = SubscribeAuthorizationResult { return_code: vec![SubscribeReturnCode::MaxQosLeastOnce] };
+                std::result::Result::Ok(subscribe_result)
+            });
+        
+        let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            Arc::new(RwLock::new(mock_topic_manager)),
+            Arc::new(mock_plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        let subscribe_packet = SubscribePacketBuilder::new(1).add_topic_filter(
+            TopicFilter { topic_name: "/a/b/c".to_string(), qos: 0 }
+        ).build();
+
+        session_actor.send(SessionActorMessage::InboundPacket(MqttPacketV3::Subscribe(subscribe_packet))).await.unwrap();
+
+        let msg = _message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(packet) => {
+                match packet {
+                    MqttPacketV3::Suback(suback_packet) => {
+                        assert_eq!(suback_packet.variable_header.packet_identifier, 1);
+                        assert_eq!(suback_packet.payload.return_code.len(), 1);
+                        assert_eq!(suback_packet.payload.return_code[0], SubscribeReturnCode::MaxQosLeastOnce.into());
+                    }
+                    _ => assert!(false)
+                }
+            }
+            _ => assert!(false)
+        }
+
+    }
+
+    #[actix::test]
+    async fn when_receive_publish_packet_from_connection_should_send_to_the_router() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut _message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+        let client_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).build();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        let message = router_rx.recv().await.unwrap();
+
+        match message {
+            RouterCmd::RoutePacket {
+                tenant_identifier,
+                packet,
+            } => {
+                assert_eq!(tenant_identifier, "tenant_a");
+                match packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        assert_eq!(publish_packet.variable_header.topic_name, "/a/b/c");
+                        assert_eq!(publish_packet.payload.payload, "hello".as_bytes().to_vec());
+                    }
+                    _ => assert!(false),
+                }
+            }
+            _ => assert!(false),
+        }
+    }
+
+    #[actix::test]
+    async fn when_receive_outbound_message_should_send_to_connection_actor() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let _session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        let outbound_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).build();
+
+        _session_actor
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                outbound_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Publish(packet) => {
+                    assert_eq!(packet.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(packet.payload.payload, "hello".as_bytes().to_vec());
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[actix::test]
+    async fn when_keep_alive_expired_should_send_disconnect_to_connection_actor() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let _session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::Disconnect => {
+                assert!(true)
+            }
+            _ => {
+                assert!(false)
+            }
+        }
     }
 }

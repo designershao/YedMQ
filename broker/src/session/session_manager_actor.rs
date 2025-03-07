@@ -5,15 +5,14 @@ use crate::{
     settings::Settings, topic::topic_manager::TopicManager,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler, Message, Recipient, WrapFuture
+    dev::ContextFutureSpawner, Actor, ActorFutureExt, AsyncContext, Context, Handler, Message,
+    Recipient, WrapFuture,
 };
 use log::error;
 use thiserror::Error;
-use tokio::
-    sync::{mpsc::Sender, RwLock}
-;
+use tokio::sync::{mpsc::Sender, RwLock};
 
-use super::{connection::{ConnectionActor, ConnectionActorMessage}, session_actor::{ SessionActorMessage}, WillMessage};
+use super::{connection::ConnectionActorMessage, session_actor::SessionActorMessage, WillMessage};
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -43,8 +42,7 @@ pub enum SessionLifecycleMessage {
     },
 }
 
-pub struct SessionManagerActor
-{
+pub struct SessionManagerActor {
     pub sessions: HashMap<String, HashMap<String, Recipient<SessionActorMessage>>>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
@@ -58,8 +56,7 @@ pub struct SessionManagerActor
     settings: Arc<Settings>,
 }
 
-impl Actor for SessionManagerActor
-{
+impl Actor for SessionManagerActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -86,8 +83,7 @@ impl Actor for SessionManagerActor
     }
 }
 
-pub struct CreateSessionMessage
-{
+pub struct CreateSessionMessage {
     pub tenant_id: String,
     pub client_id: String,
     pub clean_session: bool,
@@ -102,9 +98,7 @@ impl Message for CreateSessionMessage {
     type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
 }
 
-impl Handler<CreateSessionMessage>
-    for SessionManagerActor
-{
+impl Handler<CreateSessionMessage> for SessionManagerActor {
     type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
 
     fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
@@ -117,32 +111,36 @@ impl Handler<CreateSessionMessage>
             // previously session existed, force disconnect the old connection
             let session_addr = sessions.get(&msg.client_id).unwrap().clone();
             let session_addr_in_async = session_addr.clone();
-            async move { 
-                let res = session_addr_in_async.send(SessionActorMessage::ForceDisconnect).await;
+            async move {
+                let res = session_addr_in_async
+                    .send(SessionActorMessage::ForceDisconnect)
+                    .await;
                 if let Err(err) = res {
                     return Err(err);
                 } else {
-                    let res = session_addr_in_async.send(SessionActorMessage::Reconnect {
-                        conn: msg.connection_addr.clone(),
-                        keep_alive: msg.keep_alive,
-                        clean_session: msg.clean_session,
-                        username: msg.username,
-                        will_message: msg.will_message,
-                        socket_addr: msg.peer_addr,
-                    }).await;
+                    let res = session_addr_in_async
+                        .send(SessionActorMessage::Reconnect {
+                            conn: msg.connection_addr.clone(),
+                            keep_alive: msg.keep_alive,
+                            clean_session: msg.clean_session,
+                            username: msg.username,
+                            will_message: msg.will_message,
+                            socket_addr: msg.peer_addr,
+                        })
+                        .await;
                     if let Err(err) = res {
                         return Err(err);
                     }
                 }
                 Ok(())
             }
-                .into_actor(self)
-                .map(|res, act, _ctx| {
-                    if let Err(err) = res {
-                        error!("reconnect previeus session error: {}", err);
-                    }
-                })
-                .wait(ctx);
+            .into_actor(self)
+            .map(|res, act, _ctx| {
+                if let Err(err) = res {
+                    error!("reconnect previeus session error: {}", err);
+                }
+            })
+            .wait(ctx);
             return Ok(session_addr);
         } else {
             let sessions = self.sessions.get_mut(&msg.tenant_id).unwrap();
@@ -174,9 +172,7 @@ struct CreateTenantMessage {
     tenant_id: String,
 }
 
-impl Handler<CreateTenantMessage>
-    for SessionManagerActor
-{
+impl Handler<CreateTenantMessage> for SessionManagerActor {
     type Result = Result<(), SessionManagerError>;
 
     fn handle(&mut self, msg: CreateTenantMessage, ctx: &mut Self::Context) -> Self::Result {
@@ -201,9 +197,7 @@ struct RemoveSessionMessage {
     client_id: String,
 }
 
-impl Handler<RemoveSessionMessage>
-    for SessionManagerActor
-{
+impl Handler<RemoveSessionMessage> for SessionManagerActor {
     type Result = Result<(), SessionManagerError>;
 
     fn handle(&mut self, msg: RemoveSessionMessage, ctx: &mut Self::Context) -> Self::Result {
@@ -215,4 +209,9 @@ impl Handler<RemoveSessionMessage>
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
 }

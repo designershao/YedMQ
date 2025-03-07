@@ -28,9 +28,8 @@ pub enum ConnectionActorMessage {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct UpdateSession
-{
-    pub session: Addr<SessionActor>,
+pub struct UpdateSession {
+    pub session: Recipient<SessionActorMessage>,
 }
 
 #[derive(Message)]
@@ -40,7 +39,7 @@ pub struct NotifyUpdateDisconnectedNormally {
 }
 
 pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
-    pub session_manager: Recipient<CreateSessionMessage>,
+    pub session_manager_recipient: Recipient<CreateSessionMessage>,
     peer_addr: SocketAddr,
     pub reader: Rc<RefCell<tokio::io::ReadHalf<T>>>,
     pub writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
@@ -48,7 +47,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     pub max_message_size: u32,
     pub disconnected_normally: bool,
     pub buffer_size: usize,
-    session: Option<Addr<SessionActor>>,
+    session: Option<Recipient<SessionActorMessage>>,
     read_packet_handle: Option<SpawnHandle>,
 }
 
@@ -73,7 +72,7 @@ where
             buffer_size: default_buffer_size,
             peer_addr,
             plugin_service,
-            session_manager,
+            session_manager_recipient: session_manager,
             session: None,
             read_packet_handle: None,
         }
@@ -259,7 +258,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 .await
                 .unwrap();
             Err(anyhow::anyhow!("connect error"))
-        },
+        }
     }
 }
 
@@ -275,7 +274,7 @@ where
         let reader = self.reader.clone();
         let mut buffer = BytesMut::with_capacity(self.buffer_size);
         let plugin_service = self.plugin_service.clone();
-        let session_manager = self.session_manager.clone();
+        let session_manager = self.session_manager_recipient.clone();
         let peer_addr = self.peer_addr.clone();
         let handle = ctx.spawn(
             async move {
@@ -352,12 +351,12 @@ where
                 self.session
                     .clone()
                     .unwrap()
-                    .do_send(session_actor::UnexpectClientDisconnected {});
+                    .do_send(session_actor::SessionActorMessage::UnexpectClientDisconnected);
             } else {
                 self.session
                     .clone()
                     .unwrap()
-                    .do_send(session_actor::ClientDisconnected {});
+                    .do_send(session_actor::SessionActorMessage::ClientDisconnected);
             }
         }
     }
@@ -407,12 +406,10 @@ where
                 }
                 .into_actor(self)
                 .wait(ctx);
-                self.read_packet_handle.and_then(
-                    |handle| {
-                        ctx.cancel_future(handle);
-                        Some(())
-                    },
-                );
+                self.read_packet_handle.and_then(|handle| {
+                    ctx.cancel_future(handle);
+                    Some(())
+                });
                 ctx.stop();
             }
         }
@@ -439,6 +436,7 @@ mod tests {
     use std::{sync::Arc, time::Duration};
 
     use actix::{Actor, Context, Handler, Recipient};
+    use anyhow::Ok;
     use nom::AsBytes;
     use yedmq_mqtt::{
         v3::{
@@ -450,58 +448,13 @@ mod tests {
     use yedmq_plugin::plugin::ConnectReturnCode;
 
     use crate::{
-        plugin_manager::{PluginService, SubscribeAuthorizationResult, SubscribeReturnCode},
+        plugin_manager::{
+            MockPluginService, PluginService, SubscribeAuthorizationResult, SubscribeReturnCode,
+        },
         session::{session_actor, session_manager_actor},
     };
 
     use super::ConnectionActor;
-
-    struct MockPluginService {
-        connect_authenticate: Arc<
-            dyn Fn(
-                    &yedmq_mqtt::v3::connect::ConnectPacket,
-                )
-                    -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResultValue>
-                + Send
-                + Sync,
-        >,
-    }
-
-    impl PluginService for MockPluginService {
-        fn do_on_disconnect(&self, _client: &yedmq_plugin::plugin::Client) {}
-
-        fn do_on_publish(
-            &self,
-            _client: &yedmq_plugin::plugin::Client,
-            _packet: &yedmq_mqtt::v3::publish::PublishPacket,
-        ) {
-        }
-
-        fn do_publish_authorizate(
-            &self,
-            _client: &yedmq_plugin::plugin::Client,
-            _packet: &yedmq_mqtt::v3::publish::PublishPacket,
-        ) -> anyhow::Result<bool> {
-            return Ok(true);
-        }
-
-        fn do_subscribe_authorizate(
-            &self,
-            _client: &yedmq_plugin::plugin::Client,
-            _packet: &yedmq_mqtt::v3::subscribe::SubscribePacket,
-        ) -> anyhow::Result<crate::plugin_manager::SubscribeAuthorizationResult> {
-            return Ok(SubscribeAuthorizationResult {
-                return_code: vec![SubscribeReturnCode::MaxQosLeastOnce],
-            });
-        }
-
-        fn do_connect_authenticate(
-            &self,
-            packet: &yedmq_mqtt::v3::connect::ConnectPacket,
-        ) -> anyhow::Result<yedmq_plugin::plugin::AuthenticationResultValue> {
-            return (self.connect_authenticate)(packet);
-        }
-    }
 
     struct MockSessionManager {}
 
@@ -509,9 +462,7 @@ mod tests {
         type Context = Context<Self>;
     }
 
-    impl Handler<session_manager_actor::CreateSessionMessage>
-        for MockSessionManager
-    {
+    impl Handler<session_manager_actor::CreateSessionMessage> for MockSessionManager {
         type Result = Result<
             Recipient<session_actor::SessionActorMessage>,
             session_manager_actor::SessionManagerError,
@@ -523,7 +474,7 @@ mod tests {
             _ctx: &mut Self::Context,
         ) -> Self::Result {
             let mock_session = MockSession {}.start();
-            Ok(mock_session.recipient())
+            std::result::Result::Ok(mock_session.recipient())
         }
     }
 
@@ -558,18 +509,18 @@ mod tests {
             .write(MqttPacketV3::Connack(conack_packet).to_bytes().as_bytes())
             .build();
 
+        let mut mock_plugin_service = MockPluginService::new();
+        mock_plugin_service
+            .expect_do_connect_authenticate()
+            .returning(|_| {
+                Ok(yedmq_plugin::plugin::AuthenticationResultValue::Success("tenant_a".into()))
+            });
         let connection_actor = ConnectionActor::new(
             mock_io,
             256,
             4096,
             "127.0.0.1:8080".parse().unwrap(),
-            Arc::new(MockPluginService {
-                connect_authenticate: Arc::new(|_| {
-                    Ok(yedmq_plugin::plugin::AuthenticationResultValue::Success(
-                        "tenant_a".into(),
-                    ))
-                }),
-            }),
+            Arc::new(mock_plugin_service),
             session_manager_actor.recipient(),
         );
         connection_actor.start();
@@ -592,22 +543,24 @@ mod tests {
             .write(MqttPacketV3::Connack(conack_packet).to_bytes().as_bytes())
             .build();
 
+        let mut mock_plugin_service = MockPluginService::new();
+        mock_plugin_service
+            .expect_do_connect_authenticate()
+            .returning(|_| {
+                Ok(yedmq_plugin::plugin::AuthenticationResultValue::Fail(
+                    ConnectReturnCode::ConnectionForbidenUnauth,
+                ))
+            });
+
         let connection_actor = ConnectionActor::new(
             mock_io,
             256,
             4096,
             "127.0.0.1:8080".parse().unwrap(),
-            Arc::new(MockPluginService {
-                connect_authenticate: Arc::new(|_| {
-                    Ok(yedmq_plugin::plugin::AuthenticationResultValue::Fail(
-                        ConnectReturnCode::ConnectionForbidenUnauth,
-                    ))
-                }),
-            }),
+            Arc::new(mock_plugin_service),
             session_manager_actor.recipient(),
         );
         connection_actor.start();
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-
 }

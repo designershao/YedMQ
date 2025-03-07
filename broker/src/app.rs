@@ -19,7 +19,7 @@ use crate::{
     session::session_manager::{SessionManager, SessionMessage},
     settings::Settings,
     topic::{
-        topic_manager::TopicManager,
+        topic_manager::{TopicManager, TopicManagerTrait},
         topic_storage::TopicStorage,
     },
 };
@@ -30,7 +30,7 @@ pub struct YedMQApp {
 
     pub plugin_manager: Arc<PluginManager>,
 
-    pub topic_manager: Arc<RwLock<TopicManager>>,
+    pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
 
     pub topic_storage: Arc<RwLock<TopicStorage>>,
 

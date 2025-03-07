@@ -4,7 +4,7 @@ use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::RwLock};
 
-use crate::{session::session_manager::SessionManager, topic::topic_manager::TopicManager};
+use crate::{session::session_manager::SessionManager, topic::topic_manager::{TopicManager, TopicManagerTrait}};
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
 use crate::protobuf::raft_service_client::RaftServiceClient;
@@ -21,7 +21,7 @@ pub enum RouterCmd {
 
 pub struct Router {
     pub session_manager: Arc<RwLock<SessionManager>>,
-    pub topic_manager: Arc<RwLock<TopicManager>>,
+    pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
     pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
 }

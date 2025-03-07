@@ -13,7 +13,7 @@ use crate::{
     connection::Connection, inflight::Inflight, metric::Metric, plugin_manager::{PluginManager, PluginService}, router::RouterCmd, session::{session_manager::{
         ConnectionMessage, KickOffReason, Session, SessionContext, SessionManager, SessionMessage,
         SessionWrapper,
-    }, WillMessage}, settings::Settings, topic::topic_manager::TopicManager
+    }, WillMessage}, settings::Settings, topic::topic_manager::{TopicManager, TopicManagerTrait}
 };
 
 use yedmq_mqtt::v3::connack::ConnAckPacketBuilder;
@@ -56,7 +56,7 @@ async fn accept_connection<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     stream: T,
     plugin_manager: Arc<PluginManager>,
     session_manager: Arc<RwLock<SessionManager>>,
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     router_sender: Sender<RouterCmd>,
     settings: Arc<Settings>,
     peer_addr: SocketAddr,

@@ -5,7 +5,7 @@ use axum::{
 };
 use log::error;
 use serde::Serialize;
-use crate::app::YedMQApp;
+use crate::{app::YedMQApp, topic::topic_manager::TopicManagerTrait};
 
 use super::{Pagination, PaginationListResult, PaginationMeta};
 

@@ -27,7 +27,7 @@ use crate::{
     inflight::Inflight,
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
-    topic::topic_manager::TopicManager,
+    topic::topic_manager::{TopicManager, TopicManagerTrait},
 };
 
 use super::WillMessage;
@@ -142,7 +142,7 @@ pub struct SessionWrapper {
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
 
     quit_signal_sender: Option<Sender<()>>,
 }
@@ -248,7 +248,7 @@ impl SessionWrapper {
         session: Session,
         session_receiver: Receiver<SessionMessage>,
         plugin_manager: Arc<dyn PluginService + 'static>,
-        topic_manager: Arc<RwLock<TopicManager>>,
+        topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     ) -> Self {
         SessionWrapper {
             session,
@@ -1054,7 +1054,7 @@ mod tests {
         inflight::Inflight, plugin_manager::{PluginService, SubscribeAuthorizationResult, SubscribeReturnCode}, raft::raft_manager::RaftManager, router::RouterCmd, session::session_manager::{
             keep_alive_task, KeepAliveMessage, KickOffReason, SessionMessage, SessionWrapper,
         }, settings::{Cluster, RPC}, topic::{
-            topic_manager::{self, TopicManager},
+            topic_manager::{self, TopicManager, TopicManagerTrait},
             topic_storage::TopicStorage,
         }
     };
