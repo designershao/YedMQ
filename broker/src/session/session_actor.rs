@@ -5,10 +5,7 @@ use actix::{
 use log::warn;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    sync::{mpsc::Sender, Mutex, RwLock},
-};
+use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use yedmq_mqtt::{
     v3::{
         disconnect::DisconnectPacket,
@@ -31,7 +28,7 @@ use crate::{
     inflight::Inflight,
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
-    topic::topic_manager::{TopicManager, TopicManagerTrait},
+    topic::topic_manager::TopicManagerTrait,
 };
 
 use super::{
@@ -109,6 +106,8 @@ pub enum SessionState {
 
     Inactive,
 }
+
+
 
 pub struct SessionActor {
     tenant_id: String,
@@ -789,7 +788,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                         .wait(ctx);
                     }
                 } else {
-                    self.pending_messages.push(packet);
+                    if matches!(packet, MqttPacketV3::Publish(_)) {
+                        if let MqttPacketV3::Publish(publish_packet) = packet {
+                            if publish_packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
+                                self.pending_messages.push(MqttPacketV3::Publish(publish_packet));
+                            }
+                        }
+                    }
                 }
             }
             SessionActorMessage::KeepAliveExpred => {
@@ -885,15 +890,31 @@ impl Handler<SessionActorMessage> for SessionActor {
     }
 }
 
+
+#[cfg(test)]
+#[derive(Message)]
+#[rtype(result = "usize")]
+pub struct GetPendingMessagesCount {}
+
+#[cfg(test)]
+impl Handler<GetPendingMessagesCount> for SessionActor {
+    type Result = usize;
+
+    fn handle(&mut self, _msg: GetPendingMessagesCount, _ctx: &mut Self::Context) -> Self::Result {
+        self.pending_messages.len()
+    }
+}
+
+
+
 #[cfg(test)]
 mod tests {
     use mockall::predicate::eq;
-    use yedmq_mqtt::v3::subscribe::{self, SubscribePacketBuilder, TopicFilter};
+    use yedmq_mqtt::v3::{pingreq::PingreqPacketBuilder, subscribe::{SubscribePacketBuilder, TopicFilter}};
 
     use super::*;
     use crate::{
-        plugin_manager::{MockPluginService, SubscribeAuthorizationResult},
-        topic::topic_manager::MockTopicManagerTrait,
+        plugin_manager::{MockPluginService, SubscribeAuthorizationResult}, topic::topic_manager::MockTopicManagerTrait
     };
 
     struct MockConnectionActor {
@@ -921,10 +942,328 @@ mod tests {
     const KEEP_ALIVE: u64 = 5;
     const INFLIGHT_RETRY: u64 = 5;
 
+    #[actix::test]
+    pub async fn when_session_inactivate_should_not_save_outbound_qos0_message() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        );
+        let session_actor_addr = session_actor.start();
+
+        session_actor_addr.send(SessionActorMessage::ClientDisconnected).await.unwrap();
+
+        let client_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).build();
+
+        session_actor_addr.send(SessionActorMessage::OutboundMessage(
+            MqttPacketV3::Publish(client_publish_packet)
+        )).await.unwrap();
+
+        let pending_message_len = session_actor_addr.send(GetPendingMessagesCount {}).await.unwrap();
+
+        assert_eq!(0,pending_message_len);
+
+    }
     
+    #[actix::test]
+    pub async fn when_receive_qos_2_packet_should_correctly_handle_the_whole_process() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+        let client_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(2).build();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+        
+        let message = message_rx.recv().await.unwrap();
+
+        match message {
+            ConnectionActorMessage::WritePacketToClient(msg) => {
+                match msg {
+                    MqttPacketV3::Pubrec(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, 123);
+                    }
+                    _ => panic!("Unexpected message"),
+                }
+            }
+            _ => panic!("Unexpected message"),  
+        }
+
+        let client_pubrel_packet = PubRelPacket::new(123);
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrel(client_pubrel_packet)))
+            .await
+            .unwrap();
+
+        let message = message_rx.recv().await.unwrap();
+
+        match message {
+            ConnectionActorMessage::WritePacketToClient(msg) => {
+                match msg {
+                    MqttPacketV3::Pubcomp(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, 123);
+                    }
+                    _ => panic!("Unexpected message"),
+                }
+            }
+            _ => panic!("Unexpected message"),  
+        }
+    }
 
     #[actix::test]
-     pub async fn when_force_disconnect_should_send_disconnect_to_connection() {
+    pub async fn when_send_qos_1_packet_if_not_receive_ack_should_retry() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE + INFLIGHT_RETRY * 2, // ensure retry before keep-alive expired
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+        let client_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(1).build();
+
+        session_actor
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+        
+        let message = message_rx.recv().await.unwrap();
+
+        match message {
+            ConnectionActorMessage::WritePacketToClient(msg) => {
+                match msg {
+                    MqttPacketV3::Publish(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, Some(123));
+                        assert_eq!(packet.fix_header.dup, None);
+                    }
+                    _ => panic!("Unexpected message"),
+                }
+            }
+            _ => panic!("Unexpected message"),  
+        }
+
+        let message = message_rx.recv().await.unwrap();
+
+        match message {
+            ConnectionActorMessage::WritePacketToClient(msg) => {
+                match msg {
+                    MqttPacketV3::Publish(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, Some(123));
+                        assert_eq!(packet.fix_header.dup, Some(1));
+                    }
+                    _ => panic!("Unexpected message"),
+                }
+            }
+            _ => panic!("Unexpected message"),  
+        }
+    }
+
+    #[actix::test]
+    pub async fn when_receive_qos_1_packet_should_correctly_handle_the_whole_process() {
+
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            true,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+        let client_publish_packet =
+            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(1).build();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+        
+        let message = message_rx.recv().await.unwrap();
+
+        match message {
+            ConnectionActorMessage::WritePacketToClient(msg) => {
+                match msg {
+                    MqttPacketV3::Puback(packet) => {
+                        assert_eq!(packet.variable_header.packet_identifier, 123);
+                    }
+                    _ => panic!("Unexpected message"),
+                }
+            }
+            _ => panic!("Unexpected message"),  
+        }
+
+    }
+
+    #[actix::test]
+    pub async fn when_receive_pingreq_packet_shoud_send_pingresp_to_connection() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let plugin_service = MockPluginService::new();
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient,
+            "127.0.0.1:1883".parse().unwrap(),
+        )
+        .start();
+
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Pingreq(
+                PingreqPacketBuilder::new().build(),
+            )))
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(packet) => {
+                match  packet {
+                    MqttPacketV3::Pingresp(_pingresp_packet) => (), 
+                    _ => panic!("expect pingresp packet")
+                }
+            }
+            _ => panic!("expect outbound message"),
+        }
+    }
+
+    #[actix::test]
+    pub async fn when_force_disconnect_should_send_disconnect_to_connection() {
         let mock_topic_manager = MockTopicManagerTrait::new();
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
 
@@ -969,7 +1308,7 @@ mod tests {
                 unreachable!()
             }
         }
-     }
+    }
 
     #[actix::test]
     pub async fn when_receive_publish_packet_with_retain_flag_and_empty_payload_should_unset_reatin_message_in_topic_manager(
@@ -1169,7 +1508,7 @@ mod tests {
         .start();
         let connection_recipient = connection_actor.recipient();
 
-        let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
