@@ -1,8 +1,16 @@
 use std::{collections::HashMap, time::Duration};
 
+use thiserror::Error;
 use tokio::sync::RwLock;
 
 use yedmq_mqtt::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
+
+#[derive(Debug,Error)]
+pub enum InflightError {
+
+    #[error("packet identifier has existed")]
+    PacketIdentifierHasExisted
+}
 
 pub struct Inflight {
     inner: RwLock<HashMap<u16, InflightItem>>,
@@ -43,10 +51,18 @@ impl Inflight {
         }
     }
 
-    pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) {
+    async fn packet_id_exists(&self, packet_identifier: u16) -> bool {
+        let inner = self.inner.read().await;
+        inner.contains_key(&packet_identifier)
+    }
+
+    pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) -> Result<(), InflightError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
+                if self.packet_id_exists(packet_identifier).await {
+                    return Err(InflightError::PacketIdentifierHasExisted);
+                }
                 let qos = publish_packet.fix_header.qos.unwrap();
                 if qos == 2 {
                     let item = InflightItemBuilder::new(
@@ -66,6 +82,7 @@ impl Inflight {
                 }
             }
         }
+        Ok(())
     }
 
     // Get all packet which should be resend to the client and refresh expired time
@@ -95,6 +112,18 @@ impl Inflight {
             None
         }
     }
+
+    pub async fn allocate_packet_id(&mut self) -> Option<u16> {
+        for id in 1..=65535 {
+            let inner = self.inner.read().await;
+
+            if !inner.contains_key(&id) {
+                return Some(id);
+            }
+        }
+        None
+    }
+
 
     pub async fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
         let inner = self.inner.read().await;
@@ -256,7 +285,7 @@ mod tests {
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
         let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
-        inflight.register_with_tx_packet(&packet).await;
+        inflight.register_with_tx_packet(&packet).await.unwrap();
 
         let state = get_state(&inflight, packet_identifier).await;
         assert!(state.is_some());
@@ -379,7 +408,7 @@ mod tests {
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
         let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
-        inflight.register_with_tx_packet(&packet).await;
+        inflight.register_with_tx_packet(&packet).await.unwrap();
 
         let state = get_state(&inflight, packet_identifier).await;
 
@@ -426,5 +455,24 @@ mod tests {
 
         assert_eq!(state, super::InflightState::Finish);
 
+    }
+
+    #[tokio::test()]
+    async fn when_register_tx_packet_with_duplicate_packet_identifier_should_return_error() {
+        let inflight = Inflight::new(Duration::from_secs(10));
+
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).packet_identifier(123).qos(2).build();
+
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
+
+        inflight.register_with_tx_packet(&packet).await.unwrap();
+
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).packet_identifier(123).qos(2).build();
+
+        let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
+        let res = inflight.register_with_tx_packet(&packet).await;
+
+        assert!(res.is_err());
+        
     }
 }

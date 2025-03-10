@@ -25,7 +25,7 @@ use yedmq_mqtt::{
 use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
-    inflight::Inflight,
+    inflight::{Inflight, InflightError},
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
     topic::topic_manager::TopicManagerTrait,
@@ -106,8 +106,6 @@ pub enum SessionState {
 
     Inactive,
 }
-
-
 
 pub struct SessionActor {
     tenant_id: String,
@@ -769,16 +767,28 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::OutboundMessage(packet) => {
                 if matches!(self.state, SessionState::Active) {
-                    if let MqttPacketV3::Publish(packet) = packet {
+                    if let MqttPacketV3::Publish(mut packet) = packet {
                         let conn = self.conn_recipient.clone().unwrap();
                         let inflight = self.inflight.clone();
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                inflight
+                                let res = inflight
                                     .lock()
                                     .await
                                     .register_with_tx_packet(&MqttPacketV3::Publish(packet.clone()))
                                     .await;
+                                if let Err(e) = res {
+                                    match e {
+                                        InflightError::PacketIdentifierHasExisted => {
+                                            let packet_id = inflight.lock().await.allocate_packet_id().await;
+                                            if let Some(packet_id) = packet_id {
+                                                packet.variable_header.packet_identifier = Some(packet_id);
+                                            } else {
+                                                warn!("infligh has no more packet id available");
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                                 yedmq_mqtt::MqttPacketV3::Publish(packet),
@@ -791,7 +801,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                     if matches!(packet, MqttPacketV3::Publish(_)) {
                         if let MqttPacketV3::Publish(publish_packet) = packet {
                             if publish_packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                self.pending_messages.push(MqttPacketV3::Publish(publish_packet));
+                                self.pending_messages
+                                    .push(MqttPacketV3::Publish(publish_packet));
                             }
                         }
                     }
@@ -890,7 +901,6 @@ impl Handler<SessionActorMessage> for SessionActor {
     }
 }
 
-
 #[cfg(test)]
 #[derive(Message)]
 #[rtype(result = "usize")]
@@ -905,16 +915,18 @@ impl Handler<GetPendingMessagesCount> for SessionActor {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use mockall::predicate::eq;
-    use yedmq_mqtt::v3::{pingreq::PingreqPacketBuilder, subscribe::{SubscribePacketBuilder, TopicFilter}};
+    use yedmq_mqtt::v3::{
+        pingreq::PingreqPacketBuilder,
+        subscribe::{SubscribePacketBuilder, TopicFilter},
+    };
 
     use super::*;
     use crate::{
-        plugin_manager::{MockPluginService, SubscribeAuthorizationResult}, topic::topic_manager::MockTopicManagerTrait
+        plugin_manager::{MockPluginService, SubscribeAuthorizationResult},
+        topic::topic_manager::MockTopicManagerTrait,
     };
 
     struct MockConnectionActor {
@@ -941,6 +953,273 @@ mod tests {
 
     const KEEP_ALIVE: u64 = 5;
     const INFLIGHT_RETRY: u64 = 5;
+
+    #[actix::test]
+    pub async fn when_qos_packet_identifier_exist_in_inflight_should_reallocate_new_one() {
+
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
+            connection_recipient.clone(),
+            "127.0.0.1:1883".parse().unwrap(),
+        );
+        let session_actor_addr = session_actor.start();
+
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .qos(2)
+            .packet_identifier(123)
+            .build();
+
+        session_actor_addr
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(publish) => {
+                match publish {
+                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                        assert_eq!(publish.fix_header.qos, Some(2));
+                    }
+                    _ => panic!("expected ConnectionActorMessage::Publish"),
+                }
+            }
+            _ => panic!("expected ConnectionActorMessage::Publish"),
+        }
+
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .qos(2)
+            .packet_identifier(123)
+            .build();
+
+        session_actor_addr
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(publish) => {
+                match publish {
+                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                        assert_eq!(publish.fix_header.qos, Some(2));
+                        assert_ne!(publish.variable_header.packet_identifier.unwrap(), 123);
+                    }
+                    _ => panic!("expected ConnectionActorMessage::Publish"),
+                }
+            }
+            _ => panic!("expected ConnectionActorMessage::Publish"),
+        }
+    }
+
+    #[actix::test]
+    pub async fn when_session_reactive_should_process_the_outbound_uncomplete_qos_2_message() {
+
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
+            connection_recipient.clone(),
+            "127.0.0.1:1883".parse().unwrap(),
+        );
+        let session_actor_addr = session_actor.start();
+
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .qos(2)
+            .packet_identifier(123)
+            .build();
+
+        session_actor_addr
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(publish) => {
+                match publish {
+                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                        assert_eq!(publish.fix_header.qos, Some(2));
+                    }
+                    _ => panic!("expected ConnectionActorMessage::Publish"),
+                }
+            }
+            _ => panic!("expected ConnectionActorMessage::Publish"),
+        }
+
+        session_actor_addr
+            .send(SessionActorMessage::ClientDisconnected)
+            .await
+            .unwrap();
+
+        session_actor_addr.send(SessionActorMessage::Reconnect {
+            conn: connection_recipient.clone(),
+            keep_alive: KEEP_ALIVE,
+            clean_session: false,
+            username: Some("test".to_string()),
+            will_message: None,
+            socket_addr: "127.0.0.1:1883".parse().unwrap(),
+        }).await.unwrap();
+
+        let client_pubrec_packet = PubRecPacket::new(123);
+        session_actor_addr
+            .do_send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrec(client_pubrec_packet)));
+
+        let msg = message_rx.recv().await.unwrap();
+
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(pubrel) => {
+                match pubrel {
+                    yedmq_mqtt::MqttPacketV3::Pubrel(pubrel) => {
+                        assert_eq!(pubrel.variable_header.packet_identifier, 123);
+                    }
+                    _ => panic!("expected ConnectionActorMessage::Pubrel"),
+                }
+            }
+            _ => panic!("expected ConnectionActorMessage::Pubrel"),
+        }
+    }
+
+    #[actix::test]
+    pub async fn when_session_reactive_should_send_message_which_qos_is_not_0() {
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            router_tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE,
+            connection_recipient.clone(),
+            "127.0.0.1:1883".parse().unwrap(),
+        );
+        let session_actor_addr = session_actor.start();
+
+        session_actor_addr
+            .send(SessionActorMessage::ClientDisconnected)
+            .await
+            .unwrap();
+
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .qos(1)
+            .build();
+
+        session_actor_addr
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
+
+        session_actor_addr.send(SessionActorMessage::Reconnect {
+            conn: connection_recipient.clone(),
+            keep_alive: KEEP_ALIVE,
+            clean_session: false,
+            username: Some("test".to_string()),
+            will_message: None,
+            socket_addr: "127.0.0.1:1883".parse().unwrap(),
+        }).await.unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(publish) => {
+                match publish {
+                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                        assert_eq!(publish.fix_header.qos, Some(1));
+                    }
+                    _ => panic!("expected ConnectionActorMessage::Publish"),
+                }
+            }
+            _ => panic!("expected ConnectionActorMessage::Publish"),
+        }
+
+    }
 
     #[actix::test]
     pub async fn when_session_inactivate_should_not_save_outbound_qos0_message() {
@@ -979,21 +1258,29 @@ mod tests {
         );
         let session_actor_addr = session_actor.start();
 
-        session_actor_addr.send(SessionActorMessage::ClientDisconnected).await.unwrap();
+        session_actor_addr
+            .send(SessionActorMessage::ClientDisconnected)
+            .await
+            .unwrap();
 
         let client_publish_packet =
             PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).build();
 
-        session_actor_addr.send(SessionActorMessage::OutboundMessage(
-            MqttPacketV3::Publish(client_publish_packet)
-        )).await.unwrap();
+        session_actor_addr
+            .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
+                client_publish_packet,
+            )))
+            .await
+            .unwrap();
 
-        let pending_message_len = session_actor_addr.send(GetPendingMessagesCount {}).await.unwrap();
+        let pending_message_len = session_actor_addr
+            .send(GetPendingMessagesCount {})
+            .await
+            .unwrap();
 
-        assert_eq!(0,pending_message_len);
-
+        assert_eq!(0, pending_message_len);
     }
-    
+
     #[actix::test]
     pub async fn when_receive_qos_2_packet_should_correctly_handle_the_whole_process() {
         let mock_topic_manager = MockTopicManagerTrait::new();
@@ -1030,8 +1317,10 @@ mod tests {
             "127.0.0.1:1883".parse().unwrap(),
         )
         .start();
-        let client_publish_packet =
-            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(2).build();
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .packet_identifier(123)
+            .qos(2)
+            .build();
 
         session_actor
             .send(SessionActorMessage::InboundPacket(MqttPacketV3::Publish(
@@ -1039,39 +1328,37 @@ mod tests {
             )))
             .await
             .unwrap();
-        
+
         let message = message_rx.recv().await.unwrap();
 
         match message {
-            ConnectionActorMessage::WritePacketToClient(msg) => {
-                match msg {
-                    MqttPacketV3::Pubrec(packet) => {
-                        assert_eq!(packet.variable_header.packet_identifier, 123);
-                    }
-                    _ => panic!("Unexpected message"),
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Pubrec(packet) => {
+                    assert_eq!(packet.variable_header.packet_identifier, 123);
                 }
-            }
-            _ => panic!("Unexpected message"),  
+                _ => panic!("Unexpected message"),
+            },
+            _ => panic!("Unexpected message"),
         }
 
         let client_pubrel_packet = PubRelPacket::new(123);
         session_actor
-            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrel(client_pubrel_packet)))
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrel(
+                client_pubrel_packet,
+            )))
             .await
             .unwrap();
 
         let message = message_rx.recv().await.unwrap();
 
         match message {
-            ConnectionActorMessage::WritePacketToClient(msg) => {
-                match msg {
-                    MqttPacketV3::Pubcomp(packet) => {
-                        assert_eq!(packet.variable_header.packet_identifier, 123);
-                    }
-                    _ => panic!("Unexpected message"),
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Pubcomp(packet) => {
+                    assert_eq!(packet.variable_header.packet_identifier, 123);
                 }
-            }
-            _ => panic!("Unexpected message"),  
+                _ => panic!("Unexpected message"),
+            },
+            _ => panic!("Unexpected message"),
         }
     }
 
@@ -1107,8 +1394,10 @@ mod tests {
             "127.0.0.1:1883".parse().unwrap(),
         )
         .start();
-        let client_publish_packet =
-            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(1).build();
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .packet_identifier(123)
+            .qos(1)
+            .build();
 
         session_actor
             .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
@@ -1116,41 +1405,36 @@ mod tests {
             )))
             .await
             .unwrap();
-        
+
         let message = message_rx.recv().await.unwrap();
 
         match message {
-            ConnectionActorMessage::WritePacketToClient(msg) => {
-                match msg {
-                    MqttPacketV3::Publish(packet) => {
-                        assert_eq!(packet.variable_header.packet_identifier, Some(123));
-                        assert_eq!(packet.fix_header.dup, None);
-                    }
-                    _ => panic!("Unexpected message"),
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Publish(packet) => {
+                    assert_eq!(packet.variable_header.packet_identifier, Some(123));
+                    assert_eq!(packet.fix_header.dup, None);
                 }
-            }
-            _ => panic!("Unexpected message"),  
+                _ => panic!("Unexpected message"),
+            },
+            _ => panic!("Unexpected message"),
         }
 
         let message = message_rx.recv().await.unwrap();
 
         match message {
-            ConnectionActorMessage::WritePacketToClient(msg) => {
-                match msg {
-                    MqttPacketV3::Publish(packet) => {
-                        assert_eq!(packet.variable_header.packet_identifier, Some(123));
-                        assert_eq!(packet.fix_header.dup, Some(1));
-                    }
-                    _ => panic!("Unexpected message"),
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Publish(packet) => {
+                    assert_eq!(packet.variable_header.packet_identifier, Some(123));
+                    assert_eq!(packet.fix_header.dup, Some(1));
                 }
-            }
-            _ => panic!("Unexpected message"),  
+                _ => panic!("Unexpected message"),
+            },
+            _ => panic!("Unexpected message"),
         }
     }
 
     #[actix::test]
     pub async fn when_receive_qos_1_packet_should_correctly_handle_the_whole_process() {
-
         let mock_topic_manager = MockTopicManagerTrait::new();
 
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
@@ -1185,8 +1469,10 @@ mod tests {
             "127.0.0.1:1883".parse().unwrap(),
         )
         .start();
-        let client_publish_packet =
-            PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(123).qos(1).build();
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .packet_identifier(123)
+            .qos(1)
+            .build();
 
         session_actor
             .send(SessionActorMessage::InboundPacket(MqttPacketV3::Publish(
@@ -1194,21 +1480,18 @@ mod tests {
             )))
             .await
             .unwrap();
-        
+
         let message = message_rx.recv().await.unwrap();
 
         match message {
-            ConnectionActorMessage::WritePacketToClient(msg) => {
-                match msg {
-                    MqttPacketV3::Puback(packet) => {
-                        assert_eq!(packet.variable_header.packet_identifier, 123);
-                    }
-                    _ => panic!("Unexpected message"),
+            ConnectionActorMessage::WritePacketToClient(msg) => match msg {
+                MqttPacketV3::Puback(packet) => {
+                    assert_eq!(packet.variable_header.packet_identifier, 123);
                 }
-            }
-            _ => panic!("Unexpected message"),  
+                _ => panic!("Unexpected message"),
+            },
+            _ => panic!("Unexpected message"),
         }
-
     }
 
     #[actix::test]
@@ -1252,12 +1535,10 @@ mod tests {
 
         let msg = message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(packet) => {
-                match  packet {
-                    MqttPacketV3::Pingresp(_pingresp_packet) => (), 
-                    _ => panic!("expect pingresp packet")
-                }
-            }
+            ConnectionActorMessage::WritePacketToClient(packet) => match packet {
+                MqttPacketV3::Pingresp(_pingresp_packet) => (),
+                _ => panic!("expect pingresp packet"),
+            },
             _ => panic!("expect outbound message"),
         }
     }
