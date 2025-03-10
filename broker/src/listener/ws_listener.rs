@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
+use actix::Actor;
 use anyhow::Result;
 use log::warn;
 use tokio::net::TcpListener;
 use tokio_util::io::StreamReader;
 
 
+use crate::session::connection::ConnectionActor;
+
 use super::{
-    accept_connection,
     websocket_tunnel::{StreamWrapper, WebsocketTunnel},
     WsCallBack,
 };
@@ -21,13 +23,6 @@ impl MqttWsListener {
         loop {
             let (stream, _) = listener.accept().await?;
 
-            let peer_addr = stream.peer_addr().unwrap();
-            let plugin_manager = self.app.plugin_manager.clone();
-            let session_manager = self.app.session_manager.clone();
-            let topic_manager = self.app.topic_manager.clone();
-            let router_sender = self.app.router_sender.get().unwrap().clone();
-            let settings = self.app.settings.clone();
-
             let remote_addr = stream.peer_addr().unwrap();
 
             let ws_stream = tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
@@ -37,16 +32,16 @@ impl MqttWsListener {
                     inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
                 };
 
-                tokio::spawn(accept_connection(
+                let settings = self.app.settings.clone();
+                ConnectionActor::new(
                     websocket_tunnel,
-                    plugin_manager,
-                    session_manager,
-                    topic_manager,
-                    router_sender,
-                    settings,
-                    peer_addr,
-                    self.app.metric.clone(),
-                ));
+                    settings.mqtt.max_message_size,
+                    4096,
+                    remote_addr,
+                    self.app.plugin_manager.clone(),
+                    self.app.session_manager.get().unwrap().clone().recipient(),
+                )
+                .start();
             } else {
                 warn!(
                     "Failed to accept WebSocket connection from {}, err {}",

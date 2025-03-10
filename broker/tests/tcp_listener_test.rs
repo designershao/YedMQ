@@ -7,18 +7,18 @@ use yedmq::app::YedMQApp;
 use yedmq::metric::Metric;
 use yedmq::plugin_manager::PluginManager;
 use yedmq::raft::raft_manager::RaftManager;
-use yedmq::session::session_manager::SessionMessage;
 
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, OnceCell, RwLock};
+use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};
-use yedmq::topic;
 use yedmq::topic::topic_manager::TopicManager;
 use yedmq::topic::topic_storage::TopicStorage;
 use yedmq::{
     listener::tcp_listener::MqttTcpListener, router::Router,
-    session::session_manager::SessionManager, settings::Settings,
+    settings::Settings,
 };
+use actix::Actor;
 use yedmq_mqtt::{v3::subscribe::TopicFilter, MqttPacketV3};
 
 fn random_tcp_port() -> u16 {
@@ -65,9 +65,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let plugin_manager =
         PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone()).unwrap();
     let plugin_manager = Arc::new(plugin_manager);
-    let session_manager = Arc::new(RwLock::new(SessionManager {
-        sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
-    }));
+        
     let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
     let raft_manager = Arc::new(mock_raft_manager(topic_storage.clone()).await);
 
@@ -77,7 +75,14 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
     let router_sender_once_cell = OnceCell::new();
-    let _ = router_sender_once_cell.set(router_sender);
+    let _ = router_sender_once_cell.set(router_sender.clone());
+
+    let session_manager = SessionManagerActor::new(
+        plugin_manager.clone(), 
+        topic_manager.clone(), 
+        router_sender.clone(), 
+        settings.clone()
+    ).start();
 
     let mut router = Router {
         session_manager: session_manager.clone(),
@@ -86,14 +91,14 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         raft_manager: raft_manager.clone(),
     };
 
-    tokio::spawn(async move {
+    actix::spawn(async move {
         router.run().await;
     });
 
     YedMQApp {
         settings,
         plugin_manager,
-        session_manager,
+        session_manager: session_manager.into(),
         topic_manager,
         router_sender: router_sender_once_cell,
         metric: Arc::new(Metric::new()),
@@ -146,7 +151,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
     settings
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[actix::test]
 pub async fn test_tcp_listener_connect() {
     let keep_live_duration_secs = 5;
 
@@ -160,7 +165,7 @@ pub async fn test_tcp_listener_connect() {
 
     let listener = MqttTcpListener { app: app.clone() };
 
-    tokio::spawn(async move {
+    actix::spawn(async move {
         listener.run().await.unwrap();
     });
 
@@ -199,7 +204,7 @@ pub async fn test_tcp_listener_connect() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[actix::test]
 pub async fn test_tcp_client_subscribe_and_publish() {
     let keep_live_duration_secs = 5;
 
@@ -214,7 +219,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     let listener = MqttTcpListener { app: app.clone() };
 
-    tokio::spawn(async move {
+    actix::spawn(async move {
         listener.run().await.unwrap();
     });
 
@@ -224,7 +229,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     //
 
     // subscriber process
-    let sub_join = tokio::spawn(async move {
+    let sub_join = actix::spawn(async move {
         let mut subscriber = tokio::net::TcpStream::connect(connect_address)
             .await
             .unwrap();
@@ -249,6 +254,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
                  .1;
             match packet {
                 MqttPacketV3::Connack(connack_packet) => {
+                    println!("connack_packet={:?}", connack_packet);
                     assert_eq!(connack_packet.variable_header.connect_return_code, 0x00);
                 }
                 _ => assert!(false),
@@ -315,7 +321,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     //
 
     // publisher process
-    let pub_join = tokio::spawn(async move {
+    let pub_join = actix::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
         let mut publisher = tokio::net::TcpStream::connect(connect_address_cloned)
             .await
@@ -373,12 +379,12 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let listener = MqttTcpListener { app: app.clone() };
 
-    tokio::spawn(async move {
+    actix::spawn(async move {
         listener.run().await.unwrap();
     });
 
     // subscriber process
-    let invalid_connect_join = tokio::spawn(async move {
+    let invalid_connect_join = actix::spawn(async move {
         let variable_header = yedmq_mqtt::v3::connect::VariableHeader {
             protocol_name: "MQT".to_string(), // invalid protocol name
             protocol_level: 0x04,
@@ -448,7 +454,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     let listener = MqttTcpListener { app: app.clone() };
 
-    tokio::spawn(async move {
+    actix::spawn(async move {
         listener.run().await.unwrap();
     });
 
@@ -458,7 +464,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     //
 
     let connect_address_cloned = connect_address.clone();
-    let unexpect_disconnect_join = tokio::spawn(async move {
+    let unexpect_disconnect_join = actix::spawn(async move {
         tokio::time::sleep(Duration::from_secs(1)).await; // wait subscriber
         let mut publisher = tokio::net::TcpStream::connect(connect_address)
             .await
@@ -501,7 +507,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
         publisher.shutdown().await.unwrap();
     });
 
-    let sub_will_join = tokio::spawn(async move {
+    let sub_will_join = actix::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
         let mut subscriber = tokio::net::TcpStream::connect(connect_address_cloned)
             .await

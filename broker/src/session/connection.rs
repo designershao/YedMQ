@@ -200,30 +200,38 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                         username: packet.payload.username.clone(),
                     })
                     .await;
-                if let Ok(session) = result.unwrap() {
-                    let connack_packet = ConnAckPacketBuilder::new()
-                        .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::Accpet)
-                        .build();
-                    self_addr
-                        .send(ConnectionActorMessage::WritePacketToClient(
-                            yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                        ))
-                        .await
-                        .unwrap();
-                    Ok(session)
-                } else {
-                    let connack_packet = ConnAckPacketBuilder::new()
-                        .set_return_code(
-                            yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable,
-                        )
-                        .build();
-                    self_addr
-                        .send(ConnectionActorMessage::WritePacketToClient(
-                            yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                        ))
-                        .await
-                        .unwrap();
-                    Err(anyhow::anyhow!("create session error"))
+                if let Ok(result) = result {
+                    if let Ok(session) = result {
+                        println!("create session success, set session to connection");
+
+                        let connack_packet = ConnAckPacketBuilder::new()
+                            .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::Accpet)
+                            .build();
+                        self_addr
+                            .send(ConnectionActorMessage::WritePacketToClient(
+                                yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
+                            ))
+                            .await
+                            .unwrap();
+                        Ok(session)
+                    } else {
+                        let connack_packet = ConnAckPacketBuilder::new()
+                            .set_return_code(
+                                yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable,
+                            )
+                            .build();
+                        self_addr
+                            .send(ConnectionActorMessage::WritePacketToClient(
+                                yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
+                            ))
+                            .await
+                            .unwrap();
+                        Err(anyhow::anyhow!("create session error, {}", result.err().unwrap()))
+                    }
+
+                }
+                else {
+                    Err(anyhow::anyhow!("create session error, {}", result.err().unwrap()))
                 }
             }
             yedmq_plugin::plugin::AuthenticationResultValue::Fail(reason) => {
@@ -313,7 +321,7 @@ where
                                     }
                                 }
                             } else {
-                                error!("create session error");
+                                error!("handle initial connect error, {}", session_res.err().unwrap());
                                 return;
                             }
                         }

@@ -1,8 +1,9 @@
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context,
+    dev::{ContextFutureSpawner, MessageResponse}, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context,
     Handler, MailboxError, Message, Recipient, SpawnHandle, WrapFuture,
 };
 use log::warn;
+use serde::Serialize;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
@@ -36,6 +37,28 @@ use super::{
     WillMessage,
 };
 
+pub struct SessionInfo {
+    pub tenant_identifier: String,
+
+    pub client_identifier: String,
+
+    pub subscription_topics: Vec<String>,
+
+    pub session_state: SessionState,
+}
+
+impl<A, M> MessageResponse<A, M> for SessionInfo 
+where 
+    A:Actor,
+    M:Message<Result = SessionInfo>,
+{
+    fn handle(self, ctx: &mut <A as Actor>::Context, tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>) {
+        if let Some(tx) = tx {
+            tx.send(self);
+        }
+    }
+}
+
 pub enum QoS {
     AtMostOnce,
     AtLeastOnce,
@@ -64,6 +87,10 @@ pub enum SessionActorError {
     #[error("connection not set")]
     ConnectionNotSet,
 }
+
+#[derive(Message)]
+#[rtype(result = "SessionInfo")]
+pub struct GetSessionInfo {}
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -101,6 +128,8 @@ pub enum SessionActorMessage {
 #[rtype(result = "()")]
 pub struct ClientDisconnected {}
 
+#[derive(Debug,Clone, Copy)]
+#[derive(Serialize)]
 pub enum SessionState {
     Active,
 
@@ -896,7 +925,20 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::ClientDisconnected => {
                 self.clean_up(ctx);
-            }
+            },
+        }
+    }
+}
+
+impl Handler<GetSessionInfo> for SessionActor {
+    type Result = SessionInfo;
+    
+    fn handle(&mut self, msg: GetSessionInfo, ctx: &mut Self::Context) -> Self::Result {
+        SessionInfo {
+            tenant_identifier: self.tenant_id.clone(),
+            client_identifier: self.client_id.clone(),
+            subscription_topics: self.subscriptions.iter().map(|(k, _)| k.clone()).collect(),
+            session_state: self.state,
         }
     }
 }

@@ -1,12 +1,20 @@
 use std::sync::Arc;
 
+use super::{Pagination, PaginationListResult, PaginationMeta};
+use crate::{
+    app::YedMQApp,
+    session::{
+        session_actor::SessionState, session_manager_actor::{self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError}
+    },
+};
 use axum::{
-    extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
 };
 use log::error;
 use serde::Serialize;
-use crate::{app::YedMQApp, session::session_manager::{self, SessionManagerError, SessionState}};
-use super::{Pagination, PaginationListResult, PaginationMeta};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,55 +28,47 @@ pub struct Client {
     session_state: SessionState,
 }
 
-
 pub async fn kickoff_client(
     State(app_state): State<Arc<YedMQApp>>,
     Path((tenant_id, client_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let session_manager = app_state.session_manager.clone();
-    let (session_quit_sender, mut session_quit_receiver) = tokio::sync::mpsc::channel(1);
     let kickoff_result = session_manager
-        .read()
+        .get()
+        .unwrap()
+        .send(ForceDisconnect {
+            tenant_id: tenant_id.clone(),
+            client_id: client_id.clone(),
+        })
         .await
-        .kickoff(&tenant_id, &client_id, &session_quit_sender.clone())
-        .await;
-    if let Err(e) = kickoff_result {
-        if let Some(session_err) = e.downcast_ref::<SessionManagerError>() {
-            let response = match session_err {
-                session_manager::SessionManagerError::TenantNotExisted(_) => {
-                    let error_response = super::ErrorResponse {
-                        code: 3,
-                        message: format!("tenant {} not existed", tenant_id),
-                    };
-                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                }
-                session_manager::SessionManagerError::SessionNotExisted(_) => {
-                    let error_response = super::ErrorResponse {
-                        code: 4,
-                        message: format!("session {} not existed", client_id),
-                    };
-                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                }
-                _ => {
-                    let error_response = super::ErrorResponse {
-                        code: 101,
-                        message: "Internal server error".to_string(),
-                    };
-                    error!("kickoff client error: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-                }
-            };
-            return response
-        } else {
-            let error_response = super::ErrorResponse {
-                code: 101,
-                message: "Internal server error".to_string(),
-            };
-            error!("kickoff client error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-        }
+        .unwrap();
+    if let Err(session_err) = kickoff_result {
+        let response = match session_err {
+            session_manager_actor::SessionManagerError::TenantNotExisted(_) => {
+                let error_response = super::ErrorResponse {
+                    code: 3,
+                    message: format!("tenant {} not existed", tenant_id),
+                };
+                (StatusCode::NOT_FOUND, Json(error_response)).into_response()
+            }
+            session_manager_actor::SessionManagerError::SessionNotExisted(_) => {
+                let error_response = super::ErrorResponse {
+                    code: 4,
+                    message: format!("session {} not existed", client_id),
+                };
+                (StatusCode::NOT_FOUND, Json(error_response)).into_response()
+            }
+            _ => {
+                let error_response = super::ErrorResponse {
+                    code: 101,
+                    message: "Internal server error".to_string(),
+                };
+                error!("kickoff client error: {}", session_err);
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+            }
+        };
+        return response;
     } else {
-        session_quit_receiver.recv().await;
         axum::http::StatusCode::OK.into_response()
     }
 }
@@ -83,10 +83,13 @@ pub async fn client_list(
 
     let session_manager = app_state.session_manager.clone();
     let session_list_result = session_manager
-        .read()
-        .await
-        .get_session_info_list_with_pagination(&tenant_id, offset_param, limit_param)
-        .await;
+    .get()
+    .unwrap().send(GetSessionInfoListWithPagination {
+        tenant_id: tenant_id.clone(),
+        offset_param,
+        limit_param,
+    })
+        .await.unwrap();
     if let Ok(session_list) = session_list_result {
         let mut result = Vec::<Client>::new();
 
@@ -109,8 +112,8 @@ pub async fn client_list(
         let result = PaginationListResult { meta, data: result };
         (StatusCode::OK, Json(result)).into_response()
     } else {
-        let error = session_list_result.err().unwrap();
-        if let Some(session_error) = error.downcast_ref::<SessionManagerError>() {
+        let error = session_list_result.err();
+        if let Some(session_error) = error {
             let response = match session_error {
                 SessionManagerError::TenantNotExisted(_) => {
                     let error_response = super::ErrorResponse {
@@ -119,7 +122,7 @@ pub async fn client_list(
                     };
                     (StatusCode::NOT_FOUND, Json(error_response)).into_response()
                 }
-                _ =>{
+                _ => {
                     let error_response = super::ErrorResponse {
                         code: 101,
                         message: "Internal server error".to_string(),
@@ -134,7 +137,7 @@ pub async fn client_list(
                 code: 101,
                 message: "Internal server error".to_string(),
             };
-            error!("get session list error: {}", error);
+            error!("get session list error: {}", error.unwrap());
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
     }

@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use actix::System;
 use log::{info, warn};
 use tokio::signal;
 use yedmq::{app::YedMQApp, settings::Settings};
 
-#[tokio::main]
+#[actix::main]
 async fn main() {
     env_logger::init();
 
@@ -28,6 +29,7 @@ async fn main() {
         }
         Err(e) => {
             warn!("signal error: {}", e);
+            System::current().stop();
         }
     };
     

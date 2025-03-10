@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use actix::Addr;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::RwLock};
 
-use crate::{session::session_manager::SessionManager, topic::topic_manager::{TopicManager, TopicManagerTrait}};
+use crate::{session::session_manager_actor::{SendMessageToSession, SessionManagerActor}, topic::topic_manager::TopicManagerTrait};
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
 use crate::protobuf::raft_service_client::RaftServiceClient;
@@ -20,7 +21,7 @@ pub enum RouterCmd {
 }
 
 pub struct Router {
-    pub session_manager: Arc<RwLock<SessionManager>>,
+    pub session_manager: Addr<SessionManagerActor>,
     pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
     pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
@@ -87,7 +88,6 @@ impl Router {
             let subscriptions = topic_manager
                 .get_subscribers(tenant_identifier.clone(), topic).await
                 .unwrap();
-            let session_manager = self.session_manager.read().await;
             for item in subscriptions.iter() {
                 if item.node_id != self.raft_manager.current_node_id() {
                     // not the current node, send to other node
@@ -123,19 +123,17 @@ impl Router {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
                         }
-                        if let Err(error) = session_manager
-                            .send_packet(
-                                tenant_identifier.clone(),
-                                client_identifier.clone(),
-                                &MqttPacketV3::Publish(publish_packet),
-                            )
-                            .await
+                        if let Err(err) = self.session_manager.send(SendMessageToSession {
+                            tenant_id: tenant_identifier.clone(),
+                            client_id: tenant_identifier.clone(),
+                            packet: MqttPacketV3::Publish(publish_packet),
+                        }).await
                         {
                             warn!(
                                 "tenant {} session {} send packet error, details: {}",
                                 tenant_identifier,
                                 client_identifier.clone(),
-                                error
+                                err
                             );
                         }
                     }

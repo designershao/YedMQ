@@ -153,7 +153,7 @@ impl RaftManager {
         let leader_state = self.current_leader.clone();
         let mut rx = self.raft.metrics();
 
-        tokio::spawn(async move {
+        actix::spawn(async move {
             loop {
                 let _ = rx.changed().await;
                 let mut state = leader_state.write().await;
@@ -267,7 +267,7 @@ impl RaftManager {
 
         let node_id = raft_manager.cluster_cfg.node_id;
 
-        let h = tokio::spawn(async move {
+        let h = actix::spawn(async move {
             srv.serve_with_shutdown(addr, async move {
                 let _ = rx.changed().await;
                 info!("signal receivbed, shutting down: id={} {}", addr, node_id);

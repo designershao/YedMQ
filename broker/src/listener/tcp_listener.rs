@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use actix::Actor;
 use anyhow::Result;
 use tokio::net::TcpListener;
 
-use super::accept_connection;
+use crate::session::connection::ConnectionActor;
 
 pub struct MqttTcpListener {
     pub app: Arc<crate::app::YedMQApp>,
@@ -14,24 +15,17 @@ impl MqttTcpListener {
         let listener = TcpListener::bind(self.app.settings.listener.tcp.external.clone()).await?;
         loop {
             let (stream, _) = listener.accept().await?;
-
             let peer_addr = stream.peer_addr().unwrap();
-            let plugin_manager = self.app.plugin_manager.clone();
-            let session_manager = self.app.session_manager.clone();
-            let topic_manager = self.app.topic_manager.clone();
-            let router_sender = self.app.router_sender.get().unwrap().clone();
             let settings = self.app.settings.clone();
-
-            tokio::spawn(accept_connection(
+            ConnectionActor::new(
                 stream,
-                plugin_manager,
-                session_manager,
-                topic_manager,
-                router_sender,
-                settings,
+                settings.mqtt.max_message_size,
+                4096,
                 peer_addr,
-                self.app.metric.clone(),
-            ));
+                self.app.plugin_manager.clone(),
+                self.app.session_manager.get().unwrap().clone().recipient(),
+            )
+            .start();
         }
     }
 }
@@ -39,15 +33,16 @@ impl MqttTcpListener {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{BTreeMap, HashMap},
+        collections::BTreeMap,
         env, fs,
         path::{Path, PathBuf},
         time::Duration,
     };
 
+    use actix::spawn;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        sync::{mpsc::Sender, Mutex, OnceCell, RwLock},
+        sync::{Mutex, OnceCell, RwLock},
     };
 
     use yedmq_mqtt::MqttPacketV3;
@@ -55,7 +50,7 @@ mod tests {
     use crate::{
         plugin_manager::PluginManager,
         raft::raft_manager::RaftManager,
-        session::session_manager::{SessionManager, SessionMessage},
+        session::session_manager_actor::SessionManagerActor,
         settings::{Cluster, Settings, RPC},
         topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
     };
@@ -81,14 +76,10 @@ mod tests {
             store_dir: test_temp_store_dir.clone(),
             rpc: RPC {
                 external: "127.0.0.1:4321".to_string(),
-            }
+            },
         };
 
-        RaftManager::new(
-            test_cluster_cfg,
-            Arc::new(RwLock::new(TopicStorage::new())),
-        )
-        .await
+        RaftManager::new(test_cluster_cfg, Arc::new(RwLock::new(TopicStorage::new()))).await
     }
 
     async fn mock_topic_manager(
@@ -96,11 +87,7 @@ mod tests {
         raft_manager: Arc<RaftManager>,
         test_node_id: u64,
     ) -> TopicManager {
-        TopicManager::new(
-            topic_storage.clone(),
-            raft_manager.clone(),
-            test_node_id,
-        )
+        TopicManager::new(topic_storage.clone(), raft_manager.clone(), test_node_id)
     }
 
     async fn mock_app(settings: Arc<crate::settings::Settings>) -> crate::app::YedMQApp {
@@ -111,10 +98,9 @@ mod tests {
             PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone())
                 .unwrap();
         let plugin_manager = Arc::new(plugin_manager);
-        let session_manager = Arc::new(RwLock::new(SessionManager {
-            sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
-        }));
+
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+
         let raft_manager = Arc::new(mock_raft_manager().await);
 
         let topic_manager = Arc::new(RwLock::new(
@@ -123,12 +109,18 @@ mod tests {
         let (router_sender, _) = tokio::sync::mpsc::channel(10);
 
         let router_sender_once_cell = OnceCell::new();
-        let _ = router_sender_once_cell.set(router_sender);
+        let _ = router_sender_once_cell.set(router_sender.clone());
+
+        let session_manager = SessionManagerActor::new(
+            plugin_manager.clone(), 
+            topic_manager.clone(), 
+            router_sender.clone(), 
+            settings.clone()).start();
 
         crate::app::YedMQApp {
             settings,
             plugin_manager,
-            session_manager,
+            session_manager: session_manager.into(),
             topic_manager,
             router_sender: router_sender_once_cell,
             metric: Arc::new(crate::metric::Metric::new()),
@@ -139,7 +131,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[actix::test]
     pub async fn test_invalid_connect_packet_income() {
         let keep_live_duration_secs = 5;
 
@@ -191,7 +183,7 @@ mod tests {
 
         let listener = MqttTcpListener { app };
 
-        tokio::spawn(async move {
+        spawn(async move {
             listener.run().await.unwrap();
         });
 
@@ -223,7 +215,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[actix::test]
     pub async fn test_tcp_listener_connect() {
         let keep_live_duration_secs = 5;
 
@@ -275,7 +267,7 @@ mod tests {
 
         let listener = MqttTcpListener { app };
 
-        tokio::spawn(async move {
+        spawn(async move {
             listener.run().await.unwrap();
         });
 

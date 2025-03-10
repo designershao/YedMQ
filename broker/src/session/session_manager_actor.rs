@@ -1,18 +1,25 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    plugin_manager::PluginService, router::RouterCmd, session::session_actor::SessionActor,
-    settings::Settings, topic::topic_manager::TopicManager,
+    plugin_manager::PluginService,
+    router::RouterCmd,
+    session::session_actor::SessionActor,
+    settings::Settings,
+    topic::topic_manager::{TopicManager, TopicManagerTrait},
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, AsyncContext, Context, Handler, Message,
-    Recipient, WrapFuture,
+    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, WrapFuture
 };
 use log::error;
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
+use yedmq_mqtt::MqttPacketV3;
 
-use super::{connection::ConnectionActorMessage, session_actor::SessionActorMessage, WillMessage};
+use super::{
+    connection::ConnectionActorMessage,
+    session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
+    WillMessage,
+};
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -43,17 +50,36 @@ pub enum SessionLifecycleMessage {
 }
 
 pub struct SessionManagerActor {
+
     pub sessions: HashMap<String, HashMap<String, Recipient<SessionActorMessage>>>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
-    topic_manager: Arc<RwLock<TopicManager>>,
+    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
 
     router_sender: Sender<RouterCmd>,
 
     session_lifecycle_tx: Option<Sender<SessionLifecycleMessage>>,
 
     settings: Arc<Settings>,
+}
+
+impl SessionManagerActor {
+    pub fn new(
+        plugin_manager: Arc<dyn PluginService + 'static>,
+        topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
+        router_sender: Sender<RouterCmd>,
+        settings: Arc<Settings>,
+    ) -> SessionManagerActor {
+        SessionManagerActor {
+            sessions: HashMap::new(),
+            plugin_manager,
+            topic_manager,
+            router_sender,
+            session_lifecycle_tx: None,
+            settings,
+        }
+    }
 }
 
 impl Actor for SessionManagerActor {
@@ -80,6 +106,79 @@ impl Actor for SessionManagerActor {
             }
         };
         ctx.spawn(future.into_actor(self));
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SendMessageToSession {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet: MqttPacketV3,
+}
+
+impl Handler<SendMessageToSession> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
+        let session = self
+            .sessions
+            .get(&msg.tenant_id)
+            .unwrap()
+            .get(&msg.client_id);
+        if let Some(session) = session {
+            session.do_send(SessionActorMessage::InboundPacket(msg.packet));
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(u64,Vec<SessionInfo>), SessionManagerError>")]
+pub struct GetSessionInfoListWithPagination {
+    pub tenant_id: String,
+    pub offset_param: u64,
+    pub limit_param: u64,
+}
+
+impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
+    type Result = ResponseFuture<Result<(u64, Vec<SessionInfo>), SessionManagerError>>;
+    fn handle(
+        &mut self,
+        msg: GetSessionInfoListWithPagination,
+        ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let future = async move {
+            return Ok((0, vec![]).into());
+        };
+        Box::pin(future)
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), SessionManagerError>")]
+pub struct ForceDisconnect {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<ForceDisconnect> for SessionManagerActor {
+    type Result = Result<(), SessionManagerError>;
+
+    fn handle(&mut self, msg: ForceDisconnect, ctx: &mut Self::Context) -> Self::Result {
+        if self.sessions.contains_key(&msg.tenant_id) == false {
+            return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
+        }
+        let session = self
+            .sessions
+            .get(&msg.tenant_id)
+            .unwrap()
+            .get(&msg.client_id);
+        if let Some(session) = session {
+            session.do_send(SessionActorMessage::ForceDisconnect);
+        } else {
+            return Err(SessionManagerError::SessionNotExisted(msg.client_id));
+        }
+        Ok(())
     }
 }
 

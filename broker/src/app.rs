@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use actix::Addr;
+use actix::Actor;
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
@@ -16,7 +18,7 @@ use crate::{
     raft::Node,
     rest_api,
     router::{Router, RouterCmd},
-    session::session_manager::{SessionManager, SessionMessage},
+    session::session_manager_actor::SessionManagerActor,
     settings::Settings,
     topic::{
         topic_manager::{TopicManager, TopicManagerTrait},
@@ -26,7 +28,7 @@ use crate::{
 
 // Representation of the application state.This struct can be shared around to share.
 pub struct YedMQApp {
-    pub session_manager: Arc<RwLock<SessionManager>>,
+    pub session_manager: OnceCell<Addr<SessionManagerActor>>,
 
     pub plugin_manager: Arc<PluginManager>,
 
@@ -56,14 +58,25 @@ impl YedMQApp {
         //
         info!("start router task");
 
+        // init session manager
+        let session_manager  = SessionManagerActor::new(
+            app.plugin_manager.clone(),
+            app.topic_manager.clone(),
+            router_sender.clone(),
+            app.settings.clone(),
+        ).start();
+        //
+
+        app.session_manager.set(session_manager.clone());
+
         let mut router = Router {
             topic_manager: app.topic_manager.clone(),
-            session_manager: app.session_manager.clone(),
+            session_manager: session_manager,
             router_receiver: router_receiver,
             raft_manager: app.raft_manager.clone(),
         };
 
-        let router_join_handle = tokio::spawn(async move {
+        let router_join_handle = actix::spawn(async move {
             router.run().await;
             Ok(())
         });
@@ -79,7 +92,7 @@ impl YedMQApp {
             settings.mqtt.sys_topic_interval_secs,
             router_sender.clone(),
         );
-        let sys_topic_task_join_handle = tokio::spawn(async move {
+        let sys_topic_task_join_handle = actix::spawn(async move {
             sys_topic_task.run().await;
             Ok(())
         });
@@ -91,7 +104,7 @@ impl YedMQApp {
 
         info!("start api task");
         let app_cloned = app.clone();
-        tokio::spawn(async move {
+        actix::spawn(async move {
             if let Err(e) =
                 rest_api::run_rest_api_task(&api_listen_external, app_cloned.clone()).await
             {
@@ -104,7 +117,7 @@ impl YedMQApp {
         let listener = MqttTcpListener { app: app.clone() };
 
         let settings_clone = settings.clone();
-        let tcp_listener_join = tokio::spawn(async move {
+        let tcp_listener_join = actix::spawn(async move {
             info!(
                 "start tcp listener on {}",
                 settings_clone.listener.tcp.external
@@ -118,7 +131,7 @@ impl YedMQApp {
         let mut tcp_tls_listener = MqttTcpTlsListener { app: app.clone() };
 
         let settings_clone = settings.clone();
-        let tcp_tls_listener_join = tokio::spawn(async move {
+        let tcp_tls_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
             info!(
                 "start tls listener on {}",
@@ -132,7 +145,7 @@ impl YedMQApp {
 
         let ws_listener = MqttWsListener { app: app.clone() };
         let settings_clone = settings.clone();
-        let mqtt_ws_listener_join = tokio::spawn(async move {
+        let mqtt_ws_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
             info!("start ws listener on {}", settings.listener.ws.external);
             if let Err(e) = ws_listener.run().await {
@@ -143,7 +156,7 @@ impl YedMQApp {
 
         let wss_listener = MqttWssListener { app: app.clone() };
         let settings_clone = settings.clone();
-        let mqtt_wss_listener_join = tokio::spawn(async move {
+        let mqtt_wss_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
             info!("start wss listener on {}", settings.listener.wss.external);
             if let Err(e) = wss_listener.run().await {
@@ -165,12 +178,6 @@ impl YedMQApp {
     }
 
     pub async fn new(settings: Arc<Settings>) -> Self {
-        // init session manager
-        let session_manager = Arc::new(RwLock::new(SessionManager {
-            sessions: HashMap::<String, HashMap<String, Sender<SessionMessage>>>::new(),
-        }));
-        //
-
         // init plugin manager
         info!("start load plugin manager");
         let plugin_manager =
@@ -178,6 +185,7 @@ impl YedMQApp {
         let plugin_manager = Arc::new(plugin_manager);
         info!("plugin manager load succeed");
         //
+
 
         let metric = Arc::new(metric::Metric::new());
 
@@ -205,8 +213,9 @@ impl YedMQApp {
         info!("topic manager load succeed");
         //
 
+
         YedMQApp {
-            session_manager,
+            session_manager: OnceCell::new(),
             plugin_manager,
             topic_manager,
             raft_manager,

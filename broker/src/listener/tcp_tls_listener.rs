@@ -1,10 +1,11 @@
 use std::{fs::File, io::Read, sync::Arc};
 
+use actix::Actor;
 use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio_native_tls::native_tls::{self, Identity};
 
-use super::accept_connection;
+use crate::session::connection::ConnectionActor;
 
 pub struct MqttTcpTlsListener {
     pub app: Arc<crate::app::YedMQApp>,
@@ -32,27 +33,22 @@ impl MqttTcpTlsListener {
         loop {
             let (stream, _) = listener.accept().await?;
 
-            let plugin_manager = self.app.plugin_manager.clone();
-            let session_manager = self.app.session_manager.clone();
-            let topic_manager = self.app.topic_manager.clone();
-            let router_sender = self.app.router_sender.get().unwrap().clone();
-            let settings = self.app.settings.clone();
             let tls_acceptor = tls_acceptor.clone();
 
             let remote_addr = stream.peer_addr().unwrap();
 
             let tls_stream = tls_acceptor.accept(stream).await.unwrap();
 
-            tokio::spawn(accept_connection(
+            let settings = self.app.settings.clone();
+            ConnectionActor::new(
                 tls_stream,
-                plugin_manager,
-                session_manager,
-                topic_manager,
-                router_sender,
-                settings,
+                settings.mqtt.max_message_size,
+                4096,
                 remote_addr,
-                self.app.metric.clone(),
-            ));
+                self.app.plugin_manager.clone(),
+                self.app.session_manager.get().unwrap().clone().recipient(),
+            )
+            .start();
         }
     }
 }
