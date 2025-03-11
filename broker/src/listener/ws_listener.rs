@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tokio_util::io::StreamReader;
 
 
-use crate::session::connection::ConnectionActor;
+use crate::connection::ConnectionActor;
 
 use super::{
     websocket_tunnel::{StreamWrapper, WebsocketTunnel},

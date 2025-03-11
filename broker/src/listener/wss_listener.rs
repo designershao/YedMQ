@@ -8,7 +8,7 @@ use tokio_native_tls::native_tls::{self, Identity};
 use tokio_util::io::StreamReader;
 
 
-use crate::session::connection::ConnectionActor;
+use crate::connection::ConnectionActor;
 
 use super::{
     websocket_tls_tunnel::{StreamWrapper, WebsocketTlsTunnel},

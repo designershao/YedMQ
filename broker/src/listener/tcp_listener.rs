@@ -4,7 +4,7 @@ use actix::Actor;
 use anyhow::Result;
 use tokio::net::TcpListener;
 
-use crate::session::connection::ConnectionActor;
+use crate::connection::ConnectionActor;
 
 pub struct MqttTcpListener {
     pub app: Arc<crate::app::YedMQApp>,
@@ -209,9 +209,11 @@ mod tests {
         let mut buf = Vec::new();
         let read_bytes = writer.read_buf(&mut buf).await.unwrap();
         if read_bytes == 0 {
-            assert!(true)
-        } else {
             assert!(false)
+        } else {
+            let (_, connack_packet) = yedmq_mqtt::v3::connack::parse(&buf).unwrap();
+            assert_eq!(connack_packet.variable_header.connect_return_code, 0x01); // unsupport protocol
+            assert!(true)
         }
     }
 

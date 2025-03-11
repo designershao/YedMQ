@@ -5,7 +5,7 @@ use anyhow::Result;
 use tokio::net::TcpListener;
 use tokio_native_tls::native_tls::{self, Identity};
 
-use crate::session::connection::ConnectionActor;
+use crate::connection::ConnectionActor;
 
 pub struct MqttTcpTlsListener {
     pub app: Arc<crate::app::YedMQApp>,

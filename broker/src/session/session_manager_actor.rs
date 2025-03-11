@@ -15,8 +15,8 @@ use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::MqttPacketV3;
 
+use crate::connection::ConnectionActorMessage;
 use super::{
-    connection::ConnectionActorMessage,
     session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
     WillMessage,
 };
@@ -202,7 +202,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
     fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
         if !self.tenant_existed(&msg.tenant_id) {
-            return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
+            self.create_tenant(&msg.tenant_id);
+            //return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
 
         let sessions = self.sessions.get(&msg.tenant_id).unwrap();
@@ -286,6 +287,10 @@ impl Handler<CreateTenantMessage> for SessionManagerActor {
 impl SessionManagerActor {
     fn tenant_existed(&self, tenant_identifier: &str) -> bool {
         return self.sessions.contains_key(tenant_identifier);
+    }
+
+    fn create_tenant(&mut self, tenant_identifier: &str)  {
+        self.sessions.insert(tenant_identifier.to_string(), HashMap::new());
     }
 }
 

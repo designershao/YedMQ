@@ -32,10 +32,8 @@ use crate::{
     topic::topic_manager::TopicManagerTrait,
 };
 
-use super::{
-    connection::{ConnectionActor, ConnectionActorMessage},
-    WillMessage,
-};
+use crate::connection::{ConnectionActor, ConnectionActorMessage};
+use super::WillMessage;
 
 pub struct SessionInfo {
     pub tenant_identifier: String,

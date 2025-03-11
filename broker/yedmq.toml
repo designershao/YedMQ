@@ -44,7 +44,7 @@ users = [
 cluster_name = "YedMQ"
 node_id = 1001
 heartbeat_interval = 10
-store_dir = ./store
+store_dir = "./store"
 
 [cluster.rpc]
 external = "0.0.0.0:3457"
