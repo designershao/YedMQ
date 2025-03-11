@@ -1,25 +1,23 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    plugin_manager::PluginService,
-    router::RouterCmd,
-    session::session_actor::SessionActor,
-    settings::Settings,
-    topic::topic_manager::{TopicManager, TopicManagerTrait},
+    plugin_manager::PluginService, router::RouterCmd, session::session_actor::SessionActor,
+    settings::Settings, topic::topic_manager::TopicManagerTrait,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, WrapFuture
+    dev::ContextFutureSpawner, Actor, ActorFutureExt, AsyncContext, Context, Handler, Message,
+    Recipient, ResponseFuture, WrapFuture,
 };
 use log::error;
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::connection::ConnectionActorMessage;
 use super::{
     session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
     WillMessage,
 };
+use crate::connection::ConnectionActorMessage;
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -49,9 +47,14 @@ pub enum SessionLifecycleMessage {
     },
 }
 
-pub struct SessionManagerActor {
+struct SessionActorRecipientWrapper {
+    session_actor_message_recipient: Recipient<SessionActorMessage>,
 
-    pub sessions: HashMap<String, HashMap<String, Recipient<SessionActorMessage>>>,
+    get_session_info_recipient: Recipient<GetSessionInfo>,
+}
+
+pub struct SessionManagerActor {
+    sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
@@ -121,14 +124,18 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
     type Result = ();
 
     fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
-        let session = self
-            .sessions
-            .get(&msg.tenant_id)
-            .unwrap()
-            .get(&msg.client_id);
-        if let Some(session) = session {
-            session.do_send(SessionActorMessage::InboundPacket(msg.packet));
+        let tenant_session = self.sessions.get(&msg.tenant_id).unwrap().clone();
+        async move {
+            let session = tenant_session.read().await;
+            let session = session.get(&msg.client_id);
+            if let Some(session) = session {
+                session
+                    .session_actor_message_recipient
+                    .do_send(SessionActorMessage::InboundPacket(msg.packet));
+            }
         }
+        .into_actor(self)
+        .wait(ctx);
     }
 }
 
@@ -145,12 +152,33 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
     fn handle(
         &mut self,
         msg: GetSessionInfoListWithPagination,
-        ctx: &mut Self::Context,
+        _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let future = async move {
-            return Ok((0, vec![]).into());
-        };
-        Box::pin(future)
+        let tenant_sessions = self.sessions.get(msg.tenant_id.as_str());
+        if tenant_sessions.is_none() {
+            Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) })
+        } else {
+            let tenant_sessions = tenant_sessions.unwrap().clone();
+            let mut session_infos = Vec::new();
+            let f = async move {
+                let tenant_sessions = tenant_sessions.read().await;
+                let total_len = tenant_sessions.len();
+                let tenant_sessions_iter = tenant_sessions.iter();
+                let iter = tenant_sessions_iter
+                    .skip(msg.offset_param as usize)
+                    .take(msg.limit_param as usize);
+                for (_, session) in iter {
+                    let session_info_recipient = session.get_session_info_recipient.clone();
+                    let session_info = session_info_recipient
+                        .send(GetSessionInfo {})
+                        .await
+                        .unwrap();
+                    session_infos.push(session_info);
+                }
+                Ok((total_len as u64, session_infos))
+            };
+            Box::pin(f)
+        }
     }
 }
 
@@ -162,23 +190,28 @@ pub struct ForceDisconnect {
 }
 
 impl Handler<ForceDisconnect> for SessionManagerActor {
-    type Result = Result<(), SessionManagerError>;
+    type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
-    fn handle(&mut self, msg: ForceDisconnect, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ForceDisconnect, _ctx: &mut Self::Context) -> Self::Result {
         if self.sessions.contains_key(&msg.tenant_id) == false {
-            return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
+            return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }
-        let session = self
-            .sessions
-            .get(&msg.tenant_id)
-            .unwrap()
-            .get(&msg.client_id);
-        if let Some(session) = session {
-            session.do_send(SessionActorMessage::ForceDisconnect);
-        } else {
-            return Err(SessionManagerError::SessionNotExisted(msg.client_id));
-        }
-        Ok(())
+        let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
+
+        let f = async move {
+            let tenant_sessions = tenant_sessions.read().await;
+            let session = tenant_sessions.get(&msg.client_id);
+            if let Some(session) = session {
+                session
+                    .session_actor_message_recipient
+                    .do_send(SessionActorMessage::ForceDisconnect);
+            } else {
+                return Err(SessionManagerError::SessionNotExisted(msg.client_id));
+            }
+            Ok(())
+        };
+
+        Box::pin(f)
     }
 }
 
@@ -198,7 +231,7 @@ impl Message for CreateSessionMessage {
 }
 
 impl Handler<CreateSessionMessage> for SessionManagerActor {
-    type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
+    type Result = ResponseFuture<Result<Recipient<SessionActorMessage>, SessionManagerError>>;
 
     fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
         if !self.tenant_existed(&msg.tenant_id) {
@@ -206,19 +239,23 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             //return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
 
-        let sessions = self.sessions.get(&msg.tenant_id).unwrap();
-        if sessions.contains_key(&msg.client_id) {
-            // previously session existed, force disconnect the old connection
-            let session_addr = sessions.get(&msg.client_id).unwrap().clone();
-            let session_addr_in_async = session_addr.clone();
-            async move {
-                let res = session_addr_in_async
+        let sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
+        let topic_manager = self.topic_manager.clone();
+        let plugin_manager = self.plugin_manager.clone();
+        let router_sender = self.router_sender.clone();
+
+        let future = async move {
+            let mut sessions_guard = sessions.write().await;
+
+            if let Some(session) = sessions_guard.get(&msg.client_id) {
+                let session_actor_message_recipient = session.session_actor_message_recipient.clone();
+                let res = session_actor_message_recipient
                     .send(SessionActorMessage::ForceDisconnect)
                     .await;
                 if let Err(err) = res {
-                    return Err(err);
+                    return Err(SessionManagerError::SessionNotExisted(err.to_string()));
                 } else {
-                    let res = session_addr_in_async
+                    let res = session_actor_message_recipient
                         .send(SessionActorMessage::Reconnect {
                             conn: msg.connection_addr.clone(),
                             keep_alive: msg.keep_alive,
@@ -229,40 +266,39 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         })
                         .await;
                     if let Err(err) = res {
-                        return Err(err);
+                        return Err(SessionManagerError::SessionNotExisted(err.to_string()));
                     }
                 }
-                Ok(())
-            }
-            .into_actor(self)
-            .map(|res, act, _ctx| {
-                if let Err(err) = res {
-                    error!("reconnect previeus session error: {}", err);
-                }
-            })
-            .wait(ctx);
-            return Ok(session_addr);
-        } else {
-            let sessions = self.sessions.get_mut(&msg.tenant_id).unwrap();
-            let session_actor = SessionActor::new(
-                msg.tenant_id.clone(),
-                msg.client_id.clone(),
-                msg.clean_session,
-                self.topic_manager.clone(),
-                self.plugin_manager.clone(),
-                self.router_sender.clone(),
-                50,
-                msg.will_message,
-                msg.keep_alive,
-                msg.connection_addr,
-                msg.peer_addr,
-            );
+                Ok(session_actor_message_recipient)
+            } else {
+                let session_actor = SessionActor::new(
+                    msg.tenant_id.clone(),
+                    msg.client_id.clone(),
+                    msg.clean_session,
+                    topic_manager.clone(),
+                    plugin_manager.clone(),
+                    router_sender.clone(),
+                    50,
+                    msg.will_message,
+                    msg.keep_alive,
+                    msg.connection_addr,
+                    msg.peer_addr,
+                );
 
-            let session_actor_addr = session_actor.start();
-            let recipient = session_actor_addr.recipient();
-            sessions.insert(msg.client_id.clone(), recipient.clone());
-            return Ok(recipient);
-        }
+                let session_actor_addr = session_actor.start();
+                let session_actor_message_recipient = session_actor_addr.clone().recipient();
+                let get_session_info_recipient = session_actor_addr.clone().recipient();
+                sessions_guard.insert(
+                    msg.client_id.clone(),
+                    SessionActorRecipientWrapper {
+                        session_actor_message_recipient: session_actor_message_recipient.clone(),
+                        get_session_info_recipient,
+                    },
+                );
+                return Ok(session_actor_message_recipient);
+            }
+        };
+        Box::pin(future)
     }
 }
 
@@ -275,11 +311,11 @@ struct CreateTenantMessage {
 impl Handler<CreateTenantMessage> for SessionManagerActor {
     type Result = Result<(), SessionManagerError>;
 
-    fn handle(&mut self, msg: CreateTenantMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: CreateTenantMessage, _ctx: &mut Self::Context) -> Self::Result {
         if self.tenant_existed(&msg.tenant_id) {
             return Err(SessionManagerError::TenantHasExisted(msg.tenant_id));
         }
-        self.sessions.insert(msg.tenant_id.into(), HashMap::new());
+        self.sessions.insert(msg.tenant_id.into(), Arc::new(RwLock::new(HashMap::new())));
         Ok(())
     }
 }
@@ -289,8 +325,9 @@ impl SessionManagerActor {
         return self.sessions.contains_key(tenant_identifier);
     }
 
-    fn create_tenant(&mut self, tenant_identifier: &str)  {
-        self.sessions.insert(tenant_identifier.to_string(), HashMap::new());
+    fn create_tenant(&mut self, tenant_identifier: &str) {
+        self.sessions
+            .insert(tenant_identifier.to_string(), Arc::new(RwLock::new(HashMap::new())));
     }
 }
 
@@ -306,8 +343,12 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
 
     fn handle(&mut self, msg: RemoveSessionMessage, ctx: &mut Self::Context) -> Self::Result {
         let tenant_sessions = self.sessions.get_mut(&msg.tenant_id);
-        if tenant_sessions.is_some() {
-            tenant_sessions.unwrap().remove(&msg.client_id);
+        if let Some(sessions) = tenant_sessions {
+            let sessions = sessions.clone();
+            async move {
+                let mut sessions_guard = sessions.write().await;
+                sessions_guard.remove(&msg.client_id);
+            }.into_actor(self).wait(ctx);
         } else {
             return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }

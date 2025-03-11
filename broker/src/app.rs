@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::Arc,
 };
 
@@ -67,7 +67,7 @@ impl YedMQApp {
         ).start();
         //
 
-        app.session_manager.set(session_manager.clone());
+        app.session_manager.set(session_manager.clone()).unwrap();
 
         let mut router = Router {
             topic_manager: app.topic_manager.clone(),

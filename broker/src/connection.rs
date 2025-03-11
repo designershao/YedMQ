@@ -13,7 +13,7 @@ use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
 use crate::plugin_manager;
 
-use crate::session::session_actor::{SessionActor, SessionActorMessage};
+use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
 use crate::session::{session_actor, WillMessage};
 
@@ -365,7 +365,7 @@ where
         self.read_packet_handle = Some(handle);
     }
 
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
         if self.session.is_some() {
             if !self.disconnected_normally {
                 warn!(
@@ -471,9 +471,9 @@ mod tests {
     use yedmq_plugin::plugin::ConnectReturnCode;
 
     use crate::{
-        plugin_manager::{
-            MockPluginService, PluginService, SubscribeAuthorizationResult, SubscribeReturnCode,
-        },
+        plugin_manager::
+            MockPluginService
+        ,
         session::{session_actor, session_manager_actor},
     };
 

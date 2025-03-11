@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use std::{env, fs, thread, time};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
@@ -8,7 +8,6 @@ use yedmq::metric::Metric;
 use yedmq::plugin_manager::PluginManager;
 use yedmq::raft::raft_manager::RaftManager;
 
-use tokio::sync::mpsc::Sender;
 use tokio::sync::{Mutex, OnceCell, RwLock};
 use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};

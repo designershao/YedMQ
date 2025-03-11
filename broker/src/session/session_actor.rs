@@ -32,7 +32,7 @@ use crate::{
     topic::topic_manager::TopicManagerTrait,
 };
 
-use crate::connection::{ConnectionActor, ConnectionActorMessage};
+use crate::connection::ConnectionActorMessage;
 use super::WillMessage;
 
 pub struct SessionInfo {
@@ -50,9 +50,9 @@ where
     A:Actor,
     M:Message<Result = SessionInfo>,
 {
-    fn handle(self, ctx: &mut <A as Actor>::Context, tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>) {
+    fn handle(self, _ctx: &mut <A as Actor>::Context, tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>) {
         if let Some(tx) = tx {
-            tx.send(self);
+            let _ = tx.send(self);
         }
     }
 }
