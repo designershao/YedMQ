@@ -8,6 +8,7 @@ pub mod network;
 pub mod service;
 pub mod store;
 pub mod raft_manager;
+pub mod session_actor_map;
 
 pub type NodeId = u64;
 
