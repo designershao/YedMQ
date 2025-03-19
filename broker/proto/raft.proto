@@ -45,8 +45,14 @@ message RoutePacketResponse {
 
 }
 
+enum RaftType {
+  TOPIC = 0;
+  SESSION_ACTOR_MAP = 1;
+}
+
 message AppendEntriesRequest {
   string data = 1;
+  RaftType raft_type = 2;
 }
 
 message AppendEntriesResponse {
@@ -59,6 +65,7 @@ message AppendEntriesResponse {
 
 message VoteRequest {
   string data = 1;
+  RaftType raft_type = 2;
 }
 
 message VoteResponse {
@@ -71,6 +78,7 @@ message VoteResponse {
 
 message InstallSnapshotRequest {
   string data = 1;
+  RaftType raft_type = 2;
 }
 
 message InstallSnapshotResponse {

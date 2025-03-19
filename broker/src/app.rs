@@ -8,6 +8,7 @@ use actix::Actor;
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
+use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
@@ -192,12 +193,14 @@ impl YedMQApp {
         let join_handles = Mutex::new(vec![]);
 
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
 
         // init raft manager
         let raft_manager = Arc::new(
             crate::raft::raft_manager::RaftManager::new(
                 settings.cluster.clone(),
                 topic_storage.clone(),
+                session_actor_map_storage.clone(),
             )
             .await,
         );

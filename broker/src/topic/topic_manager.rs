@@ -4,7 +4,7 @@ use mockall::automock;
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::raft::{store::Request, NodeId};
+use crate::raft::{topic::types::Request, NodeId};
 
 use super::topic_storage::{Error, Subscription, TopicStorage};
 use async_trait::async_trait;
@@ -106,7 +106,7 @@ impl TopicManagerTrait for TopicManager {
         topic_filter: String,
         qos: u8,
     ) -> Result<(), Error> {
-        self.raft_manager
+        self.raft_manager.topic_raft
             .execute_command(Request::SubscribeTopic {
                 node_id: self.current_node_id,
                 tenant_id,
@@ -125,7 +125,7 @@ impl TopicManagerTrait for TopicManager {
         client_identifier: String,
         topic_filter: String,
     ) -> Result<(), Error> {
-        self.raft_manager
+        self.raft_manager.topic_raft
             .execute_command(Request::UnsubscribeTopic {
                 node_id: self.current_node_id,
                 tenant_id,
@@ -152,7 +152,7 @@ impl TopicManagerTrait for TopicManager {
         topic_filter: &String,
     ) -> Result<(), Error> {
         let _ = self
-            .raft_manager
+            .raft_manager.topic_raft
             .execute_command(Request::CleanRetainPublishPacket {
                 tenant_id,
                 topic_filter: topic_filter.to_string(),
@@ -173,7 +173,7 @@ impl TopicManagerTrait for TopicManager {
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
     ) -> Result<(), Error> {
-        self.raft_manager
+        self.raft_manager.topic_raft
             .execute_command(Request::RegisterRetainPublishPacket {
                 tenant_id,
                 source_client_identifier,
@@ -195,6 +195,7 @@ impl TopicManagerTrait for TopicManager {
 
     async fn create_tenant(&mut self, tenant_id: String) -> Result<(), Error> {
         self.raft_manager
+            .topic_raft
             .execute_command(Request::CreateTenant { tenant_id })
             .await
             .unwrap();

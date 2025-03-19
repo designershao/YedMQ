@@ -1,24 +1,37 @@
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::{collections::HashMap, fmt, sync::Arc};
+pub mod store;
+pub mod types;
+pub mod raft_network_impl;
+
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt,
+    path::Path,
+    sync::Arc,
+};
 
 use log::info;
 use openraft::Config;
 use raft_network_impl::Network;
-use store::new_storage;
-use tokio::sync::{watch, RwLock, Mutex};
-use types::{SessionActorMapRequest, SessionActorMapTypeConfig};
+use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
 
-use crate::protobuf::raft_service_client::RaftServiceClient;
-use crate::protobuf::{AppendEntriesRequest, RaftType};
-use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
+use crate::{
+    protobuf::{
+        raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
+        AppendEntriesRequest, RaftType,
+    },
+    router::RouterCmd,
+    settings::Cluster,
+    topic::topic_storage::TopicStorage,
+};
 
-use super::NodeId;
-use super::Node;
-
-pub mod types;
-pub mod store;
-pub mod raft_network_impl;
+use super::{
+    service::raft_service::RaftServiceImpl,
+    topic::{
+        store::new_storage,
+        types::{Request, TopicRaft},
+    },
+    Node, NodeId,
+};
 
 #[derive(Debug)]
 pub enum RaftManagerError {
@@ -45,11 +58,8 @@ impl fmt::Display for RaftManagerError {
     }
 }
 
-pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
-
-pub struct SessionActorMapRaftManager {
-
-    pub raft: SessionActorMapRaft,
+pub struct RaftManager {
+    pub raft: TopicRaft,
 
     current_leader: Arc<RwLock<Option<NodeId>>>,
 
@@ -64,7 +74,13 @@ pub struct SessionActorMapRaftManager {
     running_tx: watch::Sender<()>,
 }
 
-impl SessionActorMapRaftManager {
+impl Drop for RaftManager {
+    fn drop(&mut self) {
+        println!("Raft drop: id={}", self.cluster_cfg.node_id);
+    }
+}
+
+impl RaftManager {
     pub fn current_node_id(&self) -> NodeId {
         self.cluster_cfg.node_id
     }
@@ -76,15 +92,15 @@ impl SessionActorMapRaftManager {
     pub async fn stop(&self) -> Result<(), RaftManagerError> {
         let mut rx = self.raft.metrics();
 
-        self.raft
-            .shutdown()
-            .await
-            .map_err(|e| RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e)))?;
+        self.raft.shutdown().await.map_err(|e| {
+            RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e))
+        })?;
 
         if let Err(e) = self.running_tx.send(()) {
-            return Err(RaftManagerError::InternalError(
-                format!("Failed to shutdown raft, {}", e),
-            ));
+            return Err(RaftManagerError::InternalError(format!(
+                "Failed to shutdown raft, {}",
+                e
+            )));
         }
 
         loop {
@@ -104,14 +120,14 @@ impl SessionActorMapRaftManager {
         Ok(())
     }
 
-    pub async fn new(cluster_cfg: Cluster, session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>) -> Self {
+    pub async fn new(cluster_cfg: Cluster, topic_storage: Arc<RwLock<TopicStorage>>) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
         let dir = Path::new(&cluster_cfg.store_dir);
 
         let config = Arc::new(raft_config.validate().unwrap());
 
-        let (log_store, state_machine_store) = new_storage(&dir, session_actor_map_storage.clone()).await;
+        let (log_store, state_machine_store) = new_storage(&dir, topic_storage.clone()).await;
 
         let network = Network {};
 
@@ -126,7 +142,7 @@ impl SessionActorMapRaftManager {
         .unwrap();
         let (tx, rx) = watch::channel::<()>(());
 
-        let manager = SessionActorMapRaftManager {
+        let manager = RaftManager {
             raft,
             current_leader: Arc::new(RwLock::new(None)),
             nodes: Arc::new(RwLock::new(HashMap::new())),
@@ -176,7 +192,7 @@ impl SessionActorMapRaftManager {
         self.current_leader.read().await.clone()
     }
 
-    pub async fn execute_command(&self, command: SessionActorMapRequest) -> Result<(), RaftManagerError> {
+    pub async fn execute_command(&self, command: Request) -> Result<(), RaftManagerError> {
         if !self.is_leader().await {
             let leader_node_id = self.get_leader().await;
 
@@ -195,7 +211,7 @@ impl SessionActorMapRaftManager {
 
                 let append_request = AppendEntriesRequest {
                     data: serde_json::to_string(&command).unwrap(),
-                    raft_type: RaftType::SessionActorMap.into(),
+                    raft_type: RaftType::Topic.into(),
                 };
 
                 let res = client.append_entries(append_request).await;

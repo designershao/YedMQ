@@ -1,23 +1,21 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::{path::PathBuf, sync::Arc, time::Duration};
 use std::{env, fs, thread, time};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
 use yedmq::metric::Metric;
 use yedmq::plugin_manager::PluginManager;
 use yedmq::raft::raft_manager::RaftManager;
 
+use actix::Actor;
 use tokio::sync::{Mutex, OnceCell, RwLock};
+use yedmq::session::session_actor_map_storage;
 use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};
 use yedmq::topic::topic_manager::TopicManager;
 use yedmq::topic::topic_storage::TopicStorage;
-use yedmq::{
-    listener::tcp_listener::MqttTcpListener, router::Router,
-    settings::Settings,
-};
-use actix::Actor;
+use yedmq::{listener::tcp_listener::MqttTcpListener, router::Router, settings::Settings};
 use yedmq_mqtt::{v3::subscribe::TopicFilter, MqttPacketV3};
 
 fn random_tcp_port() -> u16 {
@@ -39,12 +37,17 @@ async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftMana
         store_dir: test_temp_store_dir.clone(),
         rpc: RPC {
             external: "127.0.0.1:4321".to_string(),
-        }
+        },
     };
+
+    let session_actor_map_storage = Arc::new(RwLock::new(
+        session_actor_map_storage::SessionActorMapStorage::new(),
+    ));
 
     RaftManager::new(
         test_cluster_cfg,
-        topic_storage.clone()
+        topic_storage.clone(),
+        session_actor_map_storage.clone(),
     )
     .await
 }
@@ -64,7 +67,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let plugin_manager =
         PluginManager::new(plugin_path.to_str().unwrap().to_string(), settings.clone()).unwrap();
     let plugin_manager = Arc::new(plugin_manager);
-        
+
     let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
     let raft_manager = Arc::new(mock_raft_manager(topic_storage.clone()).await);
 
@@ -77,11 +80,12 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let _ = router_sender_once_cell.set(router_sender.clone());
 
     let session_manager = SessionManagerActor::new(
-        plugin_manager.clone(), 
-        topic_manager.clone(), 
-        router_sender.clone(), 
-        settings.clone()
-    ).start();
+        plugin_manager.clone(),
+        topic_manager.clone(),
+        router_sender.clone(),
+        settings.clone(),
+    )
+    .start();
 
     let mut router = Router {
         session_manager: session_manager.clone(),
@@ -104,7 +108,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         join_handles: Mutex::new(vec![]),
         topic_router: Arc::new(RwLock::new(BTreeMap::new())),
         raft_manager,
-        topic_storage
+        topic_storage,
     }
 }
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {

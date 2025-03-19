@@ -50,7 +50,10 @@ mod tests {
     use crate::{
         plugin_manager::PluginManager,
         raft::raft_manager::RaftManager,
-        session::session_manager_actor::SessionManagerActor,
+        session::{
+            session_actor_map_storage::SessionActorMapStorage,
+            session_manager_actor::SessionManagerActor,
+        },
         settings::{Cluster, Settings, RPC},
         topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
     };
@@ -79,7 +82,12 @@ mod tests {
             },
         };
 
-        RaftManager::new(test_cluster_cfg, Arc::new(RwLock::new(TopicStorage::new()))).await
+        RaftManager::new(
+            test_cluster_cfg,
+            Arc::new(RwLock::new(TopicStorage::new())),
+            Arc::new(RwLock::new(SessionActorMapStorage::new())),
+        )
+        .await
     }
 
     async fn mock_topic_manager(
@@ -112,10 +120,12 @@ mod tests {
         let _ = router_sender_once_cell.set(router_sender.clone());
 
         let session_manager = SessionManagerActor::new(
-            plugin_manager.clone(), 
-            topic_manager.clone(), 
-            router_sender.clone(), 
-            settings.clone()).start();
+            plugin_manager.clone(),
+            topic_manager.clone(),
+            router_sender.clone(),
+            settings.clone(),
+        )
+        .start();
 
         crate::app::YedMQApp {
             settings,

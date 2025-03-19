@@ -4,7 +4,7 @@ use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::topic::topic_storage::Subscription;
+use crate::raft::SnapshotData;
 use crate::topic::topic_storage::TopicStorage;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
@@ -37,54 +37,14 @@ use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
-use yedmq_mqtt::MqttPacketV3;
 
-use super::typ;
-use super::SnapshotData;
-use super::TypeConfig;
-use super::{Node, NodeId};
+use super::types;
+use super::types::{Response,Request};
+use super::types::TypeConfig;
+use crate::raft::{Node, NodeId};
 
 type StorageResult<T> = Result<T, StorageError<NodeId>>;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum Request {
-    // Subscribe topic
-    SubscribeTopic {
-        node_id: NodeId,
-        tenant_id: String,
-        client_identifier: String,
-        topic: String,
-        qos: u8,
-    },
-    // Unsubscribe topic
-    UnsubscribeTopic {
-        node_id: NodeId,
-        tenant_id: String,
-        client_identifier: String,
-        topic: String,
-    },
-    RegisterRetainPublishPacket {
-        tenant_id: String,
-        source_client_identifier: String,
-        publish_packet: MqttPacketV3,
-    },
-    CleanRetainPublishPacket {
-        tenant_id: String,
-        topic_filter: String,
-    },
-    CreateTenant {
-        tenant_id: String,
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum Response {
-    get_topic_subscriptions_response { subscriptions: Vec<Subscription> },
-
-    get_topic_router_response { nodes: Vec<Node> },
-
-    None
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSnapshot {
@@ -255,7 +215,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
 
     async fn apply<I>(&mut self, entries: I) -> Result<Vec<Response>, StorageError<NodeId>>
     where
-        I: IntoIterator<Item = typ::Entry> + OptionalSend,
+        I: IntoIterator<Item = types::Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter();

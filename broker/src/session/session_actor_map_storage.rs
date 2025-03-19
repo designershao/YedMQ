@@ -10,6 +10,12 @@ pub struct SessionActorMapStorage {
 }
 
 impl SessionActorMapStorage {
+    pub fn new() -> Self {
+        SessionActorMapStorage {
+            inner: HashMap::new()
+        }
+    }
+
     pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId) {
         self.inner.entry(tenant_id).or_insert(HashMap::new()).insert(session_id, node_id);
     }

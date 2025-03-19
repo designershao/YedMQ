@@ -1,10 +1,12 @@
 use crate::protobuf::raft_service_server::RaftService;
 use crate::protobuf::{
     AppendEntriesRequest, AppendEntriesResponse, ErrorCode, ErrorDetail, InstallSnapshotRequest,
-    InstallSnapshotResponse, RoutePacketRequest, RoutePacketResponse, VoteRequest, VoteResponse,
+    InstallSnapshotResponse, RaftType, RoutePacketRequest, RoutePacketResponse, VoteRequest,
+    VoteResponse,
 };
 use crate::raft::raft_manager::RaftManager;
 use crate::router::RouterCmd;
+use openraft::Raft;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -33,7 +35,11 @@ impl RaftService for RaftServiceImpl {
                 error: Some(ErrorDetail {
                     code: ErrorCode::InternalError.into(),
                     message: e.to_string(),
-                    node: self.raft_manager.current_node_id().to_string(),
+                    node: self
+                        .raft_manager
+                        .session_actor_map_raft
+                        .current_node_id()
+                        .to_string(),
                 }),
             };
             Ok(tonic::Response::new(res))
@@ -52,16 +58,36 @@ impl RaftService for RaftServiceImpl {
         request: tonic::Request<AppendEntriesRequest>,
     ) -> Result<tonic::Response<AppendEntriesResponse>, tonic::Status> {
         let req = request.into_inner();
+        let resp = match req.raft_type() {
+            RaftType::Topic => {
+                let append_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let append_req =
-            serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+                let resp = self
+                    .raft_manager
+                    .topic_raft
+                    .raft
+                    .append_entries(append_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self
-            .raft_manager
-            .raft
-            .append_entries(append_req)
-            .await
-            .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
+            }
+            RaftType::SessionActorMap => {
+                let append_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_actor_map_raft
+                    .raft
+                    .append_entries(append_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                resp
+            }
+        };
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = AppendEntriesResponse {
@@ -79,15 +105,36 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<InstallSnapshotResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        let install_req =
-            serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let resp = match req.raft_type() {
+            RaftType::Topic => {
+                let install_req =
+                    serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self
-            .raft_manager
-            .raft
-            .install_snapshot(install_req)
-            .await
-            .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                let resp = self
+                    .raft_manager
+                    .topic_raft
+                    .raft
+                    .install_snapshot(install_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
+
+            }
+            RaftType::SessionActorMap => {
+                let install_req =
+                    serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_actor_map_raft
+                    .raft
+                    .install_snapshot(install_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
+                
+            }
+        };
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = InstallSnapshotResponse {
@@ -105,15 +152,32 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<VoteResponse>, tonic::Status> {
         let req = request.into_inner();
 
-        let vote_req =
-            serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+        let resp = match req.raft_type() {
+            RaftType::Topic => {
+                let vote_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let resp = self
-            .raft_manager
-            .raft
-            .vote(vote_req)
-            .await
-            .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                let resp = self
+                    .raft_manager
+                    .topic_raft
+                    .raft
+                    .vote(vote_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+            }
+            RaftType::SessionActorMap => {
+                let vote_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_actor_map_raft
+                    .raft
+                    .vote(vote_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+            }
+        };
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
         let mes = VoteResponse {

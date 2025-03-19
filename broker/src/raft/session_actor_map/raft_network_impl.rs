@@ -11,11 +11,13 @@ use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 
-use crate::raft::{Node, NodeId, TypeConfig};
+use crate::raft::{Node, NodeId};
+
+use super::types::SessionActorMapTypeConfig;
 
 pub struct Network {}
 
-impl RaftNetworkFactory<TypeConfig> for Network {
+impl RaftNetworkFactory<SessionActorMapTypeConfig> for Network {
     type Network = NetworkConnection;
 
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
@@ -52,10 +54,10 @@ impl NetworkConnection {
     }
 }
 
-impl RaftNetwork<TypeConfig> for NetworkConnection {
+impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
     async fn append_entries(
         &mut self,
-        req: AppendEntriesRequest<TypeConfig>,
+        req: AppendEntriesRequest<SessionActorMapTypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let c = self.c().await?;
@@ -71,7 +73,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
 
     async fn install_snapshot(
         &mut self,
-        req: InstallSnapshotRequest<TypeConfig>,
+        req: InstallSnapshotRequest<SessionActorMapTypeConfig>,
         _option: RPCOption,
     ) -> Result<
         InstallSnapshotResponse<NodeId>,
@@ -93,7 +95,13 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let c = self.c().await?;
-        let resp = c.vote(req).await;
+
+        let mes = crate::protobuf::VoteRequest {
+            data: serde_json::to_string(&req).expect("fail to serialize"),
+            raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
+        };
+        let request = tonic::Request::new(mes);
+        let resp = c.vote(request).await;
 
         let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         let mes = resp.into_inner();

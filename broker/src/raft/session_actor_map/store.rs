@@ -1,4 +1,4 @@
-use std::{io::Cursor, ops::RangeBounds, sync::Arc};
+use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
@@ -9,7 +9,7 @@ use openraft::{
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
     Vote,
 };
-use rocksdb::{ColumnFamily, Direction, DB};
+use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Direction, Options, DB};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -511,4 +511,24 @@ impl RaftLogStorage<SessionActorMapTypeConfig> for LogStore {
     async fn get_log_reader(&mut self) -> Self::LogReader {
         self.clone()
     }
+}
+
+pub(crate) async fn new_storage<P: AsRef<Path>>(
+    db_path: P,
+    topic_storage: Arc<RwLock<SessionActorMapStorage>>,
+) -> (LogStore, StateMachineStore) {
+    let mut db_opts = Options::default();
+    db_opts.create_missing_column_families(true);
+    db_opts.create_if_missing(true);
+
+    let store = ColumnFamilyDescriptor::new("store", Options::default());
+    let logs = ColumnFamilyDescriptor::new("logs", Options::default());
+
+    let db = DB::open_cf_descriptors(&db_opts, db_path, vec![store, logs]).unwrap();
+    let db = Arc::new(db);
+
+    let log_store = LogStore { db: db.clone() };
+    let sm_store = StateMachineStore::new(db, topic_storage).await.unwrap();
+
+    (log_store, sm_store)
 }
