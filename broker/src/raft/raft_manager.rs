@@ -1,29 +1,15 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt,
-    path::Path,
-    sync::Arc,
-};
+use std::{fmt, sync::Arc};
 
 use log::info;
-use openraft::Config;
 use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
 
 use crate::{
-    protobuf::{
-        raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
-        AppendEntriesRequest,
-    }, router::RouterCmd, session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster, topic::topic_storage::TopicStorage
+    protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
+    session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster,
+    topic::topic_storage::TopicStorage,
 };
 
-use super::{
-    service::raft_service::RaftServiceImpl,
-    topic::{
-        store::new_storage,
-        types::{Request, TopicRaft},
-    },
-    Node, NodeId,
-};
+use super::service::raft_service::RaftServiceImpl;
 
 #[derive(Debug)]
 pub enum RaftManagerError {
@@ -51,7 +37,6 @@ impl fmt::Display for RaftManagerError {
 }
 
 pub struct RaftManager {
-    
     pub topic_raft: crate::raft::topic::RaftManager,
 
     pub session_actor_map_raft: crate::raft::session_actor_map::SessionActorMapRaftManager,
@@ -72,21 +57,22 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-
-    pub async fn new(cluster_cfg: Cluster, topic_storage: Arc<RwLock<TopicStorage>>, session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>) -> Self {
-        let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
-
-        let dir = Path::new(&cluster_cfg.store_dir);
-
-        let config = Arc::new(raft_config.validate().unwrap());
-
-        let (log_store, state_machine_store) = new_storage(&dir, topic_storage.clone()).await;
-
+    pub async fn new(
+        cluster_cfg: Cluster,
+        topic_storage: Arc<RwLock<TopicStorage>>,
+        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+    ) -> Self {
         let (tx, rx) = watch::channel::<()>(());
 
-        let topic_raft_manager = crate::raft::topic::RaftManager::new(cluster_cfg.clone(), topic_storage.clone()).await;
+        let topic_raft_manager =
+            crate::raft::topic::RaftManager::new(cluster_cfg.clone(), topic_storage.clone()).await;
 
-        let session_actor_map_raft_manager = crate::raft::session_actor_map::SessionActorMapRaftManager::new(cluster_cfg.clone(), session_actor_map_storage.clone()).await;
+        let session_actor_map_raft_manager =
+            crate::raft::session_actor_map::SessionActorMapRaftManager::new(
+                cluster_cfg.clone(),
+                session_actor_map_storage.clone(),
+            )
+            .await;
 
         let manager = RaftManager {
             topic_raft: topic_raft_manager,
@@ -99,20 +85,6 @@ impl RaftManager {
 
         manager
     }
-
-    async fn get_raft_config(heartbeat_interval: u64) -> Config {
-        let election_timeout_min = heartbeat_interval * 1000 * 8;
-        let election_timeout_max = heartbeat_interval * 1000 * 12;
-        let heartbeat_interval = heartbeat_interval * 1000;
-
-        Config {
-            heartbeat_interval,
-            election_timeout_min,
-            election_timeout_max,
-            ..Default::default()
-        }
-    }
-
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
         router_sender: Sender<RouterCmd>,

@@ -524,7 +524,9 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     let store = ColumnFamilyDescriptor::new("store", Options::default());
     let logs = ColumnFamilyDescriptor::new("logs", Options::default());
 
-    let db = DB::open_cf_descriptors(&db_opts, db_path, vec![store, logs]).unwrap();
+    let session_actor_map_db_path = db_path.as_ref().join("session_actor_map");
+
+    let db = DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };

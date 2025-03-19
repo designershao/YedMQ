@@ -1,4 +1,4 @@
-use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest, VoteRequest};
+use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use crate::raft::Node;

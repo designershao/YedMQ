@@ -5,7 +5,7 @@ use crate::{
     settings::Settings, topic::topic_manager::TopicManagerTrait,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, ActorFutureExt, AsyncContext, Context, Handler, Message,
+    dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message,
     Recipient, ResponseFuture, WrapFuture,
 };
 use log::error;

@@ -26,15 +26,6 @@ impl Display for Node {
 
 pub type SnapshotData = Cursor<Vec<u8>>;
 
-pub mod typ {
-
-    use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest, VoteRequest};
-
-    use super::{topic::types::TypeConfig, NodeId};
-
-
-}
-
 pub enum RaftManagerError {
     Raft(openraft::AnyError),
     

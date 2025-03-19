@@ -6,7 +6,6 @@ use crate::protobuf::{
 };
 use crate::raft::raft_manager::RaftManager;
 use crate::router::RouterCmd;
-use openraft::Raft;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -164,6 +163,7 @@ impl RaftService for RaftServiceImpl {
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
             }
             RaftType::SessionActorMap => {
                 let vote_req = serde_json::from_str(&req.data)
@@ -176,6 +176,7 @@ impl RaftService for RaftServiceImpl {
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
             }
         };
 

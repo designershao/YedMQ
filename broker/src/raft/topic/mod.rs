@@ -12,20 +12,17 @@ use std::{
 use log::info;
 use openraft::Config;
 use raft_network_impl::Network;
-use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 
 use crate::{
     protobuf::{
-        raft_service_client::RaftServiceClient, raft_service_server::RaftServiceServer,
-        AppendEntriesRequest, RaftType,
+        raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType,
     },
-    router::RouterCmd,
     settings::Cluster,
     topic::topic_storage::TopicStorage,
 };
 
 use super::{
-    service::raft_service::RaftServiceImpl,
     topic::{
         store::new_storage,
         types::{Request, TopicRaft},
