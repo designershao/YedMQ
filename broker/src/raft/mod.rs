@@ -5,6 +5,7 @@ pub mod service;
 pub mod topic;
 pub mod raft_manager;
 pub mod session_actor_map;
+pub mod session_state;
 
 pub type NodeId = u64;
 

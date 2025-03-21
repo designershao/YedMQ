@@ -370,7 +370,7 @@ pub async fn test_tcp_client_subscribe_and_publish() {
     pub_join.await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[actix::test]
 pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
     let resend_duration_secs = 10;
 
@@ -443,7 +443,7 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
     invalid_connect_join.await.unwrap();
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[actix::test]
 pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_message() {
     let keep_live_duration_secs = 5;
 
@@ -463,7 +463,7 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     // ensure listener start
     let sleep_duration = time::Duration::from_millis(1000);
-    thread::sleep(sleep_duration);
+    tokio::time::sleep(sleep_duration).await;
     //
 
     let connect_address_cloned = connect_address.clone();

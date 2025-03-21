@@ -1,9 +1,8 @@
 use actix::{
-    dev::{ContextFutureSpawner, MessageResponse}, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context,
-    Handler, MailboxError, Message, Recipient, SpawnHandle, WrapFuture,
+    dev::{ContextFutureSpawner, MessageResponse}, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture
 };
 use log::warn;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
@@ -33,7 +32,7 @@ use crate::{
 };
 
 use crate::connection::ConnectionActorMessage;
-use super::WillMessage;
+use super::{session_state_storage::SessionState, WillMessage};
 
 pub struct SessionInfo {
     pub tenant_identifier: String,
@@ -42,7 +41,7 @@ pub struct SessionInfo {
 
     pub subscription_topics: Vec<String>,
 
-    pub session_state: SessionState,
+    pub session_state: ActivityState,
 }
 
 impl<A, M> MessageResponse<A, M> for SessionInfo 
@@ -57,6 +56,7 @@ where
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum QoS {
     AtMostOnce,
     AtLeastOnce,
@@ -128,7 +128,7 @@ pub struct ClientDisconnected {}
 
 #[derive(Debug,Clone, Copy)]
 #[derive(Serialize)]
-pub enum SessionState {
+pub enum ActivityState {
     Active,
 
     Inactive,
@@ -145,9 +145,7 @@ pub struct SessionActor {
 
     will_message: Option<WillMessage>,
 
-    state: SessionState,
-
-    subscriptions: HashMap<String, QoS>,
+    activity_state: ActivityState,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
@@ -159,8 +157,6 @@ pub struct SessionActor {
 
     router_sender: Sender<RouterCmd>,
 
-    inflight: Arc<Mutex<Inflight>>,
-
     keep_alive: u64,
 
     keep_alive_expired: bool,
@@ -171,7 +167,7 @@ pub struct SessionActor {
 
     inflight_retry_task_handle: Option<SpawnHandle>,
 
-    pending_messages: Vec<MqttPacketV3>,
+    state: Arc<RwLock<SessionState>>,
 }
 
 impl Actor for SessionActor {
@@ -262,7 +258,7 @@ async fn do_handle_publish(
     client_info: Client,
     topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     plugin_manager: Arc<dyn PluginService>,
-    inflight: Arc<Mutex<Inflight>>,
+    session_state: Arc<RwLock<SessionState>>,
     router_sender: Sender<RouterCmd>,
 ) -> HandlePublishResult {
     let publish_authorization = plugin_manager
@@ -276,13 +272,15 @@ async fn do_handle_publish(
     if publish_authorization {
         plugin_manager.do_on_publish(&client_info, &publish_packet);
 
+        let mut session_state_guard = session_state.write().await;
+
         if publish_packet.fix_header.qos > Some(0) {
-            let inflight = inflight.lock().await;
-            inflight
+            //let mut inflight = inflight.write().await;
+            session_state_guard.inflight
                 .register_with_rx_packet(&MqttPacketV3::Publish(publish_packet.clone()))
                 .await;
 
-            let packet = inflight
+            let packet = session_state_guard.inflight
                 .get_current_packet(publish_packet.variable_header.packet_identifier.unwrap())
                 .await
                 .unwrap();
@@ -411,12 +409,8 @@ impl SessionActor {
             router_sender,
             conn_recipient: Some(connection_actor_addr),
             conn_addr: Some(peer_addr),
-            inflight: Arc::new(Mutex::new(Inflight::new(Duration::from_secs(
-                inflight_retry_duration_secs,
-            )))),
-            state: SessionState::Active,
+            activity_state: ActivityState::Active,
             keep_alive_task_handle: None,
-            subscriptions: HashMap::new(),
             clean_session,
             keep_alive,
             keep_alive_expired: true,
@@ -426,7 +420,7 @@ impl SessionActor {
             client_id,
             will_message,
             username: None,
-            pending_messages: vec![],
+            state: Arc::new(RwLock::new(SessionState::new(Duration::from_secs(inflight_retry_duration_secs)))),
         }
     }
 
@@ -455,15 +449,15 @@ impl SessionActor {
         }
     }
 
-    fn set_state(&mut self, state: SessionState) {
-        self.state = state;
+    fn set_state(&mut self, state: ActivityState) {
+        self.activity_state = state;
     }
 
     fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         if self.clean_session {
             ctx.stop();
         } else {
-            self.state = SessionState::Inactive;
+            self.activity_state = ActivityState::Inactive;
 
             if let Some(handle) = self.keep_alive_task_handle.take() {
                 if ctx.cancel_future(handle) {
@@ -487,7 +481,7 @@ impl SessionActor {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
-        let inflight = self.inflight.clone();
+        let session_state = self.state.clone();
         let router_sender = self.router_sender.clone();
 
         async move {
@@ -496,7 +490,7 @@ impl SessionActor {
                 client_info,
                 topic_manager,
                 plugin_manager,
-                inflight,
+                session_state,
                 router_sender,
             )
             .await
@@ -532,7 +526,7 @@ impl SessionActor {
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                 yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
             ));
-            act.subscriptions.extend(res.succeed_subscriptions);
+            act.state.blocking_write().subscriptions.extend(res.succeed_subscriptions);
         })
         .wait(ctx);
     }
@@ -554,7 +548,7 @@ impl SessionActor {
         async move { do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await }
             .into_actor(self)
             .map(|res, act, _ctx| {
-                act.subscriptions
+                act.state.blocking_write().subscriptions
                     .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
                 let conn = act.conn_recipient.clone().unwrap();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(
@@ -574,12 +568,12 @@ impl SessionActor {
         // then wait for the connection actor to reply, confirming the write is complete,
         // before updating the inflight status again.
 
-        let infight = self.inflight.clone();
+        let session_state =self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
 
         async move {
-            let mut inflight = infight.lock().await;
-            let next_state_packet = inflight
+            let mut session_state_guard = session_state.write().await;
+            let next_state_packet = session_state_guard.inflight
                 .get_next_state_packet(pubrel_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -589,7 +583,7 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    inflight
+                    session_state_guard.inflight
                         .next_state(pubrel_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -609,12 +603,12 @@ impl SessionActor {
         // then wait for the connection actor to reply, confirming the write is complete,
         // before updating the inflight status again.
 
-        let infight = self.inflight.clone();
+        let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
 
         async move {
-            let mut inflight = infight.lock().await;
-            let next_state_packet = inflight
+            let mut session_state_guard = session_state.write().await;
+            let next_state_packet = session_state_guard.inflight
                 .get_next_state_packet(pubrec_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -624,7 +618,7 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    inflight
+                    session_state_guard.inflight
                         .next_state(pubrec_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -644,12 +638,12 @@ impl SessionActor {
         // then wait for the connection actor to reply, confirming the write is complete,
         // before updating the inflight status again.
 
-        let infight = self.inflight.clone();
+        let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
 
         async move {
-            let mut inflight = infight.lock().await;
-            let next_state_packet = inflight
+            let mut session_state_guard = session_state.write().await;
+            let next_state_packet = session_state_guard.inflight
                 .get_next_state_packet(puback_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -659,7 +653,7 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    inflight
+                    session_state_guard.inflight
                         .next_state(puback_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -679,12 +673,12 @@ impl SessionActor {
         // then wait for the connection actor to reply, confirming the write is complete,
         // before updating the inflight status again.
 
-        let infight = self.inflight.clone();
+        let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
 
         async move {
-            let mut inflight = infight.lock().await;
-            let next_state_packet = inflight
+            let mut session_state_guard = session_state.write().await;
+            let next_state_packet = session_state_guard.inflight
                 .get_next_state_packet(pubcomp_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -694,7 +688,7 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    inflight
+                    session_state_guard.inflight
                         .next_state(pubcomp_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -793,21 +787,21 @@ impl Handler<SessionActorMessage> for SessionActor {
                 }
             }
             SessionActorMessage::OutboundMessage(packet) => {
-                if matches!(self.state, SessionState::Active) {
+                if matches!(self.activity_state, ActivityState::Active) {
                     if let MqttPacketV3::Publish(mut packet) = packet {
                         let conn = self.conn_recipient.clone().unwrap();
-                        let inflight = self.inflight.clone();
+                        let session_state = self.state.clone();
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                let res = inflight
-                                    .lock()
-                                    .await
+                                let mut session_state_guard = session_state.write().await;
+                                let res = session_state_guard
+                                    .inflight
                                     .register_with_tx_packet(&MqttPacketV3::Publish(packet.clone()))
                                     .await;
                                 if let Err(e) = res {
                                     match e {
                                         InflightError::PacketIdentifierHasExisted => {
-                                            let packet_id = inflight.lock().await.allocate_packet_id().await;
+                                            let packet_id = session_state_guard.inflight.allocate_packet_id().await;
                                             if let Some(packet_id) = packet_id {
                                                 packet.variable_header.packet_identifier = Some(packet_id);
                                             } else {
@@ -828,8 +822,12 @@ impl Handler<SessionActorMessage> for SessionActor {
                     if matches!(packet, MqttPacketV3::Publish(_)) {
                         if let MqttPacketV3::Publish(publish_packet) = packet {
                             if publish_packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                self.pending_messages
-                                    .push(MqttPacketV3::Publish(publish_packet));
+                                let session_state = self.state.clone();
+                                async move {
+                                    let mut session_state_guard = session_state.write().await;
+                                    session_state_guard.pending_messages
+                                        .push(MqttPacketV3::Publish(publish_packet));
+                                }.into_actor(self).wait(ctx);
                             }
                         }
                     }
@@ -844,11 +842,11 @@ impl Handler<SessionActorMessage> for SessionActor {
                 }
             }
             SessionActorMessage::InflightRetry => {
-                let inflight = self.inflight.clone();
+                let session_state = self.state.clone();
                 let conn = self.conn_recipient.clone().unwrap();
                 async move {
-                    let mut inflight = inflight.lock().await;
-                    let packets = inflight
+                    let mut session_state_guard = session_state.write().await;
+                    let packets = session_state_guard.inflight
                         .get_all_expired_packets_and_refresh_expired_time()
                         .await;
                     for packet in packets {
@@ -859,7 +857,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                             warn!("write packet to client error: {}", e);
                         } else {
                             // update inflight
-                            inflight.next_state(packet.0).await;
+                            session_state_guard.inflight.next_state(packet.0).await;
                         }
                         //
                     }
@@ -868,7 +866,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 .wait(ctx);
             }
             SessionActorMessage::ForceDisconnect => {
-                if matches!(self.state, SessionState::Active) {
+                if matches!(self.activity_state, ActivityState::Active) {
                     let conn = self.conn_recipient.clone().unwrap();
                     async move {
                         conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
@@ -890,7 +888,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 will_message,
                 socket_addr,
             } => {
-                self.set_state(SessionState::Active);
+                self.set_state(ActivityState::Active);
                 self.conn_recipient = Some(conn);
                 self.will_message = will_message;
                 self.clean_session = clean_session;
@@ -916,10 +914,15 @@ impl Handler<SessionActorMessage> for SessionActor {
                 //
 
                 // start consume pending messages
-                for msg in self.pending_messages.drain(..) {
-                    ctx.address()
-                        .do_send(SessionActorMessage::OutboundMessage(msg));
-                }
+                let session_state = self.state.clone();
+                let session_actor_addr = ctx.address().clone();
+                async move {
+                    let mut session_state_guard = session_state.write().await;
+                    for msg in session_state_guard.pending_messages.drain(..) {
+                        session_actor_addr
+                            .do_send(SessionActorMessage::OutboundMessage(msg));
+                    }
+                }.into_actor(self).wait(ctx);
             }
             SessionActorMessage::ClientDisconnected => {
                 self.clean_up(ctx);
@@ -935,8 +938,8 @@ impl Handler<GetSessionInfo> for SessionActor {
         SessionInfo {
             tenant_identifier: self.tenant_id.clone(),
             client_identifier: self.client_id.clone(),
-            subscription_topics: self.subscriptions.iter().map(|(k, _)| k.clone()).collect(),
-            session_state: self.state,
+            subscription_topics: self.state.blocking_read().subscriptions.iter().map(|(k, _)| k.clone()).collect(),
+            session_state: self.activity_state,
         }
     }
 }
@@ -948,10 +951,16 @@ pub struct GetPendingMessagesCount {}
 
 #[cfg(test)]
 impl Handler<GetPendingMessagesCount> for SessionActor {
-    type Result = usize;
+    type Result = ResponseFuture<usize>;
 
     fn handle(&mut self, _msg: GetPendingMessagesCount, _ctx: &mut Self::Context) -> Self::Result {
-        self.pending_messages.len()
+        let session_state = self.state.clone();
+        let r = async move {
+            let session_state_guard = session_state.write().await;
+            session_state_guard.pending_messages.len()
+        };
+
+        Box::pin(r)
     }
 }
 

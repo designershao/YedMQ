@@ -1,5 +1,6 @@
 use std::{collections::HashMap, time::Duration};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -12,8 +13,9 @@ pub enum InflightError {
     PacketIdentifierHasExisted
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Inflight {
-    inner: RwLock<HashMap<u16, InflightItem>>,
+    inner: HashMap<u16, InflightItem>,
     expired_duration: Duration
 }
 
@@ -21,12 +23,12 @@ impl Inflight {
 
     pub fn new(expired_duration: Duration) -> Inflight {
         Inflight {
-            inner: RwLock::new(HashMap::new()),
+            inner: HashMap::new(),
             expired_duration
         }
     }
 
-    pub async fn register_with_rx_packet(&self, packet: &MqttPacketV3) {
+    pub async fn register_with_rx_packet(&mut self, packet: &MqttPacketV3) {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
@@ -36,27 +38,26 @@ impl Inflight {
                         packet_identifier,
                         InflightState::WaitPubrel
                     ).packet(&MqttPacketV3::Pubrec(PubRecPacket::new(packet_identifier))).build();
-                    let mut inner = self.inner.write().await;
-                    inner.insert(packet_identifier, item);
+                    //let mut inner = self.inner.write().await;
+                    self.inner.insert(packet_identifier, item);
                 } 
                 if qos == 1 {
                     let item = InflightItemBuilder::new(
                         packet_identifier,
                         InflightState::Finish
                     ).packet(&MqttPacketV3::Puback(PubAckPacket::new(packet_identifier))).build();
-                    let mut inner = self.inner.write().await;
-                    inner.insert(packet_identifier, item);
+                    //let mut inner = self.inner.write().await;
+                    self.inner.insert(packet_identifier, item);
                 }
             } 
         }
     }
 
     async fn packet_id_exists(&self, packet_identifier: u16) -> bool {
-        let inner = self.inner.read().await;
-        inner.contains_key(&packet_identifier)
+        self.inner.contains_key(&packet_identifier)
     }
 
-    pub async fn register_with_tx_packet(&self, packet: &MqttPacketV3) -> Result<(), InflightError> {
+    pub async fn register_with_tx_packet(&mut self, packet: &MqttPacketV3) -> Result<(), InflightError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let packet_identifier = publish_packet.variable_header.packet_identifier;
             if let Some(packet_identifier) = packet_identifier {
@@ -69,16 +70,16 @@ impl Inflight {
                         packet_identifier,
                         InflightState::WaitPubrec
                     ).packet(packet).build();
-                    let mut inner = self.inner.write().await;
-                    inner.insert(packet_identifier, item);
+                    //let mut inner = self.inner.write().await;
+                    self.inner.insert(packet_identifier, item);
                 } 
                 if qos == 1 {
                     let item = InflightItemBuilder::new(
                         packet_identifier,
                         InflightState::WaitPuback
                     ).packet(packet).build();
-                    let mut inner = self.inner.write().await;
-                    inner.insert(packet_identifier, item);
+                    //let mut inner = self.inner.write().await;
+                    self.inner.insert(packet_identifier, item);
                 }
             }
         }
@@ -86,10 +87,10 @@ impl Inflight {
     }
 
     // Get all packet which should be resend to the client and refresh expired time
-    pub async fn get_all_expired_packets_and_refresh_expired_time(&self) -> Vec<(u16,MqttPacketV3)> {
+    pub async fn get_all_expired_packets_and_refresh_expired_time(&mut self) -> Vec<(u16,MqttPacketV3)> {
         let mut result_vec:Vec<(u16,MqttPacketV3)> = vec![];
-        let mut inner = self.inner.write().await;
-        for item in inner.values_mut() {
+        //let mut inner = self.inner.write().await;
+        for item in self.inner.values_mut() {
             if item.last_modified + self.expired_duration.as_secs() < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
                 if let Some(packet) = item.current_packet() {
                     let mut packet = packet.clone();
@@ -103,9 +104,7 @@ impl Inflight {
     }
 
     pub async fn get_next_state_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
-        let inner = self.inner.read().await;
-        let binding = inner;
-        let ctx = binding.get(&packet_identifier);
+        let ctx = self.inner.get(&packet_identifier);
         if let Some(ctx_item) = ctx {
             ctx_item.next_packet()
         } else {
@@ -115,9 +114,8 @@ impl Inflight {
 
     pub async fn allocate_packet_id(&mut self) -> Option<u16> {
         for id in 1..=65535 {
-            let inner = self.inner.read().await;
 
-            if !inner.contains_key(&id) {
+            if !self.inner.contains_key(&id) {
                 return Some(id);
             }
         }
@@ -126,9 +124,7 @@ impl Inflight {
 
 
     pub async fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
-        let inner = self.inner.read().await;
-        let binding = inner;
-        let ctx = binding.get(&packet_identifier);
+        let ctx = self.inner.get(&packet_identifier);
         if let Some(ctx_item) = ctx {
             if let Some(packet) = ctx_item.current_packet() {
                 Some(packet.clone())
@@ -141,8 +137,7 @@ impl Inflight {
     }
 
     pub async fn next_state(&mut self, packet_identifier: u16) {
-        let mut binding = self.inner.write().await;
-        let ctx = binding.get_mut(&packet_identifier);
+        let ctx = self.inner.get_mut(&packet_identifier);
         if let Some(ctx_item) = ctx {
             ctx_item.to_next();
         }
@@ -150,12 +145,11 @@ impl Inflight {
 
     // Clean all finished qos packet identifier
     pub async fn clean_finished_items(&mut self) {
-        let mut inner = self.inner.write().await;
-        inner.retain(|_, v| v.state != InflightState::Finish);
+        self.inner.retain(|_, v| v.state != InflightState::Finish);
     }
 }
 
-#[derive(PartialEq, Eq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize, Deserialize)]
 enum InflightState {
     WaitPubrel,
     WaitPubcomp,
@@ -164,6 +158,7 @@ enum InflightState {
     Finish
 }
 
+#[derive(Debug,Serialize,Deserialize, Clone)]
 struct InflightItem {
     packet_identifier: u16,
     state: InflightState,
@@ -272,8 +267,7 @@ mod tests {
     use super::{Inflight, InflightState};
 
     async fn get_state(inflight: &Inflight, packet_identifier: u16) -> Option<InflightState> {
-        let inner = inflight.inner.read().await;
-        inner.get(&packet_identifier).map(|item| item.state.clone())
+        inflight.inner.get(&packet_identifier).map(|item| item.state.clone())
         
     }
 
@@ -314,7 +308,7 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_rx_qos_1_publish_packet_inflight_should_return_correct_state() {
 
-        let inflight = Inflight::new(Duration::from_secs(10));
+        let mut inflight = Inflight::new(Duration::from_secs(10));
         let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
@@ -459,7 +453,7 @@ mod tests {
 
     #[tokio::test()]
     async fn when_register_tx_packet_with_duplicate_packet_identifier_should_return_error() {
-        let inflight = Inflight::new(Duration::from_secs(10));
+        let mut inflight = Inflight::new(Duration::from_secs(10));
 
         let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).packet_identifier(123).qos(2).build();
 

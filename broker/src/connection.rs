@@ -345,6 +345,7 @@ where
                         }
                     }
                 } else {
+                    println!("client first packet is not connect packet");
                     error!("client first packet is not connect packet");
                     let connack_packet = ConnAckPacketBuilder::new()
                         .set_return_code(connack::ConnackReturnCode::UnsupportedProtocolVersion)

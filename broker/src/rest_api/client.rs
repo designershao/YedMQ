@@ -4,7 +4,7 @@ use super::{Pagination, PaginationListResult, PaginationMeta};
 use crate::{
     app::YedMQApp,
     session::{
-        session_actor::SessionState, session_manager_actor::{self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError}
+        session_actor::ActivityState, session_manager_actor::{self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError}
     },
 };
 use axum::{
@@ -25,7 +25,7 @@ pub struct Client {
 
     subscription_topics: Vec<String>,
 
-    session_state: SessionState,
+    session_state: ActivityState,
 }
 
 pub async fn kickoff_client(
