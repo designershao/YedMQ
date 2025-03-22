@@ -21,3 +21,27 @@ openraft::declare_raft_types!(
 );
 
 pub type Entry = openraft::Entry<SessionStateTypeConfig>;
+
+impl tonic::IntoRequest<crate::protobuf::AppendEntriesRequest>
+    for AppendEntriesRequest<SessionStateTypeConfig>
+{
+    fn into_request(self) -> tonic::Request<crate::protobuf::AppendEntriesRequest> {
+        let mes = crate::protobuf::AppendEntriesRequest {
+            data: serde_json::to_string(&self).expect("fail to serialize"),
+            raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
+        };
+        tonic::Request::new(mes)
+    }
+}
+
+impl tonic::IntoRequest<crate::protobuf::InstallSnapshotRequest>
+    for InstallSnapshotRequest<SessionStateTypeConfig>
+{
+    fn into_request(self) -> tonic::Request<crate::protobuf::InstallSnapshotRequest> {
+        let mes = crate::protobuf::InstallSnapshotRequest {
+            data: serde_json::to_string(&self).expect("fail to serialize"),
+            raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
+        };
+        tonic::Request::new(mes)
+    }
+}

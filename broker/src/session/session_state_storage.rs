@@ -32,6 +32,12 @@ pub struct SessionStateStorage {
 }
 
 impl SessionStateStorage {
+    pub fn new () -> Self {
+        SessionStateStorage {
+            inner: HashMap::new(),
+        }
+    }
+
     fn to_serializable(&self) -> SerializableSessionStateStorage {
         SerializableSessionStateStorage {
             inner: self

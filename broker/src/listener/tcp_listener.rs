@@ -52,7 +52,7 @@ mod tests {
         raft::raft_manager::RaftManager,
         session::{
             session_actor_map_storage::SessionActorMapStorage,
-            session_manager_actor::SessionManagerActor,
+            session_manager_actor::SessionManagerActor, session_state_storage::SessionStateStorage,
         },
         settings::{Cluster, Settings, RPC},
         topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
@@ -86,6 +86,7 @@ mod tests {
             test_cluster_cfg,
             Arc::new(RwLock::new(TopicStorage::new())),
             Arc::new(RwLock::new(SessionActorMapStorage::new())),
+            Arc::new(RwLock::new(SessionStateStorage::new())),
         )
         .await
     }

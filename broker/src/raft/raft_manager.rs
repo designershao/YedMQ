@@ -5,7 +5,7 @@ use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
 
 use crate::{
     protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
-    session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster,
+    session::{session_actor_map_storage::SessionActorMapStorage, session_state_storage::SessionStateStorage}, settings::Cluster,
     topic::topic_storage::TopicStorage,
 };
 
@@ -41,6 +41,8 @@ pub struct RaftManager {
 
     pub session_actor_map_raft: crate::raft::session_actor_map::SessionActorMapRaftManager,
 
+    pub session_state_raft: crate::raft::session_state::SessionActorMapRaftManager,
+
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
     cluster_cfg: Cluster,
@@ -61,6 +63,7 @@ impl RaftManager {
         cluster_cfg: Cluster,
         topic_storage: Arc<RwLock<TopicStorage>>,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+        session_state_storage: Arc<RwLock<SessionStateStorage>>
     ) -> Self {
         let (tx, rx) = watch::channel::<()>(());
 
@@ -74,9 +77,17 @@ impl RaftManager {
             )
             .await;
 
+        let session_state_raft_manager = 
+            crate::raft::session_state::SessionActorMapRaftManager::new(
+                cluster_cfg.clone(),
+                session_state_storage.clone(),
+            )
+            .await;
+
         let manager = RaftManager {
             topic_raft: topic_raft_manager,
             session_actor_map_raft: session_actor_map_raft_manager,
+            session_state_raft: session_state_raft_manager,
             running_rx: rx,
             running_tx: tx,
             join_handles: Mutex::new(vec![]),

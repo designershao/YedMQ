@@ -10,7 +10,8 @@ use yedmq::raft::raft_manager::RaftManager;
 
 use actix::Actor;
 use tokio::sync::{Mutex, OnceCell, RwLock};
-use yedmq::session::session_actor_map_storage;
+use yedmq::session::session_state_storage::SessionStateStorage;
+use yedmq::session::{session_actor_map_storage, session_state_storage};
 use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};
 use yedmq::topic::topic_manager::TopicManager;
@@ -44,10 +45,13 @@ async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftMana
         session_actor_map_storage::SessionActorMapStorage::new(),
     ));
 
+    let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
+
     RaftManager::new(
         test_cluster_cfg,
         topic_storage.clone(),
         session_actor_map_storage.clone(),
+        session_state_storage.clone(),
     )
     .await
 }
