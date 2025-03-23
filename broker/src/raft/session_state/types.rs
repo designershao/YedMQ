@@ -1,16 +1,62 @@
+use crate::{raft::Node, settings::Mqtt};
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use crate::raft::Node;
+use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateRequest {
-    
+    InflightRegisterRxPacket {
+        tenant_id: String,
+        client_id: String,
+        packet: MqttPacketV3,
+    },
+    InflightRegisterTxPacket {
+        tenant_id: String,
+        client_id: String,
+        packet: MqttPacketV3,
+    },
+    InflightGetCurrentPacket {
+        tenant_id: String,
+        client_id: String,
+        packet_identifier: u64,
+    },
+    InflightNextState {
+        tenant_id: String,
+        client_id: String,
+        packet_identifier: u64,
+    },
+    InflightCleanFinishItems {
+        tenant_id: String,
+        client_id: String,
+    },
+    AppendToPendingQueue {
+        tenant_id: String,
+        client_id: String,
+        packet: MqttPacketV3,
+    },
+    PopFromPendingQueue {
+        tenant_id: String,
+        client_id: String,
+    },
+    SubscribeTopic {
+        tenant_id: String,
+        client_id: String,
+        topic: String,
+        qos: u8,
+    },
+    UnsubscribeTopic {
+        tenant_id: String,
+        client_id: String,
+        topic: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateResponse {
-    None
+    InflightGetCurrentPacketResult(Option<MqttPacketV3>),
+    PopFromPendingQueueResult(Option<MqttPacketV3>),
+    None,
 }
 
 openraft::declare_raft_types!(

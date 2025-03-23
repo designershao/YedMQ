@@ -136,7 +136,9 @@ impl StateMachineStore {
             data: StateMachineData {
                 last_applied_log_id: None,
                 last_membership: Default::default(),
-                state: State { session_state_storage },
+                state: State {
+                    session_state_storage,
+                },
             },
             snapshot_idx: 0,
             db,
@@ -235,19 +237,151 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
         let mut replies = Vec::with_capacity(entries.size_hint().0);
 
         for ent in entries {
-
             self.data.last_applied_log_id = Some(ent.log_id);
 
             match ent.payload {
                 openraft::EntryPayload::Blank => {
                     replies.push(SessionStateResponse::None);
-                },
+                }
                 openraft::EntryPayload::Normal(req) => match req {
+                    types::SessionStateRequest::InflightRegisterRxPacket {
+                        tenant_id,
+                        client_id,
+                        packet,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_register_rx_packet(tenant_id, client_id, packet)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::InflightRegisterTxPacket {
+                        tenant_id,
+                        client_id,
+                        packet,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_register_tx_packet(tenant_id, client_id, packet)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::InflightGetCurrentPacket {
+                        tenant_id,
+                        client_id,
+                        packet_identifier,
+                    } => {
+                        let packet = self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_get_current_packet(
+                                tenant_id,
+                                client_id,
+                                packet_identifier.try_into().unwrap(),
+                            ).await;
+                        replies.push(SessionStateResponse::InflightGetCurrentPacketResult(packet));
+                    }
+                    types::SessionStateRequest::InflightNextState {
+                        tenant_id,
+                        client_id,
+                        packet_identifier,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_next_state(
+                                tenant_id,
+                                client_id,
+                                packet_identifier.try_into().unwrap(),
+                            )
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::InflightCleanFinishItems {
+                        tenant_id,
+                        client_id,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_clean_finished_items(tenant_id, client_id)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::AppendToPendingQueue {
+                        tenant_id,
+                        client_id,
+                        packet,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .append_to_pending_queue(tenant_id, client_id, packet)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::PopFromPendingQueue {
+                        tenant_id,
+                        client_id,
+                    } => {
+                        let packet = self
+                            .data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .pop_from_pending_queue(tenant_id, client_id)
+                            .await;
+                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet));
+                    }
+                    types::SessionStateRequest::SubscribeTopic {
+                        tenant_id,
+                        client_id,
+                        topic,
+                        qos,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .subscribe_topic(tenant_id, client_id, topic, qos.into())
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::UnsubscribeTopic {
+                        tenant_id,
+                        client_id,
+                        topic,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .unsubscribe_topic(tenant_id, client_id, topic)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
                 },
                 openraft::EntryPayload::Membership(membership) => {
                     self.data.last_membership = StoredMembership::new(Some(ent.log_id), membership);
-                    replies.push(SessionStateResponse::None);                    
-                },
+                    replies.push(SessionStateResponse::None);
+                }
             }
         }
         Ok(replies)
@@ -540,7 +674,8 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
 
     let session_actor_map_db_path = db_path.as_ref().join("session_state");
 
-    let db = DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
+    let db =
+        DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };

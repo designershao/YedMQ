@@ -1,9 +1,14 @@
-use std::{collections::HashMap, sync::{Arc, RwLock}, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::inflight::{self, Inflight};
+use crate::inflight::Inflight;
 
 use super::session_actor::QoS;
 
@@ -32,9 +37,241 @@ pub struct SessionStateStorage {
 }
 
 impl SessionStateStorage {
-    pub fn new () -> Self {
+    pub fn new() -> Self {
         SessionStateStorage {
             inner: HashMap::new(),
+        }
+    }
+
+    pub async fn inflight_register_tx_packet(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) {
+        if self.inner.get(&tenant_id).is_none() {
+            self.inner.insert(tenant_id.clone(), HashMap::new());
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.register_with_tx_packet(&packet).await.unwrap();
+        }
+    }
+
+    pub async fn inflight_register_rx_packet(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) {
+        if self.inner.get(&tenant_id).is_none() {
+            self.inner.insert(tenant_id.clone(), HashMap::new());
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.register_with_rx_packet(&packet).await;
+        }
+    }
+
+    pub async fn inflight_get_current_packet(&mut self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
+        if self.inner.get(&tenant_id).is_none() {
+            return None;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.get_current_packet(packet_identifier).await
+        } else {
+            None
+        }
+    }
+
+    pub async fn inflight_next_state(&mut self, tenant_id: String, client_id: String, packet_identifier: u16) {
+        if self.inner.get(&tenant_id).is_none() {
+            return;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.next_state(packet_identifier).await;
+        }
+    }
+
+    pub async fn inflight_clean_finished_items(&mut self, tenant_id: String, client_id: String) {
+        if self.inner.get(&tenant_id).is_none() {
+            return;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.clean_finished_items().await;
+        }
+    }
+
+    pub async fn append_to_pending_queue(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) {
+        if self.inner.get(&tenant_id).is_none() {
+            self.inner.insert(tenant_id.clone(), HashMap::new());
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.pending_messages.push(packet);
+        }
+    }
+
+    pub async fn pop_from_pending_queue(&mut self, tenant_id: String, client_id: String) -> Option<MqttPacketV3> {
+        if self.inner.get(&tenant_id).is_none() {
+            return None;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let mut state = self
+                .inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            let packet = state.pending_messages.pop();
+            Some(packet.unwrap())
+        } else {
+            None
+        }   
+    }
+
+    pub async fn subscribe_topic(
+        &mut self,
+        tenant_id: String,
+        client_id: String,
+        topic: String,
+        qos: QoS,
+    ) {
+        if self.inner.get(&tenant_id).is_none() {
+            self.inner.insert(tenant_id.clone(), HashMap::new());
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            self.inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await
+                .subscriptions
+                .insert(topic, qos);
+        }
+    }
+
+    pub async fn unsubscribe_topic(
+        &mut self,
+        tenant_id: String,
+        client_id: String,
+        topic: String,
+    ) {
+        if self.inner.get(&tenant_id).is_none() {
+            return;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            self.inner
+                .get_mut(&tenant_id)
+                .unwrap()
+                .get_mut(&client_id)
+                .unwrap()
+                .write()
+                .await
+                .subscriptions
+                .remove(&topic);
         }
     }
 
@@ -47,7 +284,7 @@ impl SessionStateStorage {
                     (
                         k.clone(),
                         v.iter()
-                            .map(|(k, v)| (k.clone(), v.read().unwrap().clone()))
+                            .map(|(k, v)| (k.clone(), v.blocking_read().clone()))
                             .collect(),
                     )
                 })
@@ -56,16 +293,20 @@ impl SessionStateStorage {
     }
 
     fn from_serializable(data: SerializableSessionStateStorage) -> Self {
-        SessionStateStorage { inner: data.inner.iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    v.iter()
-                        .map(|(k, v)| (k.clone(), Arc::new(RwLock::new(v.clone()))))
-                        .collect(),
-                )
-            }).collect()
-         }
+        SessionStateStorage {
+            inner: data
+                .inner
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.iter()
+                            .map(|(k, v)| (k.clone(), Arc::new(RwLock::new(v.clone()))))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        }
     }
 
     pub fn to_snapshot(&self) -> Vec<u8> {
