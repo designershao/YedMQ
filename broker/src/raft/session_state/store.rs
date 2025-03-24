@@ -3,6 +3,7 @@ use std::io::Cursor;
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::raft::Node;
 use crate::raft::NodeId;
@@ -243,6 +244,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                 openraft::EntryPayload::Blank => {
                     replies.push(SessionStateResponse::None);
                 }
+
                 openraft::EntryPayload::Normal(req) => match req {
                     types::SessionStateRequest::InflightRegisterRxPacket {
                         tenant_id,
@@ -277,7 +279,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         client_id,
                         packet_identifier,
                     } => {
-                        let packet = self.data
+                        let packet = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
@@ -286,7 +289,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 tenant_id,
                                 client_id,
                                 packet_identifier.try_into().unwrap(),
-                            ).await;
+                            )
+                            .await;
                         replies.push(SessionStateResponse::InflightGetCurrentPacketResult(packet));
                     }
                     types::SessionStateRequest::InflightNextState {
@@ -377,6 +381,33 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .await;
                         replies.push(SessionStateResponse::None);
                     }
+                    types::SessionStateRequest::CreateSessionState {
+                        tenant_id,
+                        client_id,
+                        inflight_duration_secs
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .create_session_state(&tenant_id, &client_id, Duration::from_secs(inflight_duration_secs))
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::DeleteSessionState {
+                        tenant_id,
+                        client_id,
+                    } => {
+                        self.data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .delete_session_state(&tenant_id, &client_id)
+                            .await;
+                        replies.push(SessionStateResponse::None);
+                    },
                 },
                 openraft::EntryPayload::Membership(membership) => {
                     self.data.last_membership = StoredMembership::new(Some(ent.log_id), membership);

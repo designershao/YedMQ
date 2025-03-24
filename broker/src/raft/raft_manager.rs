@@ -41,7 +41,7 @@ pub struct RaftManager {
 
     pub session_actor_map_raft: crate::raft::session_actor_map::SessionActorMapRaftManager,
 
-    pub session_state_raft: crate::raft::session_state::SessionActorMapRaftManager,
+    pub session_state_raft: crate::raft::session_state::SessionStateRaftManager,
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
@@ -78,7 +78,7 @@ impl RaftManager {
             .await;
 
         let session_state_raft_manager = 
-            crate::raft::session_state::SessionActorMapRaftManager::new(
+            crate::raft::session_state::SessionStateRaftManager::new(
                 cluster_cfg.clone(),
                 session_state_storage.clone(),
             )

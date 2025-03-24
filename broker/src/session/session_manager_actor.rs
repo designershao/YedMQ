@@ -1,12 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    plugin_manager::PluginService, router::RouterCmd, session::session_actor::SessionActor,
-    settings::Settings, topic::topic_manager::TopicManagerTrait,
+    plugin_manager::PluginService, raft::raft_manager::RaftManager, router::RouterCmd,
+    session::session_actor::SessionActor, settings::Settings,
+    topic::topic_manager::TopicManagerTrait,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message,
-    Recipient, ResponseFuture, WrapFuture,
+    dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message, Recipient,
+    ResponseFuture, WrapFuture,
 };
 use log::error;
 use thiserror::Error;
@@ -15,6 +16,7 @@ use yedmq_mqtt::MqttPacketV3;
 
 use super::{
     session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
+    session_state_storage::SessionState,
     WillMessage,
 };
 use crate::connection::ConnectionActorMessage;
@@ -56,6 +58,8 @@ struct SessionActorRecipientWrapper {
 pub struct SessionManagerActor {
     sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
+    raft_manager: Arc<RaftManager>,
+
     plugin_manager: Arc<dyn PluginService + 'static>,
 
     topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
@@ -73,6 +77,7 @@ impl SessionManagerActor {
         topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
         router_sender: Sender<RouterCmd>,
         settings: Arc<Settings>,
+        session_state_raft_manager: Arc<RaftManager>,
     ) -> SessionManagerActor {
         SessionManagerActor {
             sessions: HashMap::new(),
@@ -81,6 +86,7 @@ impl SessionManagerActor {
             router_sender,
             session_lifecycle_tx: None,
             settings,
+            raft_manager: session_state_raft_manager,
         }
     }
 }
@@ -243,12 +249,16 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
         let router_sender = self.router_sender.clone();
+        let settings = self.settings.clone();
+
+        let raft_manager = self.raft_manager.clone();
 
         let future = async move {
             let mut sessions_guard = sessions.write().await;
 
             if let Some(session) = sessions_guard.get(&msg.client_id) {
-                let session_actor_message_recipient = session.session_actor_message_recipient.clone();
+                let session_actor_message_recipient =
+                    session.session_actor_message_recipient.clone();
                 let res = session_actor_message_recipient
                     .send(SessionActorMessage::ForceDisconnect)
                     .await;
@@ -271,6 +281,43 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 }
                 Ok(session_actor_message_recipient)
             } else {
+                let mut session_state = Arc::new(RwLock::new(SessionState::new(
+                    Duration::from_secs(settings.mqtt.sys_topic_interval_secs),
+                )));
+
+                if !msg.clean_session {
+                    let session_existed = raft_manager
+                        .session_state_raft
+                        .session_state_exists(&msg.tenant_id, &msg.client_id)
+                        .await;
+                    if session_existed {
+                        session_state = raft_manager
+                            .session_state_raft
+                            .get_session_state(&msg.tenant_id, &msg.client_id)
+                            .await;
+                    } else {
+                        raft_manager
+                            .session_state_raft
+                            .create_session_state(
+                                &msg.tenant_id,
+                                &msg.client_id,
+                                settings.mqtt.sys_topic_interval_secs,
+                            )
+                            .await;
+                    }
+                } else {
+                    let session_existed = raft_manager
+                        .session_state_raft
+                        .session_state_exists(&msg.tenant_id, &msg.client_id)
+                        .await;
+                    if session_existed {
+                        // delete prev session state
+                        raft_manager
+                            .session_state_raft
+                            .delete_session_state(&msg.tenant_id, &msg.client_id)
+                            .await;
+                    }
+                }
                 let session_actor = SessionActor::new(
                     msg.tenant_id.clone(),
                     msg.client_id.clone(),
@@ -283,6 +330,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     msg.keep_alive,
                     msg.connection_addr,
                     msg.peer_addr,
+                    session_state,
                 );
 
                 let session_actor_addr = session_actor.start();
@@ -315,7 +363,8 @@ impl Handler<CreateTenantMessage> for SessionManagerActor {
         if self.tenant_existed(&msg.tenant_id) {
             return Err(SessionManagerError::TenantHasExisted(msg.tenant_id));
         }
-        self.sessions.insert(msg.tenant_id.into(), Arc::new(RwLock::new(HashMap::new())));
+        self.sessions
+            .insert(msg.tenant_id.into(), Arc::new(RwLock::new(HashMap::new())));
         Ok(())
     }
 }
@@ -326,8 +375,10 @@ impl SessionManagerActor {
     }
 
     fn create_tenant(&mut self, tenant_identifier: &str) {
-        self.sessions
-            .insert(tenant_identifier.to_string(), Arc::new(RwLock::new(HashMap::new())));
+        self.sessions.insert(
+            tenant_identifier.to_string(),
+            Arc::new(RwLock::new(HashMap::new())),
+        );
     }
 }
 
@@ -348,7 +399,9 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
             async move {
                 let mut sessions_guard = sessions.write().await;
                 sessions_guard.remove(&msg.client_id);
-            }.into_actor(self).wait(ctx);
+            }
+            .into_actor(self)
+            .wait(ctx);
         } else {
             return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }

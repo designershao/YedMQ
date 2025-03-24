@@ -6,6 +6,15 @@ use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateRequest {
+    CreateSessionState {
+        tenant_id: String,
+        client_id: String,
+        inflight_duration_secs: u64,
+    },
+    DeleteSessionState {
+        tenant_id: String,
+        client_id: String,
+    },
     InflightRegisterRxPacket {
         tenant_id: String,
         client_id: String,

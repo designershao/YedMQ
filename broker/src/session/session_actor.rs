@@ -402,6 +402,7 @@ impl SessionActor {
         keep_alive: u64,
         connection_actor_addr: Recipient<ConnectionActorMessage>,
         peer_addr: SocketAddr,
+        session_state: Arc<RwLock<SessionState>>,
     ) -> Self {
         SessionActor {
             topic_manager,
@@ -1038,6 +1039,7 @@ mod tests {
             KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1130,6 +1132,7 @@ mod tests {
             KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1226,6 +1229,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1304,6 +1308,8 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+
         );
         let session_actor_addr = session_actor.start();
 
@@ -1364,6 +1370,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1441,6 +1448,7 @@ mod tests {
             KEEP_ALIVE + INFLIGHT_RETRY * 2, // ensure retry before keep-alive expired
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1516,6 +1524,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1572,6 +1581,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1621,6 +1631,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1685,6 +1696,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1744,6 +1756,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1785,6 +1798,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1852,6 +1866,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -1920,6 +1935,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
         let client_publish_packet =
@@ -1981,6 +1997,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 
@@ -2036,6 +2053,7 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
         )
         .start();
 

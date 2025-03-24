@@ -43,6 +43,32 @@ impl SessionStateStorage {
         }
     }
 
+    pub async fn create_session_state(&mut self, tenant_id: &str, session_id: &str, inflight_duration: Duration) {
+        self.inner
+            .entry(tenant_id.to_owned())
+            .or_insert(HashMap::new())
+            .insert(session_id.to_owned(), Arc::new(RwLock::new(SessionState::new(inflight_duration))));
+    }
+
+    pub async fn delete_session_state(&mut self, tenant_id: &str, session_id: &str) {
+        self.inner.get_mut(tenant_id).unwrap().remove(session_id);
+    }
+
+    pub async fn get_session_state(&self, tenant_id: &str, session_id: &str) -> Arc<RwLock<SessionState>> {
+        self.inner
+            .get(tenant_id)
+            .and_then(|v| v.get(session_id))
+            .unwrap()
+            .clone()
+    }
+
+    pub async fn session_state_exists(&self, tenant_id: &str, session_id: &str) -> bool {
+        self.inner
+            .get(tenant_id)
+            .and_then(|v| v.get(session_id))
+            .is_some()
+    }
+
     pub async fn inflight_register_tx_packet(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) {
         if self.inner.get(&tenant_id).is_none() {
             self.inner.insert(tenant_id.clone(), HashMap::new());

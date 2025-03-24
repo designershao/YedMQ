@@ -66,6 +66,7 @@ impl YedMQApp {
             app.topic_manager.clone(),
             router_sender.clone(),
             app.settings.clone(),
+            app.raft_manager.clone(),
         ).start();
         //
 
