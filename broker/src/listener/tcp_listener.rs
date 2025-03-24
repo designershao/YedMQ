@@ -125,6 +125,7 @@ mod tests {
             topic_manager.clone(),
             router_sender.clone(),
             settings.clone(),
+            raft_manager.clone(),
         )
         .start();
 

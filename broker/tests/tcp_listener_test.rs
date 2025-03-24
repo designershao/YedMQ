@@ -88,6 +88,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
         topic_manager.clone(),
         router_sender.clone(),
         settings.clone(),
+        raft_manager.clone()
     )
     .start();
 
