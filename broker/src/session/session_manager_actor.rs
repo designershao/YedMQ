@@ -289,12 +289,12 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 if !msg.clean_session {
                     let session_existed = raft_manager
                         .session_state_raft
-                        .session_state_exists(&msg.tenant_id, &msg.client_id)
+                        .session_state_exists_from_local_raft_store(&msg.tenant_id, &msg.client_id)
                         .await;
                     if session_existed {
                         session_state = raft_manager
                             .session_state_raft
-                            .get_session_state(&msg.tenant_id, &msg.client_id)
+                            .get_session_state_from_local_raft_store(&msg.tenant_id, &msg.client_id)
                             .await.unwrap();
                     } else {
                         raft_manager

@@ -95,6 +95,8 @@ impl RaftManager {
             cluster_cfg,
         };
 
+        manager.topic_raft.init_cluster().await.unwrap();
+
         manager
     }
     pub async fn start_grpc(

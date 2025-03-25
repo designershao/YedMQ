@@ -23,6 +23,8 @@ service RaftService {
 
   rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse);
 
+  rpc SessionStateExisted(SessionExistedRequest) returns (SessionExistedResponse);
+
 }
 
 message ErrorDetail {
@@ -32,6 +34,24 @@ message ErrorDetail {
   string message = 2;
 
   string node = 3;
+
+}
+
+message SessionExistedResponse {
+
+  bool success = 1;
+
+  ErrorDetail error = 2;
+
+  bool session_existed = 3;
+
+}
+
+message SessionExistedRequest {
+  
+  string tenant_id = 1;
+
+  string client_id = 2;
 
 }
 

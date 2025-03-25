@@ -221,11 +221,13 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                 openraft::EntryPayload::Normal(req) => match req {
                     types::SessionActorMapRequest::CreateSession { tenant_id, session_id, node_id } => {
                         let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
+                        todo!("if session actor on current node, force disconnect current from current node");
                         session_actor_map_storage.register_session_actor(tenant_id, session_id, node_id);
                         replies.push(SessionActorMapResponse::None);
                     },
                     types::SessionActorMapRequest::DeleteSession { tenant_id ,session_id, node_id } => {
                         let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
+                        todo!("if session actor on current node, force disconnect current from current node");
                         session_actor_map_storage.unregister_session_actor(tenant_id, session_id);
                         replies.push(SessionActorMapResponse::None);
                     },

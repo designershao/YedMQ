@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use log::info;
+use log::{debug, info};
 use openraft::Config;
 use raft_network_impl::Network;
 use tokio::sync::{watch, Mutex, RwLock};

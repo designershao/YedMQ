@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::{collections::HashMap, fmt, sync::Arc};
 
-use log::info;
+use log::{info, warn};
 use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
@@ -67,6 +67,7 @@ pub struct SessionStateRaftManager {
 }
 
 impl SessionStateRaftManager {
+
     pub async fn create_session_state(
         &self,
         tenant_id: &str,
@@ -89,7 +90,51 @@ impl SessionStateRaftManager {
         .await;
     }
 
+    async fn get_grpc_client(&self, node_id: NodeId) -> RaftServiceClient<tonic::transport::Channel> {
+        let node = self.get_node_by_id(node_id).await.unwrap();
+        let addr = format!("http://{}", node.rpc_addr);
+        let client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+        client
+    }
+
+    // get session state from leader
     pub async fn get_session_state(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+    ) -> Option<SessionState> {
+        let current_leader_node_id = self.get_leader().await;
+        if current_leader_node_id.is_none() {
+            warn!("raft get session state leader not found");
+            return None;
+        }
+        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let res = client.get_session_state(crate::protobuf::GetSessionStateRequest {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+
+        match res {
+            Ok(r) => {
+                let response = r.into_inner();
+                if response.success {
+                    response.session_state_data.and_then(|data| {
+                        let session_state: SessionState = serde_json::from_str(&data).unwrap();
+                        Some(session_state)
+                    })
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                warn!("raft get session state grpc error: {}", e);
+                None
+            }
+        }
+    }
+
+    // get session state from local raft store
+    pub async fn get_session_state_from_local_raft_store(
         &self,
         tenant_id: &str,
         session_id: &str,
@@ -100,7 +145,36 @@ impl SessionStateRaftManager {
             .await
     }
 
-    pub async fn session_state_exists(&self, tenant_id: &str, session_id: &str) -> bool {
+    // get session existed from leader
+    pub async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
+        let current_leader_node_id = self.get_leader().await;
+        if current_leader_node_id.is_none() {
+            warn!("raft get session state leader not found");
+            return false;
+        }
+        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let res = client.session_state_existed(crate::protobuf::SessionExistedRequest {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+
+        match res {
+            Ok(r) => {
+                let response = r.into_inner();
+                if response.success {
+                    response.session_existed
+                } else {
+                    false
+                }
+            }
+            Err(e) => {
+                warn!("raft get session state grpc error: {}", e);
+                false
+            }
+        }
+    }
+
+    pub async fn session_state_exists_from_local_raft_store(&self, tenant_id: &str, session_id: &str) -> bool {
         let session_state_guard = self.session_state_storage.read().await;
         session_state_guard
             .session_state_exists(tenant_id, session_id)

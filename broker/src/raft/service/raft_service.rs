@@ -23,6 +23,52 @@ pub struct RaftServiceImpl {
 #[tonic::async_trait]
 impl RaftService for RaftServiceImpl {
 
+    async fn session_state_existed(
+        &self,
+        request: tonic::Request<crate::protobuf::SessionExistedRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::SessionExistedResponse>, tonic::Status> {
+        let ret = self
+            .raft_manager
+            .session_actor_map_raft
+            .raft
+            .ensure_linearizable()
+            .await;
+        match ret {
+            Ok(_) => {
+                let request = request.into_inner();
+                let client_id = request.client_id;
+                let tenant_id = request.tenant_id;
+                let session_state = self
+                    .raft_manager
+                    .session_state_raft
+                    .session_state_exists_from_local_raft_store(&tenant_id, &client_id).await;
+                let res = crate::protobuf::SessionExistedResponse {
+                    success: true,
+                    error: None,
+                    session_existed: session_state,
+                };
+                Ok(tonic::Response::new(res))
+            }
+            Err(e) => {
+                let res = crate::protobuf::SessionExistedResponse {
+                    success: false,
+                    error: Some(crate::protobuf::ErrorDetail {
+                        code: 500,
+                        message: e.to_string(),
+                        node: self
+                            .raft_manager
+                            .session_actor_map_raft
+                            .current_node_id()
+                            .to_string(),
+                    }),
+                    session_existed: false
+                };
+
+                Ok(tonic::Response::new(res))
+            }
+        }
+    }
+
     // Consistent get the session state
     async fn get_session_state(
         &self,
@@ -44,7 +90,7 @@ impl RaftService for RaftServiceImpl {
                 let session_state = self
                     .raft_manager
                     .session_state_raft
-                    .get_session_state(&tenant_id, &client_id)
+                    .get_session_state_from_local_raft_store(&tenant_id, &client_id)
                     .await;
                 match session_state {
                     Some(session_state) => {
