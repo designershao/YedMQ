@@ -17,6 +17,12 @@ service RaftService {
 
   rpc RoutePacket(RoutePacketRequest) returns (RoutePacketResponse);
 
+  rpc SessionForceDisconnect(ForceSessionDisconnectRequest) returns (ForceSessionDisconnectResponse);
+
+  rpc GetSessionActorMap(GetSessionActorMapRequest) returns (GetSessionActorMapResponse);
+
+  rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse);
+
 }
 
 message ErrorDetail {
@@ -27,6 +33,48 @@ message ErrorDetail {
 
   string node = 3;
 
+}
+
+message GetSessionStateRequest {
+  
+  string tenant_id = 1;
+
+  string client_id = 2;
+
+}
+
+message GetSessionStateResponse {
+
+  bool success = 1;
+
+  ErrorDetail error = 2;
+
+  optional string session_state_data = 3;
+  
+}
+
+message GetSessionActorMapResponse {
+
+  bool success = 1;
+
+  ErrorDetail error = 2;
+
+  optional uint64 node_id = 3;
+}
+
+message GetSessionActorMapRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message ForceSessionDisconnectRequest {
+  string tenant_id = 1;
+  string client_id = 2;
+}
+
+message ForceSessionDisconnectResponse {
+  bool success = 1;
+  ErrorDetail error = 2;
 }
 
 message RoutePacketRequest {

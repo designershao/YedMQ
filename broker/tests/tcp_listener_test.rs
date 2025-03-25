@@ -11,7 +11,7 @@ use yedmq::raft::raft_manager::RaftManager;
 use actix::Actor;
 use tokio::sync::{Mutex, OnceCell, RwLock};
 use yedmq::session::session_state_storage::SessionStateStorage;
-use yedmq::session::{session_actor_map_storage, session_state_storage};
+use yedmq::session::session_actor_map_storage;
 use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};
 use yedmq::topic::topic_manager::TopicManager;

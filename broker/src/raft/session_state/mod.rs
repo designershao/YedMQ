@@ -93,7 +93,7 @@ impl SessionStateRaftManager {
         &self,
         tenant_id: &str,
         session_id: &str,
-    ) -> Arc<RwLock<SessionState>> {
+    ) -> Option<Arc<RwLock<SessionState>>> {
         let session_state_guard = self.session_state_storage.read().await;
         session_state_guard
             .get_session_state(tenant_id, session_id)

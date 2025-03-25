@@ -254,6 +254,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let raft_manager = self.raft_manager.clone();
 
         let future = async move {
+
             let mut sessions_guard = sessions.write().await;
 
             if let Some(session) = sessions_guard.get(&msg.client_id) {
@@ -294,7 +295,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         session_state = raft_manager
                             .session_state_raft
                             .get_session_state(&msg.tenant_id, &msg.client_id)
-                            .await;
+                            .await.unwrap();
                     } else {
                         raft_manager
                             .session_state_raft

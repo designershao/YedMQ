@@ -1,10 +1,7 @@
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
-use actix::Addr;
 use actix::Actor;
+use actix::Addr;
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
@@ -61,13 +58,24 @@ impl YedMQApp {
         info!("start router task");
 
         // init session manager
-        let session_manager  = SessionManagerActor::new(
+        let session_manager = SessionManagerActor::new(
             app.plugin_manager.clone(),
             app.topic_manager.clone(),
             router_sender.clone(),
             app.settings.clone(),
             app.raft_manager.clone(),
-        ).start();
+        )
+        .start();
+        //
+
+        // start rpc server
+        crate::raft::raft_manager::RaftManager::start_grpc(
+            app.raft_manager.clone(),
+            router_sender.clone(),
+            session_manager.clone().recipient(),
+        )
+        .await.unwrap();
+        info!("start grpc service succeed");
         //
 
         app.session_manager.set(session_manager.clone()).unwrap();
@@ -189,7 +197,6 @@ impl YedMQApp {
         info!("plugin manager load succeed");
         //
 
-
         let metric = Arc::new(metric::Metric::new());
 
         let join_handles = Mutex::new(vec![]);
@@ -219,7 +226,6 @@ impl YedMQApp {
         )));
         info!("topic manager load succeed");
         //
-
 
         YedMQApp {
             session_manager: OnceCell::new(),

@@ -16,6 +16,13 @@ impl SessionActorMapStorage {
         }
     }
 
+    pub fn get_session_actor_map(&self, tenant_id: &str, client_id: &str) -> Option<NodeId> {
+        self.inner
+            .get(tenant_id)
+            .and_then(|v| v.get(client_id))
+            .cloned()   
+    }
+
     pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId) {
         self.inner.entry(tenant_id).or_insert(HashMap::new()).insert(session_id, node_id);
     }

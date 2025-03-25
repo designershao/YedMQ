@@ -1,11 +1,13 @@
 use actix::{
-    dev::{ContextFutureSpawner, MessageResponse}, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture
+    dev::{ContextFutureSpawner, MessageResponse},
+    Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message,
+    Recipient, ResponseFuture, SpawnHandle, WrapFuture,
 };
 use log::warn;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::sync::{mpsc::Sender, Mutex, RwLock};
+use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::{
     v3::{
         disconnect::DisconnectPacket,
@@ -25,14 +27,14 @@ use yedmq_mqtt::{
 use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
-    inflight::{Inflight, InflightError},
+    inflight::InflightError,
     plugin_manager::{PluginService, SubscribeReturnCode},
     router::RouterCmd,
     topic::topic_manager::TopicManagerTrait,
 };
 
-use crate::connection::ConnectionActorMessage;
 use super::{session_state_storage::SessionState, WillMessage};
+use crate::connection::ConnectionActorMessage;
 
 pub struct SessionInfo {
     pub tenant_identifier: String,
@@ -44,12 +46,16 @@ pub struct SessionInfo {
     pub session_state: ActivityState,
 }
 
-impl<A, M> MessageResponse<A, M> for SessionInfo 
-where 
-    A:Actor,
-    M:Message<Result = SessionInfo>,
+impl<A, M> MessageResponse<A, M> for SessionInfo
+where
+    A: Actor,
+    M: Message<Result = SessionInfo>,
 {
-    fn handle(self, _ctx: &mut <A as Actor>::Context, tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>) {
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
         if let Some(tx) = tx {
             let _ = tx.send(self);
         }
@@ -126,8 +132,7 @@ pub enum SessionActorMessage {
 #[rtype(result = "()")]
 pub struct ClientDisconnected {}
 
-#[derive(Debug,Clone, Copy)]
-#[derive(Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum ActivityState {
     Active,
 
@@ -276,11 +281,13 @@ async fn do_handle_publish(
 
         if publish_packet.fix_header.qos > Some(0) {
             //let mut inflight = inflight.write().await;
-            session_state_guard.inflight
+            session_state_guard
+                .inflight
                 .register_with_rx_packet(&MqttPacketV3::Publish(publish_packet.clone()))
                 .await;
 
-            let packet = session_state_guard.inflight
+            let packet = session_state_guard
+                .inflight
                 .get_current_packet(publish_packet.variable_header.packet_identifier.unwrap())
                 .await
                 .unwrap();
@@ -421,7 +428,7 @@ impl SessionActor {
             client_id,
             will_message,
             username: None,
-            state: Arc::new(RwLock::new(SessionState::new(Duration::from_secs(inflight_retry_duration_secs)))),
+            state: session_state,
         }
     }
 
@@ -527,7 +534,10 @@ impl SessionActor {
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                 yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
             ));
-            act.state.blocking_write().subscriptions.extend(res.succeed_subscriptions);
+            act.state
+                .blocking_write()
+                .subscriptions
+                .extend(res.succeed_subscriptions);
         })
         .wait(ctx);
     }
@@ -549,7 +559,9 @@ impl SessionActor {
         async move { do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await }
             .into_actor(self)
             .map(|res, act, _ctx| {
-                act.state.blocking_write().subscriptions
+                act.state
+                    .blocking_write()
+                    .subscriptions
                     .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
                 let conn = act.conn_recipient.clone().unwrap();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(
@@ -569,12 +581,13 @@ impl SessionActor {
         // then wait for the connection actor to reply, confirming the write is complete,
         // before updating the inflight status again.
 
-        let session_state =self.state.clone();
+        let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
 
         async move {
             let mut session_state_guard = session_state.write().await;
-            let next_state_packet = session_state_guard.inflight
+            let next_state_packet = session_state_guard
+                .inflight
                 .get_next_state_packet(pubrel_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -584,7 +597,8 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    session_state_guard.inflight
+                    session_state_guard
+                        .inflight
                         .next_state(pubrel_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -609,7 +623,8 @@ impl SessionActor {
 
         async move {
             let mut session_state_guard = session_state.write().await;
-            let next_state_packet = session_state_guard.inflight
+            let next_state_packet = session_state_guard
+                .inflight
                 .get_next_state_packet(pubrec_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -619,7 +634,8 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    session_state_guard.inflight
+                    session_state_guard
+                        .inflight
                         .next_state(pubrec_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -644,7 +660,8 @@ impl SessionActor {
 
         async move {
             let mut session_state_guard = session_state.write().await;
-            let next_state_packet = session_state_guard.inflight
+            let next_state_packet = session_state_guard
+                .inflight
                 .get_next_state_packet(puback_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -654,7 +671,8 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    session_state_guard.inflight
+                    session_state_guard
+                        .inflight
                         .next_state(puback_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -679,7 +697,8 @@ impl SessionActor {
 
         async move {
             let mut session_state_guard = session_state.write().await;
-            let next_state_packet = session_state_guard.inflight
+            let next_state_packet = session_state_guard
+                .inflight
                 .get_next_state_packet(pubcomp_packet.variable_header.packet_identifier)
                 .await;
             if let Some(packet) = next_state_packet {
@@ -689,7 +708,8 @@ impl SessionActor {
                 {
                     warn!("write packet to client error: {}", e);
                 } else {
-                    session_state_guard.inflight
+                    session_state_guard
+                        .inflight
                         .next_state(pubcomp_packet.variable_header.packet_identifier)
                         .await;
                 }
@@ -802,9 +822,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 if let Err(e) = res {
                                     match e {
                                         InflightError::PacketIdentifierHasExisted => {
-                                            let packet_id = session_state_guard.inflight.allocate_packet_id().await;
+                                            let packet_id = session_state_guard
+                                                .inflight
+                                                .allocate_packet_id()
+                                                .await;
                                             if let Some(packet_id) = packet_id {
-                                                packet.variable_header.packet_identifier = Some(packet_id);
+                                                packet.variable_header.packet_identifier =
+                                                    Some(packet_id);
                                             } else {
                                                 warn!("infligh has no more packet id available");
                                             }
@@ -826,9 +850,12 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 let session_state = self.state.clone();
                                 async move {
                                     let mut session_state_guard = session_state.write().await;
-                                    session_state_guard.pending_messages
+                                    session_state_guard
+                                        .pending_messages
                                         .push(MqttPacketV3::Publish(publish_packet));
-                                }.into_actor(self).wait(ctx);
+                                }
+                                .into_actor(self)
+                                .wait(ctx);
                             }
                         }
                     }
@@ -847,7 +874,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let conn = self.conn_recipient.clone().unwrap();
                 async move {
                     let mut session_state_guard = session_state.write().await;
-                    let packets = session_state_guard.inflight
+                    let packets = session_state_guard
+                        .inflight
                         .get_all_expired_packets_and_refresh_expired_time()
                         .await;
                     for packet in packets {
@@ -920,26 +948,33 @@ impl Handler<SessionActorMessage> for SessionActor {
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for msg in session_state_guard.pending_messages.drain(..) {
-                        session_actor_addr
-                            .do_send(SessionActorMessage::OutboundMessage(msg));
+                        session_actor_addr.do_send(SessionActorMessage::OutboundMessage(msg));
                     }
-                }.into_actor(self).wait(ctx);
+                }
+                .into_actor(self)
+                .wait(ctx);
             }
             SessionActorMessage::ClientDisconnected => {
                 self.clean_up(ctx);
-            },
+            }
         }
     }
 }
 
 impl Handler<GetSessionInfo> for SessionActor {
     type Result = SessionInfo;
-    
-    fn handle(&mut self, msg: GetSessionInfo, ctx: &mut Self::Context) -> Self::Result {
+
+    fn handle(&mut self, _msg: GetSessionInfo, _ctx: &mut Self::Context) -> Self::Result {
         SessionInfo {
             tenant_identifier: self.tenant_id.clone(),
             client_identifier: self.client_id.clone(),
-            subscription_topics: self.state.blocking_read().subscriptions.iter().map(|(k, _)| k.clone()).collect(),
+            subscription_topics: self
+                .state
+                .blocking_read()
+                .subscriptions
+                .iter()
+                .map(|(k, _)| k.clone())
+                .collect(),
             session_state: self.activity_state,
         }
     }
@@ -1006,7 +1041,6 @@ mod tests {
 
     #[actix::test]
     pub async fn when_qos_packet_identifier_exist_in_inflight_should_reallocate_new_one() {
-
         let mock_topic_manager = MockTopicManagerTrait::new();
 
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
@@ -1039,7 +1073,9 @@ mod tests {
             KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1057,15 +1093,13 @@ mod tests {
 
         let msg = message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(publish) => {
-                match publish {
-                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
-                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
-                        assert_eq!(publish.fix_header.qos, Some(2));
-                    }
-                    _ => panic!("expected ConnectionActorMessage::Publish"),
+            ConnectionActorMessage::WritePacketToClient(publish) => match publish {
+                yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                    assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(publish.fix_header.qos, Some(2));
                 }
-            }
+                _ => panic!("expected ConnectionActorMessage::Publish"),
+            },
             _ => panic!("expected ConnectionActorMessage::Publish"),
         }
 
@@ -1083,23 +1117,20 @@ mod tests {
 
         let msg = message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(publish) => {
-                match publish {
-                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
-                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
-                        assert_eq!(publish.fix_header.qos, Some(2));
-                        assert_ne!(publish.variable_header.packet_identifier.unwrap(), 123);
-                    }
-                    _ => panic!("expected ConnectionActorMessage::Publish"),
+            ConnectionActorMessage::WritePacketToClient(publish) => match publish {
+                yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                    assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(publish.fix_header.qos, Some(2));
+                    assert_ne!(publish.variable_header.packet_identifier.unwrap(), 123);
                 }
-            }
+                _ => panic!("expected ConnectionActorMessage::Publish"),
+            },
             _ => panic!("expected ConnectionActorMessage::Publish"),
         }
     }
 
     #[actix::test]
     pub async fn when_session_reactive_should_process_the_outbound_uncomplete_qos_2_message() {
-
         let mock_topic_manager = MockTopicManagerTrait::new();
 
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
@@ -1132,7 +1163,9 @@ mod tests {
             KEEP_ALIVE + 2 * INFLIGHT_RETRY, // ensure the keep-alive not expired
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1150,15 +1183,13 @@ mod tests {
 
         let msg = message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(publish) => {
-                match publish {
-                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
-                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
-                        assert_eq!(publish.fix_header.qos, Some(2));
-                    }
-                    _ => panic!("expected ConnectionActorMessage::Publish"),
+            ConnectionActorMessage::WritePacketToClient(publish) => match publish {
+                yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                    assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(publish.fix_header.qos, Some(2));
                 }
-            }
+                _ => panic!("expected ConnectionActorMessage::Publish"),
+            },
             _ => panic!("expected ConnectionActorMessage::Publish"),
         }
 
@@ -1167,30 +1198,32 @@ mod tests {
             .await
             .unwrap();
 
-        session_actor_addr.send(SessionActorMessage::Reconnect {
-            conn: connection_recipient.clone(),
-            keep_alive: KEEP_ALIVE,
-            clean_session: false,
-            username: Some("test".to_string()),
-            will_message: None,
-            socket_addr: "127.0.0.1:1883".parse().unwrap(),
-        }).await.unwrap();
+        session_actor_addr
+            .send(SessionActorMessage::Reconnect {
+                conn: connection_recipient.clone(),
+                keep_alive: KEEP_ALIVE,
+                clean_session: false,
+                username: Some("test".to_string()),
+                will_message: None,
+                socket_addr: "127.0.0.1:1883".parse().unwrap(),
+            })
+            .await
+            .unwrap();
 
         let client_pubrec_packet = PubRecPacket::new(123);
-        session_actor_addr
-            .do_send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrec(client_pubrec_packet)));
+        session_actor_addr.do_send(SessionActorMessage::InboundPacket(MqttPacketV3::Pubrec(
+            client_pubrec_packet,
+        )));
 
         let msg = message_rx.recv().await.unwrap();
 
         match msg {
-            ConnectionActorMessage::WritePacketToClient(pubrel) => {
-                match pubrel {
-                    yedmq_mqtt::MqttPacketV3::Pubrel(pubrel) => {
-                        assert_eq!(pubrel.variable_header.packet_identifier, 123);
-                    }
-                    _ => panic!("expected ConnectionActorMessage::Pubrel"),
+            ConnectionActorMessage::WritePacketToClient(pubrel) => match pubrel {
+                yedmq_mqtt::MqttPacketV3::Pubrel(pubrel) => {
+                    assert_eq!(pubrel.variable_header.packet_identifier, 123);
                 }
-            }
+                _ => panic!("expected ConnectionActorMessage::Pubrel"),
+            },
             _ => panic!("expected ConnectionActorMessage::Pubrel"),
         }
     }
@@ -1229,7 +1262,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient.clone(),
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1249,29 +1284,29 @@ mod tests {
             .await
             .unwrap();
 
-        session_actor_addr.send(SessionActorMessage::Reconnect {
-            conn: connection_recipient.clone(),
-            keep_alive: KEEP_ALIVE,
-            clean_session: false,
-            username: Some("test".to_string()),
-            will_message: None,
-            socket_addr: "127.0.0.1:1883".parse().unwrap(),
-        }).await.unwrap();
+        session_actor_addr
+            .send(SessionActorMessage::Reconnect {
+                conn: connection_recipient.clone(),
+                keep_alive: KEEP_ALIVE,
+                clean_session: false,
+                username: Some("test".to_string()),
+                will_message: None,
+                socket_addr: "127.0.0.1:1883".parse().unwrap(),
+            })
+            .await
+            .unwrap();
 
         let msg = message_rx.recv().await.unwrap();
         match msg {
-            ConnectionActorMessage::WritePacketToClient(publish) => {
-                match publish {
-                    yedmq_mqtt::MqttPacketV3::Publish(publish) => {
-                        assert_eq!(publish.variable_header.topic_name, "/a/b/c");
-                        assert_eq!(publish.fix_header.qos, Some(1));
-                    }
-                    _ => panic!("expected ConnectionActorMessage::Publish"),
+            ConnectionActorMessage::WritePacketToClient(publish) => match publish {
+                yedmq_mqtt::MqttPacketV3::Publish(publish) => {
+                    assert_eq!(publish.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(publish.fix_header.qos, Some(1));
                 }
-            }
+                _ => panic!("expected ConnectionActorMessage::Publish"),
+            },
             _ => panic!("expected ConnectionActorMessage::Publish"),
         }
-
     }
 
     #[actix::test]
@@ -1308,8 +1343,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
-
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         );
         let session_actor_addr = session_actor.start();
 
@@ -1370,7 +1406,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1448,7 +1486,9 @@ mod tests {
             KEEP_ALIVE + INFLIGHT_RETRY * 2, // ensure retry before keep-alive expired
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1524,7 +1564,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1581,7 +1623,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1631,7 +1675,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1696,7 +1742,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1756,7 +1804,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1798,7 +1848,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1866,7 +1918,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -1935,7 +1989,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
         let client_publish_packet =
@@ -1997,7 +2053,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 
@@ -2053,7 +2111,9 @@ mod tests {
             KEEP_ALIVE,
             connection_recipient,
             "127.0.0.1:1883".parse().unwrap(),
-            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(INFLIGHT_RETRY)))),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
         )
         .start();
 

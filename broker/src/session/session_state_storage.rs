@@ -54,12 +54,11 @@ impl SessionStateStorage {
         self.inner.get_mut(tenant_id).unwrap().remove(session_id);
     }
 
-    pub async fn get_session_state(&self, tenant_id: &str, session_id: &str) -> Arc<RwLock<SessionState>> {
+    pub async fn get_session_state(&self, tenant_id: &str, session_id: &str) -> Option<Arc<RwLock<SessionState>>> {
         self.inner
             .get(tenant_id)
             .and_then(|v| v.get(session_id))
-            .unwrap()
-            .clone()
+            .cloned()
     }
 
     pub async fn session_state_exists(&self, tenant_id: &str, session_id: &str) -> bool {

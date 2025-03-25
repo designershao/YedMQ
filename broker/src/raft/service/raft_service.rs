@@ -1,11 +1,13 @@
 use crate::protobuf::raft_service_server::RaftService;
 use crate::protobuf::{
-    AppendEntriesRequest, AppendEntriesResponse, ErrorCode, ErrorDetail, InstallSnapshotRequest,
+    AppendEntriesRequest, AppendEntriesResponse, ErrorCode, ErrorDetail,
+    ForceSessionDisconnectRequest, ForceSessionDisconnectResponse, InstallSnapshotRequest,
     InstallSnapshotResponse, RaftType, RoutePacketRequest, RoutePacketResponse, VoteRequest,
     VoteResponse,
 };
 use crate::raft::raft_manager::RaftManager;
 use crate::router::RouterCmd;
+use actix::Recipient;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -13,10 +15,167 @@ pub struct RaftServiceImpl {
     pub raft_manager: Arc<RaftManager>,
 
     pub router_sender: Sender<RouterCmd>,
+
+    pub session_manager_actor_recipient:
+        Recipient<crate::session::session_manager_actor::ForceDisconnect>,
 }
 
 #[tonic::async_trait]
 impl RaftService for RaftServiceImpl {
+
+    // Consistent get the session state
+    async fn get_session_state(
+        &self,
+        request: tonic::Request<crate::protobuf::GetSessionStateRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::GetSessionStateResponse>, tonic::Status> {
+        let ret = self
+            .raft_manager
+            .session_actor_map_raft
+            .raft
+            .ensure_linearizable()
+            .await;
+        match ret {
+            Ok(_) => {
+                let request = request.into_inner();
+                let client_id = request.client_id;
+                let tenant_id = request.tenant_id;
+
+
+                let session_state = self
+                    .raft_manager
+                    .session_state_raft
+                    .get_session_state(&tenant_id, &client_id)
+                    .await;
+                match session_state {
+                    Some(session_state) => {
+                        let session_state = session_state.read().await.clone();
+                        let data = serde_json::to_string(&session_state).unwrap();
+                        let res = crate::protobuf::GetSessionStateResponse {
+                            success: true,
+                            error: None,
+                            session_state_data: Some(data),
+                        };
+                        Ok(tonic::Response::new(res))
+                    },
+                    None => {
+                        let res = crate::protobuf::GetSessionStateResponse {
+                            success: true,
+                            error: None,
+                            session_state_data: None
+                        };
+                        Ok(tonic::Response::new(res))
+                    }
+                }
+            }
+            Err(e) => {
+                let res = crate::protobuf::GetSessionStateResponse {
+                    success: false,
+                    error: Some(crate::protobuf::ErrorDetail {
+                        code: 500,
+                        message: e.to_string(),
+                        node: self
+                            .raft_manager
+                            .session_actor_map_raft
+                            .current_node_id()
+                            .to_string(),
+                    }),
+                    session_state_data: None
+                };
+
+                Ok(tonic::Response::new(res))
+            }
+        }
+    }
+
+    // Consistent get the session actor map
+    async fn get_session_actor_map(
+        &self,
+        request: tonic::Request<crate::protobuf::GetSessionActorMapRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::GetSessionActorMapResponse>, tonic::Status> {
+        let ret = self
+            .raft_manager
+            .session_actor_map_raft
+            .raft
+            .ensure_linearizable()
+            .await;
+        match ret {
+            Ok(_) => {
+                let request = request.into_inner();
+                let client_id = request.client_id;
+                let tenant_id = request.tenant_id;
+                let node_id_option = self
+                    .raft_manager
+                    .session_actor_map_raft
+                    .get_session_actor_map_node_id(&tenant_id, &client_id)
+                    .await;
+                let res = crate::protobuf::GetSessionActorMapResponse {
+                    success: true,
+                    error: None,
+                    node_id: node_id_option,
+                };
+                Ok(tonic::Response::new(res))
+            }
+            Err(e) => {
+                let res = crate::protobuf::GetSessionActorMapResponse {
+                    success: false,
+                    error: Some(crate::protobuf::ErrorDetail {
+                        code: 500,
+                        message: e.to_string(),
+                        node: self
+                            .raft_manager
+                            .session_actor_map_raft
+                            .current_node_id()
+                            .to_string(),
+                    }),
+                    node_id: None,
+                };
+
+                Ok(tonic::Response::new(res))
+            }
+        }
+    }
+
+    // Foce session disconnect
+    async fn session_force_disconnect(
+        &self,
+        request: tonic::Request<ForceSessionDisconnectRequest>,
+    ) -> Result<tonic::Response<ForceSessionDisconnectResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let client_id = req.client_id;
+        let tenant_id = req.tenant_id;
+
+        let res = self
+            .session_manager_actor_recipient
+            .send(crate::session::session_manager_actor::ForceDisconnect {
+                client_id,
+                tenant_id,
+            })
+            .await;
+
+        if let Err(e) = res {
+            let res = ForceSessionDisconnectResponse {
+                success: false,
+                error: Some(ErrorDetail {
+                    code: ErrorCode::InternalError.into(),
+                    message: e.to_string(),
+                    node: self
+                        .raft_manager
+                        .session_actor_map_raft
+                        .current_node_id()
+                        .to_string(),
+                }),
+            };
+            Ok(tonic::Response::new(res))
+        } else {
+            let res = ForceSessionDisconnectResponse {
+                success: true,
+                error: None,
+            };
+            Ok(tonic::Response::new(res))
+        }
+    }
+
+    // Receive route packet from other node
     async fn route_packet(
         &self,
         request: tonic::Request<RoutePacketRequest>,
@@ -106,8 +265,8 @@ impl RaftService for RaftServiceImpl {
 
         let resp = match req.raft_type() {
             RaftType::Topic => {
-                let install_req =
-                    serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+                let install_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
                 let resp = self
                     .raft_manager
@@ -117,11 +276,10 @@ impl RaftService for RaftServiceImpl {
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
                 resp
-
             }
             RaftType::SessionActorMap => {
-                let install_req =
-                    serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+                let install_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
                 let resp = self
                     .raft_manager
@@ -131,7 +289,6 @@ impl RaftService for RaftServiceImpl {
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
                 resp
-                
             }
         };
 

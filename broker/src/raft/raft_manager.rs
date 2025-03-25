@@ -1,5 +1,6 @@
 use std::{fmt, sync::Arc};
 
+use actix::Recipient;
 use log::info;
 use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
 
@@ -99,12 +100,14 @@ impl RaftManager {
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
         router_sender: Sender<RouterCmd>,
+        session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
         let raft_service = RaftServiceImpl {
             raft_manager: raft_manager.clone(),
             router_sender,
+            session_manager_actor_recipient
         };
 
         let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();

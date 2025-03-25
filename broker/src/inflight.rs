@@ -2,7 +2,6 @@ use std::{collections::HashMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 use yedmq_mqtt::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
 
