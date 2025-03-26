@@ -1,8 +1,15 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{cell::OnceCell, collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    plugin_manager::PluginService, raft::raft_manager::RaftManager, router::RouterCmd,
-    session::session_actor::SessionActor, settings::Settings,
+    plugin_manager::PluginService,
+    protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
+    raft::{
+        raft_manager::{RaftManager, RaftManagerError},
+        NodeId,
+    },
+    router::RouterCmd,
+    session::session_actor::SessionActor,
+    settings::Settings,
     topic::topic_manager::TopicManagerTrait,
 };
 use actix::{
@@ -34,6 +41,9 @@ pub enum SessionManagerError {
 
     #[error("session {0} has existed")]
     SessionHasExisted(String),
+
+    #[error("raft error {0} ")]
+    RaftErr(#[from] RaftManagerError),
 }
 
 pub enum SessionLifecycleMessage {
@@ -77,7 +87,7 @@ impl SessionManagerActor {
         topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
         router_sender: Sender<RouterCmd>,
         settings: Arc<Settings>,
-        session_state_raft_manager: Arc<RaftManager>,
+        raft_manager: Arc<RaftManager>
     ) -> SessionManagerActor {
         SessionManagerActor {
             sessions: HashMap::new(),
@@ -86,9 +96,10 @@ impl SessionManagerActor {
             router_sender,
             session_lifecycle_tx: None,
             settings,
-            raft_manager: session_state_raft_manager,
+            raft_manager
         }
     }
+
 }
 
 impl Actor for SessionManagerActor {
@@ -236,6 +247,39 @@ impl Message for CreateSessionMessage {
     type Result = Result<Recipient<SessionActorMessage>, SessionManagerError>;
 }
 
+// force disconnect
+async fn call_force_disconnect(
+    node_id: NodeId,
+    raft_manager: Arc<RaftManager>,
+    tenant_id: String,
+    client_id: String,
+) -> bool {
+    let max_retries = 3;
+    let node = raft_manager
+        .session_actor_map_raft()
+        .get_node_by_id(node_id)
+        .await
+        .unwrap();
+
+    let addr = format!("http://{}", node.rpc_addr);
+
+    let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+
+    for i in 0..max_retries {
+        let res = client
+            .session_force_disconnect(ForceSessionDisconnectRequest {
+                tenant_id: tenant_id.clone(),
+                client_id: client_id.clone(),
+            })
+            .await;
+        if res.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_secs(2 ^ i)).await;
+    }
+    false
+}
+
 impl Handler<CreateSessionMessage> for SessionManagerActor {
     type Result = ResponseFuture<Result<Recipient<SessionActorMessage>, SessionManagerError>>;
 
@@ -254,6 +298,58 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let raft_manager = self.raft_manager.clone();
 
         let future = async move {
+            // Force previous session to disconnect if exists
+            let session_actor_map_node_id = raft_manager
+                .session_actor_map_raft()
+                .get_session_actor_map_node_id(&msg.tenant_id, &msg.client_id)
+                .await;
+
+            if let Some(node_id) = session_actor_map_node_id {
+                if !call_force_disconnect(
+                    node_id,
+                    raft_manager.clone(),
+                    msg.tenant_id.clone(),
+                    msg.client_id.clone(),
+                )
+                .await
+                {
+                    raft_manager
+                        .clone()
+                        .session_actor_map_raft()
+                        .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id)
+                        .await
+                        .unwrap();
+                }
+            }
+
+            let current_node_id = raft_manager
+                .session_actor_map_raft()
+                .current_node_id();
+
+            let res = raft_manager
+                .session_actor_map_raft()
+                .register_session_actor_map(&msg.tenant_id, &msg.client_id, current_node_id)
+                .await;
+
+            if res.is_err() {
+                return Err(SessionManagerError::RaftErr(res.unwrap_err()));
+            }
+            //
+
+            if msg.clean_session {
+
+                // 1. check same client id exist
+                // 2. if yes, force disconnect previous session
+                // 3. notify raft to delete previous session state
+                // 4. create new session state
+                // 5. register session actor map
+            } else {
+                // 1. check same client id exist
+                // 2. if yes, force disconnect previous session
+                // 3. get previous session state from raft
+                // 4. use previous session state to start session actor
+                // 5. register session actor map
+            }
 
             let mut sessions_guard = sessions.write().await;
 
@@ -288,17 +384,18 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
                 if !msg.clean_session {
                     let session_existed = raft_manager
-                        .session_state_raft
+                        .session_state_raft()
                         .session_state_exists_from_local_raft_store(&msg.tenant_id, &msg.client_id)
                         .await;
                     if session_existed {
                         session_state = raft_manager
-                            .session_state_raft
+                            .session_state_raft()
                             .get_session_state_from_local_raft_store(&msg.tenant_id, &msg.client_id)
-                            .await.unwrap();
+                            .await
+                            .unwrap();
                     } else {
                         raft_manager
-                            .session_state_raft
+                            .session_state_raft()
                             .create_session_state(
                                 &msg.tenant_id,
                                 &msg.client_id,
@@ -308,13 +405,13 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
                 } else {
                     let session_existed = raft_manager
-                        .session_state_raft
+                        .session_state_raft()
                         .session_state_exists(&msg.tenant_id, &msg.client_id)
                         .await;
                     if session_existed {
                         // delete prev session state
                         raft_manager
-                            .session_state_raft
+                            .session_state_raft()
                             .delete_session_state(&msg.tenant_id, &msg.client_id)
                             .await;
                     }

@@ -84,9 +84,6 @@ mod tests {
 
         RaftManager::new(
             test_cluster_cfg,
-            Arc::new(RwLock::new(TopicStorage::new())),
-            Arc::new(RwLock::new(SessionActorMapStorage::new())),
-            Arc::new(RwLock::new(SessionStateStorage::new())),
         )
         .await
     }

@@ -1,5 +1,6 @@
 use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
+use actix::Recipient;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
 use openraft::{
@@ -40,6 +41,11 @@ pub struct StateMachineData {
 
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
+
+    session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+
+    node_id: NodeId,
+
     pub data: StateMachineData,
 
     snapshot_idx: u64,
@@ -107,6 +113,8 @@ impl StateMachineStore {
     async fn new(
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
+        node_id: NodeId,
+        session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -114,8 +122,10 @@ impl StateMachineStore {
                 last_membership: Default::default(),
                 state: State { session_actor_map },
             },
+            node_id,
             snapshot_idx: 0,
             db,
+            session_manager_recipient,
         };
 
         let snapshot = sm.get_current_snapshot_()?;
@@ -219,16 +229,22 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                     replies.push(SessionActorMapResponse::None);
                 },
                 openraft::EntryPayload::Normal(req) => match req {
-                    types::SessionActorMapRequest::CreateSession { tenant_id, session_id, node_id } => {
+                    types::SessionActorMapRequest::RegisterSession { tenant_id, session_id, node_id } => {
                         let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
-                        todo!("if session actor on current node, force disconnect current from current node");
                         session_actor_map_storage.register_session_actor(tenant_id, session_id, node_id);
                         replies.push(SessionActorMapResponse::None);
                     },
-                    types::SessionActorMapRequest::DeleteSession { tenant_id ,session_id, node_id } => {
+                    types::SessionActorMapRequest::UnregisterSession { tenant_id ,session_id, node_id } => {
                         let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
-                        todo!("if session actor on current node, force disconnect current from current node");
-                        session_actor_map_storage.unregister_session_actor(tenant_id, session_id);
+                        session_actor_map_storage.unregister_session_actor(tenant_id.clone(), session_id.clone());
+
+                        if node_id == self.node_id {
+                            self.session_manager_recipient
+                                .send(crate::session::session_manager_actor::ForceDisconnect {
+                                    tenant_id,
+                                    client_id: session_id, 
+                            }).await;
+                        }
                         replies.push(SessionActorMapResponse::None);
                     },
                 },
@@ -518,6 +534,8 @@ impl RaftLogStorage<SessionActorMapTypeConfig> for LogStore {
 pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
+    current_node_id: NodeId,
+    session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -532,7 +550,12 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };
-    let sm_store = StateMachineStore::new(db, topic_storage).await.unwrap();
+    let sm_store = StateMachineStore::new(
+        db,
+         topic_storage,
+         current_node_id,
+         session_manager_recipient
+        ).await.unwrap();
 
     (log_store, sm_store)
 }

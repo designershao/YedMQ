@@ -2,7 +2,8 @@ use std::{fmt, sync::Arc};
 
 use actix::Recipient;
 use log::info;
-use tokio::sync::{mpsc::Sender, watch, Mutex, RwLock};
+use thiserror::Error;
+use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
     protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
@@ -12,7 +13,7 @@ use crate::{
 
 use super::service::raft_service::RaftServiceImpl;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum RaftManagerError {
     NodeUnavailable(String),
     ElectionFailure(String),
@@ -38,11 +39,11 @@ impl fmt::Display for RaftManagerError {
 }
 
 pub struct RaftManager {
-    pub topic_raft: crate::raft::topic::RaftManager,
+    topic_raft: OnceCell<crate::raft::topic::RaftManager>,
 
-    pub session_actor_map_raft: crate::raft::session_actor_map::SessionActorMapRaftManager,
+    session_actor_map_raft: OnceCell<crate::raft::session_actor_map::SessionActorMapRaftManager>,
 
-    pub session_state_raft: crate::raft::session_state::SessionStateRaftManager,
+    session_state_raft: OnceCell<crate::raft::session_state::SessionStateRaftManager>,
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
@@ -60,42 +61,67 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-    pub async fn new(
-        cluster_cfg: Cluster,
-        topic_storage: Arc<RwLock<TopicStorage>>,
-        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_state_storage: Arc<RwLock<SessionStateStorage>>
-    ) -> Self {
-        let (tx, rx) = watch::channel::<()>(());
+
+    pub fn topic_raft(&self) -> &crate::raft::topic::RaftManager {
+        self.topic_raft.get().unwrap()
+    }
+
+    pub fn session_actor_map_raft(&self) -> &crate::raft::session_actor_map::SessionActorMapRaftManager {
+        self.session_actor_map_raft.get().unwrap()
+    }
+
+    pub fn session_state_raft(&self) -> &crate::raft::session_state::SessionStateRaftManager {
+        self.session_state_raft.get().unwrap()
+    }
+
+    pub async fn init_topic_raft(&self, topic_storage: Arc<RwLock<TopicStorage>>) {
 
         let topic_raft_manager =
-            crate::raft::topic::RaftManager::new(cluster_cfg.clone(), topic_storage.clone()).await;
+            crate::raft::topic::RaftManager::new(self.cluster_cfg.clone(), topic_storage.clone()).await;
+        topic_raft_manager.init_cluster().await.unwrap();
+        self.topic_raft.set(topic_raft_manager);
+    }
 
-        let session_actor_map_raft_manager =
-            crate::raft::session_actor_map::SessionActorMapRaftManager::new(
-                cluster_cfg.clone(),
-                session_actor_map_storage.clone(),
-            )
-            .await;
-
+    pub async fn init_session_state_raft(&self, session_state_storage: Arc<RwLock<SessionStateStorage>>) {
         let session_state_raft_manager = 
             crate::raft::session_state::SessionStateRaftManager::new(
-                cluster_cfg.clone(),
+                self.cluster_cfg.clone(),
                 session_state_storage.clone(),
             )
             .await;
+        session_state_raft_manager.init_cluster().await.unwrap();
+        self.session_state_raft.set(session_state_raft_manager);
+    }
+
+    pub async fn init_session_actor_map_raft(&self,
+        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>) {
+
+        let session_actor_map_raft_manager =
+            crate::raft::session_actor_map::SessionActorMapRaftManager::new(
+                self.cluster_cfg.clone(),
+                session_actor_map_storage.clone(),
+                session_manager_actor_recipient
+            )
+            .await;
+        session_actor_map_raft_manager.init_cluster().await.unwrap();
+        self.session_actor_map_raft.set(session_actor_map_raft_manager);
+    }
+
+    pub async fn new(
+        cluster_cfg: Cluster,
+    ) -> Self {
+        let (tx, rx) = watch::channel::<()>(());
 
         let manager = RaftManager {
-            topic_raft: topic_raft_manager,
-            session_actor_map_raft: session_actor_map_raft_manager,
-            session_state_raft: session_state_raft_manager,
+            topic_raft: OnceCell::new(),
+            session_actor_map_raft: OnceCell::new(),
+            session_state_raft: OnceCell::new(),
             running_rx: rx,
             running_tx: tx,
             join_handles: Mutex::new(vec![]),
             cluster_cfg,
         };
-
-        manager.topic_raft.init_cluster().await.unwrap();
 
         manager
     }

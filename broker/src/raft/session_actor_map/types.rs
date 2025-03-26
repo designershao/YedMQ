@@ -6,12 +6,12 @@ use super::NodeId;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionActorMapRequest {
-    CreateSession {
+    RegisterSession {
         tenant_id: String,
         session_id: String,
         node_id: NodeId,
     },
-    DeleteSession {
+    UnregisterSession {
         tenant_id: String,
         session_id: String,
         node_id: NodeId,

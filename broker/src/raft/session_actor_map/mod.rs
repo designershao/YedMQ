@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::{collections::HashMap, fmt, sync::Arc};
 
+use actix::Recipient;
 use log::info;
 use openraft::Config;
 use raft_network_impl::Network;
@@ -13,37 +14,13 @@ use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
 
+use super::raft_manager::RaftManagerError;
 use super::Node;
 use super::NodeId;
 
 pub mod raft_network_impl;
 pub mod store;
 pub mod types;
-
-#[derive(Debug)]
-pub enum RaftManagerError {
-    NodeUnavailable(String),
-    ElectionFailure(String),
-    LogSyncError(String),
-    TimeoutError(String),
-    NetworkError(String),
-    InternalError(String),
-    Unknown(String),
-}
-
-impl fmt::Display for RaftManagerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            RaftManagerError::NodeUnavailable(ref msg) => write!(f, "Node Unavailable: {}", msg),
-            RaftManagerError::ElectionFailure(ref msg) => write!(f, "Election Failure: {}", msg),
-            RaftManagerError::LogSyncError(ref msg) => write!(f, "Log Sync Error: {}", msg),
-            RaftManagerError::TimeoutError(ref msg) => write!(f, "Timeout Error: {}", msg),
-            RaftManagerError::NetworkError(ref msg) => write!(f, "Network Error: {}", msg),
-            RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
-            RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
-        }
-    }
-}
 
 pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 
@@ -74,6 +51,36 @@ impl SessionActorMapRaftManager {
         } else {
             false
         }
+    }
+
+    pub async fn register_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) -> Result<(), RaftManagerError> {
+        let request = SessionActorMapRequest::RegisterSession {
+            tenant_id: tenant_id.to_string(),
+            session_id: client_id.to_string(),
+            node_id,
+        };
+
+        self.execute_command(request).await
+    }
+
+    pub async fn unregister_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) -> Result<(), RaftManagerError> {
+        let request = SessionActorMapRequest::UnregisterSession {
+            tenant_id: tenant_id.to_string(),
+            session_id: client_id.to_string(),
+            node_id,
+        };
+
+        self.execute_command(request).await
     }
 
     pub async fn get_session_actor_map_node_id(
@@ -127,6 +134,7 @@ impl SessionActorMapRaftManager {
     pub async fn new(
         cluster_cfg: Cluster,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+        session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
     ) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
@@ -135,7 +143,12 @@ impl SessionActorMapRaftManager {
         let config = Arc::new(raft_config.validate().unwrap());
 
         let (log_store, state_machine_store) =
-            new_storage(&dir, session_actor_map_storage.clone()).await;
+            new_storage(
+                &dir, 
+                session_actor_map_storage.clone(),
+                cluster_cfg.node_id,
+                session_manager_recipient
+        ).await;
 
         let network = Network {};
 

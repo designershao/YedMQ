@@ -54,6 +54,14 @@ impl YedMQApp {
 
         let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
+        let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
+
+        app.raft_manager.init_session_state_raft(session_state_storage.clone()).await;
+
+        app.raft_manager.init_topic_raft(app.topic_storage.clone()).await;
+
+        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
+
         //
         info!("start router task");
 
@@ -68,13 +76,21 @@ impl YedMQApp {
         .start();
         //
 
+        app.raft_manager
+            .init_session_actor_map_raft(
+                session_actor_map_storage,
+                session_manager.clone().recipient(),
+            )
+            .await;
+
         // start rpc server
         crate::raft::raft_manager::RaftManager::start_grpc(
             app.raft_manager.clone(),
             router_sender.clone(),
             session_manager.clone().recipient(),
         )
-        .await.unwrap();
+        .await
+        .unwrap();
         info!("start grpc service succeed");
         //
 
@@ -202,16 +218,11 @@ impl YedMQApp {
         let join_handles = Mutex::new(vec![]);
 
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
-        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
-        let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
 
         // init raft manager
         let raft_manager = Arc::new(
             crate::raft::raft_manager::RaftManager::new(
                 settings.cluster.clone(),
-                topic_storage.clone(),
-                session_actor_map_storage.clone(),
-                session_state_storage.clone(),
             )
             .await,
         );

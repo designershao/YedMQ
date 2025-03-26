@@ -29,7 +29,7 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<crate::protobuf::SessionExistedResponse>, tonic::Status> {
         let ret = self
             .raft_manager
-            .session_actor_map_raft
+            .session_actor_map_raft()
             .raft
             .ensure_linearizable()
             .await;
@@ -40,7 +40,7 @@ impl RaftService for RaftServiceImpl {
                 let tenant_id = request.tenant_id;
                 let session_state = self
                     .raft_manager
-                    .session_state_raft
+                    .session_state_raft()
                     .session_state_exists_from_local_raft_store(&tenant_id, &client_id).await;
                 let res = crate::protobuf::SessionExistedResponse {
                     success: true,
@@ -57,7 +57,7 @@ impl RaftService for RaftServiceImpl {
                         message: e.to_string(),
                         node: self
                             .raft_manager
-                            .session_actor_map_raft
+                            .session_actor_map_raft()
                             .current_node_id()
                             .to_string(),
                     }),
@@ -76,7 +76,7 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<crate::protobuf::GetSessionStateResponse>, tonic::Status> {
         let ret = self
             .raft_manager
-            .session_actor_map_raft
+            .session_actor_map_raft()
             .raft
             .ensure_linearizable()
             .await;
@@ -89,7 +89,7 @@ impl RaftService for RaftServiceImpl {
 
                 let session_state = self
                     .raft_manager
-                    .session_state_raft
+                    .session_state_raft()
                     .get_session_state_from_local_raft_store(&tenant_id, &client_id)
                     .await;
                 match session_state {
@@ -121,7 +121,7 @@ impl RaftService for RaftServiceImpl {
                         message: e.to_string(),
                         node: self
                             .raft_manager
-                            .session_actor_map_raft
+                            .session_actor_map_raft()
                             .current_node_id()
                             .to_string(),
                     }),
@@ -140,7 +140,7 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<crate::protobuf::GetSessionActorMapResponse>, tonic::Status> {
         let ret = self
             .raft_manager
-            .session_actor_map_raft
+            .session_actor_map_raft()
             .raft
             .ensure_linearizable()
             .await;
@@ -151,7 +151,7 @@ impl RaftService for RaftServiceImpl {
                 let tenant_id = request.tenant_id;
                 let node_id_option = self
                     .raft_manager
-                    .session_actor_map_raft
+                    .session_actor_map_raft()
                     .get_session_actor_map_node_id(&tenant_id, &client_id)
                     .await;
                 let res = crate::protobuf::GetSessionActorMapResponse {
@@ -169,7 +169,7 @@ impl RaftService for RaftServiceImpl {
                         message: e.to_string(),
                         node: self
                             .raft_manager
-                            .session_actor_map_raft
+                            .session_actor_map_raft()
                             .current_node_id()
                             .to_string(),
                     }),
@@ -206,7 +206,7 @@ impl RaftService for RaftServiceImpl {
                     message: e.to_string(),
                     node: self
                         .raft_manager
-                        .session_actor_map_raft
+                        .session_actor_map_raft()
                         .current_node_id()
                         .to_string(),
                 }),
@@ -241,7 +241,7 @@ impl RaftService for RaftServiceImpl {
                     message: e.to_string(),
                     node: self
                         .raft_manager
-                        .session_actor_map_raft
+                        .session_actor_map_raft()
                         .current_node_id()
                         .to_string(),
                 }),
@@ -269,7 +269,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .topic_raft
+                    .topic_raft()
                     .raft
                     .append_entries(append_req)
                     .await
@@ -283,7 +283,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .session_actor_map_raft
+                    .session_actor_map_raft()
                     .raft
                     .append_entries(append_req)
                     .await
@@ -316,7 +316,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .topic_raft
+                    .topic_raft()
                     .raft
                     .install_snapshot(install_req)
                     .await
@@ -329,7 +329,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .session_actor_map_raft
+                    .session_actor_map_raft()
                     .raft
                     .install_snapshot(install_req)
                     .await
@@ -361,7 +361,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .topic_raft
+                    .topic_raft()
                     .raft
                     .vote(vote_req)
                     .await
@@ -374,7 +374,7 @@ impl RaftService for RaftServiceImpl {
 
                 let resp = self
                     .raft_manager
-                    .session_actor_map_raft
+                    .session_actor_map_raft()
                     .raft
                     .vote(vote_req)
                     .await

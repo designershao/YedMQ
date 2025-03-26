@@ -524,7 +524,9 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let session_state = self.state.clone();
         async move {
-            let res = do_handle_subscribe(subscribe_packet, client_info, topic_manager, plugin_manager).await;
+            let res =
+                do_handle_subscribe(subscribe_packet, client_info, topic_manager, plugin_manager)
+                    .await;
             for packet in res.retain_messages {
                 let packet = (*packet).clone();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
@@ -532,7 +534,9 @@ impl SessionActor {
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                 yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
             ));
-            session_state.write().await
+            session_state
+                .write()
+                .await
                 .subscriptions
                 .extend(res.succeed_subscriptions);
         }
@@ -556,17 +560,19 @@ impl SessionActor {
         let topic_manager = self.topic_manager.clone();
         let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
-        async move { 
+        async move {
             let res = do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await;
             session_state
-                    .write().await
-                    .subscriptions
-                    .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
-                conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                    yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
-                ));
-            }.into_actor(self)
-            .wait(ctx);
+                .write()
+                .await
+                .subscriptions
+                .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
+            conn.do_send(ConnectionActorMessage::WritePacketToClient(
+                yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
+            ));
+        }
+        .into_actor(self)
+        .wait(ctx);
     }
 
     fn handle_pubrel(
@@ -973,7 +979,8 @@ impl Handler<GetSessionInfo> for SessionActor {
                 tenant_identifier: tenant_id,
                 client_identifier: client_id,
                 subscription_topics: session_state
-                    .read().await
+                    .read()
+                    .await
                     .subscriptions
                     .iter()
                     .map(|(k, _)| k.clone())
@@ -983,7 +990,6 @@ impl Handler<GetSessionInfo> for SessionActor {
         };
 
         Box::pin(future)
-
     }
 }
 

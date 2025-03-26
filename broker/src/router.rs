@@ -89,13 +89,13 @@ impl Router {
                 .get_subscribers(tenant_identifier.clone(), topic).await
                 .unwrap();
             for item in subscriptions.iter() {
-                if item.node_id != self.raft_manager.topic_raft.current_node_id() {
+                if item.node_id != self.raft_manager.topic_raft().current_node_id() {
                     // not the current node, send to other node
                     let router_cmd = RouterCmd::RoutePacket{
                         tenant_identifier: tenant_identifier.clone(),
                         packet: packet.clone(),
                     };
-                    let node = self.raft_manager.topic_raft.get_node_by_id(item.node_id).await;
+                    let node = self.raft_manager.topic_raft().get_node_by_id(item.node_id).await;
                     if let Some(node) = node {
                         if let Err(e) = self.route_to_other_nodes(&node.rpc_addr, router_cmd).await {
                             warn!("route packet to node {} error: {}", node.rpc_addr, e);
