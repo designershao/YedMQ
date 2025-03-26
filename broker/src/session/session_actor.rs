@@ -521,12 +521,10 @@ impl SessionActor {
         let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
+        let conn = self.conn_recipient.clone().unwrap();
+        let session_state = self.state.clone();
         async move {
-            do_handle_subscribe(subscribe_packet, client_info, topic_manager, plugin_manager).await
-        }
-        .into_actor(self)
-        .map(|res, act, _ctx| {
-            let conn = act.conn_recipient.clone().unwrap();
+            let res = do_handle_subscribe(subscribe_packet, client_info, topic_manager, plugin_manager).await;
             for packet in res.retain_messages {
                 let packet = (*packet).clone();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
@@ -534,11 +532,11 @@ impl SessionActor {
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                 yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
             ));
-            act.state
-                .blocking_write()
+            session_state.write().await
                 .subscriptions
                 .extend(res.succeed_subscriptions);
-        })
+        }
+        .into_actor(self)
         .wait(ctx);
     }
 
@@ -556,18 +554,18 @@ impl SessionActor {
     ) {
         let client_info = self.get_plugin_client_info();
         let topic_manager = self.topic_manager.clone();
-        async move { do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await }
-            .into_actor(self)
-            .map(|res, act, _ctx| {
-                act.state
-                    .blocking_write()
+        let session_state = self.state.clone();
+        let conn = self.conn_recipient.clone().unwrap();
+        async move { 
+            let res = do_handle_unsubscribe(unsubscribe_packet, client_info, topic_manager).await;
+            session_state
+                    .write().await
                     .subscriptions
                     .retain(|k, _| !res.succeed_unsubscriptions.contains(k));
-                let conn = act.conn_recipient.clone().unwrap();
                 conn.do_send(ConnectionActorMessage::WritePacketToClient(
                     yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
                 ));
-            })
+            }.into_actor(self)
             .wait(ctx);
     }
 
@@ -962,21 +960,30 @@ impl Handler<SessionActorMessage> for SessionActor {
 }
 
 impl Handler<GetSessionInfo> for SessionActor {
-    type Result = SessionInfo;
+    type Result = ResponseFuture<SessionInfo>;
 
     fn handle(&mut self, _msg: GetSessionInfo, _ctx: &mut Self::Context) -> Self::Result {
-        SessionInfo {
-            tenant_identifier: self.tenant_id.clone(),
-            client_identifier: self.client_id.clone(),
-            subscription_topics: self
-                .state
-                .blocking_read()
-                .subscriptions
-                .iter()
-                .map(|(k, _)| k.clone())
-                .collect(),
-            session_state: self.activity_state,
-        }
+        let session_state = self.state.clone();
+        let activity_state = self.activity_state.clone();
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+
+        let future = async move {
+            SessionInfo {
+                tenant_identifier: tenant_id,
+                client_identifier: client_id,
+                subscription_topics: session_state
+                    .read().await
+                    .subscriptions
+                    .iter()
+                    .map(|(k, _)| k.clone())
+                    .collect(),
+                session_state: activity_state,
+            }
+        };
+
+        Box::pin(future)
+
     }
 }
 
