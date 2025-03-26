@@ -49,9 +49,6 @@ async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftMana
 
     RaftManager::new(
         test_cluster_cfg,
-        topic_storage.clone(),
-        session_actor_map_storage.clone(),
-        session_state_storage.clone(),
     )
     .await
 }
