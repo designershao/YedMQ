@@ -3,12 +3,15 @@ use std::path::Path;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use log::{info, warn};
+use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
 use tokio::sync::{watch, Mutex, RwLock};
 use types::{SessionStateRequest, SessionStateTypeConfig};
+use yedmq_mqtt::MqttPacketV3;
 
+use crate::listener::tcp_listener::MqttTcpListener;
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::session::session_state_storage::{SessionState, SessionStateStorage};
@@ -48,8 +51,184 @@ impl fmt::Display for RaftManagerError {
 
 pub type SessionStateRaft = openraft::Raft<SessionStateTypeConfig>;
 
+#[async_trait::async_trait]
+#[automock]
+pub trait SessionStateRaftManagerTrait {
+    async fn get_session_state(&self, tenant_id: &str, client_id: &str) -> Option<SessionState>;
+
+   async fn create_session_state(&self, tenant_id: &str, client_id: &str, inflight_duration: u64); 
+
+   async fn delete_session_state(&self, tenant_id: &str, client_id: &str);
+
+   async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3);
+
+   async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3);
+
+   async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError>;
+
+   async fn inflight_next_state(&self, tenant_id: &str, client_id: &str, packet_identifier: u16);
+
+   async fn inflight_clean_finished_items(&self, tenant_id: &str, client_id: &str);
+
+   async fn append_to_pending_queue(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3);
+
+   async fn subscribe_topic(&self, tenant_id: String, client_id: String, topic: String, qos: u8);
+
+   async fn unsubscribe_topic(&self, tenant_id: String, client_id: String, topic: String);
+
+}
+
+#[async_trait::async_trait]
+impl SessionStateRaftManagerTrait for SessionStateRaftManager {
+
+    async fn get_session_state(&self, tenant_id: &str, client_id: &str) -> Option<SessionState> {
+        let current_leader_node_id = self.get_leader().await;
+        if current_leader_node_id.is_none() {
+            warn!("raft get session state leader not found");
+            return None;
+        }
+        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let res = client.get_session_state(crate::protobuf::GetSessionStateRequest {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+
+        match res {
+            Ok(r) => {
+                let response = r.into_inner();
+                if response.success {
+                    response.session_state_data.and_then(|data| {
+                        let session_state: SessionState = serde_json::from_str(&data).unwrap();
+                        Some(session_state)
+                    })
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                warn!("raft get session state grpc error: {}", e);
+                None
+            }
+        }
+    }
+
+    async fn create_session_state(&self, tenant_id: &str, client_id: &str, inflight_duration: u64) {
+        self.execute_command(SessionStateRequest::CreateSessionState {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+            inflight_duration_secs: inflight_duration,
+        }).await;
+    }
+
+    async fn delete_session_state(&self, tenant_id: &str, client_id: &str) {
+        self.execute_command(SessionStateRequest::DeleteSessionState {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+    }
+
+    async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) {
+        self.execute_command(SessionStateRequest::InflightRegisterRxPacket {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+            packet,
+        }).await;
+    }
+
+    async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) {
+        self.execute_command(SessionStateRequest::InflightRegisterTxPacket {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+            packet,
+        }).await;
+    }
+
+    async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError> {
+        
+        let leader_node_id = self.get_leader().await;
+
+        if leader_node_id.is_none() {
+            return Err(RaftManagerError::InternalError(
+                "No leader available".into(),
+            ));
+        } else {
+            let nodes = self.nodes.read().await;
+
+            let leader_node = nodes.get(&leader_node_id.unwrap()).unwrap();
+
+            let addr = format!("http://{}", leader_node.rpc_addr);
+
+            let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+
+            let response = client.inflight_get_current_packet(crate::protobuf::InflightGetCurrentPacketRequest {
+                tenant_id: tenant_id.to_string(),
+                client_id: client_id.to_string(),
+                packet_id: packet_identifier.into(),
+            }).await.unwrap();
+
+            let inner = response.into_inner();
+
+            if inner.success {
+                let r = inner.packet.and_then(|packet| {
+                    let packet: MqttPacketV3 = serde_json::from_str(&packet).unwrap();
+                    Some(packet)
+                });
+                return Ok(r)
+            } else {
+                return Err(
+                    RaftManagerError::InternalError(
+                        format!("Failed to get current packet: {} from node {}", inner.error.unwrap().message, leader_node_id.unwrap())
+                    )
+                )
+            }
+        }
+    }
+
+    async fn inflight_next_state(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) {
+        self.execute_command(SessionStateRequest::InflightNextState {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+            packet_identifier: packet_identifier.into(),
+        }).await;
+    }
+
+    async fn inflight_clean_finished_items(&self, tenant_id: &str, client_id: &str) {
+        self.execute_command(SessionStateRequest::InflightCleanFinishItems { 
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+    }
+
+    async fn append_to_pending_queue(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) {
+        self.execute_command(SessionStateRequest::AppendToPendingQueue {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+            packet,
+        }).await;
+    }
+
+    async fn subscribe_topic(&self, tenant_id: String, client_id: String, topic: String, qos: u8) {
+        self.execute_command(SessionStateRequest::SubscribeTopic {
+            tenant_id,
+            client_id,
+            topic,
+            qos,
+        }).await;
+    }
+
+    async fn unsubscribe_topic(&self, tenant_id: String, client_id: String, topic: String) {
+        self.execute_command(SessionStateRequest::UnsubscribeTopic {
+            tenant_id,
+            client_id,
+            topic,
+        }).await;
+    }
+
+}
+
+
 pub struct SessionStateRaftManager {
-    session_state_storage: Arc<RwLock<SessionStateStorage>>,
+    pub session_state_storage: Arc<RwLock<SessionStateStorage>>,
 
     pub raft: SessionStateRaft,
 

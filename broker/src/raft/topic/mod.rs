@@ -10,9 +10,11 @@ use std::{
 };
 
 use log::{debug, info};
+use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
 use tokio::sync::{watch, Mutex, RwLock};
+use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
     protobuf::{
@@ -52,6 +54,66 @@ impl fmt::Display for RaftManagerError {
             RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
             RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
         }
+    }
+}
+
+#[async_trait::async_trait]
+#[automock]
+pub trait TopicRaftManagerTrait {
+
+    async fn subscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String, qos: u8);
+
+    async fn unsubscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String);
+
+    async fn register_retain_publish_packet(&self, tenant_id: String, source_client_identifier: String, publish_packet: MqttPacketV3);
+
+    async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String);
+
+    async fn create_tenant(&self, tenant_id: String);
+
+}
+
+#[async_trait::async_trait]
+impl TopicRaftManagerTrait for RaftManager {
+    async fn subscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String, qos: u8) {
+        self.execute_command(
+            Request::SubscribeTopic {
+                node_id,
+                tenant_id,
+                client_identifier,
+                topic,
+                qos,
+            },
+        ).await;
+    }
+
+    async fn unsubscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String) {
+        self.execute_command(
+            Request::UnsubscribeTopic {
+                node_id,
+                tenant_id,
+                client_identifier,
+                topic,
+            },
+        ).await;
+    }
+
+    async fn register_retain_publish_packet(&self, tenant_id: String, source_client_identifier: String, publish_packet: MqttPacketV3) {
+        self.execute_command(
+            Request::RegisterRetainPublishPacket { tenant_id, source_client_identifier, publish_packet }
+        ).await;
+    }
+
+    async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String) {
+        self.execute_command(
+            Request::CleanRetainPublishPacket { tenant_id, topic_filter }
+        ).await;
+    }
+
+    async fn create_tenant(&self, tenant_id: String) {
+        self.execute_command(
+            Request::CreateTenant { tenant_id }
+        ).await;
     }
 }
 

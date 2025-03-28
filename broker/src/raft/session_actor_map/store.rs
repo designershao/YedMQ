@@ -42,7 +42,7 @@ pub struct StateMachineData {
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
 
-    session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+    session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
 
     node_id: NodeId,
 
@@ -114,7 +114,7 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
         node_id: NodeId,
-        session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+        session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -125,7 +125,7 @@ impl StateMachineStore {
             node_id,
             snapshot_idx: 0,
             db,
-            session_manager_recipient,
+            session_manager_force_stop_recipient,
         };
 
         let snapshot = sm.get_current_snapshot_()?;
@@ -239,8 +239,8 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         session_actor_map_storage.unregister_session_actor(tenant_id.clone(), session_id.clone());
 
                         if node_id == self.node_id {
-                            self.session_manager_recipient
-                                .send(crate::session::session_manager_actor::ForceDisconnect {
+                            self.session_manager_force_stop_recipient
+                                .send(crate::session::session_manager_actor::ForceStop {
                                     tenant_id,
                                     client_id: session_id, 
                             }).await;
@@ -535,7 +535,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
-    session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+    session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -554,7 +554,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         db,
          topic_storage,
          current_node_id,
-         session_manager_recipient
+         session_manager_force_stop_recipient
         ).await.unwrap();
 
     (log_store, sm_store)

@@ -5,7 +5,7 @@ use crate::{
     protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
     raft::{
         raft_manager::{RaftManager, RaftManagerError},
-        NodeId,
+        session_state, NodeId,
     },
     router::RouterCmd,
     session::session_actor::SessionActor,
@@ -87,7 +87,7 @@ impl SessionManagerActor {
         topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
         router_sender: Sender<RouterCmd>,
         settings: Arc<Settings>,
-        raft_manager: Arc<RaftManager>
+        raft_manager: Arc<RaftManager>,
     ) -> SessionManagerActor {
         SessionManagerActor {
             sessions: HashMap::new(),
@@ -96,10 +96,9 @@ impl SessionManagerActor {
             router_sender,
             session_lifecycle_tx: None,
             settings,
-            raft_manager
+            raft_manager,
         }
     }
-
 }
 
 impl Actor for SessionManagerActor {
@@ -196,6 +195,38 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
             };
             Box::pin(f)
         }
+    }
+}
+#[derive(Message)]
+#[rtype(result = "Result<(), SessionManagerError>")]
+pub struct ForceStop {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<ForceStop> for SessionManagerActor {
+    type Result = ResponseFuture<Result<(), SessionManagerError>>;
+
+    fn handle(&mut self, msg: ForceStop, ctx: &mut Self::Context) -> Self::Result {
+        if self.sessions.contains_key(&msg.tenant_id) == false {
+            return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
+        }
+        let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
+
+        let f = async move {
+            let tenant_sessions = tenant_sessions.read().await;
+            let session = tenant_sessions.get(&msg.client_id);
+            if let Some(session) = session {
+                session
+                    .session_actor_message_recipient
+                    .do_send(SessionActorMessage::ForceStop);
+            } else {
+                return Err(SessionManagerError::SessionNotExisted(msg.client_id));
+            }
+            Ok(())
+        };
+
+        Box::pin(f)
     }
 }
 
@@ -322,9 +353,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 }
             }
 
-            let current_node_id = raft_manager
-                .session_actor_map_raft()
-                .current_node_id();
+            let current_node_id = raft_manager.session_actor_map_raft().current_node_id();
 
             let res = raft_manager
                 .session_actor_map_raft()
@@ -336,113 +365,86 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             }
             //
 
-            if msg.clean_session {
-
-                // 1. check same client id exist
-                // 2. if yes, force disconnect previous session
-                // 3. notify raft to delete previous session state
-                // 4. create new session state
-                // 5. register session actor map
-            } else {
-                // 1. check same client id exist
-                // 2. if yes, force disconnect previous session
-                // 3. get previous session state from raft
-                // 4. use previous session state to start session actor
-                // 5. register session actor map
-            }
-
             let mut sessions_guard = sessions.write().await;
 
-            if let Some(session) = sessions_guard.get(&msg.client_id) {
-                let session_actor_message_recipient =
-                    session.session_actor_message_recipient.clone();
-                let res = session_actor_message_recipient
-                    .send(SessionActorMessage::ForceDisconnect)
-                    .await;
-                if let Err(err) = res {
-                    return Err(SessionManagerError::SessionNotExisted(err.to_string()));
-                } else {
-                    let res = session_actor_message_recipient
-                        .send(SessionActorMessage::Reconnect {
-                            conn: msg.connection_addr.clone(),
-                            keep_alive: msg.keep_alive,
-                            clean_session: msg.clean_session,
-                            username: msg.username,
-                            will_message: msg.will_message,
-                            socket_addr: msg.peer_addr,
-                        })
-                        .await;
-                    if let Err(err) = res {
-                        return Err(SessionManagerError::SessionNotExisted(err.to_string()));
-                    }
-                }
-                Ok(session_actor_message_recipient)
-            } else {
-                let mut session_state = Arc::new(RwLock::new(SessionState::new(
-                    Duration::from_secs(settings.mqtt.sys_topic_interval_secs),
-                )));
+            let mut session_state = Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                settings.mqtt.sys_topic_interval_secs,
+            ))));
 
-                if !msg.clean_session {
-                    let session_existed = raft_manager
-                        .session_state_raft()
-                        .session_state_exists_from_local_raft_store(&msg.tenant_id, &msg.client_id)
-                        .await;
-                    if session_existed {
-                        session_state = raft_manager
-                            .session_state_raft()
-                            .get_session_state_from_local_raft_store(&msg.tenant_id, &msg.client_id)
+            if !msg.clean_session {
+                // If raft store not existed, create new session state
+                // First check local sessions if exists send reconect
+                // If local sessions not existed, recover from raft store
+                let session_state_exist = raft_manager
+                    .session_state_raft()
+                    .session_state_exists(&msg.tenant_id, &msg.client_id)
+                    .await;
+                if session_state_exist {
+                    // check session in current node
+                    if sessions_guard.contains_key(&msg.client_id) {
+                        sessions_guard
+                            .get(&msg.client_id)
+                            .unwrap()
+                            .session_actor_message_recipient
+                            .send(SessionActorMessage::Reconnect {
+                                conn: msg.connection_addr.clone(),
+                                keep_alive: msg.keep_alive,
+                                clean_session: msg.clean_session,
+                                username: msg.username.clone(),
+                                will_message: msg.will_message.clone(),
+                                socket_addr: msg.peer_addr,
+                            })
                             .await
                             .unwrap();
+                        // in current node, send reconnect
                     } else {
-                        raft_manager
+                        // not in current node, recover from raft
+                        let session_state_from_raft = raft_manager
                             .session_state_raft()
-                            .create_session_state(
-                                &msg.tenant_id,
-                                &msg.client_id,
-                                settings.mqtt.sys_topic_interval_secs,
-                            )
-                            .await;
+                            .get_session_state(&msg.tenant_id, &msg.client_id)
+                            .await
+                            .unwrap();
+                        session_state = Arc::new(RwLock::new(session_state_from_raft));
                     }
+                    //
                 } else {
-                    let session_existed = raft_manager
+                    raft_manager
                         .session_state_raft()
-                        .session_state_exists(&msg.tenant_id, &msg.client_id)
+                        .create_session_state(
+                            &msg.tenant_id,
+                            &msg.client_id,
+                            settings.mqtt.sys_topic_interval_secs,
+                        )
                         .await;
-                    if session_existed {
-                        // delete prev session state
-                        raft_manager
-                            .session_state_raft()
-                            .delete_session_state(&msg.tenant_id, &msg.client_id)
-                            .await;
-                    }
                 }
-                let session_actor = SessionActor::new(
-                    msg.tenant_id.clone(),
-                    msg.client_id.clone(),
-                    msg.clean_session,
-                    topic_manager.clone(),
-                    plugin_manager.clone(),
-                    router_sender.clone(),
-                    50,
-                    msg.will_message,
-                    msg.keep_alive,
-                    msg.connection_addr,
-                    msg.peer_addr,
-                    session_state,
-                );
-
-                let session_actor_addr = session_actor.start();
-                let session_actor_message_recipient = session_actor_addr.clone().recipient();
-                let get_session_info_recipient = session_actor_addr.clone().recipient();
-                sessions_guard.insert(
-                    msg.client_id.clone(),
-                    SessionActorRecipientWrapper {
-                        session_actor_message_recipient: session_actor_message_recipient.clone(),
-                        get_session_info_recipient,
-                    },
-                );
-                return Ok(session_actor_message_recipient);
             }
+            let session_actor = SessionActor::new(
+                msg.tenant_id.clone(),
+                msg.client_id.clone(),
+                msg.clean_session,
+                topic_manager.clone(),
+                plugin_manager.clone(),
+                router_sender.clone(),
+                50,
+                msg.will_message,
+                msg.keep_alive,
+                msg.connection_addr,
+                msg.peer_addr,
+                session_state,
+                raft_manager
+            );
+
+            let session_actor_addr = session_actor.start();
+            let session_actor_message_recipient = session_actor_addr.clone().recipient();
+            let get_session_info_recipient = session_actor_addr.clone().recipient();
+            sessions_guard.insert(
+                msg.client_id.clone(),
+                SessionActorRecipientWrapper {
+                    session_actor_message_recipient: session_actor_message_recipient.clone(),
+                    get_session_info_recipient,
+                },
+            );
+            return Ok(session_actor_message_recipient);
         };
         Box::pin(future)
     }

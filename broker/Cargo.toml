@@ -38,7 +38,7 @@ uuid = { version = "1.14.0", features = ["v4", "fast-rng", "macro-diagnostics"] 
 portpicker = "0.1.1"
 actix = "0.13.5"
 async-trait = "0.1.87"
-mockall = "0.9.1"
+mockall = "0.13.1"
 
 [dev-dependencies]
 

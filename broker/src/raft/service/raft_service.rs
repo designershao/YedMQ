@@ -16,12 +16,69 @@ pub struct RaftServiceImpl {
 
     pub router_sender: Sender<RouterCmd>,
 
-    pub session_manager_actor_recipient:
+    pub session_manager_actor_force_stop_recipient:
+        Recipient<crate::session::session_manager_actor::ForceStop>,
+
+    pub session_manager_actor_force_disconnect_recipient:
         Recipient<crate::session::session_manager_actor::ForceDisconnect>,
 }
 
 #[tonic::async_trait]
 impl RaftService for RaftServiceImpl {
+
+    async fn inflight_get_current_packet(
+        &self,
+        request: tonic::Request<crate::protobuf::InflightGetCurrentPacketRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::InflightGetCurrentPacketResponse>, tonic::Status> {
+        let request = request.into_inner();
+
+        let ret = self
+            .raft_manager
+            .session_actor_map_raft()
+            .raft
+            .ensure_linearizable()
+            .await;
+        match ret {
+            Ok(_) => {
+                let client_id = request.client_id;
+                let tenant_id = request.tenant_id;
+                let packet_id = request.packet_id;
+
+                let state_storage_guard= self.raft_manager.session_state_raft().session_state_storage.read().await;
+                let packet_opt = state_storage_guard.inflight_get_current_packet(tenant_id, client_id, packet_id as u16).await;
+
+                let r= packet_opt.and_then(|packet| {
+                    Some(serde_json::to_string(&packet).unwrap())
+                });
+
+                let res = crate::protobuf::InflightGetCurrentPacketResponse {
+                    success: true,
+                    packet: r,
+                    error: None
+                };
+
+                Ok(tonic::Response::new(res))
+
+            }
+            Err(e) => {
+                let res = crate::protobuf::InflightGetCurrentPacketResponse  {
+                    success: false,
+                    error: Some(crate::protobuf::ErrorDetail {
+                        code: 500,
+                        message: e.to_string(),
+                        node: self
+                            .raft_manager
+                            .session_actor_map_raft()
+                            .current_node_id()
+                            .to_string(),
+                    }),
+                    packet: None
+                };
+
+                Ok(tonic::Response::new(res))
+            }
+        }
+    }
 
     async fn session_state_existed(
         &self,
@@ -181,6 +238,45 @@ impl RaftService for RaftServiceImpl {
         }
     }
 
+    async fn session_actor_force_stop(
+        &self,
+        request: tonic::Request<crate::protobuf::SessionActorForceStopRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::SessionActorForceStopResponse>, tonic::Status> {
+        let req = request.into_inner();
+        let client_id = req.client_id;
+        let tenant_id = req.tenant_id;
+
+        let res = self
+            .session_manager_actor_force_stop_recipient
+            .send(crate::session::session_manager_actor::ForceStop {
+                client_id,
+                tenant_id,
+            })
+            .await;
+
+        if let Err(e) = res {    
+            let res = crate::protobuf::SessionActorForceStopResponse {
+                success: false,
+                error: Some(ErrorDetail {
+                    code: ErrorCode::InternalError.into(),
+                    message: e.to_string(),
+                    node: self
+                        .raft_manager
+                        .session_actor_map_raft()
+                        .current_node_id()
+                        .to_string(),
+                }), 
+            };            
+            Ok(tonic::Response::new(res))
+        } else {
+            let res = crate::protobuf::SessionActorForceStopResponse {
+                success: true,
+                error: None,
+            };
+            Ok(tonic::Response::new(res))
+        }
+    }
+
     // Foce session disconnect
     async fn session_force_disconnect(
         &self,
@@ -191,7 +287,7 @@ impl RaftService for RaftServiceImpl {
         let tenant_id = req.tenant_id;
 
         let res = self
-            .session_manager_actor_recipient
+            .session_manager_actor_force_disconnect_recipient
             .send(crate::session::session_manager_actor::ForceDisconnect {
                 client_id,
                 tenant_id,

@@ -88,6 +88,7 @@ impl YedMQApp {
             app.raft_manager.clone(),
             router_sender.clone(),
             session_manager.clone().recipient(),
+            session_manager.clone().recipient()
         )
         .await
         .unwrap();

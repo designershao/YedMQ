@@ -2,6 +2,7 @@ use std::{fmt, sync::Arc};
 
 use actix::Recipient;
 use log::info;
+use mockall::automock;
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
@@ -35,6 +36,31 @@ impl fmt::Display for RaftManagerError {
             RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
             RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
         }
+    }
+}
+
+#[automock]
+pub trait RaftManagerTrait {
+
+    fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait;
+
+    fn topic_raft(&self) -> &dyn crate::raft::topic::TopicRaftManagerTrait;
+
+    fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait;
+
+}
+
+impl RaftManagerTrait for RaftManager {
+    fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
+        self.session_actor_map_raft.get().unwrap()
+    }
+
+    fn topic_raft(&self) -> &dyn crate::raft::topic::TopicRaftManagerTrait {
+        self.topic_raft.get().unwrap()
+    }
+
+    fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait {
+        self.session_state_raft.get().unwrap()
     }
 }
 
@@ -79,7 +105,7 @@ impl RaftManager {
         let topic_raft_manager =
             crate::raft::topic::RaftManager::new(self.cluster_cfg.clone(), topic_storage.clone()).await;
         topic_raft_manager.init_cluster().await.unwrap();
-        self.topic_raft.set(topic_raft_manager);
+        let _ = self.topic_raft.set(topic_raft_manager);
     }
 
     pub async fn init_session_state_raft(&self, session_state_storage: Arc<RwLock<SessionStateStorage>>) {
@@ -90,12 +116,12 @@ impl RaftManager {
             )
             .await;
         session_state_raft_manager.init_cluster().await.unwrap();
-        self.session_state_raft.set(session_state_raft_manager);
+        let _ = self.session_state_raft.set(session_state_raft_manager);
     }
 
     pub async fn init_session_actor_map_raft(&self,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>) {
+         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceStop>) {
 
         let session_actor_map_raft_manager =
             crate::raft::session_actor_map::SessionActorMapRaftManager::new(
@@ -105,7 +131,7 @@ impl RaftManager {
             )
             .await;
         session_actor_map_raft_manager.init_cluster().await.unwrap();
-        self.session_actor_map_raft.set(session_actor_map_raft_manager);
+        let _ = self.session_actor_map_raft.set(session_actor_map_raft_manager);
     }
 
     pub async fn new(
@@ -128,14 +154,16 @@ impl RaftManager {
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
         router_sender: Sender<RouterCmd>,
-        session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>
+        session_manager_actor_force_disconnect_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+        session_manager_actor_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
         let raft_service = RaftServiceImpl {
             raft_manager: raft_manager.clone(),
             router_sender,
-            session_manager_actor_recipient
+            session_manager_actor_force_disconnect_recipient,
+            session_manager_actor_force_stop_recipient
         };
 
         let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();

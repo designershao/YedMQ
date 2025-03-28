@@ -4,6 +4,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 use actix::Recipient;
 use log::info;
+use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
@@ -23,6 +24,66 @@ pub mod store;
 pub mod types;
 
 pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
+
+#[async_trait::async_trait]
+#[automock]
+pub trait SessionActorMapRaftManagerTrait {
+
+    async fn register_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    );
+
+    async fn unregister_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    );
+
+    fn current_node_id(&self) -> NodeId;
+}
+
+
+#[async_trait::async_trait]
+impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
+
+    fn current_node_id(&self) -> NodeId {
+        self.cluster_cfg.node_id
+    }
+
+    async fn register_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) {
+        self.execute_command(
+            types::SessionActorMapRequest::RegisterSession {
+                tenant_id: tenant_id.to_string(),
+                session_id: client_id.to_string(),
+                node_id,
+            }
+        ).await;
+    }
+
+    async fn unregister_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) {
+       self.execute_command(
+        types::SessionActorMapRequest::UnregisterSession {
+            tenant_id: tenant_id.to_string(),
+            session_id: client_id.to_string(),
+            node_id,
+        }
+       ).await;
+    }
+}
 
 pub struct SessionActorMapRaftManager {
     session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
@@ -134,7 +195,7 @@ impl SessionActorMapRaftManager {
     pub async fn new(
         cluster_cfg: Cluster,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_manager_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
+        session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
     ) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
@@ -147,7 +208,7 @@ impl SessionActorMapRaftManager {
                 &dir, 
                 session_actor_map_storage.clone(),
                 cluster_cfg.node_id,
-                session_manager_recipient
+                session_manager_force_stop_recipient
         ).await;
 
         let network = Network {};

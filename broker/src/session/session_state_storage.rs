@@ -19,6 +19,7 @@ pub struct SessionState {
     pub inflight: Inflight,
 
     pub subscriptions: HashMap<String, QoS>,
+
 }
 
 impl SessionState {
@@ -116,7 +117,7 @@ impl SessionStateStorage {
         }
     }
 
-    pub async fn inflight_get_current_packet(&mut self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
+    pub async fn inflight_get_current_packet(&self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
         if self.inner.get(&tenant_id).is_none() {
             return None;
         }
@@ -130,9 +131,9 @@ impl SessionStateStorage {
         {
             let state = self
                 .inner
-                .get_mut(&tenant_id)
+                .get(&tenant_id)
                 .unwrap()
-                .get_mut(&client_id)
+                .get(&client_id)
                 .unwrap()
                 .write()
                 .await;
