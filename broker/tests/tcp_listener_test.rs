@@ -90,7 +90,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     .start();
 
     let mut router = Router {
-        session_manager: session_manager.clone(),
+        session_manager_recipient: session_manager.clone().recipient(),
         topic_manager: topic_manager.clone(),
         router_receiver: router_receiver,
         raft_manager: raft_manager.clone(),

@@ -35,7 +35,7 @@ impl RaftService for RaftServiceImpl {
         let ret = self
             .raft_manager
             .session_actor_map_raft()
-            .raft
+            .raft()
             .ensure_linearizable()
             .await;
         match ret {
@@ -87,7 +87,7 @@ impl RaftService for RaftServiceImpl {
         let ret = self
             .raft_manager
             .session_actor_map_raft()
-            .raft
+            .raft()
             .ensure_linearizable()
             .await;
         match ret {
@@ -134,7 +134,7 @@ impl RaftService for RaftServiceImpl {
         let ret = self
             .raft_manager
             .session_actor_map_raft()
-            .raft
+            .raft()
             .ensure_linearizable()
             .await;
         match ret {
@@ -198,7 +198,7 @@ impl RaftService for RaftServiceImpl {
         let ret = self
             .raft_manager
             .session_actor_map_raft()
-            .raft
+            .raft()
             .ensure_linearizable()
             .await;
         match ret {
@@ -380,7 +380,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .session_actor_map_raft()
-                    .raft
+                    .raft()
                     .append_entries(append_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -426,7 +426,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .session_actor_map_raft()
-                    .raft
+                    .raft()
                     .install_snapshot(install_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -471,7 +471,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .session_actor_map_raft()
-                    .raft
+                    .raft()
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;

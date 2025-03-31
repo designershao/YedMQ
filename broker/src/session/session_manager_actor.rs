@@ -4,7 +4,7 @@ use crate::{
     plugin_manager::PluginService,
     protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
     raft::{
-        raft_manager::{RaftManager, RaftManagerError},
+        raft_manager::{RaftManager, RaftManagerError, RaftManagerTrait},
         NodeId,
     },
     router::RouterCmd,
@@ -16,7 +16,7 @@ use actix::{
     dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message, Recipient,
     ResponseFuture, WrapFuture,
 };
-use log::error;
+use log::{error, info};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::MqttPacketV3;
@@ -68,7 +68,7 @@ struct SessionActorRecipientWrapper {
 pub struct SessionManagerActor {
     sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
-    raft_manager: Arc<RaftManager>,
+    raft_manager: Arc<dyn RaftManagerTrait>,
 
     plugin_manager: Arc<dyn PluginService + 'static>,
 
@@ -87,7 +87,7 @@ impl SessionManagerActor {
         topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
         router_sender: Sender<RouterCmd>,
         settings: Arc<Settings>,
-        raft_manager: Arc<RaftManager>,
+        raft_manager: Arc<dyn RaftManagerTrait>,
     ) -> SessionManagerActor {
         SessionManagerActor {
             sessions: HashMap::new(),
@@ -140,6 +140,7 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
     type Result = ();
 
     fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
+        info!("send packet to session {}", msg.client_id);
         let tenant_session = self.sessions.get(&msg.tenant_id).unwrap().clone();
         async move {
             let session = tenant_session.read().await;
@@ -147,7 +148,7 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
             if let Some(session) = session {
                 session
                     .session_actor_message_recipient
-                    .do_send(SessionActorMessage::InboundPacket(msg.packet));
+                    .do_send(SessionActorMessage::OutboundMessage(msg.packet));
             }
         }
         .into_actor(self)
@@ -281,7 +282,7 @@ impl Message for CreateSessionMessage {
 // force disconnect
 async fn call_force_disconnect(
     node_id: NodeId,
-    raft_manager: Arc<RaftManager>,
+    raft_manager: Arc<dyn RaftManagerTrait>,
     tenant_id: String,
     client_id: String,
 ) -> bool {

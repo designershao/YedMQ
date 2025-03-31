@@ -99,7 +99,7 @@ impl YedMQApp {
 
         let mut router = Router {
             topic_manager: app.topic_manager.clone(),
-            session_manager: session_manager,
+            session_manager_recipient: session_manager.recipient(),
             router_receiver: router_receiver,
             raft_manager: app.raft_manager.clone(),
         };

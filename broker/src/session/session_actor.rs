@@ -1327,7 +1327,7 @@ mod tests {
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
         session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
-            Box::pin(async move {})
+            Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
             Box::new(session_actor_map_mock)
@@ -1441,7 +1441,7 @@ mod tests {
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
         session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
-            Box::pin(async move {})
+            Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
             Box::new(session_actor_map_mock)
@@ -1536,7 +1536,7 @@ mod tests {
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
         session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
-            Box::pin(async move {})
+            Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
             Box::new(session_actor_map_mock)
@@ -1890,7 +1890,7 @@ mod tests {
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
         session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
-            Box::pin(async move {})
+            Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
             Box::new(session_actor_map_mock)
@@ -2080,7 +2080,7 @@ mod tests {
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
         session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
-            Box::pin(async move {})
+            Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
             Box::new(session_actor_map_mock)

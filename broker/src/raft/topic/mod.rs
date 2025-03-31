@@ -71,10 +71,27 @@ pub trait TopicRaftManagerTrait {
 
     async fn create_tenant(&self, tenant_id: String);
 
+    fn current_node_id(&self) -> NodeId;
+
+    async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
 }
 
 #[async_trait::async_trait]
 impl TopicRaftManagerTrait for RaftManager {
+    fn current_node_id(&self) -> NodeId {
+        self.cluster_cfg.node_id
+    }
+
+    async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .find(|x| *x.0 == id)
+            .and_then(|x| Some(x.1.clone()))
+    }
+
     async fn subscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String, qos: u8) {
         self.execute_command(
             Request::SubscribeTopic {
@@ -140,20 +157,6 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-    pub fn current_node_id(&self) -> NodeId {
-        self.cluster_cfg.node_id
-    }
-
-    pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
-        self.raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .nodes()
-            .find(|x| *x.0 == id)
-            .and_then(|x| Some(x.1.clone()))
-    }
-
     pub async fn stop(&self) -> Result<(), RaftManagerError> {
         let mut rx = self.raft.metrics();
 

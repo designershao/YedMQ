@@ -25,7 +25,7 @@ pub async fn metrics(
     let session_actor_map_metrics = app_state
         .raft_manager
         .session_actor_map_raft()
-        .raft
+        .raft()
         .metrics()
         .borrow()
         .clone();

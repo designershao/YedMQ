@@ -28,26 +28,41 @@ pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 #[async_trait::async_trait]
 #[automock]
 pub trait SessionActorMapRaftManagerTrait {
-    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId);
+    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) -> Result<(), RaftManagerError>;
 
-    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId);
+    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) -> Result<(), RaftManagerError>;
 
     fn current_node_id(&self) -> NodeId;
+
+    async fn get_session_actor_map_node_id(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+    ) -> Option<NodeId>;
+
+    async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
+
+    fn raft(&self) -> &SessionActorMapRaft;
 }
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
+
+    fn raft(&self) -> &SessionActorMapRaft {
+        &self.raft
+    }
+
     fn current_node_id(&self) -> NodeId {
         self.cluster_cfg.node_id
     }
 
-    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) {
+    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId)  -> Result<(), RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
         })
-        .await;
+        .await
     }
 
     async fn unregister_session_actor_map(
@@ -55,13 +70,32 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-    ) {
+    ) -> Result<(), RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
         })
-        .await;
+        .await
+    }
+
+    async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .find(|x| *x.0 == id)
+            .and_then(|x| Some(x.1.clone()))
+    }
+
+    async fn get_session_actor_map_node_id(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+    ) -> Option<NodeId> {
+        let session_map_storage_guard = self.session_actor_map_storage.read().await;
+        session_map_storage_guard.get_session_actor_map(tenant_id, client_id)
     }
 }
 
@@ -124,27 +158,8 @@ impl SessionActorMapRaftManager {
         self.execute_command(request).await
     }
 
-    pub async fn get_session_actor_map_node_id(
-        &self,
-        tenant_id: &str,
-        client_id: &str,
-    ) -> Option<NodeId> {
-        let session_map_storage_guard = self.session_actor_map_storage.read().await;
-        session_map_storage_guard.get_session_actor_map(tenant_id, client_id)
-    }
-
     pub fn current_node_id(&self) -> NodeId {
         self.cluster_cfg.node_id
-    }
-
-    pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
-        self.raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .nodes()
-            .find(|x| *x.0 == id)
-            .and_then(|x| Some(x.1.clone()))
     }
 
     pub async fn stop(&self) -> Result<(), RaftManagerError> {

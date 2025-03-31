@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use actix::Addr;
-use log::{debug, warn};
+use actix::{Addr, Recipient};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::RwLock};
 
@@ -21,10 +21,10 @@ pub enum RouterCmd {
 }
 
 pub struct Router {
-    pub session_manager: Addr<SessionManagerActor>,
+    pub session_manager_recipient: Recipient<SendMessageToSession>,
     pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
-    pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
+    pub raft_manager: Arc<dyn crate::raft::raft_manager::RaftManagerTrait>,
 }
 
 impl Router {
@@ -90,6 +90,7 @@ impl Router {
                 .unwrap();
             for item in subscriptions.iter() {
                 if item.node_id != self.raft_manager.topic_raft().current_node_id() {
+                    info!("not in local node, send to other node ");
                     // not the current node, send to other node
                     let router_cmd = RouterCmd::RoutePacket{
                         tenant_identifier: tenant_identifier.clone(),
@@ -100,6 +101,8 @@ impl Router {
                         if let Err(e) = self.route_to_other_nodes(&node.rpc_addr, router_cmd).await {
                             warn!("route packet to node {} error: {}", node.rpc_addr, e);
                         }
+                    } else {
+                        warn!("node {} not found", item.node_id);
                     }
                     
                 } else {
@@ -123,9 +126,9 @@ impl Router {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
                         }
-                        if let Err(err) = self.session_manager.send(SendMessageToSession {
+                        if let Err(err) = self.session_manager_recipient.send(SendMessageToSession {
                             tenant_id: tenant_identifier.clone(),
-                            client_id: tenant_identifier.clone(),
+                            client_id: client_identifier.clone(),
                             packet: MqttPacketV3::Publish(publish_packet),
                         }).await
                         {
@@ -143,5 +146,86 @@ impl Router {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::Sender;
+
+    use actix::{Actor, Context, Handler};
+    use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+
+    use crate::{settings::Settings, topic::topic_storage::Subscription};
+
+    use super::*;
+
+    struct MockSessionManagerActor {
+        pub message_sender: Sender<SendMessageToSession>,
+    }
+
+    impl Actor for MockSessionManagerActor {
+        type Context = Context<Self>;
+    }
+
+    impl Handler<SendMessageToSession> for MockSessionManagerActor {
+        type Result = ();
+    
+        fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
+            let _ = self.message_sender.send(msg);
+            ()
+        }
+    }
+
+    #[actix::test]
+    pub async fn when_route_packet_to_session_actor_message_should_correct() {
+
+        let mut topic_manager_mock = crate::topic::topic_manager::MockTopicManagerTrait::new();
+        topic_manager_mock.expect_get_subscribers().returning(|_, _| {
+            Box::pin(
+                async move {
+                    Ok(vec![Arc::new(Subscription {
+                        node_id: 123,
+                        client_identifier: "client_id".to_string(),
+                        qos: 1,
+                    })])
+                }
+            )
+        });
+
+        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
+
+        let mut mock_topic_raft_manager = crate::raft::topic::MockTopicRaftManagerTrait::new();
+        mock_topic_raft_manager.expect_current_node_id().return_const(123 as u64);
+
+        raft_manager_mock.expect_topic_raft().return_const(Box::new(mock_topic_raft_manager));
+
+        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let topic_manager = Arc::new(RwLock::new(topic_manager_mock));
+
+        let raft_manager = Arc::new(raft_manager_mock);
+
+        let (message_sender, message_receiver) = std::sync::mpsc::channel();
+
+        let session_manager_actor = MockSessionManagerActor {
+            message_sender
+        }.start();
+
+        let router = Router {
+            session_manager_recipient: session_manager_actor.recipient(),
+            topic_manager: topic_manager.clone(),
+            router_receiver: router_receiver,
+            raft_manager: raft_manager.clone(),
+        };
+
+        let publish_packet = PublishPacketBuilder::new("/a/b".into(), vec![]).build();
+
+        let _ = router.route(&"public".into(), &MqttPacketV3::Publish(publish_packet)).await;
+
+        let msg = message_receiver.recv().unwrap();
+        assert_eq!(msg.tenant_id, "public");
+        assert_eq!(msg.client_id, "client_id");
+
     }
 }

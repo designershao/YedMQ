@@ -92,7 +92,7 @@ impl RaftManager {
         self.topic_raft.get().unwrap()
     }
 
-    pub fn session_actor_map_raft(&self) -> &crate::raft::session_actor_map::SessionActorMapRaftManager {
+    pub fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
         self.session_actor_map_raft.get().unwrap()
     }
 

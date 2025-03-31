@@ -76,10 +76,40 @@ pub trait SessionStateRaftManagerTrait {
 
    async fn unsubscribe_topic(&self, tenant_id: String, client_id: String, topic: String);
 
+   async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool;
 }
 
 #[async_trait::async_trait]
 impl SessionStateRaftManagerTrait for SessionStateRaftManager {
+
+    // get session existed from leader
+    async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
+        let current_leader_node_id = self.get_leader().await;
+        if current_leader_node_id.is_none() {
+            warn!("raft get session state leader not found");
+            return false;
+        }
+        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let res = client.session_state_existed(crate::protobuf::SessionExistedRequest {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+
+        match res {
+            Ok(r) => {
+                let response = r.into_inner();
+                if response.success {
+                    response.session_existed
+                } else {
+                    false
+                }
+            }
+            Err(e) => {
+                warn!("raft get session state grpc error: {}", e);
+                false
+            }
+        }
+    }
 
     async fn get_session_state(&self, tenant_id: &str, client_id: &str) -> Option<SessionState> {
         let current_leader_node_id = self.get_leader().await;
@@ -322,35 +352,6 @@ impl SessionStateRaftManager {
         session_state_guard
             .get_session_state(tenant_id, session_id)
             .await
-    }
-
-    // get session existed from leader
-    pub async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
-        let current_leader_node_id = self.get_leader().await;
-        if current_leader_node_id.is_none() {
-            warn!("raft get session state leader not found");
-            return false;
-        }
-        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
-        let res = client.session_state_existed(crate::protobuf::SessionExistedRequest {
-            tenant_id: tenant_id.to_string(),
-            client_id: client_id.to_string(),
-        }).await;
-
-        match res {
-            Ok(r) => {
-                let response = r.into_inner();
-                if response.success {
-                    response.session_existed
-                } else {
-                    false
-                }
-            }
-            Err(e) => {
-                warn!("raft get session state grpc error: {}", e);
-                false
-            }
-        }
     }
 
     pub async fn session_state_exists_from_local_raft_store(&self, tenant_id: &str, session_id: &str) -> bool {
