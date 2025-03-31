@@ -183,6 +183,7 @@ mod tests {
                 max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
+                inflight_retry_interval_secs: 10
             },
             cluster: crate::settings::Cluster::default(),
         };
@@ -269,6 +270,7 @@ mod tests {
                 max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
                 default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
+                inflight_retry_interval_secs: 10
             },
             cluster: crate::settings::Cluster::default(),
         };

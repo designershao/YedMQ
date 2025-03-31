@@ -365,7 +365,13 @@ impl SessionStateRaftManager {
     }
 
     pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
-        self.nodes.read().await.get(&id).cloned()
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .find(|x| *x.0 == id)
+            .and_then(|x| Some(x.1.clone()))
     }
 
     pub async fn stop(&self) -> Result<(), RaftManagerError> {

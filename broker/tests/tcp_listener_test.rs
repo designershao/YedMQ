@@ -150,6 +150,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
             max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
             default_authentication: yedmq::settings::DefaultAuthenticationValue::Allow,
             default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow,
+            inflight_retry_interval_secs: 10
         },
         cluster: yedmq::settings::Cluster::default(),
     };

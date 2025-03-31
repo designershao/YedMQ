@@ -1,5 +1,6 @@
 [mqtt]
 sys_topic_interval_secs = 10
+inflight_retry_interval_secs = 10
 default_authentication = "allow"
 default_authorization = "allow"
 max_message_size = 268435456

@@ -28,45 +28,26 @@ pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 #[async_trait::async_trait]
 #[automock]
 pub trait SessionActorMapRaftManagerTrait {
+    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId);
 
-    async fn register_session_actor_map(
-        &self,
-        tenant_id: &str,
-        client_id: &str,
-        node_id: NodeId,
-    );
-
-    async fn unregister_session_actor_map(
-        &self,
-        tenant_id: &str,
-        client_id: &str,
-        node_id: NodeId,
-    );
+    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId);
 
     fn current_node_id(&self) -> NodeId;
 }
 
-
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
-
     fn current_node_id(&self) -> NodeId {
         self.cluster_cfg.node_id
     }
 
-    async fn register_session_actor_map(
-        &self,
-        tenant_id: &str,
-        client_id: &str,
-        node_id: NodeId,
-    ) {
-        self.execute_command(
-            types::SessionActorMapRequest::RegisterSession {
-                tenant_id: tenant_id.to_string(),
-                session_id: client_id.to_string(),
-                node_id,
-            }
-        ).await;
+    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) {
+        self.execute_command(types::SessionActorMapRequest::RegisterSession {
+            tenant_id: tenant_id.to_string(),
+            session_id: client_id.to_string(),
+            node_id,
+        })
+        .await;
     }
 
     async fn unregister_session_actor_map(
@@ -75,13 +56,12 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         client_id: &str,
         node_id: NodeId,
     ) {
-       self.execute_command(
-        types::SessionActorMapRequest::UnregisterSession {
+        self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
-        }
-       ).await;
+        })
+        .await;
     }
 }
 
@@ -158,7 +138,13 @@ impl SessionActorMapRaftManager {
     }
 
     pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
-        self.nodes.read().await.get(&id).cloned()
+        self.raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .nodes()
+            .find(|x| *x.0 == id)
+            .and_then(|x| Some(x.1.clone()))
     }
 
     pub async fn stop(&self) -> Result<(), RaftManagerError> {
@@ -195,7 +181,9 @@ impl SessionActorMapRaftManager {
     pub async fn new(
         cluster_cfg: Cluster,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+        session_manager_force_stop_recipient: Recipient<
+            crate::session::session_manager_actor::ForceStop,
+        >,
     ) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
@@ -203,13 +191,13 @@ impl SessionActorMapRaftManager {
 
         let config = Arc::new(raft_config.validate().unwrap());
 
-        let (log_store, state_machine_store) =
-            new_storage(
-                &dir, 
-                session_actor_map_storage.clone(),
-                cluster_cfg.node_id,
-                session_manager_force_stop_recipient
-        ).await;
+        let (log_store, state_machine_store) = new_storage(
+            &dir,
+            session_actor_map_storage.clone(),
+            cluster_cfg.node_id,
+            session_manager_force_stop_recipient,
+        )
+        .await;
 
         let network = Network {};
 

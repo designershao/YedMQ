@@ -1,11 +1,11 @@
-use std::{cell::OnceCell, collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     plugin_manager::PluginService,
     protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
     raft::{
         raft_manager::{RaftManager, RaftManagerError},
-        session_state, NodeId,
+        NodeId,
     },
     router::RouterCmd,
     session::session_actor::SessionActor,
@@ -368,7 +368,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             let mut sessions_guard = sessions.write().await;
 
             let mut session_state = Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
-                settings.mqtt.sys_topic_interval_secs,
+                settings.mqtt.inflight_retry_interval_secs,
             ))));
 
             if !msg.clean_session {
