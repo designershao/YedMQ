@@ -3,7 +3,7 @@ use std::path::Path;
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use actix::Recipient;
-use log::info;
+use log::{info, warn};
 use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
@@ -273,13 +273,24 @@ impl SessionActorMapRaftManager {
     }
 
 
-
     pub async fn is_leader(&self) -> bool {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader
     }
 
-    pub async fn get_leader(&self) -> Option<NodeId> {
-        self.current_leader.read().await.clone()
+    pub fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.metrics().borrow().current_leader
+    }
+
+    pub fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
     }
 
     pub async fn execute_command(
@@ -287,16 +298,15 @@ impl SessionActorMapRaftManager {
         command: SessionActorMapRequest,
     ) -> Result<(), RaftManagerError> {
         if !self.is_leader().await {
-            let leader_node_id = self.get_leader().await;
+            let leader_node = self.get_leader();
 
-            if leader_node_id.is_none() {
+            if leader_node.is_none() {
                 return Err(RaftManagerError::InternalError(
                     "No leader available".into(),
                 ));
             } else {
-                let nodes = self.nodes.read().await;
 
-                let leader_node = nodes.get(&leader_node_id.unwrap()).unwrap();
+                let leader_node = leader_node.unwrap();
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
@@ -307,8 +317,11 @@ impl SessionActorMapRaftManager {
                     raft_type: RaftType::SessionActorMap.into(),
                 };
 
+                println!("AppendEntriesRequest={:?}", append_request);
+
                 let res = client.append_entries(append_request).await;
                 if res.is_err() {
+                    warn!("AppendEntries failed, res={:?}", res);
                     return Err(RaftManagerError::InternalError(
                         "AppendEntries failed".into(),
                     ));

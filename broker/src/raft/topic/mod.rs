@@ -1,6 +1,6 @@
+pub mod raft_network_impl;
 pub mod store;
 pub mod types;
-pub mod raft_network_impl;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -17,9 +17,7 @@ use tokio::sync::{watch, Mutex, RwLock};
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
-    protobuf::{
-        raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType,
-    },
+    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType},
     settings::Cluster,
     topic::topic_storage::TopicStorage,
 };
@@ -60,12 +58,29 @@ impl fmt::Display for RaftManagerError {
 #[async_trait::async_trait]
 #[automock]
 pub trait TopicRaftManagerTrait {
+    async fn subscribe_topic(
+        &self,
+        node_id: NodeId,
+        tenant_id: String,
+        client_identifier: String,
+        topic: String,
+        qos: u8,
+    );
 
-    async fn subscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String, qos: u8);
+    async fn unsubscribe_topic(
+        &self,
+        node_id: NodeId,
+        tenant_id: String,
+        client_identifier: String,
+        topic: String,
+    );
 
-    async fn unsubscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String);
-
-    async fn register_retain_publish_packet(&self, tenant_id: String, source_client_identifier: String, publish_packet: MqttPacketV3);
+    async fn register_retain_publish_packet(
+        &self,
+        tenant_id: String,
+        source_client_identifier: String,
+        publish_packet: MqttPacketV3,
+    );
 
     async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String);
 
@@ -92,45 +107,65 @@ impl TopicRaftManagerTrait for RaftManager {
             .and_then(|x| Some(x.1.clone()))
     }
 
-    async fn subscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String, qos: u8) {
-        self.execute_command(
-            Request::SubscribeTopic {
-                node_id,
-                tenant_id,
-                client_identifier,
-                topic,
-                qos,
-            },
-        ).await;
+    async fn subscribe_topic(
+        &self,
+        node_id: NodeId,
+        tenant_id: String,
+        client_identifier: String,
+        topic: String,
+        qos: u8,
+    ) {
+        self.execute_command(Request::SubscribeTopic {
+            node_id,
+            tenant_id,
+            client_identifier,
+            topic,
+            qos,
+        })
+        .await;
     }
 
-    async fn unsubscribe_topic(&self, node_id: NodeId, tenant_id: String, client_identifier: String, topic: String) {
-        self.execute_command(
-            Request::UnsubscribeTopic {
-                node_id,
-                tenant_id,
-                client_identifier,
-                topic,
-            },
-        ).await;
+    async fn unsubscribe_topic(
+        &self,
+        node_id: NodeId,
+        tenant_id: String,
+        client_identifier: String,
+        topic: String,
+    ) {
+        self.execute_command(Request::UnsubscribeTopic {
+            node_id,
+            tenant_id,
+            client_identifier,
+            topic,
+        })
+        .await;
     }
 
-    async fn register_retain_publish_packet(&self, tenant_id: String, source_client_identifier: String, publish_packet: MqttPacketV3) {
-        self.execute_command(
-            Request::RegisterRetainPublishPacket { tenant_id, source_client_identifier, publish_packet }
-        ).await;
+    async fn register_retain_publish_packet(
+        &self,
+        tenant_id: String,
+        source_client_identifier: String,
+        publish_packet: MqttPacketV3,
+    ) {
+        self.execute_command(Request::RegisterRetainPublishPacket {
+            tenant_id,
+            source_client_identifier,
+            publish_packet,
+        })
+        .await;
     }
 
     async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String) {
-        self.execute_command(
-            Request::CleanRetainPublishPacket { tenant_id, topic_filter }
-        ).await;
+        self.execute_command(Request::CleanRetainPublishPacket {
+            tenant_id,
+            topic_filter,
+        })
+        .await;
     }
 
     async fn create_tenant(&self, tenant_id: String) {
-        self.execute_command(
-            Request::CreateTenant { tenant_id }
-        ).await;
+        self.execute_command(Request::CreateTenant { tenant_id })
+            .await;
     }
 }
 
@@ -256,22 +291,32 @@ impl RaftManager {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader
     }
 
-    pub async fn get_leader(&self) -> Option<NodeId> {
-        self.current_leader.read().await.clone()
+    pub fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.metrics().borrow().current_leader
+    }
+
+    pub fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
     }
 
     pub async fn execute_command(&self, command: Request) -> Result<(), RaftManagerError> {
         if !self.is_leader().await {
-            let leader_node_id = self.get_leader().await;
+            let leader_node = self.get_leader();
 
-            if leader_node_id.is_none() {
+            if leader_node.is_none() {
                 return Err(RaftManagerError::InternalError(
                     "No leader available".into(),
                 ));
             } else {
-                let nodes = self.nodes.read().await;
-
-                let leader_node = nodes.get(&leader_node_id.unwrap()).unwrap();
+                let leader_node = leader_node.unwrap();
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
@@ -314,5 +359,4 @@ impl RaftManager {
             ..Default::default()
         }
     }
-
 }

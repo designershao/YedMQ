@@ -84,7 +84,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
 
     // get session existed from leader
     async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
-        let current_leader_node_id = self.get_leader().await;
+        let current_leader_node_id = self.get_leader_node_id();
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return false;
@@ -112,7 +112,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
     }
 
     async fn get_session_state(&self, tenant_id: &str, client_id: &str) -> Option<SessionState> {
-        let current_leader_node_id = self.get_leader().await;
+        let current_leader_node_id = self.get_leader_node_id();
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return None;
@@ -175,7 +175,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
 
     async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError> {
         
-        let leader_node_id = self.get_leader().await;
+        let leader_node_id = self.get_leader_node_id();
 
         if leader_node_id.is_none() {
             return Err(RaftManagerError::InternalError(
@@ -312,7 +312,7 @@ impl SessionStateRaftManager {
         tenant_id: &str,
         client_id: &str,
     ) -> Option<SessionState> {
-        let current_leader_node_id = self.get_leader().await;
+        let current_leader_node_id = self.get_leader_node_id();
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return None;
@@ -479,25 +479,35 @@ impl SessionStateRaftManager {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader
     }
 
-    pub async fn get_leader(&self) -> Option<NodeId> {
-        self.current_leader.read().await.clone()
+    pub fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.metrics().borrow().current_leader
     }
 
+    pub fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
     pub async fn execute_command(
         &self,
         command: SessionStateRequest,
     ) -> Result<(), RaftManagerError> {
         if !self.is_leader().await {
-            let leader_node_id = self.get_leader().await;
+            let leader_node = self.get_leader();
 
-            if leader_node_id.is_none() {
+            if leader_node.is_none() {
                 return Err(RaftManagerError::InternalError(
                     "No leader available".into(),
                 ));
             } else {
-                let nodes = self.nodes.read().await;
 
-                let leader_node = nodes.get(&leader_node_id.unwrap()).unwrap();
+                let leader_node = leader_node.unwrap();
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
