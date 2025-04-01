@@ -12,7 +12,7 @@ use crate::{
     topic::topic_storage::TopicStorage,
 };
 
-use super::service::raft_service::RaftServiceImpl;
+use super::{service::raft_service::RaftServiceImpl, session_actor_map::SessionActorMapRaftManagerTrait};
 
 #[derive(Debug, Error)]
 pub enum RaftManagerError {
@@ -104,10 +104,6 @@ impl RaftManager {
 
         let topic_raft_manager =
             crate::raft::topic::RaftManager::new(self.cluster_cfg.clone(), topic_storage.clone()).await;
-        let err = topic_raft_manager.init_cluster().await;
-        if let Err(e) = err {
-            warn!("init topic raft error: {}", e);
-        }
         let _ = self.topic_raft.set(topic_raft_manager);
     }
 
@@ -118,10 +114,6 @@ impl RaftManager {
                 session_state_storage.clone(),
             )
             .await;
-        let err = session_state_raft_manager.init_cluster().await;
-        if let Err(e) = err {
-            warn!("init session state raft error: {}", e);
-        }
         let _ = self.session_state_raft.set(session_state_raft_manager);
     }
 
@@ -136,10 +128,6 @@ impl RaftManager {
                 session_manager_actor_recipient
             )
             .await;
-        let err = session_actor_map_raft_manager.init_cluster().await;
-        if let Err(e) = err {
-            warn!("init session actor map raft error: {}", e);
-        }
         let _ = self.session_actor_map_raft.set(session_actor_map_raft_manager);
     }
 

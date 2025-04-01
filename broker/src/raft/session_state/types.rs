@@ -83,7 +83,7 @@ impl tonic::IntoRequest<crate::protobuf::AppendEntriesRequest>
     fn into_request(self) -> tonic::Request<crate::protobuf::AppendEntriesRequest> {
         let mes = crate::protobuf::AppendEntriesRequest {
             data: serde_json::to_string(&self).expect("fail to serialize"),
-            raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
+            raft_type: crate::protobuf::RaftType::SessionState.into(),
         };
         tonic::Request::new(mes)
     }
@@ -95,7 +95,7 @@ impl tonic::IntoRequest<crate::protobuf::InstallSnapshotRequest>
     fn into_request(self) -> tonic::Request<crate::protobuf::InstallSnapshotRequest> {
         let mes = crate::protobuf::InstallSnapshotRequest {
             data: serde_json::to_string(&self).expect("fail to serialize"),
-            raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
+            raft_type: crate::protobuf::RaftType::SessionState.into(),
         };
         tonic::Request::new(mes)
     }

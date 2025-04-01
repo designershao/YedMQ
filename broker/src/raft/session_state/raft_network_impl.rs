@@ -97,7 +97,7 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
 
         let mes = crate::protobuf::VoteRequest {
             data: serde_json::to_string(&req).expect("fail to serialize"),
-            raft_type: crate::protobuf::RaftType::Topic.into(),
+            raft_type: crate::protobuf::RaftType::SessionState.into(),
         };
         let request = tonic::Request::new(mes);
         let resp = c.vote(request).await;

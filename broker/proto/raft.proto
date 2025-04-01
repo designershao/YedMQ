@@ -155,6 +155,7 @@ message RoutePacketResponse {
 enum RaftType {
   TOPIC = 0;
   SESSION_ACTOR_MAP = 1;
+  SESSION_STATE = 2;
 }
 
 message AppendEntriesRequest {

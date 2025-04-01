@@ -387,6 +387,20 @@ impl RaftService for RaftServiceImpl {
 
                 resp
             }
+            RaftType::SessionState => {
+                let append_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_state_raft()
+                    .raft
+                    .append_entries(append_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                resp
+            }
         };
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
@@ -432,6 +446,19 @@ impl RaftService for RaftServiceImpl {
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
                 resp
             }
+            RaftType::SessionState => {
+                let install_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_state_raft()
+                    .raft
+                    .install_snapshot(install_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
+            }
         };
 
         let data = serde_json::to_string(&resp).expect("fail to serialize resp");
@@ -472,6 +499,19 @@ impl RaftService for RaftServiceImpl {
                     .raft_manager
                     .session_actor_map_raft()
                     .raft()
+                    .vote(vote_req)
+                    .await
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                resp
+            }
+            RaftType::SessionState => {
+                let vote_req = serde_json::from_str(&req.data)
+                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                let resp = self
+                    .raft_manager
+                    .session_state_raft()
+                    .raft
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;

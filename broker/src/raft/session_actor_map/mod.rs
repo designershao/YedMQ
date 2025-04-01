@@ -43,10 +43,27 @@ pub trait SessionActorMapRaftManagerTrait {
     async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
 
     fn raft(&self) -> &SessionActorMapRaft;
+
+    async fn init_cluster(&self) -> Result<(), RaftManagerError>;
 }
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
+
+    async fn init_cluster(&self) -> Result<(), RaftManagerError> {
+        let mut cluster_nodes = BTreeMap::new();
+        cluster_nodes.insert(
+            self.cluster_cfg.node_id,
+            Node {
+                rpc_addr: self.cluster_cfg.rpc.external.to_string(),
+                api_addr: self.cluster_cfg.rpc.external.to_string(),
+            },
+        );
+
+        self.raft.initialize(cluster_nodes).await.map_err(|e| {
+            RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
+        })
+    }
 
     fn raft(&self) -> &SessionActorMapRaft {
         &self.raft
@@ -255,20 +272,7 @@ impl SessionActorMapRaftManager {
         });
     }
 
-    pub async fn init_cluster(&self) -> Result<(), RaftManagerError> {
-        let mut cluster_nodes = BTreeMap::new();
-        cluster_nodes.insert(
-            self.cluster_cfg.node_id,
-            Node {
-                rpc_addr: self.cluster_cfg.rpc.external.to_string(),
-                api_addr: self.cluster_cfg.rpc.external.to_string(),
-            },
-        );
 
-        self.raft.initialize(cluster_nodes).await.map_err(|e| {
-            RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
-        })
-    }
 
     pub async fn is_leader(&self) -> bool {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader

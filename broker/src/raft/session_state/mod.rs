@@ -505,7 +505,7 @@ impl SessionStateRaftManager {
 
                 let append_request = AppendEntriesRequest {
                     data: serde_json::to_string(&command).unwrap(),
-                    raft_type: RaftType::SessionActorMap.into(),
+                    raft_type: RaftType::SessionState.into(),
                 };
 
                 let res = client.append_entries(append_request).await;
