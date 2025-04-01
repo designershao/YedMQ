@@ -25,11 +25,11 @@ pub struct RaftServiceImpl {
 
 #[tonic::async_trait]
 impl RaftService for RaftServiceImpl {
-
     async fn inflight_get_current_packet(
         &self,
         request: tonic::Request<crate::protobuf::InflightGetCurrentPacketRequest>,
-    ) -> Result<tonic::Response<crate::protobuf::InflightGetCurrentPacketResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<crate::protobuf::InflightGetCurrentPacketResponse>, tonic::Status>
+    {
         let request = request.into_inner();
 
         let ret = self
@@ -44,24 +44,28 @@ impl RaftService for RaftServiceImpl {
                 let tenant_id = request.tenant_id;
                 let packet_id = request.packet_id;
 
-                let state_storage_guard= self.raft_manager.session_state_raft().session_state_storage.read().await;
-                let packet_opt = state_storage_guard.inflight_get_current_packet(tenant_id, client_id, packet_id as u16).await;
+                let state_storage_guard = self
+                    .raft_manager
+                    .session_state_raft()
+                    .session_state_storage
+                    .read()
+                    .await;
+                let packet_opt = state_storage_guard
+                    .inflight_get_current_packet(tenant_id, client_id, packet_id as u16)
+                    .await;
 
-                let r= packet_opt.and_then(|packet| {
-                    Some(serde_json::to_string(&packet).unwrap())
-                });
+                let r = packet_opt.and_then(|packet| Some(serde_json::to_string(&packet).unwrap()));
 
                 let res = crate::protobuf::InflightGetCurrentPacketResponse {
                     success: true,
                     packet: r,
-                    error: None
+                    error: None,
                 };
 
                 Ok(tonic::Response::new(res))
-
             }
             Err(e) => {
-                let res = crate::protobuf::InflightGetCurrentPacketResponse  {
+                let res = crate::protobuf::InflightGetCurrentPacketResponse {
                     success: false,
                     error: Some(crate::protobuf::ErrorDetail {
                         code: 500,
@@ -72,7 +76,7 @@ impl RaftService for RaftServiceImpl {
                             .current_node_id()
                             .to_string(),
                     }),
-                    packet: None
+                    packet: None,
                 };
 
                 Ok(tonic::Response::new(res))
@@ -98,7 +102,8 @@ impl RaftService for RaftServiceImpl {
                 let session_state = self
                     .raft_manager
                     .session_state_raft()
-                    .session_state_exists_from_local_raft_store(&tenant_id, &client_id).await;
+                    .session_state_exists_from_local_raft_store(&tenant_id, &client_id)
+                    .await;
                 let res = crate::protobuf::SessionExistedResponse {
                     success: true,
                     error: None,
@@ -118,7 +123,7 @@ impl RaftService for RaftServiceImpl {
                             .current_node_id()
                             .to_string(),
                     }),
-                    session_existed: false
+                    session_existed: false,
                 };
 
                 Ok(tonic::Response::new(res))
@@ -143,7 +148,6 @@ impl RaftService for RaftServiceImpl {
                 let client_id = request.client_id;
                 let tenant_id = request.tenant_id;
 
-
                 let session_state = self
                     .raft_manager
                     .session_state_raft()
@@ -159,12 +163,12 @@ impl RaftService for RaftServiceImpl {
                             session_state_data: Some(data),
                         };
                         Ok(tonic::Response::new(res))
-                    },
+                    }
                     None => {
                         let res = crate::protobuf::GetSessionStateResponse {
                             success: true,
                             error: None,
-                            session_state_data: None
+                            session_state_data: None,
                         };
                         Ok(tonic::Response::new(res))
                     }
@@ -182,7 +186,7 @@ impl RaftService for RaftServiceImpl {
                             .current_node_id()
                             .to_string(),
                     }),
-                    session_state_data: None
+                    session_state_data: None,
                 };
 
                 Ok(tonic::Response::new(res))
@@ -241,7 +245,8 @@ impl RaftService for RaftServiceImpl {
     async fn session_actor_force_stop(
         &self,
         request: tonic::Request<crate::protobuf::SessionActorForceStopRequest>,
-    ) -> Result<tonic::Response<crate::protobuf::SessionActorForceStopResponse>, tonic::Status> {
+    ) -> Result<tonic::Response<crate::protobuf::SessionActorForceStopResponse>, tonic::Status>
+    {
         let req = request.into_inner();
         let client_id = req.client_id;
         let tenant_id = req.tenant_id;
@@ -254,7 +259,7 @@ impl RaftService for RaftServiceImpl {
             })
             .await;
 
-        if let Err(e) = res {    
+        if let Err(e) = res {
             let res = crate::protobuf::SessionActorForceStopResponse {
                 success: false,
                 error: Some(ErrorDetail {
@@ -265,8 +270,8 @@ impl RaftService for RaftServiceImpl {
                         .session_actor_map_raft()
                         .current_node_id()
                         .to_string(),
-                }), 
-            };            
+                }),
+            };
             Ok(tonic::Response::new(res))
         } else {
             let res = crate::protobuf::SessionActorForceStopResponse {
@@ -358,59 +363,139 @@ impl RaftService for RaftServiceImpl {
         request: tonic::Request<AppendEntriesRequest>,
     ) -> Result<tonic::Response<AppendEntriesResponse>, tonic::Status> {
         let req = request.into_inner();
-        let resp = match req.raft_type() {
-            RaftType::Topic => {
-                let append_req = serde_json::from_str(&req.data)
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+        if req.data.contains("vote") {
+            let response = match req.raft_type() {
+                RaftType::Topic => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                let resp = self
-                    .raft_manager
-                    .topic_raft()
-                    .raft
-                    .append_entries(append_req)
-                    .await
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    let resp = self
+                        .raft_manager
+                        .topic_raft()
+                        .raft
+                        .append_entries(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                resp
-            }
-            RaftType::SessionActorMap => {
-                let append_req = serde_json::from_str(&req.data)
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
 
-                let resp = self
-                    .raft_manager
-                    .session_actor_map_raft()
-                    .raft()
-                    .append_entries(append_req)
-                    .await
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    Ok(tonic::Response::new(mes))
+                }
+                RaftType::SessionActorMap => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                resp
-            }
-            RaftType::SessionState => {
-                let append_req = serde_json::from_str(&req.data)
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    let resp = self
+                        .raft_manager
+                        .session_actor_map_raft()
+                        .raft()
+                        .append_entries(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
 
-                let resp = self
-                    .raft_manager
-                    .session_state_raft()
-                    .raft
-                    .append_entries(append_req)
-                    .await
-                    .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    Ok(tonic::Response::new(mes))
+                }
+                RaftType::SessionState => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                resp
-            }
-        };
+                    let resp = self
+                        .raft_manager
+                        .session_state_raft()
+                        .raft
+                        .append_entries(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-        let data = serde_json::to_string(&resp).expect("fail to serialize resp");
-        let mes = AppendEntriesResponse {
-            success: true,
-            data,
-            error: None,
-        };
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
 
-        Ok(tonic::Response::new(mes))
+                    Ok(tonic::Response::new(mes))
+                }
+            };
+            response
+        } else {
+            let response = match req.raft_type() {
+                RaftType::Topic => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                    let resp = self
+                        .raft_manager
+                        .topic_raft()
+                        .raft
+                        .client_write(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
+
+                    Ok(tonic::Response::new(mes))
+                }
+                RaftType::SessionActorMap => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                    let resp = self
+                        .raft_manager
+                        .session_actor_map_raft()
+                        .raft()
+                        .client_write(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
+
+                    Ok(tonic::Response::new(mes))
+                }
+                RaftType::SessionState => {
+                    let append_req = serde_json::from_str(&req.data)
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                    let resp = self
+                        .raft_manager
+                        .session_state_raft()
+                        .raft
+                        .client_write(append_req)
+                        .await
+                        .map_err(|x| tonic::Status::internal(x.to_string()))?;
+
+                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let mes = AppendEntriesResponse {
+                        success: true,
+                        data,
+                        error: None,
+                    };
+
+                    Ok(tonic::Response::new(mes))
+                }
+            };
+            response
+        }
     }
 
     async fn install_snapshot(
