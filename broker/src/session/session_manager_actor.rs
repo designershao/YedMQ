@@ -215,12 +215,14 @@ impl Handler<ForceStop> for SessionManagerActor {
         let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
 
         let f = async move {
-            let tenant_sessions = tenant_sessions.read().await;
+            let mut tenant_sessions = tenant_sessions.write().await;
             let session = tenant_sessions.get(&msg.client_id);
             if let Some(session) = session {
                 session
                     .session_actor_message_recipient
                     .do_send(SessionActorMessage::ForceStop);
+                info!("force stop session {} remove from local node session map", msg.client_id);
+                tenant_sessions.remove(&msg.client_id);
             } else {
                 return Err(SessionManagerError::SessionNotExisted(msg.client_id));
             }
@@ -348,7 +350,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     raft_manager
                         .clone()
                         .session_actor_map_raft()
-                        .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id)
+                        .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
                         .await
                         .unwrap();
                 }

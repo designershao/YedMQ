@@ -2,7 +2,7 @@ use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
 use actix::Recipient;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use log::debug;
+use log::{debug, warn};
 use openraft::{
     Entry,
     storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
@@ -234,16 +234,22 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         session_actor_map_storage.register_session_actor(tenant_id, session_id, node_id);
                         replies.push(SessionActorMapResponse::None);
                     },
-                    types::SessionActorMapRequest::UnregisterSession { tenant_id ,session_id, node_id } => {
+                    types::SessionActorMapRequest::UnregisterSession { tenant_id ,session_id, node_id, keep_alive } => {
                         let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
                         session_actor_map_storage.unregister_session_actor(tenant_id.clone(), session_id.clone());
 
                         if node_id == self.node_id {
-                            self.session_manager_force_stop_recipient
-                                .send(crate::session::session_manager_actor::ForceStop {
-                                    tenant_id,
-                                    client_id: session_id, 
-                            }).await;
+                            if !keep_alive {
+                                // if not stop session actor
+                                let res = self.session_manager_force_stop_recipient
+                                    .send(crate::session::session_manager_actor::ForceStop {
+                                        tenant_id: tenant_id.clone(),
+                                        client_id: session_id.clone(), 
+                                }).await;
+                                if let Err(e) = res  {
+                                    warn!("teant {} session actor {} force stop error: {}",tenant_id, session_id, e);
+                                }
+                            }
                         }
                         replies.push(SessionActorMapResponse::None);
                     },

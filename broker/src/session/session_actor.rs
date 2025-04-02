@@ -3,7 +3,7 @@ use actix::{
     Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message,
     Recipient, ResponseFuture, SpawnHandle, WrapFuture,
 };
-use log::warn;
+use log::{error, info, warn};
 use openraft::raft;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -196,6 +196,10 @@ impl Actor for SessionActor {
             },
         );
         self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
+    }
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        info!("session {} stopped", self.client_id);
     }
 }
 
@@ -482,15 +486,37 @@ impl SessionActor {
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         self.clean_up(ctx);
 
+        info!("force stop session {}", self.client_id);
+
         if !self.clean_session {
             ctx.stop();
         }
     }
 
     fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        info!("clean up session {}", self.client_id);
         if self.clean_session {
+            let raft_manager = self.raft_manager.clone();
+            let client_info = self.get_plugin_client_info();
+            async move {
+                let node_id = raft_manager.session_actor_map_raft().current_node_id();
+                let res = raft_manager
+                    .session_actor_map_raft()
+                    .unregister_session_actor_map(
+                        &client_info.tenant_id,
+                        &client_info.client_identifier,
+                        node_id,
+                        false
+                    ).await;
+                if let Err(e) = res {
+                    error!("unregister session actor map error: {}", e);
+                }
+            }
+            .into_actor(self)
+            .wait(ctx);
             ctx.stop();
         } else {
+            info!("session {} is not clean session, start into inactive state", self.client_id);
             self.activity_state = ActivityState::Inactive;
 
             if let Some(handle) = self.keep_alive_task_handle.take() {
@@ -509,13 +535,17 @@ impl SessionActor {
             let client_info = self.get_plugin_client_info();
             async move {
                 let node_id = raft_manager.session_actor_map_raft().current_node_id();
-                raft_manager
+                let res = raft_manager
                     .session_actor_map_raft()
                     .unregister_session_actor_map(
                         &client_info.tenant_id,
                         &client_info.client_identifier,
                         node_id,
+                        true
                     ).await;
+                if let Err(e) = res {
+                    error!("unregister session actor map error: {}", e);
+                }
             }
             .into_actor(self)
             .wait(ctx);
@@ -1326,7 +1356,7 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
-        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
+        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_,_| {
             Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
@@ -1440,7 +1470,7 @@ mod tests {
         });
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
-        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
+        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_,_| {
             Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
@@ -1535,7 +1565,7 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
-        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
+        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_,_| {
             Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
@@ -1889,7 +1919,7 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
-        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
+        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_,_| {
             Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(
@@ -2079,7 +2109,7 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock = crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
         session_actor_map_mock.expect_current_node_id().return_const(123 as u64);
-        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_| {
+        session_actor_map_mock.expect_unregister_session_actor_map().once().returning(|_,_,_,_| {
             Box::pin(async move {Ok(())})
         });
         raft_manager_mock.expect_session_actor_map_raft().return_const(

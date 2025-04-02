@@ -16,6 +16,9 @@ pub enum RouterCmd {
     // Route publish packet to the subscribtion session
     RoutePacket{ tenant_identifier: String, packet: MqttPacketV3 },
 
+    // Route packet from other node
+    RoutePacketFromOtherNode{ tenant_identifier: String, packet: MqttPacketV3 },
+
     // Route packet to all tenants
     RoutePacketToAllTenants(MqttPacketV3),
 }
@@ -33,6 +36,15 @@ impl Router {
             select! {
                 cmd = self.router_receiver.recv() => {
                     match cmd {
+                        Some(RouterCmd::RoutePacketFromOtherNode{tenant_identifier,packet }) => {
+                            match self.route_in_local_node(&tenant_identifier, &packet).await {
+                                Ok(_) => {
+                                },
+                                Err(e) => {
+                                    warn!("teanant {} route packet to session error: {}", tenant_identifier, e);
+                                }
+                            }
+                        }
                         Some(RouterCmd::RoutePacket{tenant_identifier,packet }) => {
                             match self.route(&tenant_identifier, &packet).await {
                                 Ok(_) => {
@@ -80,6 +92,60 @@ impl Router {
         Ok(())
     }
 
+    pub async fn route_in_local_node(&self, tenant_identifier: &String,  packet: &MqttPacketV3) -> Result<()> {
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            let topic = publish_packet.variable_header.topic_name.clone();
+            let topic_manager = self.topic_manager.read().await;
+            let subscriptions = topic_manager
+                .get_subscribers(tenant_identifier.clone(), topic).await
+                .unwrap();
+            for item in subscriptions.iter() {
+                if item.node_id != self.raft_manager.topic_raft().current_node_id() {
+                    // not the current node, do nothing
+                    return Ok(());
+                } else {
+                    let client_identifier = item.client_identifier.clone();
+                    let packet = packet.clone();
+                    if let MqttPacketV3::Publish(mut publish_packet) = packet {
+                        debug!(
+                            "tenant {} session {} send packet max qos {} , body is {:?}",
+                            tenant_identifier,
+                            client_identifier.clone(),
+                            item.qos,
+                            publish_packet.payload.payload
+                        );
+                        if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
+                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
+                                publish_packet.fix_header.qos = Some(0);
+                                publish_packet.variable_header.packet_identifier = None;
+                                publish_packet.fix_header.remaining_length =
+                                    publish_packet.fix_header.remaining_length - 2;
+                            } else {
+                                publish_packet.fix_header.qos = Some(item.qos.into());
+                            }
+                        }
+                        if let Err(err) = self.session_manager_recipient.send(SendMessageToSession {
+                            tenant_id: tenant_identifier.clone(),
+                            client_id: client_identifier.clone(),
+                            packet: MqttPacketV3::Publish(publish_packet),
+                        }).await
+                        {
+                            warn!(
+                                "tenant {} session {} send packet error, details: {}",
+                                tenant_identifier,
+                                client_identifier.clone(),
+                                err
+                            );
+                        }
+                    }
+                }
+
+            }
+        }
+
+        Ok(())
+    }
+
 
     pub async fn route(&self, tenant_identifier: &String,  packet: &MqttPacketV3) -> Result<()> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
@@ -92,7 +158,7 @@ impl Router {
                 if item.node_id != self.raft_manager.topic_raft().current_node_id() {
                     info!("not in local node, send to other node ");
                     // not the current node, send to other node
-                    let router_cmd = RouterCmd::RoutePacket{
+                    let router_cmd = RouterCmd::RoutePacketFromOtherNode {
                         tenant_identifier: tenant_identifier.clone(),
                         packet: packet.clone(),
                     };

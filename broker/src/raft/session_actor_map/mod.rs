@@ -30,7 +30,7 @@ pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 pub trait SessionActorMapRaftManagerTrait {
     async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) -> Result<(), RaftManagerError>;
 
-    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) -> Result<(), RaftManagerError>;
+    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId, keep_alive: bool) -> Result<(), RaftManagerError>;
 
     fn current_node_id(&self) -> NodeId;
 
@@ -87,11 +87,13 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
+        keep_alive: bool
     ) -> Result<(), RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
+            keep_alive
         })
         .await
     }
@@ -165,11 +167,13 @@ impl SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
+        keep_alive: bool
     ) -> Result<(), RaftManagerError> {
         let request = SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
+            keep_alive
         };
 
         self.execute_command(request).await
