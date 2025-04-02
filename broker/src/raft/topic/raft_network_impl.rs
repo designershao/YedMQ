@@ -1,3 +1,4 @@
+use std::time::Duration;
 
 use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError};
 use openraft::network::RPCOption;
@@ -7,7 +8,7 @@ use openraft::raft::{
 };
 use openraft::{AnyError, RaftNetwork, RaftNetworkFactory};
 use serde::de::DeserializeOwned;
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Endpoint};
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 
@@ -23,34 +24,32 @@ impl RaftNetworkFactory<TypeConfig> for Network {
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
         let addr = format!("http://{}", node.rpc_addr);
 
-        let client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+        let channel = Endpoint::from_shared(addr.clone()).unwrap()
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
+            .concurrency_limit(8)
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .http2_keep_alive_interval(Duration::from_secs(30))
+            .keep_alive_timeout(Duration::from_secs(20))
+            .keep_alive_while_idle(true)
+            .connect()
+            .await.unwrap();
 
         NetworkConnection {
-            rpc_addr: addr.clone(),
-            client: Some(client),
+            channel,
         }
     }
 }
 
 pub struct NetworkConnection {
-    rpc_addr: String,
-    client: Option<RaftServiceClient<Channel>>,
+    channel: Channel,
 }
 
 impl NetworkConnection {
     async fn c<E: std::error::Error + DeserializeOwned>(
         &mut self,
-    ) -> Result<&mut RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        if self.client.is_none() {
-            self.client = Some(
-                RaftServiceClient::connect(self.rpc_addr.clone())
-                    .await
-                    .unwrap(),
-            );
-        }
-        self.client
-            .as_mut()
-            .ok_or_else(|| RPCError::Network(NetworkError::from(AnyError::default())))
+    ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
+        Ok(RaftServiceClient::new(self.channel.clone()))
     }
 }
 
@@ -60,7 +59,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
         req: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let c = self.c().await?;
+        let mut c = self.c().await?;
 
         let resp = c.append_entries(req).await;
         let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
@@ -79,7 +78,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        let c = self.c().await?;
+        let mut c = self.c().await?;
         let resp = c.install_snapshot(req).await;
 
         let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
@@ -94,7 +93,7 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
         req: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let c = self.c().await?;
+        let mut c = self.c().await?;
 
         let mes = crate::protobuf::VoteRequest {
             data: serde_json::to_string(&req).expect("fail to serialize"),
