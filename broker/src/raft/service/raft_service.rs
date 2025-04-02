@@ -8,6 +8,7 @@ use crate::protobuf::{
 use crate::raft::raft_manager::RaftManager;
 use crate::router::RouterCmd;
 use actix::Recipient;
+use log::info;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -328,6 +329,8 @@ impl RaftService for RaftServiceImpl {
         request: tonic::Request<RoutePacketRequest>,
     ) -> Result<tonic::Response<RoutePacketResponse>, tonic::Status> {
         let req = request.into_inner();
+
+        info!("rpc service receive route packet: {}", req.data);
 
         let router_cmd: RouterCmd =
             serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
