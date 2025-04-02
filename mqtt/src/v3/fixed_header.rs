@@ -127,7 +127,7 @@ impl FixHeader {
             self.packet_type == PacketType::PUBREC {
             let mut r:u8 = packet_type_u8 << 4;
             if self.dup.is_some() {
-                r += 1 << 3;
+                r += (self.dup.unwrap() as u8) << 3;
             }
 
             if self.qos.is_some() {
@@ -135,7 +135,9 @@ impl FixHeader {
             }
 
             if self.retain.is_some() {
-                r += 1;
+                if self.retain.unwrap() {
+                    r += 1;
+                }
             }
             buf.put_u8(r);
         } else {
@@ -223,6 +225,36 @@ mod tests {
 
         let bytes = fix_header.to_bytes();
         let i =  &[0xE0, 0x00];
+        assert_eq!(bytes.as_bytes(), i);
+    }
+
+    #[test]
+    fn test_to_bytes_with_retain_set_false() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH, 
+            dup: None,
+            qos: None,
+            retain: Some(false),
+            remaining_length: 0,
+        };
+
+        let bytes = fix_header.to_bytes();
+        let i =  &[0x30, 0x00];
+        assert_eq!(bytes.as_bytes(), i);
+    }
+
+    #[test]
+    fn test_to_bytes_with_retain_set_true() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH, 
+            dup: None,
+            qos: None,
+            retain: Some(true),
+            remaining_length: 0,
+        };
+
+        let bytes = fix_header.to_bytes();
+        let i =  &[0x31, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
 

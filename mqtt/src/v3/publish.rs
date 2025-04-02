@@ -300,13 +300,68 @@ mod tests {
         assert_eq!(out.1.payload.payload, vec!(0x01));
         assert_eq!(out.1.variable_header.topic_name, "a/b".to_string());
         assert_eq!(out.1.fix_header.qos, Some(1));
-
     }
     #[test]
     fn test_parse_with_max_message_size_limit() {
         let input = &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01];
         let out = parse_with_max_message_size_limit(input,2);
         assert!(out.is_err());
+    }
+
+    #[test]
+    fn test_to_bytes_with_retain_true() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(0),
+            retain: Some(true),
+            dup: Some(0),
+            remaining_length: 8,
+        };
+        let variable_header = VariableHeader {
+            topic_name: "a/b".to_string(),
+            packet_identifier: Some(0x10),
+        };
+
+        let payload = Payload{
+            payload: vec!(0x01)
+        };
+
+        let publish_packet = PublishPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x31,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
+
+    }
+
+    #[test]
+    fn test_to_bytes_with_retain_false() {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(0),
+            retain: Some(false),
+            dup: Some(0),
+            remaining_length: 8,
+        };
+        let variable_header = VariableHeader {
+            topic_name: "a/b".to_string(),
+            packet_identifier: Some(0x10),
+        };
+
+        let payload = Payload{
+            payload: vec!(0x01)
+        };
+
+        let publish_packet = PublishPacket {
+            fix_header,
+            variable_header,
+            payload
+        };
+
+        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x30,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
+
     }
 
     #[test]
