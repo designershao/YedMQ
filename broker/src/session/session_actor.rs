@@ -250,8 +250,14 @@ async fn do_handle_unsubscribe(
         for topic in unsub_topic_filters {
             let tenant_id = client_info.tenant_id.clone();
             let client_id = client_info.client_identifier.clone();
-            let _ =
-                topic_manager.handle_unsubscribe(tenant_id, client_id, topic.topic_name.clone());
+            let res =
+                topic_manager.handle_unsubscribe(tenant_id, client_id, topic.topic_name.clone()).await;
+            if let Err(e) = res {
+                error!(
+                    "session {} unsubscribe topic {} error: {}",
+                    client_info.client_identifier, topic.topic_name, e
+                );
+            }
             succeed_unsubscriptions.push(topic.topic_name.clone());
         }
     }
