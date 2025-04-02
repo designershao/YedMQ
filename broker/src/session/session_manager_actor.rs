@@ -16,7 +16,7 @@ use actix::{
     dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message, Recipient,
     ResponseFuture, WrapFuture,
 };
-use log::{error, info};
+use log::{error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::MqttPacketV3;
@@ -126,6 +126,10 @@ impl Actor for SessionManagerActor {
         };
         ctx.spawn(future.into_actor(self));
     }
+
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        info!("session manager stopped");
+    }
 }
 
 #[derive(Message)]
@@ -141,18 +145,23 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
 
     fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
         info!("send packet to session {}", msg.client_id);
-        let tenant_session = self.sessions.get(&msg.tenant_id).unwrap().clone();
-        async move {
-            let session = tenant_session.read().await;
-            let session = session.get(&msg.client_id);
-            if let Some(session) = session {
-                session
-                    .session_actor_message_recipient
-                    .do_send(SessionActorMessage::OutboundMessage(msg.packet));
+        let tenant_session = self.sessions.get(&msg.tenant_id);
+        if let Some(tenant_session) =  tenant_session {
+            let tenant_session = tenant_session.clone();
+            async move {
+                let session = tenant_session.read().await;
+                let session = session.get(&msg.client_id);
+                if let Some(session) = session {
+                    session
+                        .session_actor_message_recipient
+                        .do_send(SessionActorMessage::OutboundMessage(msg.packet));
+                }
             }
+            .into_actor(self)
+            .wait(ctx);
+        } else {
+            warn!("tenant {} not found", msg.tenant_id);
         }
-        .into_actor(self)
-        .wait(ctx);
     }
 }
 

@@ -87,9 +87,18 @@ impl Router {
             data: serde_json::to_string(&cmd).unwrap(),
         };
 
-        let _ = client.route_packet(route_request).await;
+        let res = client.route_packet(route_request).await;
+        if let Ok(res) = res {
+            let res = res.into_inner();
+            if !res.success {
+                return Err(anyhow::anyhow!(res.error.unwrap().message));
+            } else {
+                return Ok(());
+            }
+        } else {
+            return Err(anyhow::anyhow!(res.unwrap_err().to_string()));
+        }
 
-        Ok(())
     }
 
     pub async fn route_in_local_node(&self, tenant_identifier: &String,  packet: &MqttPacketV3) -> Result<()> {
@@ -156,7 +165,6 @@ impl Router {
                 .unwrap();
             for item in subscriptions.iter() {
                 if item.node_id != self.raft_manager.topic_raft().current_node_id() {
-                    info!("not in local node, send to other node ");
                     // not the current node, send to other node
                     let router_cmd = RouterCmd::RoutePacketFromOtherNode {
                         tenant_identifier: tenant_identifier.clone(),
@@ -164,6 +172,7 @@ impl Router {
                     };
                     let node = self.raft_manager.topic_raft().get_node_by_id(item.node_id).await;
                     if let Some(node) = node {
+                        debug!("client not in the current node, route packet to other node {}", node);
                         if let Err(e) = self.route_to_other_nodes(&node.rpc_addr, router_cmd).await {
                             warn!("route packet to node {} error: {}", node.rpc_addr, e);
                         }
