@@ -15,7 +15,7 @@ use crate::{
 use anyhow::Result;
 use yedmq_mqtt::MqttPacketV3;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize,Debug)]
 // Represent router command
 pub enum RouterCmd {
     // Route publish packet to the subscribtion session
@@ -153,6 +153,13 @@ impl Router {
                 .await
                 .unwrap();
             for item in subscriptions.iter() {
+                info!(
+                    "route in local node tenant {} session {} send packet max qos {} , body is {:?}",
+                    tenant_identifier,
+                    item.client_identifier.clone(),
+                    item.qos,
+                    publish_packet.payload.payload
+                );
                 if item.node_id != self.raft_manager.topic_raft().current_node_id() {
                     // not the current node, do nothing
                     return Ok(());

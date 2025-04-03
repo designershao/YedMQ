@@ -334,6 +334,7 @@ impl RaftService for RaftServiceImpl {
 
         let router_cmd: RouterCmd =
             serde_json::from_str(&req.data).map_err(|x| tonic::Status::internal(x.to_string()))?;
+        info!("router cmd: {:?}", router_cmd);
         let res = self.router_sender.send(router_cmd).await;
 
         if let Err(e) = res {

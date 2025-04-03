@@ -8,7 +8,7 @@ use openraft::raft;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{mpsc::{self, Sender}, RwLock};
 use yedmq_mqtt::{
     v3::{
         disconnect::DisconnectPacket,
@@ -28,10 +28,10 @@ use yedmq_mqtt::{
 use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
-    inflight::InflightError, plugin_manager::{PluginService, SubscribeReturnCode}, raft::raft_manager::RaftManagerTrait, router::RouterCmd, topic::topic_manager::TopicManagerTrait
+    inflight::InflightError, plugin_manager::{PluginService, SubscribeReturnCode}, raft::raft_manager::RaftManagerTrait, router::RouterCmd, topic::topic_manager::{self, TopicManagerTrait}
 };
 
-use super::{session_state_storage::SessionState, WillMessage};
+use super::{session_manager_actor::SessionLifecycleMessage, session_state_storage::SessionState, WillMessage};
 use crate::connection::ConnectionActorMessage;
 
 pub struct SessionInfo {
@@ -175,6 +175,8 @@ pub struct SessionActor {
     state: Arc<RwLock<SessionState>>,
 
     raft_manager: Arc<dyn crate::raft::raft_manager::RaftManagerTrait>,
+
+    session_lifecycle_tx: mpsc::Sender<SessionLifecycleMessage>,
 }
 
 impl Actor for SessionActor {
@@ -196,9 +198,40 @@ impl Actor for SessionActor {
             },
         );
         self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
+
+        let state = self.state.clone();
+        let topic_manager = self.topic_manager.clone();
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+
+        async move {
+            let state_guard= state.read().await;
+            let topic_iter = state_guard.subscriptions.iter();
+            let topic_manager = topic_manager.read().await;
+            for (topic, qos) in topic_iter {
+                info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
+                let qos_v = match qos {
+                    QoS::AtMostOnce => 0,
+                    QoS::AtLeastOnce => 1,
+                    QoS::ExactlyOnce => 2,
+                };
+                let _ = topic_manager
+                    .handle_subscribe(tenant_id.clone(),client_id.clone(), topic.clone(), qos_v)
+                    .await;
+            }
+
+        }.into_actor(self).wait(ctx);
     }
 
-    fn stopped(&mut self, _ctx: &mut Self::Context) {
+    fn stopped(&mut self, ctx: &mut Self::Context) {
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+        let session_lifecycle_tx = self.session_lifecycle_tx.clone();
+        async move {
+            let _ = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStopped { 
+                tenant_id, client_id 
+            }).await;
+        }.into_actor(self).wait(ctx);
         info!("🗑️ session {} stopped", self.client_id);
     }
 }
@@ -437,6 +470,7 @@ impl SessionActor {
         peer_addr: SocketAddr,
         session_state: Arc<RwLock<SessionState>>,
         raft_manager: Arc<dyn RaftManagerTrait>,
+        session_lifecycle_tx: Sender<SessionLifecycleMessage>,
     ) -> Self {
         SessionActor {
             topic_manager,
@@ -457,6 +491,7 @@ impl SessionActor {
             username: None,
             state: session_state,
             raft_manager,
+            session_lifecycle_tx
         }
     }
 
@@ -1078,6 +1113,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                     .into_actor(self)
                     .wait(ctx);
                     self.clean_up(ctx);
+                } else {
+                    self.force_stop(ctx);
                 }
             }
             SessionActorMessage::UnexpectClientDisconnected => {
@@ -1252,6 +1289,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1268,6 +1307,7 @@ mod tests {
                 INFLIGHT_RETRY,
             )))),
             Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1353,6 +1393,8 @@ mod tests {
             Box::new(session_actor_map_mock)
         );
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1368,7 +1410,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1470,6 +1513,8 @@ mod tests {
             Box::new(session_state_mock)
         );
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1485,7 +1530,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1562,6 +1608,8 @@ mod tests {
             Box::new(session_actor_map_mock)
         );
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1577,7 +1625,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1628,6 +1677,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1643,7 +1694,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1711,6 +1763,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1726,7 +1780,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1792,6 +1847,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1807,7 +1864,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1853,6 +1911,8 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1868,7 +1928,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -1916,6 +1977,8 @@ mod tests {
             Box::new(session_actor_map_mock)
         );
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -1931,7 +1994,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -1986,6 +2050,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2001,7 +2067,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -2051,6 +2118,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2066,7 +2135,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -2106,6 +2176,8 @@ mod tests {
             Box::new(session_actor_map_mock)
         );
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2121,7 +2193,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -2179,6 +2252,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2194,7 +2269,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -2253,6 +2329,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2268,7 +2346,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
         let client_publish_packet =
@@ -2320,6 +2399,8 @@ mod tests {
 
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let _session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2335,7 +2416,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 
@@ -2380,6 +2462,8 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
         let raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
         let _session_actor = SessionActor::new(
             "tenant_a".to_string(),
             "client_a".to_string(),
@@ -2395,7 +2479,8 @@ mod tests {
             Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 INFLIGHT_RETRY,
             )))),
-            Arc::new(raft_manager_mock)
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
         )
         .start();
 

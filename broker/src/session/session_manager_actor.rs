@@ -340,6 +340,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let plugin_manager = self.plugin_manager.clone();
         let router_sender = self.router_sender.clone();
         let settings = self.settings.clone();
+        let session_lifecycle_tx = self.session_lifecycle_tx.clone().unwrap().clone();
 
         let raft_manager = self.raft_manager.clone();
 
@@ -486,7 +487,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.connection_addr,
                 msg.peer_addr,
                 session_state,
-                raft_manager
+                raft_manager,
+                session_lifecycle_tx
             );
 
             let session_actor_addr = session_actor.start();
