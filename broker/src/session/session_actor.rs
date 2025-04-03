@@ -198,8 +198,8 @@ impl Actor for SessionActor {
         self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
     }
 
-    fn stopped(&mut self, ctx: &mut Self::Context) {
-        info!("session {} stopped", self.client_id);
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        info!("🗑️ session {} stopped", self.client_id);
     }
 }
 
@@ -506,6 +506,7 @@ impl SessionActor {
             let client_info = self.get_plugin_client_info();
             async move {
                 let node_id = raft_manager.session_actor_map_raft().current_node_id();
+                info!("unregister session actor map from node {}", node_id);
                 let res = raft_manager
                     .session_actor_map_raft()
                     .unregister_session_actor_map(
@@ -516,6 +517,8 @@ impl SessionActor {
                     ).await;
                 if let Err(e) = res {
                     error!("unregister session actor map error: {}", e);
+                } else {
+                    info!("unregister session actor map success");
                 }
             }
             .into_actor(self)
@@ -536,25 +539,6 @@ impl SessionActor {
                     self.inflight_retry_task_handle = None;
                 }
             }
-
-            let raft_manager = self.raft_manager.clone();
-            let client_info = self.get_plugin_client_info();
-            async move {
-                let node_id = raft_manager.session_actor_map_raft().current_node_id();
-                let res = raft_manager
-                    .session_actor_map_raft()
-                    .unregister_session_actor_map(
-                        &client_info.tenant_id,
-                        &client_info.client_identifier,
-                        node_id,
-                        true
-                    ).await;
-                if let Err(e) = res {
-                    error!("unregister session actor map error: {}", e);
-                }
-            }
-            .into_actor(self)
-            .wait(ctx);
         }
     }
 

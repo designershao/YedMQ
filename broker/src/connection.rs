@@ -6,7 +6,7 @@ use std::sync::Arc;
 use actix::prelude::*;
 use actix::{Actor, Addr, Context};
 use bytes::{Buf, BytesMut};
-use log::{error, warn};
+use log::{error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder};
 use yedmq_mqtt::v3::connect::ConnectPacket;
@@ -216,17 +216,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     .await;
                 if let Ok(result) = result {
                     if let Ok(session) = result {
-                        println!("create session success, set session to connection");
-
-                        let connack_packet = ConnAckPacketBuilder::new()
-                            .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::Accpet)
-                            .build();
-                        self_addr
-                            .send(ConnectionActorMessage::WritePacketToClient(
-                                yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                            ))
-                            .await
-                            .unwrap();
+                        info!("create session success, set session to connection");
                         Ok(session)
                     } else {
                         let connack_packet = ConnAckPacketBuilder::new()

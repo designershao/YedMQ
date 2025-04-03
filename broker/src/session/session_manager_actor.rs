@@ -19,7 +19,7 @@ use actix::{
 use log::{error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::{v3::{connack::{ConnAckPacketBuilder, ConnackReturnCode}, suback::ReturnCode}, MqttPacketV3};
 
 use super::{
     session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
@@ -309,6 +309,7 @@ async fn call_force_disconnect(
     let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
 
     for i in 0..max_retries {
+        info!("force disconnect session {} from node {} in {} retry", client_id, node_id, i);
         let res = client
             .session_force_disconnect(ForceSessionDisconnectRequest {
                 tenant_id: tenant_id.clone(),
@@ -316,6 +317,7 @@ async fn call_force_disconnect(
             })
             .await;
         if res.is_ok() {
+            info!("force disconnect session {} from node {} succeed", client_id, node_id);
             return true;
         }
         tokio::time::sleep(Duration::from_secs(2 ^ i)).await;
@@ -328,6 +330,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
     fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
         if !self.tenant_existed(&msg.tenant_id) {
+            info!("tenant not existed, create tenant {}", msg.tenant_id);
             self.create_tenant(&msg.tenant_id);
             //return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
@@ -348,25 +351,32 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 .await;
 
             if let Some(node_id) = session_actor_map_node_id {
-                if !call_force_disconnect(
-                    node_id,
-                    raft_manager.clone(),
-                    msg.tenant_id.clone(),
-                    msg.client_id.clone(),
-                )
-                .await
-                {
-                    raft_manager
-                        .clone()
-                        .session_actor_map_raft()
-                        .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
-                        .await
-                        .unwrap();
+                info!("previous session actor map node id: {}", node_id);
+                if node_id != raft_manager.session_actor_map_raft().current_node_id() {
+                    info!("previous session not in current force disconnect previous session actor map node id: {}", node_id);
+                    if !call_force_disconnect(
+                        node_id,
+                        raft_manager.clone(),
+                        msg.tenant_id.clone(),
+                        msg.client_id.clone(),
+                    )
+                    .await
+                    {
+                        raft_manager
+                            .clone()
+                            .session_actor_map_raft()
+                            .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
+                            .await
+                            .unwrap();
+                    }
                 }
+            } else {
+                info!("previous session actor map node id not found");
             }
 
             let current_node_id = raft_manager.session_actor_map_raft().current_node_id();
 
+            info!("start register session actor map tenant_id: {}, client_id: {}, node_id: {}", msg.tenant_id, msg.client_id, current_node_id);
             let res = raft_manager
                 .session_actor_map_raft()
                 .register_session_actor_map(&msg.tenant_id, &msg.client_id, current_node_id)
@@ -375,6 +385,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             if res.is_err() {
                 return Err(SessionManagerError::RaftErr(res.unwrap_err()));
             }
+            info!("register session actor map succeed tenant_id: {}, client_id: {}, node_id: {}", msg.tenant_id, msg.client_id, current_node_id);
             //
 
             let mut sessions_guard = sessions.write().await;
@@ -384,6 +395,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             ))));
 
             if !msg.clean_session {
+                info!("session {} not clean session, into state recover or create logic.", msg.client_id);
                 // If raft store not existed, create new session state
                 // First check local sessions if exists send reconect
                 // If local sessions not existed, recover from raft store
@@ -392,8 +404,18 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     .session_state_exists(&msg.tenant_id, &msg.client_id)
                     .await;
                 if session_state_exist {
+                    let connack = ConnAckPacketBuilder::new()
+                        .set_return_code(ConnackReturnCode::Accpet)
+                        .set_session_present(true)
+                        .build();
+                    msg.connection_addr.send(
+                        ConnectionActorMessage::WritePacketToClient(
+                            MqttPacketV3::Connack(connack)
+                        )
+                    ).await.unwrap();
                     // check session in current node
                     if sessions_guard.contains_key(&msg.client_id) {
+                        info!("session {} exists in current node, start reconnect", msg.client_id);
                         sessions_guard
                             .get(&msg.client_id)
                             .unwrap()
@@ -410,6 +432,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             .unwrap();
                         // in current node, send reconnect
                     } else {
+                        info!("session {} not exists in current node, recover from raft", msg.client_id);
                         // not in current node, recover from raft
                         let session_state_from_raft = raft_manager
                             .session_state_raft()
@@ -420,6 +443,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
                     //
                 } else {
+                    info!("session {} not exists in cluster, create new session state", msg.client_id);
                     raft_manager
                         .session_state_raft()
                         .create_session_state(
@@ -428,7 +452,26 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             settings.mqtt.sys_topic_interval_secs,
                         )
                         .await;
+                    let connack = ConnAckPacketBuilder::new()
+                        .set_return_code(ConnackReturnCode::Accpet)
+                        .set_session_present(false)
+                        .build();
+                    msg.connection_addr.send(
+                        ConnectionActorMessage::WritePacketToClient(
+                            MqttPacketV3::Connack(connack)
+                        )
+                    ).await.unwrap();
                 }
+            } else {
+                let connack = ConnAckPacketBuilder::new()
+                    .set_return_code(ConnackReturnCode::Accpet)
+                    .set_session_present(false)
+                    .build();
+                msg.connection_addr.send(
+                    ConnectionActorMessage::WritePacketToClient(
+                        MqttPacketV3::Connack(connack)
+                    )
+                ).await.unwrap();
             }
             let session_actor = SessionActor::new(
                 msg.tenant_id.clone(),
