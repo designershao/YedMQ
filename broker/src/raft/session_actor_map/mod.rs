@@ -28,9 +28,20 @@ pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 #[async_trait::async_trait]
 #[automock]
 pub trait SessionActorMapRaftManagerTrait {
-    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId) -> Result<(), RaftManagerError>;
+    async fn register_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) -> Result<(), RaftManagerError>;
 
-    async fn unregister_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId, keep_alive: bool) -> Result<(), RaftManagerError>;
+    async fn unregister_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+        keep_alive: bool,
+    ) -> Result<(), RaftManagerError>;
 
     fn current_node_id(&self) -> NodeId;
 
@@ -49,7 +60,6 @@ pub trait SessionActorMapRaftManagerTrait {
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
-
     async fn init_cluster(&self) -> Result<(), RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
@@ -73,7 +83,12 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         self.cluster_cfg.node_id
     }
 
-    async fn register_session_actor_map(&self, tenant_id: &str, client_id: &str, node_id: NodeId)  -> Result<(), RaftManagerError> {
+    async fn register_session_actor_map(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        node_id: NodeId,
+    ) -> Result<(), RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
@@ -87,13 +102,13 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-        keep_alive: bool
+        keep_alive: bool,
     ) -> Result<(), RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
-            keep_alive
+            keep_alive,
         })
         .await
     }
@@ -113,8 +128,37 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
     ) -> Option<NodeId> {
-        let session_map_storage_guard = self.session_actor_map_storage.read().await;
-        session_map_storage_guard.get_session_actor_map(tenant_id, client_id)
+        if !self.is_leader().await {
+            let leader_node = self.get_leader();
+
+            if leader_node.is_none() {
+                warn!("GetSessionActorMap failed, leader not found");
+                return None;
+            } else {
+                let leader_node = leader_node.unwrap();
+
+                let addr = format!("http://{}", leader_node.rpc_addr);
+
+                let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+
+                let actor_map_response = client
+                    .get_session_actor_map(crate::protobuf::GetSessionActorMapRequest {
+                        tenant_id: tenant_id.to_string(),
+                        client_id: client_id.to_string(),
+                    })
+                    .await;
+
+                if actor_map_response.is_err() {
+                    warn!("GetSessionActorMap failed, res={:?}", actor_map_response);
+                    return None;
+                } else {
+                    return actor_map_response.unwrap().into_inner().node_id;
+                }
+            }
+        } else {
+            let session_map_storage_guard = self.session_actor_map_storage.read().await;
+            session_map_storage_guard.get_session_actor_map(tenant_id, client_id)
+        }
     }
 }
 
@@ -167,13 +211,13 @@ impl SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-        keep_alive: bool
+        keep_alive: bool,
     ) -> Result<(), RaftManagerError> {
         let request = SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
-            keep_alive
+            keep_alive,
         };
 
         self.execute_command(request).await
@@ -276,7 +320,6 @@ impl SessionActorMapRaftManager {
         });
     }
 
-
     pub async fn is_leader(&self) -> bool {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader
     }
@@ -309,7 +352,6 @@ impl SessionActorMapRaftManager {
                     "No leader available".into(),
                 ));
             } else {
-
                 let leader_node = leader_node.unwrap();
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
@@ -320,8 +362,6 @@ impl SessionActorMapRaftManager {
                     data: serde_json::to_string(&command).unwrap(),
                     raft_type: RaftType::SessionActorMap.into(),
                 };
-
-                println!("AppendEntriesRequest={:?}", append_request);
 
                 let res = client.append_entries(append_request).await;
                 if res.is_err() {
