@@ -26,6 +26,61 @@ pub struct RaftServiceImpl {
 
 #[tonic::async_trait]
 impl RaftService for RaftServiceImpl {
+    async fn get_subscriptions(
+        &self,
+        request: tonic::Request<crate::protobuf::GetSubscriptionRequest>,
+    ) -> Result<tonic::Response<crate::protobuf::GetSubscriptionResponse>, tonic::Status> {
+        let request = request.into_inner();
+
+        let ret = self
+            .raft_manager
+            .session_actor_map_raft()
+            .raft()
+            .ensure_linearizable()
+            .await;
+
+        match ret {
+            Ok(_) => {
+                let topic_storage_guard = self.raft_manager.topic_raft().topic_storage.read().await;
+                let tenant_id = request.tenant_id;
+                let topic = request.topic;
+                let subscriptions = topic_storage_guard
+                    .get_subscriptions(tenant_id, topic)
+                    .unwrap();
+                let subscriptions_result = subscriptions.iter().map(|sub| {
+                    crate::protobuf::Subscription {
+                        qos:sub.qos as u32, 
+                        node_id: sub.node_id, 
+                        client_id: sub.client_identifier.clone() 
+                    }
+                });
+                let res = crate::protobuf::GetSubscriptionResponse {
+                    success: true,
+                    error: None,
+                    subscriptions: subscriptions_result.collect(),
+                };
+                Ok(tonic::Response::new(res))
+            }
+            Err(e) => {
+                let res = crate::protobuf::GetSubscriptionResponse {
+                    success: false,
+                    error: Some(crate::protobuf::ErrorDetail {
+                        code: 500,
+                        message: e.to_string(),
+                        node: self
+                            .raft_manager
+                            .session_actor_map_raft()
+                            .current_node_id()
+                            .to_string(),
+                    }),
+                    subscriptions: vec![],
+                };
+
+                Ok(tonic::Response::new(res))
+            }   
+        }
+    }
+
     async fn inflight_get_current_packet(
         &self,
         request: tonic::Request<crate::protobuf::InflightGetCurrentPacketRequest>,

@@ -117,10 +117,13 @@ impl Actor for SessionManagerActor {
                     SessionLifecycleMessage::SessionStopped {
                         tenant_id,
                         client_id,
-                    } => self_addr.do_send(RemoveSessionMessage {
-                        tenant_id,
-                        client_id,
-                    }),
+                    } =>{
+                        info!("received session lifectcle message SessionStopped session {} stopped", client_id);
+                        self_addr.do_send(RemoveSessionMessage {
+                            tenant_id,
+                            client_id,
+                        })
+                    },
                 }
             }
         };
@@ -152,9 +155,12 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
                 let session = tenant_session.read().await;
                 let session = session.get(&msg.client_id);
                 if let Some(session) = session {
-                    session
+                    let res = session
                         .session_actor_message_recipient
-                        .do_send(SessionActorMessage::OutboundMessage(msg.packet));
+                        .send(SessionActorMessage::OutboundMessage(msg.packet)).await;
+                    if let Err(e) = res {
+                        error!("send packet to session {} failed: {}", msg.client_id, e);
+                    }
                 }
             }
             .into_actor(self)
@@ -556,6 +562,7 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
             async move {
                 let mut sessions_guard = sessions.write().await;
                 sessions_guard.remove(&msg.client_id);
+                info!("received RemoveSessionMessage, remove session {} from tenant {} succeed", msg.client_id, msg.tenant_id);
             }
             .into_actor(self)
             .wait(ctx);

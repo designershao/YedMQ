@@ -1,10 +1,14 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use backoff::{backoff::Backoff, ExponentialBackoff};
+use log::{info, warn};
 use mockall::automock;
+use nom::Err;
 use tokio::sync::RwLock;
+use tonic::transport::Channel;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::raft::{topic::types::Request, NodeId};
+use crate::{protobuf::raft_service_client::RaftServiceClient, raft::{topic::{types::Request, TopicRaftManagerTrait}, NodeId}};
 
 use super::topic_storage::{Error, Subscription, TopicStorage};
 use async_trait::async_trait;
@@ -106,6 +110,7 @@ impl TopicManagerTrait for TopicManager {
         topic_filter: String,
         qos: u8,
     ) -> Result<(), Error> {
+        info!("with raft cluster subscribe tenant_id: {} topic: {}, qos: {}, node_id: {}", tenant_id, topic_filter, qos, self.current_node_id);
         self.raft_manager.topic_raft()
             .execute_command(Request::SubscribeTopic {
                 node_id: self.current_node_id,
@@ -142,8 +147,34 @@ impl TopicManagerTrait for TopicManager {
         tenant_id: String,
         msg_topic: String,
     ) -> Result<Vec<Arc<Subscription>>, Error> {
-        let inner_storage = self.storage.read().await;
-        inner_storage.get_subscriptions(tenant_id, msg_topic)
+        let current_leader_node_id = self.raft_manager.topic_raft().get_leader_node_id();
+        if current_leader_node_id.is_none() {
+            warn!("raft get session state leader not found");
+            return Ok(vec![]);
+        }
+        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let request = crate::protobuf::GetSubscriptionRequest {
+            tenant_id: tenant_id.to_string(),
+            topic: msg_topic.to_string(),
+        };
+        let res = client.get_subscriptions(request).await;
+        if let Ok(res) = res {
+            let response = res.into_inner();
+            if response.success {
+                let r = response.subscriptions.iter().map(|data| {
+                    Arc::new(Subscription {
+                        node_id: data.node_id,
+                        client_identifier: data.client_id.clone(),
+                        qos: data.qos as u8,
+                    })
+                }).collect();
+                Ok(r)
+            } else {
+                Err(Error::TenantNotFound(response.error.unwrap().message))
+            }
+        } else {
+            Err(Error::TenantNotFound(res.unwrap_err().to_string()))
+        }
     }
 
     async fn clean_retain_publish_packet(
@@ -215,4 +246,41 @@ impl TopicManager {
             current_node_id,
         }
     }
+
+    async fn get_grpc_client(&self, node_id: NodeId) -> RaftServiceClient<tonic::transport::Channel> {
+        let node = self.raft_manager.topic_raft().get_node_by_id(node_id).await.unwrap();
+        let addr = format!("http://{}", node.rpc_addr);
+        let client = create_rpc_client_with_retry(addr.clone()).await.unwrap();
+        client
+    }
+
 }
+
+   async fn create_rpc_client_with_retry(addr: String) -> anyhow::Result<RaftServiceClient<Channel>> {
+        let mut backoff = ExponentialBackoff {
+            initial_interval: Duration::from_millis(100),
+            max_interval: Duration::from_secs(10),
+            multiplier: 2.0,
+            max_elapsed_time: Some(Duration::from_secs(60)),
+            ..ExponentialBackoff::default()
+        };
+
+        let channel = loop {
+            match tonic::transport::Endpoint::from_shared(addr.clone())?
+                .connect()
+                .await
+            {
+                Ok(channel) => break channel,
+                Err(e) => {
+                    if let Some(duration) = backoff.next_backoff() {
+                        warn!("RPC client connection failed: {}. Retrying in {:?}...", e, duration);
+                        tokio::time::sleep(duration).await;
+                    } else {
+                        return Err(anyhow::anyhow!(format!("Failed to connect after retries: {}", e)));
+                    }
+                }
+            }
+        };
+
+        Ok(RaftServiceClient::new(channel))
+    }

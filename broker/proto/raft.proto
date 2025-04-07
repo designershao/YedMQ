@@ -25,6 +25,8 @@ service RaftService {
 
   rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse);
 
+  rpc GetSubscriptions(GetSubscriptionRequest) returns (GetSubscriptionResponse);
+
   rpc SessionStateExisted(SessionExistedRequest) returns (SessionExistedResponse);
 
   rpc InflightGetCurrentPacket(InflightGetCurrentPacketRequest) returns (InflightGetCurrentPacketResponse);
@@ -38,6 +40,34 @@ message ErrorDetail {
   string message = 2;
 
   string node = 3;
+
+}
+
+message GetSubscriptionRequest {
+
+  string tenant_id = 1;
+
+  string topic = 2;
+
+}
+
+message Subscription {
+
+  uint64 node_id = 1;
+
+  uint32 qos = 2;
+
+  string client_id = 3;
+
+}
+
+message GetSubscriptionResponse {
+
+  bool success = 1;
+
+  ErrorDetail error = 2;
+
+  repeated Subscription subscriptions = 3;
 
 }
 

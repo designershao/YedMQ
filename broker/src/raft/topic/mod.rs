@@ -172,6 +172,8 @@ impl TopicRaftManagerTrait for RaftManager {
 pub struct RaftManager {
     pub raft: TopicRaft,
 
+    pub topic_storage: Arc<RwLock<TopicStorage>>,
+
     current_leader: Arc<RwLock<Option<NodeId>>>,
 
     nodes: Arc<RwLock<HashMap<NodeId, Node>>>,
@@ -253,6 +255,7 @@ impl RaftManager {
             running_rx: rx,
             running_tx: tx,
             cluster_cfg,
+            topic_storage,
         };
 
         manager.start_monitor_raft_metrics();

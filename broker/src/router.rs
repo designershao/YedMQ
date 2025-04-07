@@ -153,17 +153,7 @@ impl Router {
                 .await
                 .unwrap();
             for item in subscriptions.iter() {
-                info!(
-                    "route in local node tenant {} session {} send packet max qos {} , body is {:?}",
-                    tenant_identifier,
-                    item.client_identifier.clone(),
-                    item.qos,
-                    publish_packet.payload.payload
-                );
-                if item.node_id != self.raft_manager.topic_raft().current_node_id() {
-                    // not the current node, do nothing
-                    return Ok(());
-                } else {
+                if item.node_id == self.raft_manager.topic_raft().current_node_id() {
                     let client_identifier = item.client_identifier.clone();
                     let packet = packet.clone();
                     if let MqttPacketV3::Publish(mut publish_packet) = packet {
@@ -243,6 +233,12 @@ impl Router {
                 } else {
                     let client_identifier = item.client_identifier.clone();
                     let packet = packet.clone();
+                    info!(
+                        "route to current node tenant {} session {} max qos {}",
+                        tenant_identifier,
+                        client_identifier.clone(),
+                        item.qos,
+                    );
                     if let MqttPacketV3::Publish(mut publish_packet) = packet {
                         debug!(
                             "tenant {} session {} send packet max qos {} , body is {:?}",
