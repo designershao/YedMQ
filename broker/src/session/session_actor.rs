@@ -1,7 +1,5 @@
 use actix::{
-    dev::{ContextFutureSpawner, MessageResponse},
-    Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message,
-    Recipient, ResponseFuture, SpawnHandle, WrapFuture,
+    dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFuture, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture
 };
 use log::{error, info, warn};
 use openraft::raft;
@@ -459,6 +457,8 @@ async fn do_handle_subscribe(
     }
 }
 
+type ThenCallback<A, R> = fn(R, &mut A, &mut Context<A>) -> actix::fut::Ready<R>;
+
 impl SessionActor {
     pub fn new(
         tenant_id: String,
@@ -531,16 +531,26 @@ impl SessionActor {
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         self.clean_up(ctx);
 
-        info!("force stop session {}", self.client_id);
+        self.unregister_session_actor_map(ctx, |_, act, ctx| {
+            info!("force stop session {}", act.client_id);
 
-        if !self.clean_session {
-            info!("start notify session manager stopped");
-            self.notify_session_manager_stopped(ctx);
-            ctx.stop();
-        }
+            if !act.clean_session {
+                info!("start notify session manager stopped");
+                act.notify_session_manager_stopped(ctx, |_,_, ctx| {
+                    ctx.stop();
+                    fut::ready(())
+                });
+            }
+            fut::ready(())
+        });
+
     }
 
-    fn notify_session_manager_stopped(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+    fn notify_session_manager_stopped(
+        &mut self, ctx: &mut <SessionActor as Actor>::Context, 
+        callback_fn:ThenCallback<SessionActor, ()>
+        ) 
+    {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
@@ -557,10 +567,13 @@ impl SessionActor {
             }
         }
         .into_actor(self)
+        .then(callback_fn) 
         .wait(ctx);
     }
 
-    fn unregister_session_actor_map(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+    fn unregister_session_actor_map(&mut self, ctx: &mut <SessionActor as Actor>::Context,
+        callback_fn:ThenCallback<SessionActor, ()>
+    ){
         let raft_manager = self.raft_manager.clone();
         let client_info = self.get_plugin_client_info();
         async move {
@@ -582,15 +595,20 @@ impl SessionActor {
             }
         }
         .into_actor(self)
+        .then(callback_fn)
         .wait(ctx);
     }
 
     fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         info!("clean up session {}", self.client_id);
         if self.clean_session {
-            self.unregister_session_actor_map(ctx);
-            self.notify_session_manager_stopped(ctx);
-            ctx.stop();
+            self.unregister_session_actor_map(ctx, |_,act,ctx| {
+                act.notify_session_manager_stopped(ctx, |_,_,ctx| {
+                    ctx.stop();
+                    fut::ready(())
+                });
+                fut::ready(())
+            });
         } else {
             info!(
                 "session {} is not clean session, start into inactive state",
@@ -1205,7 +1223,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.clean_up(ctx);
             }
             SessionActorMessage::ForceStop => {
-                self.unregister_session_actor_map(ctx);
+                info!("receive force stop message for session {}", self.client_id);
                 self.force_stop(ctx);
             }
         }

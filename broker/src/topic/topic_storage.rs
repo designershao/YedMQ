@@ -160,6 +160,13 @@ impl TopicStorageNode {
                 subscribtion.client_identifier.clone(),
                 Arc::new(subscribtion),
             );
+        } else {
+            let mut subscriptions_guard = self.subscriptions.write().unwrap();
+            subscriptions_guard.remove(&subscribtion.client_identifier);
+            subscriptions_guard.insert(
+                subscribtion.client_identifier.clone(),
+                Arc::new(subscribtion),
+            );
         }
     }
 
@@ -1268,6 +1275,30 @@ mod tests {
         assert_eq!(clients.len(), 2);
         assert_eq!(clients.clone()[0].client_identifier, "clientB");
         assert_eq!(clients.clone()[1].client_identifier, "clientD");
+    }
+
+    #[test]
+    fn when_subscribe_the_same_topic_with_different_node_topic_storage_should_update_subscriptions() {
+        let mut topic_storage = TopicStorage::new();
+        let tenant_name = "hello".to_string();
+        topic_storage.create_tenant(&tenant_name);
+        let _ = topic_storage.subscribe(
+            "hello".to_string(),
+            "clientA".to_string(),
+            "a/b/c".to_string(),
+            0,
+            1,
+        );
+        let _ = topic_storage.subscribe(
+            "hello".to_string(),
+            "clientA".to_string(),
+            "a/b/c".to_string(),
+            0,
+            0,
+        );
+        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 0);
+        
     }
 
     #[test]
