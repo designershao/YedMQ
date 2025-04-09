@@ -32,8 +32,7 @@ impl RaftNetworkFactory<TypeConfig> for Network {
             .http2_keep_alive_interval(Duration::from_secs(30))
             .keep_alive_timeout(Duration::from_secs(20))
             .keep_alive_while_idle(true)
-            .connect()
-            .await.unwrap();
+            .connect_lazy();
 
         NetworkConnection {
             channel,

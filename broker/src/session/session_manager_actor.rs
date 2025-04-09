@@ -302,7 +302,7 @@ async fn call_force_disconnect(
     raft_manager: Arc<dyn RaftManagerTrait>,
     tenant_id: String,
     client_id: String,
-) -> bool {
+) -> Result<bool, tonic::transport::Error> {
     let max_retries = 3;
     let node = raft_manager
         .session_actor_map_raft()
@@ -312,7 +312,7 @@ async fn call_force_disconnect(
 
     let addr = format!("http://{}", node.rpc_addr);
 
-    let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+    let mut client = RaftServiceClient::connect(addr.clone()).await?;
 
     for i in 0..max_retries {
         info!("force disconnect session {} from node {} in {} retry", client_id, node_id, i);
@@ -324,11 +324,11 @@ async fn call_force_disconnect(
             .await;
         if res.is_ok() {
             info!("force disconnect session {} from node {} succeed", client_id, node_id);
-            return true;
+            return Ok(true);
         }
         tokio::time::sleep(Duration::from_secs(2 ^ i)).await;
     }
-    false
+    Ok(false)
 }
 
 impl Handler<CreateSessionMessage> for SessionManagerActor {
@@ -361,21 +361,21 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 info!("previous session actor map node id: {}", node_id);
                 if node_id != raft_manager.session_actor_map_raft().current_node_id() {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", node_id);
-                    if !call_force_disconnect(
+                    let res = call_force_disconnect(
                         node_id,
                         raft_manager.clone(),
                         msg.tenant_id.clone(),
                         msg.client_id.clone(),
-                    )
-                    .await
-                    {
-                        raft_manager
-                            .clone()
-                            .session_actor_map_raft()
-                            .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
-                            .await
-                            .unwrap();
+                    ).await;
+                    if res.is_err() {
+                        warn!("force disconnect previous session actor map node id: {} failed: {}", node_id, res.unwrap_err());
                     }
+                    raft_manager
+                        .clone()
+                        .session_actor_map_raft()
+                        .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
+                        .await
+                        .unwrap();
                 }
             } else {
                 info!("previous session actor map node id not found");
