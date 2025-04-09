@@ -139,7 +139,14 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
-                let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+                let client = super::create_rpc_client_with_retry(addr.clone()).await;
+
+                if client.is_err() {
+                    warn!("Create rpc client failed, res={:?}", client);
+                    return None;
+                }
+
+                let mut client = client.unwrap();
 
                 let actor_map_response = client
                     .get_session_actor_map(crate::protobuf::GetSessionActorMapRequest {
@@ -356,7 +363,15 @@ impl SessionActorMapRaftManager {
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
-                let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+                let client = super::create_rpc_client_with_retry(addr).await;
+
+                if client.is_err() {
+                    warn!("Create rpc client failed, res={:?}", client);
+                    return Err(RaftManagerError::InternalError(
+                        "Create rpc client failed".into(),
+                    ));
+                }
+                let mut client = client.unwrap();
 
                 let append_request = AppendEntriesRequest {
                     data: serde_json::to_string(&command).unwrap(),

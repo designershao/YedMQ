@@ -56,9 +56,9 @@ pub async fn retain_message_list(
         .await;
 
     if let Err(err) = r {
-        if let Some(topic_error) = err.downcast_ref::<crate::topic::topic_storage::Error>() {
+        if let Some(topic_error) = err.downcast_ref::<crate::topic::TopicError>() {
             let error_response = match topic_error {
-                crate::topic::topic_storage::Error::TenantNotFound(_) => {
+                crate::topic::TopicError::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
                         code: 3,
                         message: format!("tenant {} not existed", tenant_id),

@@ -3,14 +3,14 @@ use std::{sync::Arc, time::Duration};
 use backoff::{backoff::Backoff, ExponentialBackoff};
 use log::{info, warn};
 use mockall::automock;
-use nom::Err;
 use tokio::sync::RwLock;
 use tonic::transport::Channel;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::raft_service_client::RaftServiceClient, raft::{topic::{types::Request, TopicRaftManagerTrait}, NodeId}};
+use crate::{protobuf::raft_service_client::RaftServiceClient, raft::{topic::{types::Request, TopicRaftManagerTrait}, NodeId}, topic::NetworkError};
 
-use super::topic_storage::{Error, Subscription, TopicStorage};
+use super::topic_storage::{Subscription, TopicStorage};
+use super::TopicError;
 use async_trait::async_trait;
 
 #[async_trait]
@@ -36,32 +36,32 @@ pub trait TopicManagerTrait: Sync + Send {
         client_identifier: String,
         topic_filter: String,
         qos: u8,
-    ) -> Result<(), Error>;
+    ) -> Result<(), TopicError>;
 
     async fn handle_unsubscribe(
         &self,
         tenant_id: String,
         client_identifier: String,
         topic_filter: String,
-    ) -> Result<(), Error>;
+    ) -> Result<(), TopicError>;
 
     async fn get_subscribers(
         &self,
         tenant_id: String,
         msg_topic: String,
-    ) -> Result<Vec<Arc<Subscription>>, Error>;
+    ) -> Result<Vec<Arc<Subscription>>, TopicError>;
 
     async fn clean_retain_publish_packet(
         &mut self,
         tenant_id: String,
         topic_filter: &String,
-    ) -> Result<(), Error>;
+    ) -> Result<(), TopicError>;
 
     async fn get_retain_publish_packet(
         &mut self,
         tenant_id: String,
         topic_filter: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, Error>;
+    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicError>;
 
     async fn get_tenant_names(&self) -> Vec<String>;
 
@@ -70,9 +70,9 @@ pub trait TopicManagerTrait: Sync + Send {
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
-    ) -> Result<(), Error>;
+    ) -> Result<(), TopicError>;
 
-    async fn create_tenant(&mut self, tenant_id: String) -> Result<(), Error>;
+    async fn create_tenant(&mut self, tenant_id: String) -> Result<(), TopicError>;
 }
 
 pub struct TopicManager {
@@ -109,7 +109,7 @@ impl TopicManagerTrait for TopicManager {
         client_identifier: String,
         topic_filter: String,
         qos: u8,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         info!("with raft cluster subscribe tenant_id: {} topic: {}, qos: {}, node_id: {}", tenant_id, topic_filter, qos, self.current_node_id);
         self.raft_manager.topic_raft()
             .execute_command(Request::SubscribeTopic {
@@ -129,7 +129,7 @@ impl TopicManagerTrait for TopicManager {
         tenant_id: String,
         client_identifier: String,
         topic_filter: String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         self.raft_manager.topic_raft()
             .execute_command(Request::UnsubscribeTopic {
                 node_id: self.current_node_id,
@@ -146,13 +146,18 @@ impl TopicManagerTrait for TopicManager {
         &self,
         tenant_id: String,
         msg_topic: String,
-    ) -> Result<Vec<Arc<Subscription>>, Error> {
+    ) -> Result<Vec<Arc<Subscription>>, TopicError> {
         let current_leader_node_id = self.raft_manager.topic_raft().get_leader_node_id();
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return Ok(vec![]);
         }
-        let mut client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        let client = self.get_grpc_client(current_leader_node_id.unwrap()).await;
+        if client.is_err() {
+            warn!("raft get session state grpc error: {}", client.err().unwrap());
+            return Err(TopicError::NetworkError(NetworkError::Timeout));
+        }
+        let mut client = client.unwrap();
         let request = crate::protobuf::GetSubscriptionRequest {
             tenant_id: tenant_id.to_string(),
             topic: msg_topic.to_string(),
@@ -170,10 +175,11 @@ impl TopicManagerTrait for TopicManager {
                 }).collect();
                 Ok(r)
             } else {
-                Err(Error::TenantNotFound(response.error.unwrap().message))
+                Err(TopicError::InternalError(response.error.unwrap().message))
             }
         } else {
-            Err(Error::TenantNotFound(res.unwrap_err().to_string()))
+            let r = res.unwrap_err();
+            Err(TopicError::NetworkError(NetworkError::GrpcError(r)))
         }
     }
 
@@ -181,7 +187,7 @@ impl TopicManagerTrait for TopicManager {
         &mut self,
         tenant_id: String,
         topic_filter: &String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         let _ = self
             .raft_manager.topic_raft()
             .execute_command(Request::CleanRetainPublishPacket {
@@ -203,7 +209,7 @@ impl TopicManagerTrait for TopicManager {
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         self.raft_manager.topic_raft()
             .execute_command(Request::RegisterRetainPublishPacket {
                 tenant_id,
@@ -219,12 +225,12 @@ impl TopicManagerTrait for TopicManager {
         &mut self,
         tenant_id: String,
         topic_filter: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, Error> {
+    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicError> {
         let topic_storage = self.storage.read().await;
         topic_storage.get_retain_publish_packet(tenant_id, topic_filter)
     }
 
-    async fn create_tenant(&mut self, tenant_id: String) -> Result<(), Error> {
+    async fn create_tenant(&mut self, tenant_id: String) -> Result<(), TopicError> {
         self.raft_manager
             .topic_raft()
             .execute_command(Request::CreateTenant { tenant_id })
@@ -247,11 +253,18 @@ impl TopicManager {
         }
     }
 
-    async fn get_grpc_client(&self, node_id: NodeId) -> RaftServiceClient<tonic::transport::Channel> {
-        let node = self.raft_manager.topic_raft().get_node_by_id(node_id).await.unwrap();
-        let addr = format!("http://{}", node.rpc_addr);
-        let client = create_rpc_client_with_retry(addr.clone()).await.unwrap();
-        client
+    async fn get_grpc_client(&self, node_id: NodeId) -> anyhow::Result<RaftServiceClient<tonic::transport::Channel>> {
+        let max_retry = 3;
+
+        for _ in 0..max_retry {
+            let node = self.raft_manager.topic_raft().get_node_by_id(node_id).await.unwrap();
+            let addr = format!("http://{}", node.rpc_addr);
+            let client = create_rpc_client_with_retry(addr.clone()).await;
+            if client.is_ok() {
+                return client;
+            }
+        }
+        return Err(anyhow::anyhow!("Failed to connect after retries"));
     }
 
 }
@@ -261,7 +274,7 @@ impl TopicManager {
             initial_interval: Duration::from_millis(100),
             max_interval: Duration::from_secs(10),
             multiplier: 2.0,
-            max_elapsed_time: Some(Duration::from_secs(60)),
+            max_elapsed_time: Some(Duration::from_secs(30)),
             ..ExponentialBackoff::default()
         };
 

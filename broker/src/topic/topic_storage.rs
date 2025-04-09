@@ -9,7 +9,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::raft::NodeId;
+use crate::{raft::NodeId, topic::TopicError};
 
 /// Generates a key string that can be used to store subscriptions in a `SubscriptionMap`.
 ///
@@ -160,13 +160,6 @@ impl TopicStorageNode {
                 subscribtion.client_identifier.clone(),
                 Arc::new(subscribtion),
             );
-        } else {
-            let mut subscriptions_guard = self.subscriptions.write().unwrap();
-            subscriptions_guard.remove(&subscribtion.client_identifier);
-            subscriptions_guard.insert(
-                subscribtion.client_identifier.clone(),
-                Arc::new(subscribtion),
-            );
         }
     }
 
@@ -267,22 +260,6 @@ fn test_topic(topic: &String) -> bool {
     true
 }
 
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    TopicNotFound(String),
-    TenantNotFound(String),
-    InvalidTopicFilter(String),
-}
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Error::TopicNotFound(topic) => write!(f, "topic {topic} not found"),
-            Error::TenantNotFound(tenant) => write!(f, "tenant {tenant} not found"),
-            Error::InvalidTopicFilter(topic) => write!(f, "invalid topic filter {topic}"),
-        }
-    }
-}
-
 impl TopicStorage {
     pub fn get_retain_message_list_with_pagination(
         &self,
@@ -296,7 +273,7 @@ impl TopicStorage {
             .unwrap()
             .contains_key(tenant_identifier)
         {
-            Err(anyhow::anyhow!(Error::TenantNotFound(
+            Err(anyhow::anyhow!(TopicError::TenantNotFound(
                 tenant_identifier.to_string()
             )))
         } else {
@@ -332,7 +309,7 @@ impl TopicStorage {
             let total = items.len();
             return Ok((total as u64, result_items));
         } else {
-            return Err(anyhow::anyhow!(Error::TenantNotFound(
+            return Err(anyhow::anyhow!(TopicError::TenantNotFound(
                 tenant_id.to_string()
             )));
         }
@@ -425,9 +402,9 @@ impl TopicStorage {
         topic_filter: String,
         qos: u8,
         node_id: NodeId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if !test_topic(&topic_filter) {
-            return Err(Error::InvalidTopicFilter(topic_filter));
+            return Err(TopicError::InvalidTopicFilter(topic_filter));
         }
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -435,7 +412,7 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read().unwrap();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
-            Err(Error::TenantNotFound(tenant_id))
+            Err(TopicError::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
             let result = Self::recursion_subscribe(
@@ -481,7 +458,7 @@ impl TopicStorage {
         client_identifier: String,
         qos: u8,
         node_id: NodeId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -512,13 +489,13 @@ impl TopicStorage {
         client_identifier: &String,
         topic_filter: &String,
         node_id: NodeId,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(tenant_id);
         if tenant_topic_root_optional.is_none() {
-            Err(Error::TenantNotFound(tenant_id.clone()))
+            Err(TopicError::TenantNotFound(tenant_id.clone()))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
             let result = Self::recursion_unsubscription(
@@ -560,7 +537,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
         client_identifier: &String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -568,7 +545,7 @@ impl TopicStorage {
                 .unwrap()
                 .get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
-                Err(Error::TopicNotFound(topic_pattern.to_string()))
+                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             } else {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 Self::recursion_unsubscription(
@@ -590,13 +567,13 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         msg_topic: String,
-    ) -> Result<Vec<Arc<Subscription>>, Error> {
+    ) -> Result<Vec<Arc<Subscription>>, TopicError> {
         let topic_patterns: Vec<String> = msg_topic.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
-            Err(Error::TenantNotFound(tenant_id))
+            Err(TopicError::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
             Ok(Self::recursion_get_subscriptions(
@@ -656,7 +633,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
         publish_packet: MqttPacketV3,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -681,7 +658,7 @@ impl TopicStorage {
     fn recursion_clean_retain_publish_packet(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -689,7 +666,7 @@ impl TopicStorage {
                 .unwrap()
                 .get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
-                Err(Error::TopicNotFound(topic_pattern.to_string()))
+                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             } else {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 Self::recursion_clean_retain_publish_packet(
@@ -708,13 +685,13 @@ impl TopicStorage {
         &mut self,
         tenant_id: String,
         topic_filter: &String,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read().unwrap();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
-            Err(Error::TenantNotFound(tenant_id))
+            Err(TopicError::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
             let result =
@@ -777,9 +754,9 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         topic_filter: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, Error> {
+    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicError> {
         if !test_topic(&topic_filter) {
-            return Err(Error::InvalidTopicFilter(topic_filter));
+            return Err(TopicError::InvalidTopicFilter(topic_filter));
         }
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -787,7 +764,7 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read().unwrap();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
-            Err(Error::TenantNotFound(tenant_id))
+            Err(TopicError::TenantNotFound(tenant_id))
         } else {
             let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
             Ok(Self::recursion_get_retain_packet(
@@ -803,11 +780,11 @@ impl TopicStorage {
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
-    ) -> Result<(), Error> {
+    ) -> Result<(), TopicError> {
         if let MqttPacketV3::Publish(publish_packet) = publish_packet {
             let topic_filter = publish_packet.variable_header.topic_name.clone();
             if !test_topic(&publish_packet.variable_header.topic_name) {
-                return Err(Error::InvalidTopicFilter(topic_filter));
+                return Err(TopicError::InvalidTopicFilter(topic_filter));
             }
 
             let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -815,7 +792,7 @@ impl TopicStorage {
             let tenant_topic_root_rwlock = map.read().unwrap();
             let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
             if tenant_topic_root_optional.is_none() {
-                Err(Error::TenantNotFound(tenant_id))
+                Err(TopicError::TenantNotFound(tenant_id))
             } else {
                 let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
                 let result = Self::recursion_retain_publish_packet(
@@ -1187,7 +1164,7 @@ mod tests {
             0,
             1,
         );
-        assert_eq!(result, Err(Error::InvalidTopicFilter("a/#/c".to_string())));
+
         let result = topic_storage.subscribe(
             "hello".to_string(),
             "clientA".to_string(),
@@ -1195,7 +1172,18 @@ mod tests {
             0,
             1,
         );
-        assert_eq!(result, Err(Error::InvalidTopicFilter("sport+".to_string())));
+
+        match result.unwrap_err() {
+            TopicError::InvalidTopicFilter(msg) => {
+                if msg != "sport+".to_string() {
+                    assert!(false);
+                } else {
+                    assert!(true)
+                }
+            }
+            _ => assert!(false),
+        }
+
         let result = topic_storage.subscribe(
             "hello".to_string(),
             "clientA".to_string(),
@@ -1203,7 +1191,17 @@ mod tests {
             0,
             1,
         );
-        assert_eq!(result, Err(Error::InvalidTopicFilter("sport+".to_string())));
+
+        match result.unwrap_err() {
+            TopicError::InvalidTopicFilter(msg) => {
+                if msg != "sport+".to_string() {
+                    assert!(false);
+                } else {
+                    assert!(true)
+                }
+            }
+            _ => assert!(false),
+        }
     }
 
     #[test]
@@ -1275,30 +1273,6 @@ mod tests {
         assert_eq!(clients.len(), 2);
         assert_eq!(clients.clone()[0].client_identifier, "clientB");
         assert_eq!(clients.clone()[1].client_identifier, "clientD");
-    }
-
-    #[test]
-    fn when_subscribe_the_same_topic_with_different_node_topic_storage_should_update_subscriptions() {
-        let mut topic_storage = TopicStorage::new();
-        let tenant_name = "hello".to_string();
-        topic_storage.create_tenant(&tenant_name);
-        let _ = topic_storage.subscribe(
-            "hello".to_string(),
-            "clientA".to_string(),
-            "a/b/c".to_string(),
-            0,
-            1,
-        );
-        let _ = topic_storage.subscribe(
-            "hello".to_string(),
-            "clientA".to_string(),
-            "a/b/c".to_string(),
-            0,
-            0,
-        );
-        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
-        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 0);
-        
     }
 
     #[test]

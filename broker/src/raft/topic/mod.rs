@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
@@ -323,7 +323,16 @@ impl RaftManager {
 
                 let addr = format!("http://{}", leader_node.rpc_addr);
 
-                let mut client = RaftServiceClient::connect(addr.clone()).await.unwrap();
+                let client = super::create_rpc_client_with_retry(addr).await;
+
+                if client.is_err() {
+                    warn!("Create rpc client failed, res={:?}", client);
+                    return Err(RaftManagerError::InternalError(
+                        "Create rpc client failed".into(),
+                    ));
+                }
+
+                let mut client = client.unwrap();
 
                 let append_request = AppendEntriesRequest {
                     data: serde_json::to_string(&command).unwrap(),

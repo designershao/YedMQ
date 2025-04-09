@@ -204,8 +204,11 @@ impl Router {
             let topic_manager = self.topic_manager.read().await;
             let subscriptions = topic_manager
                 .get_subscribers(tenant_identifier.clone(), topic)
-                .await
-                .unwrap();
+                .await;
+            if let Err(e) = subscriptions {
+                return Err(anyhow::anyhow!(e));
+            }
+            let subscriptions = subscriptions.unwrap();
             for item in subscriptions.iter() {
                 if item.node_id != self.raft_manager.topic_raft().current_node_id() {
                     // not the current node, send to other node

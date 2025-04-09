@@ -33,10 +33,10 @@ pub async fn topic_list(
 
     if let Err(err) = topic_list_result {
 
-        let error = err.downcast_ref::<crate::topic::topic_storage::Error>();
+        let error = err.downcast_ref::<crate::topic::TopicError>();
         if let Some(topic_error) = error {
             let error_response = match topic_error {
-                crate::topic::topic_storage::Error::TenantNotFound(_) => {
+                crate::topic::TopicError::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
                         code: 3,
                         message: format!("tenant {} not existed", tenant_id),
