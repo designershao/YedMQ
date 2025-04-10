@@ -502,7 +502,7 @@ impl RaftService for RaftServiceImpl {
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let data = serde_json::to_string(&resp.data).expect("fail to serialize resp");
                     let mes = AppendEntriesResponse {
                         success: true,
                         data,
@@ -522,7 +522,7 @@ impl RaftService for RaftServiceImpl {
                         .client_write(append_req)
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
-                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let data = serde_json::to_string(&resp.data).expect("fail to serialize resp");
                     let mes = AppendEntriesResponse {
                         success: true,
                         data,
@@ -543,7 +543,7 @@ impl RaftService for RaftServiceImpl {
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
 
-                    let data = serde_json::to_string(&resp).expect("fail to serialize resp");
+                    let data = serde_json::to_string(&resp.data).expect("fail to serialize resp");
                     let mes = AppendEntriesResponse {
                         success: true,
                         data,

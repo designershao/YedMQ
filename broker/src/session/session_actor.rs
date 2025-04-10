@@ -1,8 +1,10 @@
 use actix::{
-    dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFuture, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture
+    dev::{ContextFutureSpawner, MessageResponse},
+    fut, Actor, ActorContext, ActorFuture, ActorFutureExt, AsyncContext, Context, Handler,
+    MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture,
 };
 use log::{error, info, warn};
-use openraft::raft;
+use openraft::{docs::cluster_control::node_lifecycle, raft};
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
@@ -191,18 +193,25 @@ impl Actor for SessionActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        info!("session {} started", self.client_id);
         let keep_alive_task_handle =
             ctx.run_interval(Duration::from_secs(self.keep_alive), |act, ctx| {
-                if act.keep_alive_expired {
-                    ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+                info!("in keep alive current actor state {:?} ", act.activity_state);
+                if matches!(act.activity_state, ActivityState::Active) {
+                    if act.keep_alive_expired {
+                        ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+                    }
                 }
             });
         self.keep_alive_task_handle = Some(keep_alive_task_handle);
 
         let inflight_retry_task_handle = ctx.run_interval(
             Duration::from_secs(self.inflight_retry_interval),
-            |_act, ctx| {
-                ctx.address().do_send(SessionActorMessage::InflightRetry);
+            |act, ctx| {
+                info!("in inflight retry current actor state {:?} ", act.activity_state);
+                if matches!(act.activity_state, ActivityState::Active) {
+                    ctx.address().do_send(SessionActorMessage::InflightRetry);
+                }
             },
         );
         self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
@@ -211,10 +220,12 @@ impl Actor for SessionActor {
         let topic_manager = self.topic_manager.clone();
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
+        let session_actor_addr = ctx.address();
+        let raft_manager = self.raft_manager.clone();
 
         async move {
-            let state_guard = state.read().await;
-            let topic_iter = state_guard.subscriptions.iter();
+            let mut session_state_guard = state.write().await;
+            let topic_iter = session_state_guard.subscriptions.iter();
             let topic_manager = topic_manager.read().await;
             for (topic, qos) in topic_iter {
                 info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
@@ -226,6 +237,14 @@ impl Actor for SessionActor {
                 let _ = topic_manager
                     .handle_subscribe(tenant_id.clone(), client_id.clone(), topic.clone(), qos_v)
                     .await;
+            }
+
+            while let Some(packet) = raft_manager
+                .session_state_raft()
+                .pop_from_pending_queue(tenant_id.clone(), client_id.clone())
+                .await
+            {
+                session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
             }
         }
         .into_actor(self)
@@ -525,6 +544,7 @@ impl SessionActor {
     }
 
     fn set_state(&mut self, state: ActivityState) {
+        info!("set session {} state to {:?}", self.client_id, state);
         self.activity_state = state;
     }
 
@@ -536,21 +556,20 @@ impl SessionActor {
 
             if !act.clean_session {
                 info!("start notify session manager stopped");
-                act.notify_session_manager_stopped(ctx, |_,_, ctx| {
+                act.notify_session_manager_stopped(ctx, |_, _, ctx| {
                     ctx.stop();
                     fut::ready(())
                 });
             }
             fut::ready(())
         });
-
     }
 
     fn notify_session_manager_stopped(
-        &mut self, ctx: &mut <SessionActor as Actor>::Context, 
-        callback_fn:ThenCallback<SessionActor, ()>
-        ) 
-    {
+        &mut self,
+        ctx: &mut <SessionActor as Actor>::Context,
+        callback_fn: ThenCallback<SessionActor, ()>,
+    ) {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
@@ -567,13 +586,15 @@ impl SessionActor {
             }
         }
         .into_actor(self)
-        .then(callback_fn) 
+        .then(callback_fn)
         .wait(ctx);
     }
 
-    fn unregister_session_actor_map(&mut self, ctx: &mut <SessionActor as Actor>::Context,
-        callback_fn:ThenCallback<SessionActor, ()>
-    ){
+    fn unregister_session_actor_map(
+        &mut self,
+        ctx: &mut <SessionActor as Actor>::Context,
+        callback_fn: ThenCallback<SessionActor, ()>,
+    ) {
         let raft_manager = self.raft_manager.clone();
         let client_info = self.get_plugin_client_info();
         async move {
@@ -602,8 +623,8 @@ impl SessionActor {
     fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         info!("clean up session {}", self.client_id);
         if self.clean_session {
-            self.unregister_session_actor_map(ctx, |_,act,ctx| {
-                act.notify_session_manager_stopped(ctx, |_,_,ctx| {
+            self.unregister_session_actor_map(ctx, |_, act, ctx| {
+                act.notify_session_manager_stopped(ctx, |_, _, ctx| {
                     ctx.stop();
                     fut::ready(())
                 });
@@ -614,19 +635,8 @@ impl SessionActor {
                 "session {} is not clean session, start into inactive state",
                 self.client_id
             );
-            self.activity_state = ActivityState::Inactive;
-
-            if let Some(handle) = self.keep_alive_task_handle.take() {
-                if ctx.cancel_future(handle) {
-                    self.keep_alive_task_handle = None;
-                }
-            }
-
-            if let Some(handle) = self.inflight_retry_task_handle.take() {
-                if ctx.cancel_future(handle) {
-                    self.inflight_retry_task_handle = None;
-                }
-            }
+            self.set_state(ActivityState::Inactive);
+            
         }
     }
 
@@ -793,7 +803,7 @@ impl SessionActor {
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
                     .await
                 {
-                    warn!("write packet to client error: {}", e);
+                    warn!("handle pubrel write packet to client error: {}", e);
                 } else {
                     session_state_guard
                         .inflight
@@ -843,7 +853,7 @@ impl SessionActor {
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
                     .await
                 {
-                    warn!("write packet to client error: {}", e);
+                    warn!("handle pubrec write packet to client error: {}", e);
                 } else {
                     session_state_guard
                         .inflight
@@ -894,7 +904,7 @@ impl SessionActor {
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
                     .await
                 {
-                    warn!("write packet to client error: {}", e);
+                    warn!("handle puback write packet to client error: {}", e);
                 } else {
                     session_state_guard
                         .inflight
@@ -944,7 +954,7 @@ impl SessionActor {
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
                     .await
                 {
-                    warn!("write packet to client error: {}", e);
+                    warn!("handle pubcmp write packet to client error: {}", e);
                 } else {
                     session_state_guard
                         .inflight
@@ -1146,7 +1156,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                             .send(ConnectionActorMessage::WritePacketToClient(packet.1))
                             .await;
                         if let Err(e) = result {
-                            warn!("write packet to client error: {}", e);
+                            warn!("inflight retry write packet to client error: {}", e);
                         } else {
                             // update inflight
                             session_state_guard.inflight.next_state(packet.0).await;
@@ -1166,9 +1176,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                     .into_actor(self)
                     .wait(ctx);
                     self.clean_up(ctx);
-                } else {
-                    self.force_stop(ctx);
-                }
+                } 
             }
             SessionActorMessage::UnexpectClientDisconnected => {
                 self.send_will_message(ctx);
@@ -1189,32 +1197,35 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.keep_alive = keep_alive;
                 self.username = username;
 
-                // Restart the keep-alive and inflight retry tasks
-                let keep_alive_task_handle =
-                    ctx.run_interval(Duration::from_secs(self.keep_alive), |act, ctx| {
-                        if act.keep_alive_expired {
-                            ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
-                        }
-                    });
-                self.keep_alive_task_handle = Some(keep_alive_task_handle);
-
-                let inflight_retry_task_handle = ctx.run_interval(
-                    Duration::from_secs(self.inflight_retry_interval),
-                    |_act, ctx| {
-                        ctx.address().do_send(SessionActorMessage::InflightRetry);
-                    },
-                );
-                self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
-                //
-
                 // start consume pending messages
                 let session_state = self.state.clone();
                 let session_actor_addr = ctx.address().clone();
+                let raft_manager = self.raft_manager.clone();
+                let tenant_id = self.tenant_id.clone();
+                let client_identifier = self.client_id.clone();
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for msg in session_state_guard.pending_messages.drain(..) {
                         session_actor_addr.do_send(SessionActorMessage::OutboundMessage(msg));
                     }
+                    // update topic subscribe
+                    info!("start update topic subscribe for session {}", client_identifier);
+                    let node_id = raft_manager.topic_raft().current_node_id();
+                    for (topic, qos) in session_state_guard.subscriptions.iter() {
+                        let qos_v = match qos {
+                            QoS::AtLeastOnce => 1,
+                            QoS::ExactlyOnce => 2,
+                            QoS::AtMostOnce => 0,
+                        };
+                        raft_manager.topic_raft().subscribe_topic(
+                            node_id, 
+                            tenant_id.clone(), 
+                            client_identifier.clone(), 
+                            topic.clone(), 
+                            qos_v).await;
+                    }
+                    info!("finish update topic subscribe for session {}", client_identifier);
+                    //
                 }
                 .into_actor(self)
                 .wait(ctx);

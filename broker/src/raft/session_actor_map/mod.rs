@@ -9,14 +9,15 @@ use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
 use tokio::sync::{watch, Mutex, RwLock};
-use types::{SessionActorMapRequest, SessionActorMapTypeConfig};
+use tonic::transport::Channel;
+use types::{SessionActorMapRequest, SessionActorMapResponse, SessionActorMapTypeConfig};
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
 
 use super::raft_manager::RaftManagerError;
-use super::Node;
+use super::{Node, RaftCommandExecutor};
 use super::NodeId;
 
 pub mod raft_network_impl;
@@ -33,7 +34,7 @@ pub trait SessionActorMapRaftManagerTrait {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-    ) -> Result<(), RaftManagerError>;
+    ) -> Result<SessionActorMapResponse, RaftManagerError>;
 
     async fn unregister_session_actor_map(
         &self,
@@ -41,7 +42,7 @@ pub trait SessionActorMapRaftManagerTrait {
         client_id: &str,
         node_id: NodeId,
         keep_alive: bool,
-    ) -> Result<(), RaftManagerError>;
+    ) -> Result<SessionActorMapResponse, RaftManagerError>;
 
     fn current_node_id(&self) -> NodeId;
 
@@ -88,7 +89,7 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-    ) -> Result<(), RaftManagerError> {
+    ) -> Result<SessionActorMapResponse, RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
@@ -103,7 +104,7 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         client_id: &str,
         node_id: NodeId,
         keep_alive: bool,
-    ) -> Result<(), RaftManagerError> {
+    ) -> Result<SessionActorMapResponse, RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
@@ -187,6 +188,75 @@ pub struct SessionActorMapRaftManager {
     running_tx: watch::Sender<()>,
 }
 
+#[async_trait::async_trait]
+impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse> for SessionActorMapRaftManager {
+
+    // Check if the current node is the leader
+    async fn is_leader(&self) -> bool {
+        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+    }
+
+    // Get the current leader node information
+    fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
+
+    // Execute command as leader
+    async fn execute_as_leader(&self, command: SessionActorMapRequest) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
+        let res = self.raft.client_write(command).await;
+        if let Err(e) = res {
+            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                "ClientWrite failed: {:?}",
+                e
+            )));
+        }       
+
+        let r = res.unwrap();
+        let res = r.data;
+        Ok(res)
+    }
+
+    // Create an RPC client for communication with a target node
+    async fn create_rpc_client(&self, addr: String) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
+        match super::create_rpc_client_with_retry(addr).await {
+            Ok(client) => Ok(client),
+            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError("Create rpc client failed".into())),
+        }
+    }
+
+    // Send command to another node
+    async fn send_command_to_node(&self, mut client: RaftServiceClient<Channel>, command: SessionActorMapRequest) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
+        let append_request = AppendEntriesRequest {
+            data: serde_json::to_string(&command).unwrap(),
+            raft_type: RaftType::SessionActorMap.into(),
+        };
+
+        match client.append_entries(append_request).await {
+            Ok(rpc_response) =>{
+                let response = rpc_response.into_inner();
+                let data = serde_json::from_str(&response.data).unwrap();
+                Ok(data)
+            },
+            Err(e) => {
+                return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                    "AppendEntries failed: {:?}",
+                    e
+                )));
+            },
+
+        }
+    }
+
+}
+
 impl SessionActorMapRaftManager {
     pub async fn session_exist_in_current_node(&self, tenant_id: &str, client_id: &str) -> bool {
         let session_map_storage_guard = self.session_actor_map_storage.read().await;
@@ -203,7 +273,7 @@ impl SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
-    ) -> Result<(), RaftManagerError> {
+    ) -> Result<SessionActorMapResponse, RaftManagerError> {
         let request = SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
@@ -219,7 +289,7 @@ impl SessionActorMapRaftManager {
         client_id: &str,
         node_id: NodeId,
         keep_alive: bool,
-    ) -> Result<(), RaftManagerError> {
+    ) -> Result<SessionActorMapResponse, RaftManagerError> {
         let request = SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
@@ -350,53 +420,8 @@ impl SessionActorMapRaftManager {
     pub async fn execute_command(
         &self,
         command: SessionActorMapRequest,
-    ) -> Result<(), RaftManagerError> {
-        if !self.is_leader().await {
-            let leader_node = self.get_leader();
-
-            if leader_node.is_none() {
-                return Err(RaftManagerError::InternalError(
-                    "No leader available".into(),
-                ));
-            } else {
-                let leader_node = leader_node.unwrap();
-
-                let addr = format!("http://{}", leader_node.rpc_addr);
-
-                let client = super::create_rpc_client_with_retry(addr).await;
-
-                if client.is_err() {
-                    warn!("Create rpc client failed, res={:?}", client);
-                    return Err(RaftManagerError::InternalError(
-                        "Create rpc client failed".into(),
-                    ));
-                }
-                let mut client = client.unwrap();
-
-                let append_request = AppendEntriesRequest {
-                    data: serde_json::to_string(&command).unwrap(),
-                    raft_type: RaftType::SessionActorMap.into(),
-                };
-
-                let res = client.append_entries(append_request).await;
-                if res.is_err() {
-                    warn!("AppendEntries failed, res={:?}", res);
-                    return Err(RaftManagerError::InternalError(
-                        "AppendEntries failed".into(),
-                    ));
-                }
-            }
-        } else {
-            // current node is leader
-            let res = self.raft.client_write(command).await;
-            if res.is_err() {
-                return Err(RaftManagerError::InternalError(format!(
-                    "ClientWrite failed: {:?}",
-                    res
-                )));
-            }
-        }
-        Ok(())
+    ) -> Result<SessionActorMapResponse, RaftManagerError> {
+        super::execute_raft_command(self, command, 3).await
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {

@@ -236,7 +236,7 @@ impl SessionStateStorage {
                 .write()
                 .await;
             let packet = state.pending_messages.pop();
-            Some(packet.unwrap())
+            packet
         } else {
             None
         }   

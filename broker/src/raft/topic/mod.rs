@@ -4,16 +4,16 @@ pub mod types;
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
     path::Path,
     sync::Arc,
 };
 
-use log::{debug, info, warn};
+use log::info;
 use mockall::automock;
 use openraft::Config;
 use raft_network_impl::Network;
 use tokio::sync::{watch, Mutex, RwLock};
+use tonic::transport::Channel;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
@@ -27,33 +27,8 @@ use super::{
         store::new_storage,
         types::{Request, TopicRaft},
     },
-    Node, NodeId,
+    Node, NodeId, RaftCommandExecutor,
 };
-
-#[derive(Debug)]
-pub enum RaftManagerError {
-    NodeUnavailable(String),
-    ElectionFailure(String),
-    LogSyncError(String),
-    TimeoutError(String),
-    NetworkError(String),
-    InternalError(String),
-    Unknown(String),
-}
-
-impl fmt::Display for RaftManagerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            RaftManagerError::NodeUnavailable(ref msg) => write!(f, "Node Unavailable: {}", msg),
-            RaftManagerError::ElectionFailure(ref msg) => write!(f, "Election Failure: {}", msg),
-            RaftManagerError::LogSyncError(ref msg) => write!(f, "Log Sync Error: {}", msg),
-            RaftManagerError::TimeoutError(ref msg) => write!(f, "Timeout Error: {}", msg),
-            RaftManagerError::NetworkError(ref msg) => write!(f, "Network Error: {}", msg),
-            RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
-            RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
-        }
-    }
-}
 
 #[async_trait::async_trait]
 #[automock]
@@ -89,6 +64,75 @@ pub trait TopicRaftManagerTrait {
     fn current_node_id(&self) -> NodeId;
 
     async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
+}
+
+#[async_trait::async_trait]
+impl RaftCommandExecutor<types::Request, types::Response> for RaftManager {
+
+    // Check if the current node is the leader
+    async fn is_leader(&self) -> bool {
+        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+    }
+
+    // Get the current leader node information
+    fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
+
+    // Execute command as leader
+    async fn execute_as_leader(&self, command: types::Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
+        let res = self.raft.client_write(command).await;
+        if let Err(e) = res {
+            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                "ClientWrite failed: {:?}",
+                e
+            )));
+        }       
+
+        let r = res.unwrap();
+        let res = r.data;
+        Ok(res)
+    }
+
+    // Create an RPC client for communication with a target node
+    async fn create_rpc_client(&self, addr: String) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
+        match super::create_rpc_client_with_retry(addr).await {
+            Ok(client) => Ok(client),
+            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError("Create rpc client failed".into())),
+        }
+    }
+
+    // Send command to another node
+    async fn send_command_to_node(&self, mut client: RaftServiceClient<Channel>, command: types::Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
+        let append_request = AppendEntriesRequest {
+            data: serde_json::to_string(&command).unwrap(),
+            raft_type: RaftType::Topic.into(),
+        };
+
+        match client.append_entries(append_request).await {
+            Ok(rpc_response) =>{
+                let response = rpc_response.into_inner();
+                let data = serde_json::from_str(&response.data).unwrap();
+                Ok(data)
+            },
+            Err(e) => {
+                return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                    "AppendEntries failed: {:?}",
+                    e
+                )));
+            },
+
+        }
+    }
+
 }
 
 #[async_trait::async_trait]
@@ -194,15 +238,15 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-    pub async fn stop(&self) -> Result<(), RaftManagerError> {
+    pub async fn stop(&self) -> Result<(), super::raft_manager::RaftManagerError> {
         let mut rx = self.raft.metrics();
 
         self.raft.shutdown().await.map_err(|e| {
-            RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e))
+            super::raft_manager::RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e))
         })?;
 
         if let Err(e) = self.running_tx.send(()) {
-            return Err(RaftManagerError::InternalError(format!(
+            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
                 "Failed to shutdown raft, {}",
                 e
             )));
@@ -218,7 +262,7 @@ impl RaftManager {
         for j in self.join_handles.lock().await.iter_mut() {
             let _rst = j
                 .await
-                .map_err(|e| RaftManagerError::InternalError(format!("{}", e)))?;
+                .map_err(|e| super::raft_manager::RaftManagerError::InternalError(format!("{}", e)))?;
         }
 
         info!("Raft shutdown: id={}", self.cluster_cfg.node_id);
@@ -275,7 +319,7 @@ impl RaftManager {
         });
     }
 
-    pub async fn init_cluster(&self) -> Result<(), RaftManagerError> {
+    pub async fn init_cluster(&self) -> Result<(), super::raft_manager::RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
             self.cluster_cfg.node_id,
@@ -286,7 +330,7 @@ impl RaftManager {
         );
 
         self.raft.initialize(cluster_nodes).await.map_err(|e| {
-            RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
+            super::raft_manager::RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
         })
     }
 
@@ -310,53 +354,8 @@ impl RaftManager {
         })
     }
 
-    pub async fn execute_command(&self, command: Request) -> Result<(), RaftManagerError> {
-        if !self.is_leader().await {
-            let leader_node = self.get_leader();
-
-            if leader_node.is_none() {
-                return Err(RaftManagerError::InternalError(
-                    "No leader available".into(),
-                ));
-            } else {
-                let leader_node = leader_node.unwrap();
-
-                let addr = format!("http://{}", leader_node.rpc_addr);
-
-                let client = super::create_rpc_client_with_retry(addr).await;
-
-                if client.is_err() {
-                    warn!("Create rpc client failed, res={:?}", client);
-                    return Err(RaftManagerError::InternalError(
-                        "Create rpc client failed".into(),
-                    ));
-                }
-
-                let mut client = client.unwrap();
-
-                let append_request = AppendEntriesRequest {
-                    data: serde_json::to_string(&command).unwrap(),
-                    raft_type: RaftType::Topic.into(),
-                };
-
-                let res = client.append_entries(append_request).await;
-                if res.is_err() {
-                    return Err(RaftManagerError::InternalError(
-                        "AppendEntries failed".into(),
-                    ));
-                }
-            }
-        } else {
-            // current node is leader
-            let res = self.raft.client_write(command).await;
-            if res.is_err() {
-                return Err(RaftManagerError::InternalError(format!(
-                    "ClientWrite failed: {:?}",
-                    res
-                )));
-            }
-        }
-        Ok(())
+    pub async fn execute_command(&self, command: Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
+        super::execute_raft_command(self, command, 3).await
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {

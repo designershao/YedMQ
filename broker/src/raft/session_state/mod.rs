@@ -8,7 +8,8 @@ use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
 use tokio::sync::{watch, Mutex, RwLock};
-use types::{SessionStateRequest, SessionStateTypeConfig};
+use tonic::transport::Channel;
+use types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig};
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::listener::tcp_listener::MqttTcpListener;
@@ -17,7 +18,7 @@ use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::session::session_state_storage::{SessionState, SessionStateStorage};
 use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
 
-use super::Node;
+use super::{Node, RaftCommandExecutor};
 use super::NodeId;
 
 pub mod raft_network_impl;
@@ -77,10 +78,102 @@ pub trait SessionStateRaftManagerTrait {
    async fn unsubscribe_topic(&self, tenant_id: String, client_id: String, topic: String);
 
    async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool;
+
+   async fn pop_from_pending_queue(&self, tenant_id: String, client_id: String) -> Option<MqttPacketV3>;
+
+}
+
+#[async_trait::async_trait]
+impl RaftCommandExecutor<SessionStateRequest, SessionStateResponse> for SessionStateRaftManager {
+
+    // Check if the current node is the leader
+    async fn is_leader(&self) -> bool {
+        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+    }
+
+    // Get the current leader node information
+    fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
+
+    // Execute command as leader
+    async fn execute_as_leader(&self, command: SessionStateRequest) -> Result<SessionStateResponse, super::raft_manager::RaftManagerError> {
+        let res = self.raft.client_write(command).await;
+        if let Err(e) = res {
+            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                "ClientWrite failed: {:?}",
+                e
+            )));
+        }       
+
+        let r = res.unwrap();
+        let res = r.data;
+        Ok(res)
+    }
+
+    // Create an RPC client for communication with a target node
+    async fn create_rpc_client(&self, addr: String) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
+        match super::create_rpc_client_with_retry(addr).await {
+            Ok(client) => Ok(client),
+            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError("Create rpc client failed".into())),
+        }
+    }
+
+    // Send command to another node
+    async fn send_command_to_node(&self, mut client: RaftServiceClient<Channel>, command: SessionStateRequest) -> Result<SessionStateResponse, super::raft_manager::RaftManagerError> {
+        let append_request = AppendEntriesRequest {
+            data: serde_json::to_string(&command).unwrap(),
+            raft_type: RaftType::SessionState.into(),
+        };
+
+        match client.append_entries(append_request).await {
+            Ok(rpc_response) =>{
+                let response = rpc_response.into_inner();
+                let data = serde_json::from_str(&response.data).unwrap();
+                Ok(data)
+            },
+            Err(e) => {
+                return Err(super::raft_manager::RaftManagerError::InternalError(format!(
+                    "AppendEntries failed: {:?}",
+                    e
+                )));
+            },
+
+        }
+    }
+
 }
 
 #[async_trait::async_trait]
 impl SessionStateRaftManagerTrait for SessionStateRaftManager {
+
+    async fn pop_from_pending_queue(&self, tenant_id: String, client_id: String) -> Option<MqttPacketV3> {
+        let res = self.execute_command(SessionStateRequest::PopFromPendingQueue {
+            tenant_id: tenant_id.to_string(),
+            client_id: client_id.to_string(),
+        }).await;
+
+        match res {
+            Ok(r) => {
+                match r {
+                    SessionStateResponse::PopFromPendingQueueResult(packet) => packet,
+                    _ => None
+                }
+            }
+            Err(e) => {
+                warn!("raft get session state grpc error: {}", e);
+                None
+            }
+        }
+    }
 
     // get session existed from leader
     async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
@@ -475,9 +568,6 @@ impl SessionStateRaftManager {
         })
     }
 
-    pub async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
-    }
 
     pub fn get_leader_node_id(&self) -> Option<NodeId> {
         self.raft.metrics().borrow().current_leader
@@ -494,56 +584,12 @@ impl SessionStateRaftManager {
                 .and_then(|x| Some(x.1.clone()))
         })
     }
+
     pub async fn execute_command(
         &self,
-        command: SessionStateRequest,
-    ) -> Result<(), RaftManagerError> {
-        if !self.is_leader().await {
-            let leader_node = self.get_leader();
-
-            if leader_node.is_none() {
-                return Err(RaftManagerError::InternalError(
-                    "No leader available".into(),
-                ));
-            } else {
-
-                let leader_node = leader_node.unwrap();
-
-                let addr = format!("http://{}", leader_node.rpc_addr);
-
-                let client = super::create_rpc_client_with_retry(addr).await;
-
-                if client.is_err() {
-                    warn!("Create rpc client failed, res={:?}", client);
-                    return Err(RaftManagerError::InternalError(
-                        "Create rpc client failed".into(),
-                    ));
-                }
-                let mut client = client.unwrap();
-
-                let append_request = AppendEntriesRequest {
-                    data: serde_json::to_string(&command).unwrap(),
-                    raft_type: RaftType::SessionState.into(),
-                };
-
-                let res = client.append_entries(append_request).await;
-                if res.is_err() {
-                    return Err(RaftManagerError::InternalError(
-                        "AppendEntries failed".into(),
-                    ));
-                }
-            }
-        } else {
-            // current node is leader
-            let res = self.raft.client_write(command).await;
-            if res.is_err() {
-                return Err(RaftManagerError::InternalError(format!(
-                    "ClientWrite failed: {:?}",
-                    res
-                )));
-            }
-        }
-        Ok(())
+        command: SessionStateRequest
+    ) -> Result<SessionStateResponse, super::raft_manager::RaftManagerError> {
+        super::execute_raft_command(self, command, 3).await
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {

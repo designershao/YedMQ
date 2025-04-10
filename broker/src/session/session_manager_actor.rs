@@ -376,6 +376,20 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         .unregister_session_actor_map(&msg.tenant_id, &msg.client_id, node_id, false)
                         .await
                         .unwrap();
+                } else {
+                    info!("previous session in current node, force disconnect");
+                    let sessions_guard = sessions.read().await;
+                    if sessions_guard.get(&msg.client_id).is_some() {
+                        let session = sessions_guard.get(&msg.client_id).unwrap();
+                        let res = session.session_actor_message_recipient
+                            .send(SessionActorMessage::ForceDisconnect)
+                            .await;
+                        if res.is_err() {
+                            warn!("force disconnect in current node failed: {}", res.unwrap_err());
+                        }
+                    } else {
+                        info!("session map in current not found, maybe node reboot");
+                    }
                 }
             } else {
                 info!("previous session actor map node id not found");
@@ -437,6 +451,9 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             })
                             .await
                             .unwrap();
+                        let session_recipient = sessions_guard
+                            .get(&msg.client_id).unwrap();
+                        return Ok(session_recipient.session_actor_message_recipient.clone());
                         // in current node, send reconnect
                     } else {
                         info!("session {} not exists in current node, recover from raft", msg.client_id);
