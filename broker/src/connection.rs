@@ -414,17 +414,20 @@ where
                 );
             }
             ConnectionActorMessage::Disconnect => {
+                info!("connection received disconnect message");
                 let writer = self.writer.clone();
                 async move {
-                    let _ = writer.borrow_mut().shutdown().await.unwrap();
+                    let res = writer.borrow_mut().shutdown().await;
+                    if let Err(e) = res {
+                        error!("shutdown writer error: {}", e);
+                    }
                 }
                 .into_actor(self)
+                .then(|_,_,ctx| { 
+                    ctx.stop();
+                    actix::fut::ready(())
+                })
                 .wait(ctx);
-                self.read_packet_handle.and_then(|handle| {
-                    ctx.cancel_future(handle);
-                    Some(())
-                });
-                ctx.stop();
             }
         }
     }

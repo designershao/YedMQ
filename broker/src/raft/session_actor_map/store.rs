@@ -4,9 +4,8 @@ use actix::Recipient;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::{debug, warn};
 use openraft::{
-    Entry,
     storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
-    AnyError, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader,
+    AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader,
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
     Vote,
 };
@@ -16,7 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     raft::{Node, NodeId},
-    session::session_actor_map_storage::SessionActorMapStorage,
+    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage},
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};
@@ -41,8 +40,8 @@ pub struct StateMachineData {
 
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
-
-    session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+    session_manager_force_stop_recipient:
+        Recipient<crate::session::session_manager_actor::ForceStop>,
 
     node_id: NodeId,
 
@@ -114,7 +113,9 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
         node_id: NodeId,
-        session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+        session_manager_force_stop_recipient: Recipient<
+            crate::session::session_manager_actor::ForceStop,
+        >,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -221,43 +222,72 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
         let mut replies = Vec::with_capacity(entries.size_hint().0);
 
         for ent in entries {
-
             self.data.last_applied_log_id = Some(ent.log_id);
 
             match ent.payload {
                 openraft::EntryPayload::Blank => {
                     replies.push(SessionActorMapResponse::None);
-                },
+                }
                 openraft::EntryPayload::Normal(req) => match req {
-                    types::SessionActorMapRequest::RegisterSession { tenant_id, session_id, node_id } => {
-                        let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
-                        session_actor_map_storage.register_session_actor(tenant_id, session_id, node_id);
-                        replies.push(SessionActorMapResponse::None);
-                    },
-                    types::SessionActorMapRequest::UnregisterSession { tenant_id ,session_id, node_id, keep_alive } => {
-                        let mut session_actor_map_storage = self.data.state.session_actor_map.write().await;
-                        session_actor_map_storage.unregister_session_actor(tenant_id.clone(), session_id.clone());
+                    types::SessionActorMapRequest::RegisterSession {
+                        tenant_id,
+                        session_id,
+                        node_id,
+                        version
+                    } => {
+                        let mut session_actor_map_storage =
+                            self.data.state.session_actor_map.write().await;
+                        let res = session_actor_map_storage
+                            .register_session_actor(tenant_id, session_id, node_id, version);
+                        match res {
+                            Ok(()) => {
+                                replies.push(SessionActorMapResponse::None)
+                            },
+                            Err(e) =>  {
+                                match e {
+                                    SessionActorMapError::SessionVersionRejected { current_version, existing_version } => {
+                                        replies.push(SessionActorMapResponse::Rejected { current_version, existing_version });
+                                    }
+                                }
+                            }               
+                        }
+                    }
+                    types::SessionActorMapRequest::UnregisterSession {
+                        tenant_id,
+                        session_id,
+                        node_id,
+                        keep_alive,
+                    } => {
+                        let mut session_actor_map_storage =
+                            self.data.state.session_actor_map.write().await;
+                        session_actor_map_storage
+                            .unregister_session_actor(tenant_id.clone(), session_id.clone());
 
                         if node_id == self.node_id {
                             if !keep_alive {
                                 // if not stop session actor
-                                let res = self.session_manager_force_stop_recipient
+                                let res = self
+                                    .session_manager_force_stop_recipient
                                     .send(crate::session::session_manager_actor::ForceStop {
                                         tenant_id: tenant_id.clone(),
-                                        client_id: session_id.clone(), 
-                                }).await;
-                                if let Err(e) = res  {
-                                    warn!("teant {} session actor {} force stop error: {}",tenant_id, session_id, e);
+                                        client_id: session_id.clone(),
+                                    })
+                                    .await;
+                                if let Err(e) = res {
+                                    warn!(
+                                        "teant {} session actor {} force stop error: {}",
+                                        tenant_id, session_id, e
+                                    );
                                 }
                             }
                         }
                         replies.push(SessionActorMapResponse::None);
-                    },
+                    }
                 },
                 openraft::EntryPayload::Membership(membership) => {
                     self.data.last_membership = StoredMembership::new(Some(ent.log_id), membership);
-                    replies.push(SessionActorMapResponse::None);                    
-                },
+                    replies.push(SessionActorMapResponse::None);
+                }
             }
         }
         Ok(replies)
@@ -541,7 +571,9 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
-    session_manager_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+    session_manager_force_stop_recipient: Recipient<
+        crate::session::session_manager_actor::ForceStop,
+    >,
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -552,16 +584,19 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
 
     let session_actor_map_db_path = db_path.as_ref().join("session_actor_map");
 
-    let db = DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
+    let db =
+        DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };
     let sm_store = StateMachineStore::new(
         db,
-         topic_storage,
-         current_node_id,
-         session_manager_force_stop_recipient
-        ).await.unwrap();
+        topic_storage,
+        current_node_id,
+        session_manager_force_stop_recipient,
+    )
+    .await
+    .unwrap();
 
     (log_store, sm_store)
 }

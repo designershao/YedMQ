@@ -1,7 +1,7 @@
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use crate::raft::Node;
+use crate::{raft::Node, session::session_actor_map_storage::SessionVersion};
 use super::NodeId;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -10,6 +10,7 @@ pub enum SessionActorMapRequest {
         tenant_id: String,
         session_id: String,
         node_id: NodeId,
+        version: SessionVersion
     },
     UnregisterSession {
         tenant_id: String,
@@ -21,7 +22,8 @@ pub enum SessionActorMapRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionActorMapResponse {
-    None
+    None,
+    Rejected { current_version: SessionVersion, existing_version: SessionVersion },
 }
 
 

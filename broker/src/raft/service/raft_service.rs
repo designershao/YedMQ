@@ -266,17 +266,32 @@ impl RaftService for RaftServiceImpl {
                 let request = request.into_inner();
                 let client_id = request.client_id;
                 let tenant_id = request.tenant_id;
-                let node_id_option = self
+                let session_actor_map_entry = self
                     .raft_manager
                     .session_actor_map_raft()
-                    .get_session_actor_map_node_id(&tenant_id, &client_id)
+                    .get_session_actor_map(&tenant_id, &client_id)
                     .await;
-                let res = crate::protobuf::GetSessionActorMapResponse {
-                    success: true,
-                    error: None,
-                    node_id: node_id_option,
-                };
-                Ok(tonic::Response::new(res))
+
+                if let Some(session_actor_map_entry) =  session_actor_map_entry {
+                    let res = crate::protobuf::GetSessionActorMapResponse {
+                        success: true,
+                        error: None,
+                        node_id: Some(session_actor_map_entry.node_id),
+                        version: Some(crate::protobuf::SessionVersion {
+                            node_id: session_actor_map_entry.node_id,
+                            counter: session_actor_map_entry.version.counter
+                        }),
+                    };
+                    Ok(tonic::Response::new(res))
+                } else {
+                    let res = crate::protobuf::GetSessionActorMapResponse {
+                        success: true,
+                        error: None,
+                        node_id: None,
+                        version: None,
+                    };
+                    Ok(tonic::Response::new(res))
+                }
             }
             Err(e) => {
                 let res = crate::protobuf::GetSessionActorMapResponse {
@@ -291,6 +306,7 @@ impl RaftService for RaftServiceImpl {
                             .to_string(),
                     }),
                     node_id: None,
+                    version: None
                 };
 
                 Ok(tonic::Response::new(res))

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use actix::Recipient;
 use log::{info, warn};
@@ -14,11 +14,12 @@ use types::{SessionActorMapRequest, SessionActorMapResponse, SessionActorMapType
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
+use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionVersion};
 use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
 
 use super::raft_manager::RaftManagerError;
-use super::{Node, RaftCommandExecutor};
 use super::NodeId;
+use super::{Node, RaftCommandExecutor};
 
 pub mod raft_network_impl;
 pub mod store;
@@ -34,6 +35,7 @@ pub trait SessionActorMapRaftManagerTrait {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError>;
 
     async fn unregister_session_actor_map(
@@ -46,11 +48,11 @@ pub trait SessionActorMapRaftManagerTrait {
 
     fn current_node_id(&self) -> NodeId;
 
-    async fn get_session_actor_map_node_id(
+    async fn get_session_actor_map(
         &self,
         tenant_id: &str,
         client_id: &str,
-    ) -> Option<NodeId>;
+    ) -> Option<SessionActorMapEntry>;
 
     async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
 
@@ -89,11 +91,13 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
+            version,
         })
         .await
     }
@@ -124,11 +128,11 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
             .and_then(|x| Some(x.1.clone()))
     }
 
-    async fn get_session_actor_map_node_id(
+    async fn get_session_actor_map(
         &self,
         tenant_id: &str,
         client_id: &str,
-    ) -> Option<NodeId> {
+    ) -> Option<SessionActorMapEntry> {
         if !self.is_leader().await {
             let leader_node = self.get_leader();
 
@@ -160,7 +164,24 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
                     warn!("GetSessionActorMap failed, res={:?}", actor_map_response);
                     return None;
                 } else {
-                    return actor_map_response.unwrap().into_inner().node_id;
+                    let response = actor_map_response.unwrap().into_inner();
+
+                    if response.success {
+                        if response.node_id.is_none() {
+                            return None;
+                        }
+                        let node_id = response.node_id.unwrap();
+                        let version = response.version.unwrap();
+                        Some(SessionActorMapEntry {
+                            node_id,
+                            version: SessionVersion {
+                                counter: version.counter,
+                                node_id: version.node_id,
+                            },
+                        })
+                    } else {
+                        return None;
+                    }
                 }
             }
         } else {
@@ -189,8 +210,9 @@ pub struct SessionActorMapRaftManager {
 }
 
 #[async_trait::async_trait]
-impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse> for SessionActorMapRaftManager {
-
+impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse>
+    for SessionActorMapRaftManager
+{
     // Check if the current node is the leader
     async fn is_leader(&self) -> bool {
         self.raft.metrics().borrow().state == openraft::ServerState::Leader
@@ -210,14 +232,16 @@ impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse> for Se
     }
 
     // Execute command as leader
-    async fn execute_as_leader(&self, command: SessionActorMapRequest) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
+    async fn execute_as_leader(
+        &self,
+        command: SessionActorMapRequest,
+    ) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
         let res = self.raft.client_write(command).await;
         if let Err(e) = res {
-            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
-                "ClientWrite failed: {:?}",
-                e
-            )));
-        }       
+            return Err(super::raft_manager::RaftManagerError::InternalError(
+                format!("ClientWrite failed: {:?}", e),
+            ));
+        }
 
         let r = res.unwrap();
         let res = r.data;
@@ -225,44 +249,50 @@ impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse> for Se
     }
 
     // Create an RPC client for communication with a target node
-    async fn create_rpc_client(&self, addr: String) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
+    async fn create_rpc_client(
+        &self,
+        addr: String,
+    ) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
         match super::create_rpc_client_with_retry(addr).await {
             Ok(client) => Ok(client),
-            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError("Create rpc client failed".into())),
+            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError(
+                "Create rpc client failed".into(),
+            )),
         }
     }
 
     // Send command to another node
-    async fn send_command_to_node(&self, mut client: RaftServiceClient<Channel>, command: SessionActorMapRequest) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
+    async fn send_command_to_node(
+        &self,
+        mut client: RaftServiceClient<Channel>,
+        command: SessionActorMapRequest,
+    ) -> Result<SessionActorMapResponse, super::raft_manager::RaftManagerError> {
         let append_request = AppendEntriesRequest {
             data: serde_json::to_string(&command).unwrap(),
             raft_type: RaftType::SessionActorMap.into(),
         };
 
         match client.append_entries(append_request).await {
-            Ok(rpc_response) =>{
+            Ok(rpc_response) => {
                 let response = rpc_response.into_inner();
                 let data = serde_json::from_str(&response.data).unwrap();
                 Ok(data)
-            },
+            }
             Err(e) => {
-                return Err(super::raft_manager::RaftManagerError::InternalError(format!(
-                    "AppendEntries failed: {:?}",
-                    e
-                )));
-            },
-
+                return Err(super::raft_manager::RaftManagerError::InternalError(
+                    format!("AppendEntries failed: {:?}", e),
+                ));
+            }
         }
     }
-
 }
 
 impl SessionActorMapRaftManager {
     pub async fn session_exist_in_current_node(&self, tenant_id: &str, client_id: &str) -> bool {
         let session_map_storage_guard = self.session_actor_map_storage.read().await;
         let node_id_option = session_map_storage_guard.get_session_actor_map(tenant_id, client_id);
-        if let Some(node_id) = node_id_option {
-            node_id == self.current_node_id()
+        if let Some(session_actor_map_entry) = node_id_option {
+            session_actor_map_entry.node_id == self.current_node_id()
         } else {
             false
         }
@@ -273,11 +303,13 @@ impl SessionActorMapRaftManager {
         tenant_id: &str,
         client_id: &str,
         node_id: NodeId,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError> {
         let request = SessionActorMapRequest::RegisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
             node_id,
+            version,
         };
 
         self.execute_command(request).await

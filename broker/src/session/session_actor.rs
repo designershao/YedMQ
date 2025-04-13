@@ -1174,8 +1174,11 @@ impl Handler<SessionActorMessage> for SessionActor {
                         conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
                     }
                     .into_actor(self)
+                    .then(|_, act, ctx| {
+                        act.clean_up(ctx);
+                        actix::fut::ready(())
+                    })
                     .wait(ctx);
-                    self.clean_up(ctx);
                 } 
             }
             SessionActorMessage::UnexpectClientDisconnected => {
