@@ -1,10 +1,9 @@
 use actix::{
     dev::{ContextFutureSpawner, MessageResponse},
-    fut, Actor, ActorContext, ActorFuture, ActorFutureExt, AsyncContext, Context, Handler,
+    fut, Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler,
     MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, WrapFuture,
 };
 use log::{error, info, warn};
-use openraft::{docs::cluster_control::node_lifecycle, raft};
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
@@ -35,7 +34,7 @@ use crate::{
     plugin_manager::{PluginService, SubscribeReturnCode},
     raft::raft_manager::RaftManagerTrait,
     router::RouterCmd,
-    topic::topic_manager::{self, TopicManagerTrait},
+    topic::topic_manager::TopicManagerTrait,
 };
 
 use super::{
@@ -224,7 +223,7 @@ impl Actor for SessionActor {
         let raft_manager = self.raft_manager.clone();
 
         async move {
-            let mut session_state_guard = state.write().await;
+            let session_state_guard = state.write().await;
             let topic_iter = session_state_guard.subscriptions.iter();
             let topic_manager = topic_manager.read().await;
             for (topic, qos) in topic_iter {
@@ -251,7 +250,7 @@ impl Actor for SessionActor {
         .wait(ctx);
     }
 
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("🗑️ session {} stopped", self.client_id);
     }
 }
@@ -549,19 +548,10 @@ impl SessionActor {
     }
 
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
-        self.clean_up(ctx);
 
-        self.unregister_session_actor_map(ctx, |_, act, ctx| {
-            info!("force stop session {}", act.client_id);
-
-            if !act.clean_session {
-                info!("start notify session manager stopped");
-                act.notify_session_manager_stopped(ctx, |_, _, ctx| {
-                    ctx.stop();
-                    fut::ready(())
-                });
-            }
-            fut::ready(())
+        self.notify_session_manager_stopped(ctx, |_,_, ctx| {
+            ctx.stop();
+            fut::ready(())  
         });
     }
 
@@ -588,56 +578,6 @@ impl SessionActor {
         .into_actor(self)
         .then(callback_fn)
         .wait(ctx);
-    }
-
-    fn unregister_session_actor_map(
-        &mut self,
-        ctx: &mut <SessionActor as Actor>::Context,
-        callback_fn: ThenCallback<SessionActor, ()>,
-    ) {
-        let raft_manager = self.raft_manager.clone();
-        let client_info = self.get_plugin_client_info();
-        async move {
-            let node_id = raft_manager.session_actor_map_raft().current_node_id();
-            info!("unregister session actor map from node {}", node_id);
-            let res = raft_manager
-                .session_actor_map_raft()
-                .unregister_session_actor_map(
-                    &client_info.tenant_id,
-                    &client_info.client_identifier,
-                    node_id,
-                    false,
-                )
-                .await;
-            if let Err(e) = res {
-                error!("unregister session actor map error: {}", e);
-            } else {
-                info!("unregister session actor map success");
-            }
-        }
-        .into_actor(self)
-        .then(callback_fn)
-        .wait(ctx);
-    }
-
-    fn clean_up(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
-        info!("clean up session {}", self.client_id);
-        if self.clean_session {
-            self.unregister_session_actor_map(ctx, |_, act, ctx| {
-                act.notify_session_manager_stopped(ctx, |_, _, ctx| {
-                    ctx.stop();
-                    fut::ready(())
-                });
-                fut::ready(())
-            });
-        } else {
-            info!(
-                "session {} is not clean session, start into inactive state",
-                self.client_id
-            );
-            self.set_state(ActivityState::Inactive);
-            
-        }
     }
 
     fn handle_publish(
@@ -990,7 +930,12 @@ impl SessionActor {
 
         self.plugin_manager
             .do_on_disconnect(&self.get_plugin_client_info());
-        self.clean_up(ctx);
+
+        if !self.clean_session {
+            self.set_state(ActivityState::Inactive);
+        } else {
+            self.force_stop(ctx);
+        }
     }
 
     fn reset_keep_alive_expired_flag(&mut self) {
@@ -1137,9 +1082,13 @@ impl Handler<SessionActorMessage> for SessionActor {
             SessionActorMessage::KeepAliveExpred => {
                 // send will message and clean up
                 self.send_will_message(ctx);
-                self.clean_up(ctx);
                 if let Some(recipient) = &self.conn_recipient {
                     recipient.do_send(ConnectionActorMessage::Disconnect);
+                    if !self.clean_session {
+                        self.set_state(ActivityState::Inactive);
+                    } else {
+                        self.force_stop(ctx);
+                    }
                 }
             }
             SessionActorMessage::InflightRetry => {
@@ -1175,7 +1124,11 @@ impl Handler<SessionActorMessage> for SessionActor {
                     }
                     .into_actor(self)
                     .then(|_, act, ctx| {
-                        act.clean_up(ctx);
+                        if !act.clean_session {
+                            act.set_state(ActivityState::Inactive);
+                        } else {
+                            act.force_stop(ctx);
+                        }
                         actix::fut::ready(())
                     })
                     .wait(ctx);
@@ -1183,7 +1136,11 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::UnexpectClientDisconnected => {
                 self.send_will_message(ctx);
-                self.clean_up(ctx);
+                if !self.clean_session {
+                    self.set_state(ActivityState::Inactive);
+                } else {
+                    self.force_stop(ctx);
+                }
             }
             SessionActorMessage::Reconnect {
                 conn,
@@ -1234,7 +1191,11 @@ impl Handler<SessionActorMessage> for SessionActor {
                 .wait(ctx);
             }
             SessionActorMessage::ClientDisconnected => {
-                self.clean_up(ctx);
+                if !self.clean_session {
+                    self.set_state(ActivityState::Inactive);
+                } else {
+                    self.force_stop(ctx);
+                }
             }
             SessionActorMessage::ForceStop => {
                 info!("receive force stop message for session {}", self.client_id);
@@ -1455,10 +1416,6 @@ mod tests {
         session_actor_map_mock
             .expect_current_node_id()
             .return_const(123 as u64);
-        session_actor_map_mock
-            .expect_unregister_session_actor_map()
-            .once()
-            .returning(|_, _, _, _| Box::pin(async move { Ok(()) }));
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
@@ -1578,10 +1535,6 @@ mod tests {
         session_actor_map_mock
             .expect_current_node_id()
             .return_const(123 as u64);
-        session_actor_map_mock
-            .expect_unregister_session_actor_map()
-            .once()
-            .returning(|_, _, _, _| Box::pin(async move { Ok(()) }));
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
@@ -1680,10 +1633,6 @@ mod tests {
         session_actor_map_mock
             .expect_current_node_id()
             .return_const(123 as u64);
-        session_actor_map_mock
-            .expect_unregister_session_actor_map()
-            .once()
-            .returning(|_, _, _, _| Box::pin(async move { Ok(()) }));
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
@@ -2053,10 +2002,6 @@ mod tests {
         session_actor_map_mock
             .expect_current_node_id()
             .return_const(123 as u64);
-        session_actor_map_mock
-            .expect_unregister_session_actor_map()
-            .once()
-            .returning(|_, _, _, _| Box::pin(async move { Ok(()) }));
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
@@ -2256,10 +2201,6 @@ mod tests {
         session_actor_map_mock
             .expect_current_node_id()
             .return_const(123 as u64);
-        session_actor_map_mock
-            .expect_unregister_session_actor_map()
-            .once()
-            .returning(|_, _, _, _| Box::pin(async move { Ok(()) }));
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));

@@ -1,8 +1,9 @@
-use std::{collections::HashMap, path::Display, sync::atomic::{AtomicU64, Ordering}};
+use std::{collections::HashMap, path::Path, sync::atomic::{AtomicU64, Ordering}};
 
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 
-use crate::raft::{session_actor_map, NodeId};
+use crate::raft::NodeId;
 
 #[derive(Debug,thiserror::Error)]
 pub enum SessionActorMapError {
@@ -12,18 +13,56 @@ pub enum SessionActorMapError {
 
 }
 
+#[derive(Debug)]
 pub struct SessionClock {
     counter: AtomicU64,
+    node_id: u64,
+    persist_path: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClockSnapshot {
+    counter: u64,
     node_id: u64,
 }
 
 impl SessionClock {
-    pub fn new(node_id: u64) -> Self {
-        Self {
+
+    pub fn get(&self) -> u64 {
+        self.counter.load(Ordering::SeqCst)
+    }
+
+    /// Save clock to disk as JSON
+    pub async fn persist(&self) -> std::io::Result<()> {
+        let snapshot = ClockSnapshot {
+            counter: self.get(),
+            node_id: self.node_id,
+        };
+
+        let json = serde_json::to_string_pretty(&snapshot)?;
+        fs::write(&self.persist_path, json).await
+    }
+
+    /// Restore from disk if exists, otherwise start fresh
+    pub async fn restore(&self) -> std::io::Result<()> {
+        if Path::new(&self.persist_path).exists() {
+            let content = fs::read_to_string(&self.persist_path).await?;
+            if let Ok(snapshot) = serde_json::from_str::<ClockSnapshot>(&content) {
+                self.counter.store(snapshot.counter, Ordering::SeqCst);
+                // Optional: verify snapshot.node_id == self.node_id
+            }
+        }
+        Ok(())
+    }
+
+    pub fn new(node_id: u64, persist_path: impl Into<String>) -> Self {
+        SessionClock {
             counter: AtomicU64::new(1),
             node_id,
+            persist_path: persist_path.into(),
         }
     }
+
 
     pub fn next(&self) -> SessionVersion {
         let next = self.counter.fetch_add(1, Ordering::SeqCst);
@@ -102,17 +141,17 @@ impl SessionActorMapStorage {
             .cloned()   
     }
 
-    pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId, version: SessionVersion) -> Result<(), SessionActorMapError> {
+    pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId, version: &SessionVersion) -> Result<(), SessionActorMapError> {
         let session_tenant = self.inner.entry(tenant_id.clone()).or_insert(HashMap::new());
         if session_tenant.contains_key(&session_id) {
             let existing_entry = session_tenant.get(&session_id).unwrap();
             if existing_entry.version.is_newer_than(&version) {
-                return Err(SessionActorMapError::SessionVersionRejected { current_version: version, existing_version: existing_entry.version.clone() });
+                return Err(SessionActorMapError::SessionVersionRejected { current_version: version.clone(), existing_version: existing_entry.version.clone() });
             }
         }             
         let session_actor_map_entry = SessionActorMapEntry {
             node_id,
-            version
+            version: version.clone()
         };
         session_tenant.insert(session_id.clone(), session_actor_map_entry);
         Ok(())

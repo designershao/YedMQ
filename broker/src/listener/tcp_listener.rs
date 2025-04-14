@@ -51,7 +51,7 @@ mod tests {
         plugin_manager::PluginManager,
         raft::raft_manager::RaftManager,
         session::{
-            session_actor_map_storage::SessionActorMapStorage,
+            session_actor_map_storage::{SessionActorMapStorage, SessionClock},
             session_manager_actor::SessionManagerActor, session_state_storage::SessionStateStorage,
         },
         settings::{Cluster, Settings, RPC},
@@ -117,12 +117,15 @@ mod tests {
         let router_sender_once_cell = OnceCell::new();
         let _ = router_sender_once_cell.set(router_sender.clone());
 
+        let session_clock = Arc::new(SessionClock::new(1, ".".to_string()));
+
         let session_manager = SessionManagerActor::new(
             plugin_manager.clone(),
             topic_manager.clone(),
             router_sender.clone(),
             settings.clone(),
             raft_manager.clone(),
+            session_clock.clone(),
         )
         .start();
 

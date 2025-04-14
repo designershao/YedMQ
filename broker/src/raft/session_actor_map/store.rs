@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     raft::{Node, NodeId},
-    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage},
+    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock},
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};
@@ -48,6 +48,8 @@ pub struct StateMachineStore {
     pub data: StateMachineData,
 
     snapshot_idx: u64,
+
+    session_clock: Arc<SessionClock>,
 
     db: Arc<DB>,
 }
@@ -116,6 +118,7 @@ impl StateMachineStore {
         session_manager_force_stop_recipient: Recipient<
             crate::session::session_manager_actor::ForceStop,
         >,
+        session_clock: Arc<SessionClock>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -127,6 +130,7 @@ impl StateMachineStore {
             snapshot_idx: 0,
             db,
             session_manager_force_stop_recipient,
+            session_clock,
         };
 
         let snapshot = sm.get_current_snapshot_()?;
@@ -238,9 +242,15 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write().await;
                         let res = session_actor_map_storage
-                            .register_session_actor(tenant_id, session_id, node_id, version);
+                            .register_session_actor(tenant_id, session_id, node_id, &version);
                         match res {
                             Ok(()) => {
+                                // Check local node , force stop the session if the session version is older
+                                //
+
+                                // update current node session clock
+                                self.session_clock.bump(&version);
+                                self.session_clock.persist().await.unwrap();
                                 replies.push(SessionActorMapResponse::None)
                             },
                             Err(e) =>  {
@@ -255,32 +265,14 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                     types::SessionActorMapRequest::UnregisterSession {
                         tenant_id,
                         session_id,
-                        node_id,
-                        keep_alive,
+                        session_version
                     } => {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write().await;
                         session_actor_map_storage
                             .unregister_session_actor(tenant_id.clone(), session_id.clone());
-
-                        if node_id == self.node_id {
-                            if !keep_alive {
-                                // if not stop session actor
-                                let res = self
-                                    .session_manager_force_stop_recipient
-                                    .send(crate::session::session_manager_actor::ForceStop {
-                                        tenant_id: tenant_id.clone(),
-                                        client_id: session_id.clone(),
-                                    })
-                                    .await;
-                                if let Err(e) = res {
-                                    warn!(
-                                        "teant {} session actor {} force stop error: {}",
-                                        tenant_id, session_id, e
-                                    );
-                                }
-                            }
-                        }
+                        self.session_clock.bump(&session_version);
+                        self.session_clock.persist().await.unwrap();
                         replies.push(SessionActorMapResponse::None);
                     }
                 },
@@ -574,6 +566,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     session_manager_force_stop_recipient: Recipient<
         crate::session::session_manager_actor::ForceStop,
     >,
+    session_clock: Arc<SessionClock>,
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -594,6 +587,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         topic_storage,
         current_node_id,
         session_manager_force_stop_recipient,
+        session_clock,
     )
     .await
     .unwrap();

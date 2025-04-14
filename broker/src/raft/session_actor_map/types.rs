@@ -15,8 +15,7 @@ pub enum SessionActorMapRequest {
     UnregisterSession {
         tenant_id: String,
         session_id: String,
-        node_id: NodeId,
-        keep_alive: bool
+        session_version: SessionVersion
     },
 }
 

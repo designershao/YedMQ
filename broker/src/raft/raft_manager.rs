@@ -8,7 +8,7 @@ use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
     protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
-    session::{session_actor_map_storage::SessionActorMapStorage, session_state_storage::SessionStateStorage}, settings::Cluster,
+    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::Cluster,
     topic::topic_storage::TopicStorage,
 };
 
@@ -119,13 +119,16 @@ impl RaftManager {
 
     pub async fn init_session_actor_map_raft(&self,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceStop>) {
+         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+         session_clock: Arc<SessionClock>,
+        ) {
 
         let session_actor_map_raft_manager =
             crate::raft::session_actor_map::SessionActorMapRaftManager::new(
                 self.cluster_cfg.clone(),
                 session_actor_map_storage.clone(),
-                session_manager_actor_recipient
+                session_manager_actor_recipient,
+                session_clock
             )
             .await;
         let _ = self.session_actor_map_raft.set(session_actor_map_raft_manager);

@@ -11,7 +11,7 @@ use yedmq::raft::raft_manager::RaftManager;
 use actix::Actor;
 use tokio::sync::{Mutex, OnceCell, RwLock};
 use yedmq::session::session_state_storage::SessionStateStorage;
-use yedmq::session::session_actor_map_storage;
+use yedmq::session::session_actor_map_storage::{self, SessionClock};
 use yedmq::session::session_manager_actor::SessionManagerActor;
 use yedmq::settings::{Cluster, RPC};
 use yedmq::topic::topic_manager::TopicManager;
@@ -80,12 +80,15 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let router_sender_once_cell = OnceCell::new();
     let _ = router_sender_once_cell.set(router_sender.clone());
 
+    let session_clock = Arc::new(SessionClock::new(1, ".".to_string()));
+
     let session_manager = SessionManagerActor::new(
         plugin_manager.clone(),
         topic_manager.clone(),
         router_sender.clone(),
         settings.clone(),
-        raft_manager.clone()
+        raft_manager.clone(),
+        session_clock.clone(),
     )
     .start();
 

@@ -4,7 +4,7 @@ use crate::{
     plugin_manager::PluginService,
     protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
     raft::{
-        raft_manager::{RaftManager, RaftManagerError, RaftManagerTrait},
+        raft_manager::{RaftManagerError, RaftManagerTrait},
         NodeId,
     },
     router::RouterCmd,
@@ -20,10 +20,7 @@ use log::{error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::{
-    v3::{
-        connack::{ConnAckPacketBuilder, ConnackReturnCode},
-        suback::ReturnCode,
-    },
+    v3::connack::{ConnAckPacketBuilder, ConnackReturnCode},
     MqttPacketV3,
 };
 
@@ -70,9 +67,13 @@ pub enum SessionLifecycleMessage {
 }
 
 struct SessionActorRecipientWrapper {
+
     session_actor_message_recipient: Recipient<SessionActorMessage>,
 
     get_session_info_recipient: Recipient<GetSessionInfo>,
+
+    session_version: SessionVersion,
+
 }
 
 pub struct SessionManagerActor {
@@ -122,6 +123,8 @@ impl Actor for SessionManagerActor {
         let (session_lifecycle_tx, mut session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
         self.session_lifecycle_tx = Some(session_lifecycle_tx);
         let self_addr = ctx.address();
+        let raft_manager = self.raft_manager.clone();
+        let session_clock = self.session_clock.clone();
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
                 match msg {
@@ -136,10 +139,15 @@ impl Actor for SessionManagerActor {
                             "received session lifectcle message SessionStopped session {} stopped",
                             client_id
                         );
-                        self_addr.do_send(RemoveSessionMessage {
+                        let session_version = session_clock.next();
+                        raft_manager.session_actor_map_raft().unregister_session_actor_map(
+                            &tenant_id, 
+                            &client_id, 
+                            session_version);
+                        self_addr.send(RemoveSessionMessage {
                             tenant_id,
                             client_id,
-                        })
+                        }).await;
                     }
                 }
             }
@@ -147,7 +155,7 @@ impl Actor for SessionManagerActor {
         ctx.spawn(future.into_actor(self));
     }
 
-    fn stopped(&mut self, ctx: &mut Self::Context) {
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("session manager stopped");
     }
 }
@@ -231,6 +239,44 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
         }
     }
 }
+
+#[derive(Message)]
+#[rtype(result = "Result<(), SessionManagerError>")]
+pub struct ForceStopWithSessionService {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub session_version: SessionVersion,
+}
+
+impl Handler<ForceStopWithSessionService> for SessionManagerActor {
+    type Result = ResponseFuture<Result<(), SessionManagerError>>;
+
+    fn handle(&mut self, msg: ForceStopWithSessionService, _ctx: &mut Self::Context) -> Self::Result {
+        if self.sessions.contains_key(&msg.tenant_id) == false {
+            return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
+        }
+        let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
+
+        let f = async move {
+            let tenant_sessions = tenant_sessions.write().await;
+
+            let session = tenant_sessions.get(&msg.client_id);
+
+            if let Some(session) = session {
+                // if session version is newer than the one in the message,stop the older session
+                if msg.session_version.is_newer_than(&session.session_version) {
+                    session.session_actor_message_recipient.send(SessionActorMessage::ForceStop).await;
+                }
+            }
+
+            Ok(())
+        };
+        Box::pin(f)
+    }
+}
+
+
+
 #[derive(Message)]
 #[rtype(result = "Result<(), SessionManagerError>")]
 pub struct ForceStop {
@@ -241,7 +287,7 @@ pub struct ForceStop {
 impl Handler<ForceStop> for SessionManagerActor {
     type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
-    fn handle(&mut self, msg: ForceStop, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ForceStop, _ctx: &mut Self::Context) -> Self::Result {
         if self.sessions.contains_key(&msg.tenant_id) == false {
             return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }
@@ -361,7 +407,7 @@ async fn call_force_disconnect(
 impl Handler<CreateSessionMessage> for SessionManagerActor {
     type Result = ResponseFuture<Result<Recipient<SessionActorMessage>, SessionManagerError>>;
 
-    fn handle(&mut self, msg: CreateSessionMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: CreateSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
         if !self.tenant_existed(&msg.tenant_id) {
             info!("tenant not existed, create tenant {}", msg.tenant_id);
             self.create_tenant(&msg.tenant_id);
@@ -433,14 +479,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.tenant_id, msg.client_id, current_node_id
             );
 
-            // Genereta session version, if remote version exist, bump current version else next
-            let remote_session_version = session_actor_map_entry.and_then(|e| Some(e.version));
-            let session_version = if let Some(remote_session_version) = remote_session_version {
-                session_clock.bump(&remote_session_version)
-            } else {
-                session_clock.next()
-            };
-            //
+            let session_version = session_clock.next();
 
             let res = raft_manager
                 .session_actor_map_raft()
@@ -448,7 +487,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     &msg.tenant_id,
                     &msg.client_id,
                     current_node_id,
-                    session_version,
+                    session_version.clone(),
                 )
                 .await;
             match res {
@@ -601,6 +640,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 SessionActorRecipientWrapper {
                     session_actor_message_recipient: session_actor_message_recipient.clone(),
                     get_session_info_recipient,
+                    session_version
                 },
             );
             return Ok(session_actor_message_recipient);
@@ -670,9 +710,4 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
         }
         Ok(())
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 }

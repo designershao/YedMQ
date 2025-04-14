@@ -14,7 +14,7 @@ use types::{SessionActorMapRequest, SessionActorMapResponse, SessionActorMapType
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
-use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionVersion};
+use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionClock, SessionVersion};
 use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
 
 use super::raft_manager::RaftManagerError;
@@ -42,8 +42,7 @@ pub trait SessionActorMapRaftManagerTrait {
         &self,
         tenant_id: &str,
         client_id: &str,
-        node_id: NodeId,
-        keep_alive: bool,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError>;
 
     fn current_node_id(&self) -> NodeId;
@@ -106,14 +105,12 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         &self,
         tenant_id: &str,
         client_id: &str,
-        node_id: NodeId,
-        keep_alive: bool,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError> {
         self.execute_command(types::SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
-            node_id,
-            keep_alive,
+            session_version:version,
         })
         .await
     }
@@ -319,14 +316,12 @@ impl SessionActorMapRaftManager {
         &self,
         tenant_id: &str,
         client_id: &str,
-        node_id: NodeId,
-        keep_alive: bool,
+        version: SessionVersion,
     ) -> Result<SessionActorMapResponse, RaftManagerError> {
         let request = SessionActorMapRequest::UnregisterSession {
             tenant_id: tenant_id.to_string(),
             session_id: client_id.to_string(),
-            node_id,
-            keep_alive,
+            session_version: version,
         };
 
         self.execute_command(request).await
@@ -373,6 +368,7 @@ impl SessionActorMapRaftManager {
         session_manager_force_stop_recipient: Recipient<
             crate::session::session_manager_actor::ForceStop,
         >,
+        session_clock: Arc<SessionClock>,
     ) -> Self {
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
@@ -385,6 +381,7 @@ impl SessionActorMapRaftManager {
             session_actor_map_storage.clone(),
             cluster_cfg.node_id,
             session_manager_force_stop_recipient,
+            session_clock,
         )
         .await;
 

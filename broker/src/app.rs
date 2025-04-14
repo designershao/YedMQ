@@ -6,6 +6,7 @@ use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
+use crate::session::session_actor_map_storage::SessionClock;
 use crate::session::session_state_storage::SessionStateStorage;
 use crate::{
     listener::{
@@ -49,6 +50,7 @@ pub struct YedMQApp {
 }
 
 impl YedMQApp {
+
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
 
@@ -66,12 +68,16 @@ impl YedMQApp {
         info!("start router task");
 
         // init session manager
+        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, "."));
+        session_clock.restore().await.unwrap();
+
         let session_manager = SessionManagerActor::new(
             app.plugin_manager.clone(),
             app.topic_manager.clone(),
             router_sender.clone(),
             app.settings.clone(),
             app.raft_manager.clone(),
+            session_clock.clone(),
         )
         .start();
         //
@@ -80,6 +86,7 @@ impl YedMQApp {
             .init_session_actor_map_raft(
                 session_actor_map_storage,
                 session_manager.clone().recipient(),
+                session_clock,
             )
             .await;
 
