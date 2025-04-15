@@ -58,10 +58,33 @@ pub trait SessionActorMapRaftManagerTrait {
     fn raft(&self) -> &SessionActorMapRaft;
 
     async fn init_cluster(&self) -> Result<(), RaftManagerError>;
+
+    fn get_leader_node_id(&self) -> Option<NodeId>; 
+
+    fn get_leader(&self) -> Option<Node>;
+    
 }
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
+
+    fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.metrics().borrow().current_leader
+    }
+
+    fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
+
+
     async fn init_cluster(&self) -> Result<(), RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
@@ -459,9 +482,6 @@ impl SessionActorMapRaftManager {
         let heartbeat_interval = heartbeat_interval * 1000;
 
         Config {
-            heartbeat_interval,
-            election_timeout_min,
-            election_timeout_max,
             ..Default::default()
         }
     }

@@ -598,9 +598,6 @@ impl SessionStateRaftManager {
         let heartbeat_interval = heartbeat_interval * 1000;
 
         Config {
-            heartbeat_interval,
-            election_timeout_min,
-            election_timeout_max,
             ..Default::default()
         }
     }
