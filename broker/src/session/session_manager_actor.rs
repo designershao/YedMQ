@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     plugin_manager::PluginService,
-    protobuf::{raft_service_client::RaftServiceClient, ForceSessionDisconnectRequest},
+    protobuf::{raft_service_client::RaftServiceClient, SessionActorForceStopRequest},
     raft::{
         raft_manager::{RaftManagerError, RaftManagerTrait},
         NodeId,
@@ -140,14 +140,17 @@ impl Actor for SessionManagerActor {
                             client_id
                         );
                         let session_version = session_clock.next();
-                        raft_manager.session_actor_map_raft().unregister_session_actor_map(
+                        let res = raft_manager.session_actor_map_raft().unregister_session_actor_map(
                             &tenant_id, 
                             &client_id, 
-                            session_version);
+                            session_version).await;
+                        if let Err(err) = res  {
+                            error!("failed to unregister session actor map: {}", err);
+                        }
                         self_addr.send(RemoveSessionMessage {
                             tenant_id,
                             client_id,
-                        }).await;
+                        }).await.unwrap().unwrap();
                     }
                 }
             }
@@ -265,7 +268,10 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
             if let Some(session) = session {
                 // if session version is newer than the one in the message,stop the older session
                 if msg.session_version.is_newer_than(&session.session_version) {
-                    session.session_actor_message_recipient.send(SessionActorMessage::ForceStop).await;
+                    let res = session.session_actor_message_recipient.send(SessionActorMessage::ForceStop).await;
+                    if let Err(e) = res {
+                        error!("force stop session {} failed: {}", msg.client_id, e);
+                    }
                 }
             }
 
@@ -387,7 +393,7 @@ async fn call_force_disconnect(
             client_id, node_id, i
         );
         let res = client
-            .session_force_disconnect(ForceSessionDisconnectRequest {
+            .session_actor_force_stop(SessionActorForceStopRequest {
                 tenant_id: tenant_id.clone(),
                 client_id: client_id.clone(),
             })

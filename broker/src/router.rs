@@ -292,7 +292,7 @@ mod tests {
     use actix::{Actor, Context, Handler};
     use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 
-    use crate::{settings::Settings, topic::topic_storage::Subscription};
+    use crate::topic::topic_storage::Subscription;
 
     use super::*;
 
@@ -307,7 +307,7 @@ mod tests {
     impl Handler<SendMessageToSession> for MockSessionManagerActor {
         type Result = ();
 
-        fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
+        fn handle(&mut self, msg: SendMessageToSession, _ctx: &mut Self::Context) -> Self::Result {
             let _ = self.message_sender.send(msg);
             ()
         }
@@ -339,7 +339,7 @@ mod tests {
             .expect_topic_raft()
             .return_const(Box::new(mock_topic_raft_manager));
 
-        let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+        let (_router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
         let topic_manager = Arc::new(RwLock::new(topic_manager_mock));
 

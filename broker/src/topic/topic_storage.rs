@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
     sync::{Arc, RwLock},
 };
 
@@ -150,17 +149,17 @@ impl TopicStorageNode {
     }
 
     pub fn add_subscription(&mut self, subscribtion: Subscription) {
+        /*
         let client_existed = self
             .subscriptions
             .read()
             .unwrap()
             .contains_key(&subscribtion.client_identifier);
-        if !client_existed {
-            self.subscriptions.write().unwrap().insert(
-                subscribtion.client_identifier.clone(),
-                Arc::new(subscribtion),
-            );
-        }
+        */
+        self.subscriptions.write().unwrap().insert(
+            subscribtion.client_identifier.clone(),
+            Arc::new(subscribtion),
+        );
     }
 
     pub fn get_subscriptions(&self) -> Vec<Arc<Subscription>> {
@@ -885,6 +884,32 @@ mod tests {
 
     use super::*;
     use std::thread;
+
+    #[test]
+    fn when_subscribe_same_topic_from_other_node_should_update_subscription() {
+        let mut topic_storage = TopicStorage::new();
+        let tenant_name = "hello".to_string();
+        topic_storage.create_tenant(&tenant_name);
+        let _ = topic_storage.subscribe(
+            tenant_name.clone(),
+            "clientA".to_string(),
+            "a/b/c".to_string(),
+            0,
+            1,
+        );
+        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 1);
+
+        let _ = topic_storage.subscribe(
+            tenant_name.clone(),
+            "clientA".to_string(),
+            "a/b/c".to_string(),
+            0,
+            2,
+        );
+        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 2);
+    }
 
     #[test]
     fn test_add_subscription_and_get_subscriptions() {

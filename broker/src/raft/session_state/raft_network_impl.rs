@@ -6,7 +6,7 @@ use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
     VoteRequest, VoteResponse,
 };
-use openraft::{AnyError, RaftNetwork, RaftNetworkFactory};
+use openraft::{RaftNetwork, RaftNetworkFactory};
 use serde::de::DeserializeOwned;
 use tonic::transport::{Channel, Endpoint};
 

@@ -68,7 +68,7 @@ impl YedMQApp {
         info!("start router task");
 
         // init session manager
-        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, "."));
+        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, "./clock"));
         session_clock.restore().await.unwrap();
 
         let session_manager = SessionManagerActor::new(

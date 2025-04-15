@@ -221,8 +221,16 @@ impl Actor for SessionActor {
         let client_id = self.client_id.clone();
         let session_actor_addr = ctx.address();
         let raft_manager = self.raft_manager.clone();
+        let session_lifecycle_tx = self.session_lifecycle_tx.clone();
+
+        let self_addr = ctx.address();
 
         async move {
+            if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
+                error!("send session started message to session manager error: {}, force stop the current session actor", e);
+                self_addr.send(SessionActorMessage::ForceStop).await.unwrap();
+                return;
+            }
             let session_state_guard = state.write().await;
             let topic_iter = session_state_guard.subscriptions.iter();
             let topic_manager = topic_manager.read().await;
@@ -542,12 +550,21 @@ impl SessionActor {
         }
     }
 
-    fn set_state(&mut self, state: ActivityState) {
+    fn set_state(&mut self, ctx: &mut <SessionActor as Actor>::Context, state: ActivityState) {
         info!("set session {} state to {:?}", self.client_id, state);
         self.activity_state = state;
+        let session_lifecycle_tx = self.session_lifecycle_tx.clone();
+        async move {
+            session_lifecycle_tx.send(SessionLifecycleMessage::SessionDeactivate).await.unwrap();
+        }.into_actor(self).wait(ctx);
     }
 
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+
+        // if connection is still alive, stop the connection actor
+        if let Some(conn_recipient) = &self.conn_recipient {
+            conn_recipient.do_send(ConnectionActorMessage::Disconnect);
+        }
 
         self.notify_session_manager_stopped(ctx, |_,_, ctx| {
             ctx.stop();
@@ -932,7 +949,7 @@ impl SessionActor {
             .do_on_disconnect(&self.get_plugin_client_info());
 
         if !self.clean_session {
-            self.set_state(ActivityState::Inactive);
+            self.set_state(ctx, ActivityState::Inactive);
         } else {
             self.force_stop(ctx);
         }
@@ -1015,7 +1032,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                     if let MqttPacketV3::Publish(mut packet) = packet {
                         let conn = self.conn_recipient.clone().unwrap();
                         let session_state = self.state.clone();
-                        let clean_session = self.clean_session;
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
                                 let mut session_state_guard = session_state.write().await;
@@ -1085,7 +1101,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 if let Some(recipient) = &self.conn_recipient {
                     recipient.do_send(ConnectionActorMessage::Disconnect);
                     if !self.clean_session {
-                        self.set_state(ActivityState::Inactive);
+                        self.set_state(ctx, ActivityState::Inactive);
                     } else {
                         self.force_stop(ctx);
                     }
@@ -1125,7 +1141,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                     .into_actor(self)
                     .then(|_, act, ctx| {
                         if !act.clean_session {
-                            act.set_state(ActivityState::Inactive);
+                            act.set_state(ctx, ActivityState::Inactive);
                         } else {
                             act.force_stop(ctx);
                         }
@@ -1137,7 +1153,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             SessionActorMessage::UnexpectClientDisconnected => {
                 self.send_will_message(ctx);
                 if !self.clean_session {
-                    self.set_state(ActivityState::Inactive);
+                    self.set_state(ctx, ActivityState::Inactive);
                 } else {
                     self.force_stop(ctx);
                 }
@@ -1150,7 +1166,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 will_message,
                 socket_addr,
             } => {
-                self.set_state(ActivityState::Active);
+                self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);
                 self.will_message = will_message;
                 self.clean_session = clean_session;
@@ -1192,7 +1208,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::ClientDisconnected => {
                 if !self.clean_session {
-                    self.set_state(ActivityState::Inactive);
+                    self.set_state(ctx, ActivityState::Inactive);
                 } else {
                     self.force_stop(ctx);
                 }

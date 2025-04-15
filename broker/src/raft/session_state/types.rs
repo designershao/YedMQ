@@ -1,4 +1,4 @@
-use crate::{raft::Node, settings::Mqtt};
+use crate::raft::Node;
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;

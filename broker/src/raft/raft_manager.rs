@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use actix::Recipient;
-use log::{info, warn};
+use log::info;
 use mockall::automock;
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
@@ -12,7 +12,7 @@ use crate::{
     topic::topic_storage::TopicStorage,
 };
 
-use super::{service::raft_service::RaftServiceImpl, session_actor_map::SessionActorMapRaftManagerTrait};
+use super::service::raft_service::RaftServiceImpl;
 
 #[derive(Debug, Error)]
 pub enum RaftManagerError {
