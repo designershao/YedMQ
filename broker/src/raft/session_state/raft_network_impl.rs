@@ -1,6 +1,4 @@
-use std::time::Duration;
-
-use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError};
+use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable};
 use openraft::network::RPCOption;
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
@@ -8,7 +6,7 @@ use openraft::raft::{
 };
 use openraft::{RaftNetwork, RaftNetworkFactory};
 use serde::de::DeserializeOwned;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 
@@ -20,36 +18,35 @@ pub struct Network {}
 
 impl RaftNetworkFactory<SessionStateTypeConfig> for Network {
     type Network = NetworkConnection;
-
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-        let addr = format!("http://{}", node.rpc_addr);
 
-        let channel = Endpoint::from_shared(addr.clone()).unwrap()
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(5))
-            .concurrency_limit(8)
-            .tcp_keepalive(Some(Duration::from_secs(60)))
-            .http2_keep_alive_interval(Duration::from_secs(30))
-            .keep_alive_timeout(Duration::from_secs(20))
-            .keep_alive_while_idle(true)
-            .connect_lazy();
-
-        NetworkConnection {
-            channel,
-        }
+        NetworkConnection::new(node)
     }
 }
 
 pub struct NetworkConnection {
-    channel: Channel,
+    node: Node,
 }
 
 
 impl NetworkConnection {
+    pub fn new(node: &Node) -> Self {
+        NetworkConnection {
+            node: node.clone(),
+        }
+    }
+
     async fn c<E: std::error::Error + DeserializeOwned>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        Ok(RaftServiceClient::new(self.channel.clone()))
+        let addr = format!("http://{}", self.node.rpc_addr);
+
+        match Channel::builder(addr.parse().unwrap()).connect().await {
+            Ok(channel) => Ok(RaftServiceClient::new(channel)), 
+            Err(e) => {
+                return Err(RPCError::Unreachable(Unreachable::new(&e)))
+            }
+        }
     }
 }
 
