@@ -119,6 +119,9 @@ pub async fn run_rest_api_task(
         .route("/api/v1/cluster/metrics", axum::routing::get(cluster::metrics))
         .route("/api/v1/cluster/learners", axum::routing::post(cluster::add_learner))
         .route("/api/v1/cluster/membership", axum::routing::post(cluster::change_membership))
+        .route("/api/v1/cluster/topic/membership", axum::routing::post(cluster::topic_raft_change_membership))
+        .route("/api/v1/cluster/session_actor_map/membership", axum::routing::post(cluster::session_actor_map_raft_change_membership))
+        .route("/api/v1/cluster/session_state/membership", axum::routing::post(cluster::session_state_raft_change_membership))
         .route("/api/v1/cluster/init", axum::routing::post(cluster::init_cluster))
         .layer(axum::middleware::from_fn_with_state(
             state_for_basic_auth,

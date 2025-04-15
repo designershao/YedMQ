@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
+use log::info;
 use openraft::{docs::cluster_control::node_lifecycle, RaftMetrics};
 use serde::{Deserialize, Serialize};
 
-use crate::{app::YedMQApp, raft::Node};
+use crate::{
+    app::YedMQApp,
+    raft::{raft_manager::RaftManagerTrait, topic::TopicRaftManagerTrait, Node},
+};
 
 #[derive(Debug, Serialize)]
 pub struct RaftMetricsResponse {
     pub topic_raft: RaftMetrics<u64, Node>,
     pub session_actor_map_raft: RaftMetrics<u64, Node>,
+    pub session_state_map_raft: RaftMetrics<u64, Node>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -18,18 +23,23 @@ pub struct AddNodeRequest {
     node: Node,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ChangeMembersRequest {
     members: Vec<u64>,
 }
 
-pub async fn init_cluster(
-    State(app_state): State<Arc<YedMQApp>>,
-) -> (StatusCode, String) {
-
+pub async fn init_cluster(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode, String) {
     let _ = app_state.raft_manager.topic_raft().init_cluster().await;
-    let _ = app_state.raft_manager.session_actor_map_raft().init_cluster().await;
-    let _ = app_state.raft_manager.session_state_raft().init_cluster().await;
+    let _ = app_state
+        .raft_manager
+        .session_actor_map_raft()
+        .init_cluster()
+        .await;
+    let _ = app_state
+        .raft_manager
+        .session_state_raft()
+        .init_cluster()
+        .await;
 
     (StatusCode::OK, format!(""))
 }
@@ -38,27 +48,205 @@ pub async fn add_learner(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<AddNodeRequest>,
 ) -> (StatusCode, String) {
-    let node_id= payload.node_id;
+    let node_id = payload.node_id;
     let node = payload.node;
-    let res = app_state.raft_manager.topic_raft().raft.add_learner(node_id, node.clone(), true).await;
-    let res = app_state.raft_manager.session_actor_map_raft().raft().add_learner(node_id, node.clone(), true).await;
-    let res = app_state.raft_manager.session_state_raft().raft.add_learner(node_id, node.clone(), true).await;
-
+    let res = app_state
+        .raft_manager
+        .topic_raft()
+        .raft
+        .add_learner(node_id, node.clone(), true)
+        .await;
+    let res = app_state
+        .raft_manager
+        .session_actor_map_raft()
+        .raft()
+        .add_learner(node_id, node.clone(), true)
+        .await;
+    let res = app_state
+        .raft_manager
+        .session_state_raft()
+        .raft
+        .add_learner(node_id, node.clone(), true)
+        .await;
 
     (StatusCode::OK, format!("{:?}", res))
+}
+
+pub async fn topic_raft_change_membership(
+    State(app_state): State<Arc<YedMQApp>>,
+    Json(payload): Json<ChangeMembersRequest>,
+) -> (StatusCode, String) {
+    let topic_raft_leader_node_id = app_state.raft_manager.topic_raft().get_leader_node_id();
+    if topic_raft_leader_node_id.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("topic raft leader not found"),
+        );
+    } else {
+        let topic_raft_leader_node_id = topic_raft_leader_node_id.unwrap();
+        if topic_raft_leader_node_id != app_state.raft_manager.topic_raft().current_node_id() {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("not the topic raft leader node"),
+            );
+        } else {
+            let res = app_state
+                .raft_manager
+                .topic_raft()
+                .raft
+                .change_membership(payload.members.clone(), true)
+                .await;
+            if let Err(e) = res {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
+            } else {
+                return (StatusCode::OK, format!(""));
+            }
+        }
+    }
+}
+
+pub async fn session_actor_map_raft_change_membership(
+    State(app_state): State<Arc<YedMQApp>>,
+    Json(payload): Json<ChangeMembersRequest>,
+) -> (StatusCode, String) {
+    let session_actor_map_raft_leader_node_id = app_state
+        .raft_manager
+        .session_actor_map_raft()
+        .get_leader_node_id();
+    if session_actor_map_raft_leader_node_id.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("session actor map raft leader not found"),
+        );
+    } else {
+        let session_actor_map_raft_leader_node_id = session_actor_map_raft_leader_node_id.unwrap();
+        if session_actor_map_raft_leader_node_id
+            != app_state
+                .raft_manager
+                .session_actor_map_raft()
+                .current_node_id()
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("not the topic raft leader node"),
+            );
+        } else {
+            let res = app_state
+                .raft_manager
+                .session_actor_map_raft()
+                .raft()
+                .change_membership(payload.members.clone(), true)
+                .await;
+            if let Err(e) = res {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
+            } else {
+                return (StatusCode::OK, format!(""));
+            }
+        }
+    }
+}
+
+pub async fn session_state_raft_change_membership(
+    State(app_state): State<Arc<YedMQApp>>,
+    Json(payload): Json<ChangeMembersRequest>,
+) -> (StatusCode, String) {
+    let session_state_raft_leader_node_id = app_state
+        .raft_manager
+        .session_state_raft()
+        .get_leader_node_id();
+    if session_state_raft_leader_node_id.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            format!("session actor map raft leader not found"),
+        );
+    } else {
+        let session_state_raft_leader_node_id = session_state_raft_leader_node_id.unwrap();
+        if session_state_raft_leader_node_id
+            != app_state
+                .raft_manager
+                .session_state_raft()
+                .current_node_id()
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("not the topic raft leader node"),
+            );
+        } else {
+            let res = app_state
+                .raft_manager
+                .session_state_raft()
+                .raft
+                .change_membership(payload.members.clone(), true)
+                .await;
+            if let Err(e) = res {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
+            } else {
+                return (StatusCode::OK, format!(""));
+            }
+        }
+    }
 }
 
 pub async fn change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let res = app_state.raft_manager.topic_raft().raft.change_membership(payload.members.clone(), true).await;
-    let res = app_state.raft_manager.session_actor_map_raft().raft().change_membership(payload.members.clone(), true).await;
-    let res = app_state.raft_manager.session_state_raft().raft.change_membership(payload.members.clone(), true).await;
+    info!("start change topic membership");
+    let res = reqwest::Client::new()
+        .post(format!(
+            "http://{}/api/v1/cluster/topic/membership",
+            app_state
+                .raft_manager
+                .topic_raft()
+                .get_leader()
+                .unwrap()
+                .api_addr
+        ))
+        .json(&payload)
+        .send()
+        .await;
+    if let Err(e) = res {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("update topic cluster membership error: {}", e));
+    }
+
+    info!("start change session actor map membership");
+    let res = reqwest::Client::new()
+        .post(format!(
+            "http://{}/api/v1/cluster/session_actor_map/membership",
+            app_state
+                .raft_manager
+                .session_actor_map_raft()
+                .get_leader()
+                .unwrap()
+                .api_addr
+        ))
+        .json(&payload)
+        .send()
+        .await;
+    if let Err(e) = res {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("update session state actor map cluster membership error: {}", e));
+    }
+
+    info!("start change session state membership");
+    let res = reqwest::Client::new()
+        .post(format!(
+            "http://{}/api/v1/cluster/session_state/membership",
+            app_state
+                .raft_manager
+                .session_state_raft()
+                .get_leader()
+                .unwrap()
+                .api_addr
+        ))
+        .json(&payload)
+        .send()
+        .await;
+    if let Err(e) = res {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("update session state raft cluster membership error: {}", e));
+    }
 
     (StatusCode::OK, format!(""))
 }
-
 
 pub async fn metrics(
     State(app_state): State<Arc<YedMQApp>>,
@@ -77,10 +265,18 @@ pub async fn metrics(
         .metrics()
         .borrow()
         .clone();
+    let session_state_metrics = app_state
+        .raft_manager
+        .session_state_raft()
+        .raft
+        .metrics()
+        .borrow()
+        .clone();
 
     let response = RaftMetricsResponse {
         topic_raft: topic_metrics,
         session_actor_map_raft: session_actor_map_metrics,
+        session_state_map_raft: session_state_metrics,
     };
 
     (StatusCode::OK, Json(response))
