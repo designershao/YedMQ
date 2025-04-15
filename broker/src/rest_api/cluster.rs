@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
-use log::info;
+use log::{info, warn};
 use openraft::{docs::cluster_control::node_lifecycle, RaftMetrics};
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +78,7 @@ pub async fn topic_raft_change_membership(
 ) -> (StatusCode, String) {
     let topic_raft_leader_node_id = app_state.raft_manager.topic_raft().get_leader_node_id();
     if topic_raft_leader_node_id.is_none() {
+        warn!("topic raft leader not found");
         return (
             StatusCode::NOT_FOUND,
             format!("topic raft leader not found"),
@@ -85,6 +86,7 @@ pub async fn topic_raft_change_membership(
     } else {
         let topic_raft_leader_node_id = topic_raft_leader_node_id.unwrap();
         if topic_raft_leader_node_id != app_state.raft_manager.topic_raft().current_node_id() {
+            warn!("not the topic raft leader node");
             return (
                 StatusCode::BAD_REQUEST,
                 format!("not the topic raft leader node"),
@@ -97,6 +99,7 @@ pub async fn topic_raft_change_membership(
                 .change_membership(payload.members.clone(), true)
                 .await;
             if let Err(e) = res {
+                warn!("topic raft change membership error: {}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
             } else {
                 return (StatusCode::OK, format!(""));
@@ -192,6 +195,15 @@ pub async fn change_membership(
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
     info!("start change topic membership");
+    info!("topic memberrship url {}", format!(
+        "http://{}/api/v1/cluster/topic/membership",
+        app_state
+            .raft_manager
+            .topic_raft()
+            .get_leader()
+            .unwrap()
+            .api_addr
+    ));
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/topic/membership",

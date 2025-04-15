@@ -15,7 +15,8 @@ use types::{SessionActorMapRequest, SessionActorMapResponse, SessionActorMapType
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionClock, SessionVersion};
-use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
+use crate::settings::Settings;
+use crate::session::session_actor_map_storage::SessionActorMapStorage;
 
 use super::raft_manager::RaftManagerError;
 use super::NodeId;
@@ -88,10 +89,10 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
     async fn init_cluster(&self) -> Result<(), RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
-            self.cluster_cfg.node_id,
+            self.settings.cluster.node_id,
             Node {
-                rpc_addr: self.cluster_cfg.rpc.external.to_string(),
-                api_addr: self.cluster_cfg.rpc.external.to_string(),
+                rpc_addr: self.settings.cluster.rpc.external.to_string(),
+                api_addr: self.settings.listener.api.external.to_string(),
             },
         );
 
@@ -105,7 +106,7 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
     }
 
     fn current_node_id(&self) -> NodeId {
-        self.cluster_cfg.node_id
+        self.settings.cluster.node_id
     }
 
     async fn register_session_actor_map(
@@ -222,7 +223,7 @@ pub struct SessionActorMapRaftManager {
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
-    cluster_cfg: Cluster,
+    settings: Arc<Settings>,
 
     running_rx: watch::Receiver<()>,
 
@@ -351,7 +352,7 @@ impl SessionActorMapRaftManager {
     }
 
     pub fn current_node_id(&self) -> NodeId {
-        self.cluster_cfg.node_id
+        self.settings.cluster.node_id
     }
 
     pub async fn stop(&self) -> Result<(), RaftManagerError> {
@@ -381,18 +382,19 @@ impl SessionActorMapRaftManager {
                 .map_err(|e| RaftManagerError::InternalError(format!("{}", e)))?;
         }
 
-        info!("Raft shutdown: id={}", self.cluster_cfg.node_id);
+        info!("Raft shutdown: id={}", self.settings.cluster.node_id);
         Ok(())
     }
 
     pub async fn new(
-        cluster_cfg: Cluster,
+        settings: Arc<Settings>,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
         session_manager_force_stop_recipient: Recipient<
             crate::session::session_manager_actor::ForceStop,
         >,
         session_clock: Arc<SessionClock>,
     ) -> Self {
+        let cluster_cfg = &settings.cluster;
         let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
 
         let dir = Path::new(&cluster_cfg.store_dir);
@@ -428,7 +430,7 @@ impl SessionActorMapRaftManager {
             join_handles: Mutex::new(vec![]),
             running_rx: rx,
             running_tx: tx,
-            cluster_cfg,
+            settings: settings.clone(),
             session_actor_map_storage: session_actor_map_storage.clone(),
         };
 

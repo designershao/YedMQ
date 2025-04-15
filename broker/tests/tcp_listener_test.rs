@@ -24,22 +24,12 @@ fn random_tcp_port() -> u16 {
     rand::thread_rng().gen_range(1024..=65535)
 }
 
-async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftManager {
+async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>, settings: Arc<Settings>) -> RaftManager {
     // Generate a random temporary directory
     let tmp_dir = env::temp_dir();
     let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
     fs::create_dir_all(&random_dir).unwrap();
     let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
-
-    let test_cluster_cfg = Cluster {
-        cluster_name: "test_cluster".to_string(),
-        heartbeat_interval: 10,
-        node_id: 1,
-        store_dir: test_temp_store_dir.clone(),
-        rpc: RPC {
-            external: "127.0.0.1:4321".to_string(),
-        },
-    };
 
     let session_actor_map_storage = Arc::new(RwLock::new(
         session_actor_map_storage::SessionActorMapStorage::new(),
@@ -48,7 +38,7 @@ async fn mock_raft_manager(topic_storage: Arc<RwLock<TopicStorage>>) -> RaftMana
     let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
 
     RaftManager::new(
-        test_cluster_cfg,
+        settings,
     )
     .await
 }
@@ -70,7 +60,7 @@ async fn mock_app(settings: Arc<Settings>) -> YedMQApp {
     let plugin_manager = Arc::new(plugin_manager);
 
     let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
-    let raft_manager = Arc::new(mock_raft_manager(topic_storage.clone()).await);
+    let raft_manager = Arc::new(mock_raft_manager(topic_storage.clone(), settings.clone()).await);
 
     let topic_manager = Arc::new(RwLock::new(
         mock_topic_manager(topic_storage.clone(), raft_manager.clone(), 1).await,

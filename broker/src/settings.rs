@@ -182,7 +182,7 @@ pub struct Cluster {
 
     pub store_dir: String,
 
-    pub rpc: RPC
+    pub rpc: RPC,
 
 }
 
@@ -193,7 +193,7 @@ impl Default for Cluster {
             heartbeat_interval: 10,
             store_dir: "./store".to_string(),
             node_id: 1,
-            rpc: RPC::default()
+            rpc: RPC::default(),
         }
     }
 }

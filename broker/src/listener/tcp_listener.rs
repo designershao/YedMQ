@@ -51,10 +51,10 @@ mod tests {
         plugin_manager::PluginManager,
         raft::raft_manager::RaftManager,
         session::{
-            session_actor_map_storage::{SessionActorMapStorage, SessionClock},
-            session_manager_actor::SessionManagerActor, session_state_storage::SessionStateStorage,
+            session_actor_map_storage::SessionClock,
+            session_manager_actor::SessionManagerActor,
         },
-        settings::{Cluster, Settings, RPC},
+        settings::Settings,
         topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
     };
 
@@ -72,18 +72,53 @@ mod tests {
         fs::create_dir_all(&random_dir).unwrap();
         let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
 
-        let test_cluster_cfg = Cluster {
-            cluster_name: "test_cluster".to_string(),
-            heartbeat_interval: 10,
-            node_id: 1,
-            store_dir: test_temp_store_dir.clone(),
-            rpc: RPC {
-                external: "127.0.0.1:4321".to_string(),
+        let resend_duration_secs = 10;
+
+        let tcp_port = random_tcp_port();
+
+        let settings = Settings {
+            session: crate::settings::Session {
+                qos_expired_secs: 2,
+                packet_resend_interval_secs: resend_duration_secs,
             },
+            listener: crate::settings::Listener {
+                tcp: crate::settings::Tcp {
+                    external: format!("127.0.0.1:{}", tcp_port).to_string(),
+                },
+                tcp_tls: crate::settings::TcpTls {
+                    external: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string(),
+                },
+                ws: crate::settings::Ws {
+                    external: "".to_string(),
+                },
+                wss: crate::settings::Wss {
+                    external: "".to_string(),
+                    cert_file: "".to_string(),
+                    key_file: "".to_string(),
+                },
+                api: crate::settings::Api {
+                    external: "".to_string(),
+                    auth: crate::settings::AuthConfig { users: vec![] },
+                },
+            },
+            plugin: crate::settings::Plugin {
+                dir: "test".to_string(),
+            },
+            mqtt: crate::settings::Mqtt {
+                sys_topic_interval_secs: 10,
+                max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE,
+                default_authentication: crate::settings::DefaultAuthenticationValue::Allow,
+                default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
+                inflight_retry_interval_secs: 10
+            },
+            cluster: crate::settings::Cluster::default(),
         };
 
+        let settings = Arc::new(settings);
         RaftManager::new(
-            test_cluster_cfg,
+            settings
         )
         .await
     }

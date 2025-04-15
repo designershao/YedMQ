@@ -8,7 +8,7 @@ use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
     protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
-    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::Cluster,
+    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::{Cluster, Settings},
     topic::topic_storage::TopicStorage,
 };
 
@@ -73,7 +73,7 @@ pub struct RaftManager {
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
-    cluster_cfg: Cluster,
+    settings: Arc<Settings>,
 
     running_rx: watch::Receiver<()>,
 
@@ -82,7 +82,7 @@ pub struct RaftManager {
 
 impl Drop for RaftManager {
     fn drop(&mut self) {
-        println!("Raft drop: id={}", self.cluster_cfg.node_id);
+        println!("Raft drop: id={}", self.settings.cluster.node_id);
     }
 }
 
@@ -103,14 +103,14 @@ impl RaftManager {
     pub async fn init_topic_raft(&self, topic_storage: Arc<RwLock<TopicStorage>>) {
 
         let topic_raft_manager =
-            crate::raft::topic::RaftManager::new(self.cluster_cfg.clone(), topic_storage.clone()).await;
+            crate::raft::topic::RaftManager::new(self.settings.clone(), topic_storage.clone()).await;
         let _ = self.topic_raft.set(topic_raft_manager);
     }
 
     pub async fn init_session_state_raft(&self, session_state_storage: Arc<RwLock<SessionStateStorage>>) {
         let session_state_raft_manager = 
             crate::raft::session_state::SessionStateRaftManager::new(
-                self.cluster_cfg.clone(),
+                self.settings.clone(),
                 session_state_storage.clone(),
             )
             .await;
@@ -125,7 +125,7 @@ impl RaftManager {
 
         let session_actor_map_raft_manager =
             crate::raft::session_actor_map::SessionActorMapRaftManager::new(
-                self.cluster_cfg.clone(),
+                self.settings.clone(),
                 session_actor_map_storage.clone(),
                 session_manager_actor_recipient,
                 session_clock
@@ -135,7 +135,7 @@ impl RaftManager {
     }
 
     pub async fn new(
-        cluster_cfg: Cluster,
+        settings: Arc<Settings>,
     ) -> Self {
         let (tx, rx) = watch::channel::<()>(());
 
@@ -146,7 +146,7 @@ impl RaftManager {
             running_rx: rx,
             running_tx: tx,
             join_handles: Mutex::new(vec![]),
-            cluster_cfg,
+            settings,
         };
 
         manager
@@ -166,7 +166,7 @@ impl RaftManager {
             session_manager_actor_force_stop_recipient
         };
 
-        let addr_str = raft_manager.cluster_cfg.rpc.external.to_string();
+        let addr_str = raft_manager.settings.cluster.rpc.external.to_string();
         let ret = addr_str.parse::<std::net::SocketAddr>();
 
         let addr = match ret {
@@ -181,7 +181,7 @@ impl RaftManager {
 
         info!("about to start raft grpc on resolved addr {}", addr);
 
-        let node_id = raft_manager.cluster_cfg.node_id;
+        let node_id = raft_manager.settings.cluster.node_id;
 
         let h = actix::spawn(async move {
             srv.serve_with_shutdown(addr, async move {

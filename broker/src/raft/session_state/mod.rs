@@ -12,11 +12,10 @@ use tonic::transport::Channel;
 use types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig};
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::listener::tcp_listener::MqttTcpListener;
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
 use crate::session::session_state_storage::{SessionState, SessionStateStorage};
-use crate::{session::session_actor_map_storage::SessionActorMapStorage, settings::Cluster};
+use crate::settings::Settings;
 
 use super::{Node, RaftCommandExecutor};
 use super::NodeId;
@@ -361,7 +360,7 @@ pub struct SessionStateRaftManager {
 
     join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
-    cluster_cfg: Cluster,
+    settings: Arc<Settings>,
 
     running_rx: watch::Receiver<()>,
 
@@ -455,7 +454,7 @@ impl SessionStateRaftManager {
     }
 
     pub fn current_node_id(&self) -> NodeId {
-        self.cluster_cfg.node_id
+        self.settings.cluster.node_id
     }
 
     pub async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
@@ -495,17 +494,17 @@ impl SessionStateRaftManager {
                 .map_err(|e| RaftManagerError::InternalError(format!("{}", e)))?;
         }
 
-        info!("Raft shutdown: id={}", self.cluster_cfg.node_id);
+        info!("Raft shutdown: id={}", self.settings.cluster.node_id);
         Ok(())
     }
 
     pub async fn new(
-        cluster_cfg: Cluster,
+        settings: Arc<Settings>,
         session_state_storage: Arc<RwLock<SessionStateStorage>>,
     ) -> Self {
-        let raft_config = Self::get_raft_config(cluster_cfg.heartbeat_interval.into()).await;
+        let raft_config = Self::get_raft_config(settings.cluster.heartbeat_interval.into()).await;
 
-        let dir = Path::new(&cluster_cfg.store_dir);
+        let dir = Path::new(&settings.cluster.store_dir);
 
         let config = Arc::new(raft_config.validate().unwrap());
 
@@ -515,7 +514,7 @@ impl SessionStateRaftManager {
         let network = Network {};
 
         let raft = openraft::Raft::new(
-            cluster_cfg.node_id,
+            settings.cluster.node_id,
             config.clone(),
             network,
             log_store,
@@ -532,7 +531,7 @@ impl SessionStateRaftManager {
             join_handles: Mutex::new(vec![]),
             running_rx: rx,
             running_tx: tx,
-            cluster_cfg,
+            settings,
             session_state_storage,
         };
 
@@ -556,10 +555,10 @@ impl SessionStateRaftManager {
     pub async fn init_cluster(&self) -> Result<(), RaftManagerError> {
         let mut cluster_nodes = BTreeMap::new();
         cluster_nodes.insert(
-            self.cluster_cfg.node_id,
+            self.settings.cluster.node_id,
             Node {
-                rpc_addr: self.cluster_cfg.rpc.external.to_string(),
-                api_addr: self.cluster_cfg.rpc.external.to_string(),
+                rpc_addr: self.settings.cluster.rpc.external.to_string(),
+                api_addr: self.settings.listener.api.external.to_string(),
             },
         );
 
