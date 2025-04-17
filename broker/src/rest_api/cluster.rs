@@ -56,12 +56,19 @@ pub async fn add_learner(
         .raft
         .add_learner(node_id, node.clone(), true)
         .await;
+    if let Err(e) = res {
+        warn!("topic raft add learner error: {}", e);
+    }
     let res = app_state
         .raft_manager
         .session_actor_map_raft()
         .raft()
         .add_learner(node_id, node.clone(), true)
         .await;
+    if let Err(e) = res {
+        warn!("session actor map raft add learner error: {}", e);
+    }
+
     let res = app_state
         .raft_manager
         .session_state_raft()
@@ -69,14 +76,18 @@ pub async fn add_learner(
         .add_learner(node_id, node.clone(), true)
         .await;
 
-    (StatusCode::OK, format!("{:?}", res))
+    if let Err(e) = res {
+        warn!("session state raft add learner error: {}", e);
+    }
+
+    (StatusCode::OK, format!(""))
 }
 
 pub async fn topic_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let topic_raft_leader_node_id = app_state.raft_manager.topic_raft().get_leader_node_id();
+    let topic_raft_leader_node_id = app_state.raft_manager.topic_raft().get_leader_node_id().await;
     if topic_raft_leader_node_id.is_none() {
         warn!("topic raft leader not found");
         return (
@@ -92,6 +103,7 @@ pub async fn topic_raft_change_membership(
                 format!("not the topic raft leader node"),
             );
         } else {
+            info!("topic change member ship payload: {:#?}", payload.members.clone());
             let res = app_state
                 .raft_manager
                 .topic_raft()
@@ -115,7 +127,7 @@ pub async fn session_actor_map_raft_change_membership(
     let session_actor_map_raft_leader_node_id = app_state
         .raft_manager
         .session_actor_map_raft()
-        .get_leader_node_id();
+        .get_leader_node_id().await;
     if session_actor_map_raft_leader_node_id.is_none() {
         return (
             StatusCode::NOT_FOUND,
@@ -156,7 +168,7 @@ pub async fn session_state_raft_change_membership(
     let session_state_raft_leader_node_id = app_state
         .raft_manager
         .session_state_raft()
-        .get_leader_node_id();
+        .get_leader_node_id().await;
     if session_state_raft_leader_node_id.is_none() {
         return (
             StatusCode::NOT_FOUND,
@@ -195,30 +207,27 @@ pub async fn change_membership(
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
     info!("start change topic membership");
-    info!("topic memberrship url {}", format!(
-        "http://{}/api/v1/cluster/topic/membership",
-        app_state
-            .raft_manager
-            .topic_raft()
-            .get_leader()
-            .unwrap()
-            .api_addr
-    ));
+
+    let auth_info = &app_state.settings.listener.api.auth.users[0];
+
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/topic/membership",
             app_state
                 .raft_manager
                 .topic_raft()
-                .get_leader()
+                .get_leader().await
                 .unwrap()
                 .api_addr
         ))
         .json(&payload)
+        .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
         .send()
         .await;
     if let Err(e) = res {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("update topic cluster membership error: {}", e));
+    } else {
+        info!("update topic cluster membership status: {}", res.unwrap().status());
     }
 
     info!("start change session actor map membership");
@@ -228,11 +237,12 @@ pub async fn change_membership(
             app_state
                 .raft_manager
                 .session_actor_map_raft()
-                .get_leader()
+                .get_leader().await
                 .unwrap()
                 .api_addr
         ))
         .json(&payload)
+        .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
         .send()
         .await;
     if let Err(e) = res {
@@ -246,11 +256,12 @@ pub async fn change_membership(
             app_state
                 .raft_manager
                 .session_state_raft()
-                .get_leader()
+                .get_leader().await
                 .unwrap()
                 .api_addr
         ))
         .json(&payload)
+        .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
         .send()
         .await;
     if let Err(e) = res {

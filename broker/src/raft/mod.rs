@@ -78,7 +78,7 @@ pub trait RaftCommandExecutor<Command, Response> {
     async fn is_leader(&self) -> bool;
     
     // Get the current leader node information
-    fn get_leader(&self) -> Option<Node>;
+    async fn get_leader(&self) -> Option<Node>;
 
     // Execute command as leader
     async fn execute_as_leader(&self, command: Command) -> Result<Response, raft_manager::RaftManagerError>;
@@ -114,7 +114,7 @@ where
         }
         
         // Get the leader node
-        if let Some(leader_node) = executor.get_leader() {
+        if let Some(leader_node) = executor.get_leader().await {
             let addr = format!("http://{}", leader_node.rpc_addr);
             
             // Create an RPC client

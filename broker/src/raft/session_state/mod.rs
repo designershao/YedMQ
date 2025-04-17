@@ -87,12 +87,19 @@ impl RaftCommandExecutor<SessionStateRequest, SessionStateResponse> for SessionS
 
     // Check if the current node is the leader
     async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+        let leader_node_id = self.get_leader_node_id().await;
+        if leader_node_id.is_none() {
+            return false;
+        } else {
+            let leader_node_id = leader_node_id.unwrap();
+            let current_node_id = self.current_node_id();
+            leader_node_id == current_node_id
+        }
     }
 
     // Get the current leader node information
-    fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -176,7 +183,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
 
     // get session existed from leader
     async fn session_state_exists(&self, tenant_id: &str, client_id: &str) -> bool {
-        let current_leader_node_id = self.get_leader_node_id();
+        let current_leader_node_id = self.get_leader_node_id().await;
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return false;
@@ -204,7 +211,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
     }
 
     async fn get_session_state(&self, tenant_id: &str, client_id: &str) -> Option<SessionState> {
-        let current_leader_node_id = self.get_leader_node_id();
+        let current_leader_node_id = self.get_leader_node_id().await;
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return None;
@@ -267,7 +274,7 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
 
     async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError> {
         
-        let leader_node_id = self.get_leader_node_id();
+        let leader_node_id = self.get_leader_node_id().await;
 
         if leader_node_id.is_none() {
             return Err(RaftManagerError::InternalError(
@@ -404,7 +411,7 @@ impl SessionStateRaftManager {
         tenant_id: &str,
         client_id: &str,
     ) -> Option<SessionState> {
-        let current_leader_node_id = self.get_leader_node_id();
+        let current_leader_node_id = self.get_leader_node_id().await;
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return None;
@@ -568,12 +575,12 @@ impl SessionStateRaftManager {
     }
 
 
-    pub fn get_leader_node_id(&self) -> Option<NodeId> {
-        self.raft.metrics().borrow().current_leader
+    pub async fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.current_leader().await
     }
 
-    pub fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    pub async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -592,11 +599,8 @@ impl SessionStateRaftManager {
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {
-        let election_timeout_min = heartbeat_interval * 1000 * 8;
-        let election_timeout_max = heartbeat_interval * 1000 * 12;
-        let heartbeat_interval = heartbeat_interval * 1000;
-
         Config {
+            cluster_name: "yedmq_session_state_cluster".to_string(),
             ..Default::default()
         }
     }

@@ -71,12 +71,19 @@ impl RaftCommandExecutor<types::Request, types::Response> for RaftManager {
 
     // Check if the current node is the leader
     async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+        let leader_node_id = self.get_leader_node_id().await;
+        if leader_node_id.is_none() {
+            return false;
+        } else {
+            let leader_node_id = leader_node_id.unwrap();
+            let current_node_id = self.current_node_id();
+            leader_node_id == current_node_id
+        }
     }
 
     // Get the current leader node information
-    fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -335,15 +342,22 @@ impl RaftManager {
     }
 
     pub async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+        let leader_node_id = self.get_leader_node_id().await;
+        if leader_node_id.is_none() {
+            return false;
+        } else {
+            let leader_node_id = leader_node_id.unwrap();
+            let current_node_id = self.current_node_id();
+            leader_node_id == current_node_id
+        }
     }
 
-    pub fn get_leader_node_id(&self) -> Option<NodeId> {
-        self.raft.metrics().borrow().current_leader
+    pub async fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.current_leader().await
     }
 
-    pub fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    pub async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -359,11 +373,8 @@ impl RaftManager {
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {
-        let election_timeout_min = heartbeat_interval * 1000 * 8;
-        let election_timeout_max = heartbeat_interval * 1000 * 12;
-        let heartbeat_interval = heartbeat_interval * 1000;
-
         Config {
+            cluster_name: "yedmq_topic_cluster".to_string(),
             ..Default::default()
         }
     }

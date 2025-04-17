@@ -147,7 +147,7 @@ impl TopicManagerTrait for TopicManager {
         tenant_id: String,
         msg_topic: String,
     ) -> Result<Vec<Arc<Subscription>>, TopicError> {
-        let current_leader_node_id = self.raft_manager.topic_raft().get_leader_node_id();
+        let current_leader_node_id = self.raft_manager.topic_raft().get_leader_node_id().await;
         if current_leader_node_id.is_none() {
             warn!("raft get session state leader not found");
             return Ok(vec![]);
@@ -254,15 +254,11 @@ impl TopicManager {
     }
 
     async fn get_grpc_client(&self, node_id: NodeId) -> anyhow::Result<RaftServiceClient<tonic::transport::Channel>> {
-        let max_retry = 3;
-
-        for _ in 0..max_retry {
-            let node = self.raft_manager.topic_raft().get_node_by_id(node_id).await.unwrap();
-            let addr = format!("http://{}", node.rpc_addr);
-            let client = create_rpc_client_with_retry(addr.clone()).await;
-            if client.is_ok() {
-                return client;
-            }
+        let node = self.raft_manager.topic_raft().get_node_by_id(node_id).await.unwrap();
+        let addr = format!("http://{}", node.rpc_addr);
+        let client = create_rpc_client_with_retry(addr.clone()).await;
+        if client.is_ok() {
+            return client;
         }
         return Err(anyhow::anyhow!("Failed to connect after retries"));
     }

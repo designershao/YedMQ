@@ -60,21 +60,21 @@ pub trait SessionActorMapRaftManagerTrait {
 
     async fn init_cluster(&self) -> Result<(), RaftManagerError>;
 
-    fn get_leader_node_id(&self) -> Option<NodeId>; 
+    async fn get_leader_node_id(&self) -> Option<NodeId>; 
 
-    fn get_leader(&self) -> Option<Node>;
+    async fn get_leader(&self) -> Option<Node>;
     
 }
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
 
-    fn get_leader_node_id(&self) -> Option<NodeId> {
-        self.raft.metrics().borrow().current_leader
+    async fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.current_leader().await
     }
 
-    fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -155,7 +155,7 @@ impl SessionActorMapRaftManagerTrait for SessionActorMapRaftManager {
         client_id: &str,
     ) -> Option<SessionActorMapEntry> {
         if !self.is_leader().await {
-            let leader_node = self.get_leader();
+            let leader_node = self.get_leader().await;
 
             if leader_node.is_none() {
                 warn!("GetSessionActorMap failed, leader not found");
@@ -236,12 +236,19 @@ impl RaftCommandExecutor<SessionActorMapRequest, SessionActorMapResponse>
 {
     // Check if the current node is the leader
     async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+        let leader_node_id = self.get_leader_node_id().await;
+        if leader_node_id.is_none() {
+            return false;
+        } else {
+            let leader_node_id = leader_node_id.unwrap();
+            let current_node_id = self.current_node_id();
+            leader_node_id == current_node_id
+        }
     }
 
     // Get the current leader node information
-    fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -452,15 +459,22 @@ impl SessionActorMapRaftManager {
     }
 
     pub async fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().state == openraft::ServerState::Leader
+        let leader_node_id = self.get_leader_node_id().await;
+        if leader_node_id.is_none() {
+            return false;
+        } else {
+            let leader_node_id = leader_node_id.unwrap();
+            let current_node_id = self.current_node_id();
+            leader_node_id == current_node_id
+        }
     }
 
-    pub fn get_leader_node_id(&self) -> Option<NodeId> {
-        self.raft.metrics().borrow().current_leader
+    pub async fn get_leader_node_id(&self) -> Option<NodeId> {
+        self.raft.current_leader().await
     }
 
-    pub fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().and_then(|id| {
+    pub async fn get_leader(&self) -> Option<Node> {
+        self.get_leader_node_id().await.and_then(|id| {
             self.raft
                 .metrics()
                 .borrow()
@@ -479,11 +493,8 @@ impl SessionActorMapRaftManager {
     }
 
     async fn get_raft_config(heartbeat_interval: u64) -> Config {
-        let election_timeout_min = heartbeat_interval * 1000 * 8;
-        let election_timeout_max = heartbeat_interval * 1000 * 12;
-        let heartbeat_interval = heartbeat_interval * 1000;
-
         Config {
+            cluster_name: "yedmq_session_actor_map_cluster".to_string(),
             ..Default::default()
         }
     }
