@@ -14,9 +14,10 @@ use yedmq_mqtt::MqttPacketV3;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
-use crate::session::session_state_storage::{SessionState, SessionStateStorage};
+use crate::session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError};
 use crate::settings::Settings;
 
+use super::raft_manager::RaftManagerError;
 use super::{Node, RaftCommandExecutor};
 use super::NodeId;
 
@@ -24,30 +25,6 @@ pub mod raft_network_impl;
 pub mod store;
 pub mod types;
 
-#[derive(Debug)]
-pub enum RaftManagerError {
-    NodeUnavailable(String),
-    ElectionFailure(String),
-    LogSyncError(String),
-    TimeoutError(String),
-    NetworkError(String),
-    InternalError(String),
-    Unknown(String),
-}
-
-impl fmt::Display for RaftManagerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            RaftManagerError::NodeUnavailable(ref msg) => write!(f, "Node Unavailable: {}", msg),
-            RaftManagerError::ElectionFailure(ref msg) => write!(f, "Election Failure: {}", msg),
-            RaftManagerError::LogSyncError(ref msg) => write!(f, "Log Sync Error: {}", msg),
-            RaftManagerError::TimeoutError(ref msg) => write!(f, "Timeout Error: {}", msg),
-            RaftManagerError::NetworkError(ref msg) => write!(f, "Network Error: {}", msg),
-            RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
-            RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
-        }
-    }
-}
 
 pub type SessionStateRaft = openraft::Raft<SessionStateTypeConfig>;
 
@@ -60,9 +37,9 @@ pub trait SessionStateRaftManagerTrait {
 
    async fn delete_session_state(&self, tenant_id: &str, client_id: &str);
 
-   async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3);
+   async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) -> Result<(), RaftManagerError>;
 
-   async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3);
+   async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) -> Result<(), RaftManagerError>;
 
    async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError>;
 
@@ -256,20 +233,32 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
         }).await;
     }
 
-    async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) {
-        self.execute_command(SessionStateRequest::InflightRegisterRxPacket {
+    async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) -> Result<(), RaftManagerError> {
+        let res= self.execute_command(SessionStateRequest::InflightRegisterRxPacket {
             tenant_id: tenant_id.to_string(),
             client_id: client_id.to_string(),
             packet,
         }).await;
+
+        if res.is_err() {
+            return Err(res.unwrap_err());
+        }
+
+        Ok(())
     }
 
-    async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) {
-        self.execute_command(SessionStateRequest::InflightRegisterTxPacket {
+    async fn inflight_register_tx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) -> Result<(), RaftManagerError> {
+        let res = self.execute_command(SessionStateRequest::InflightRegisterTxPacket {
             tenant_id: tenant_id.to_string(),
             client_id: client_id.to_string(),
             packet,
         }).await;
+
+        if res.is_err() {
+            return Err(res.unwrap_err());
+        }
+
+        Ok(())
     }
 
     async fn inflight_get_current_packet(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> Result<Option<MqttPacketV3>, RaftManagerError> {

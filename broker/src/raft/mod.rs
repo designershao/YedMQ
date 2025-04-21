@@ -32,10 +32,6 @@ impl Display for Node {
 
 pub type SnapshotData = Cursor<Vec<u8>>;
 
-pub enum RaftManagerError {
-    Raft(openraft::AnyError),
-}
-
 async fn create_rpc_client_with_retry(addr: String) -> anyhow::Result<RaftServiceClient<Channel>> {
     let mut backoff = ExponentialBackoff {
         initial_interval: Duration::from_millis(100),

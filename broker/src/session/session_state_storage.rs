@@ -5,12 +5,24 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::inflight::Inflight;
 
 use super::session_actor::QoS;
+
+#[derive(Debug, Error, Serialize, Deserialize, Clone)]
+pub enum SessionStateStorageError {
+
+    #[error("inflight error, details: {0}")]
+    InflightError(#[from] crate::inflight::InflightError),
+
+    #[error("session state not existed for client id: {client_id}")]
+    SessionStateNotExisted{client_id: String},
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionState {
@@ -69,7 +81,7 @@ impl SessionStateStorage {
             .is_some()
     }
 
-    pub async fn inflight_register_tx_packet(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) {
+    pub async fn inflight_register_tx_packet(&mut self, tenant_id: String, client_id: String, packet: MqttPacketV3) -> Result<(), SessionStateStorageError> {
         if self.inner.get(&tenant_id).is_none() {
             self.inner.insert(tenant_id.clone(), HashMap::new());
         }
@@ -89,7 +101,10 @@ impl SessionStateStorage {
                 .unwrap()
                 .write()
                 .await;
-            state.inflight.register_with_tx_packet(&packet).await.unwrap();
+            state.inflight.register_with_tx_packet(&packet).await?;
+            return Ok(())
+        } else {
+            return Err(SessionStateStorageError::SessionStateNotExisted{client_id: client_id})
         }
     }
 

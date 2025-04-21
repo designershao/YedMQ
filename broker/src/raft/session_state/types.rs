@@ -1,4 +1,4 @@
-use crate::raft::Node;
+use crate::{raft::Node, session::session_state_storage::SessionStateStorageError};
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -64,6 +64,8 @@ pub enum SessionStateRequest {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateResponse {
     InflightGetCurrentPacketResult(Option<MqttPacketV3>),
+    InflightRegisterTxPacketResponse(Result<(), SessionStateStorageError>),
+    InflightRegisterRxPacketResponse(Result<(), SessionStateStorageError>),
     PopFromPendingQueueResult(Option<MqttPacketV3>),
     None,
 }

@@ -16,27 +16,29 @@ use super::service::raft_service::RaftServiceImpl;
 
 #[derive(Debug, Error)]
 pub enum RaftManagerError {
+    #[error("node unavailable, details: {0}")]
     NodeUnavailable(String),
-    ElectionFailure(String),
-    LogSyncError(String),
-    TimeoutError(String),
-    NetworkError(String),
-    InternalError(String),
-    Unknown(String),
-}
 
-impl fmt::Display for RaftManagerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            RaftManagerError::NodeUnavailable(ref msg) => write!(f, "Node Unavailable: {}", msg),
-            RaftManagerError::ElectionFailure(ref msg) => write!(f, "Election Failure: {}", msg),
-            RaftManagerError::LogSyncError(ref msg) => write!(f, "Log Sync Error: {}", msg),
-            RaftManagerError::TimeoutError(ref msg) => write!(f, "Timeout Error: {}", msg),
-            RaftManagerError::NetworkError(ref msg) => write!(f, "Network Error: {}", msg),
-            RaftManagerError::InternalError(ref msg) => write!(f, "Internal Error: {}", msg),
-            RaftManagerError::Unknown(ref msg) => write!(f, "Unknown Error: {}", msg),
-        }
-    }
+    #[error("election failure, details: {0}")]
+    ElectionFailure(String),
+
+    #[error("log sync error, details: {0}")]
+    LogSyncError(String),
+
+    #[error("timeout error, details: {0}")]
+    TimeoutError(String),
+
+    #[error("network error, details: {0}")]
+    NetworkError(String),
+
+    #[error("internal error, details: {0}")]
+    InternalError(String),
+
+    #[error("unknown error, details: {0}")]
+    Unknown(String),
+
+    #[error("session state error, details: {0}")]
+    SessionStateError(#[from] crate::session::session_state_storage::SessionStateStorageError),
 }
 
 #[automock]

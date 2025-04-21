@@ -261,14 +261,20 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         client_id,
                         packet,
                     } => {
-                        self.data
+                        let r = self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
                             .inflight_register_tx_packet(tenant_id, client_id, packet)
                             .await;
-                        replies.push(SessionStateResponse::None);
+
+                        if let Err(e) = r {
+                            replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Err(e)));
+                        } else {
+                            replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())));
+                        }
+
                     }
                     types::SessionStateRequest::InflightGetCurrentPacket {
                         tenant_id,

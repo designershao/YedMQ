@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use yedmq_mqtt::{MqttPacketV3, v3::{pubcomp::PubCompPacket, pubrel::PubRelPacket, puback::PubAckPacket, pubrec::PubRecPacket}};
 
-#[derive(Debug,Error)]
+#[derive(Debug,Error, Serialize, Deserialize, Clone)]
 pub enum InflightError {
 
     #[error("packet identifier has existed")]
