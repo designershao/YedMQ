@@ -1111,6 +1111,15 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         .inflight_next_state(&tenant_id, &client_id, packet_identifier.unwrap())
                                         .await;
                                 }
+                            } else {
+                               let res = conn
+                                   .send(ConnectionActorMessage::WritePacketToClient(
+                                       yedmq_mqtt::MqttPacketV3::Publish(packet),
+                                   ))
+                                   .await;
+                               if let Err(e) = res  {
+                                   error!("failed to send packet to client: {}", e);
+                               }
                             }
                         }
                         .into_actor(self)
@@ -2745,8 +2754,9 @@ mod tests {
         }
     }
 
+
     #[actix::test]
-    async fn when_receive_outbound_message_should_send_to_connection_actor() {
+    async fn when_receive_outbound_message_which_qos_is_0_should_send_to_connection_actor() {
         let mock_topic_manager = MockTopicManagerTrait::new();
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
 
