@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
-use actix::{Addr, Recipient};
-use backoff::{backoff::Backoff, Error, ExponentialBackoff};
+use actix::Recipient;
+use backoff::{backoff::Backoff, ExponentialBackoff};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::RwLock};
@@ -9,7 +9,7 @@ use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::{
-    session::session_manager_actor::{SendMessageToSession, SessionManagerActor},
+    session::session_manager_actor::SendMessageToSession,
     topic::topic_manager::TopicManagerTrait,
 };
 use anyhow::Result;
@@ -250,16 +250,20 @@ impl Router {
                             item.qos,
                             publish_packet.payload.payload
                         );
-                        if publish_packet.fix_header.qos.unwrap() >= item.qos as i32 {
-                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
-                                publish_packet.fix_header.qos = Some(0);
-                                publish_packet.variable_header.packet_identifier = None;
-                                publish_packet.fix_header.remaining_length =
-                                    publish_packet.fix_header.remaining_length - 2;
-                            } else {
-                                publish_packet.fix_header.qos = Some(item.qos.into());
+
+                        if let Some(publish_qos) = publish_packet.fix_header.qos {
+                            if publish_qos > item.qos as i32 {
+                                if item.qos == 0 {
+                                    publish_packet.fix_header.qos = Some(0);
+                                    publish_packet.variable_header.packet_identifier = None;
+                                    publish_packet.fix_header.remaining_length =
+                                        publish_packet.fix_header.remaining_length - 2;
+                                } else {
+                                    publish_packet.fix_header.qos = Some(item.qos.into());
+                                } 
                             }
                         }
+
                         if let Err(err) = self
                             .session_manager_recipient
                             .send(SendMessageToSession {
@@ -311,6 +315,71 @@ mod tests {
             let _ = self.message_sender.send(msg);
             ()
         }
+    }
+
+    
+    #[actix::test]
+    pub async fn when_responding_to_subscription_should_use_min_qos_of_original_and_granted() {
+        let mut topic_manager_mock = crate::topic::topic_manager::MockTopicManagerTrait::new();
+        topic_manager_mock
+            .expect_get_subscribers()
+            .returning(|_, _| {
+                Box::pin(async move {
+                    Ok(vec![Arc::new(Subscription {
+                        node_id: 123,
+                        client_identifier: "client_id".to_string(),
+                        qos: 1,
+                    })])
+                })
+            });
+
+        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
+
+        let mut mock_topic_raft_manager = crate::raft::topic::MockTopicRaftManagerTrait::new();
+        mock_topic_raft_manager
+            .expect_current_node_id()
+            .return_const(123 as u64);
+
+        raft_manager_mock
+            .expect_topic_raft()
+            .return_const(Box::new(mock_topic_raft_manager));
+
+        let (_router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
+
+        let topic_manager = Arc::new(RwLock::new(topic_manager_mock));
+
+        let raft_manager = Arc::new(raft_manager_mock);
+
+        let (message_sender, message_receiver) = std::sync::mpsc::channel();
+
+        let session_manager_actor = MockSessionManagerActor { message_sender }.start();
+
+        let router = Router {
+            session_manager_recipient: session_manager_actor.recipient(),
+            topic_manager: topic_manager.clone(),
+            router_receiver: router_receiver,
+            raft_manager: raft_manager.clone(),
+        };
+
+        let publish_packet = PublishPacketBuilder::new("/a/b".into(), vec![]).qos(2).build();
+
+        let _ = router
+            .route(&"public".into(), &MqttPacketV3::Publish(publish_packet))
+            .await;
+
+        let msg = message_receiver.recv().unwrap();
+        assert_eq!(msg.tenant_id, "public");
+        assert_eq!(msg.client_id, "client_id");
+
+        let packet = msg.packet;
+
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            assert_eq!(publish_packet.fix_header.qos.unwrap(), 1);
+        } else {
+            assert!(false);
+        }
+
+
     }
 
     #[actix::test]

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 
 use log::{info, warn};
 use mockall::automock;
@@ -14,7 +14,7 @@ use yedmq_mqtt::MqttPacketV3;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
 use crate::protobuf::{AppendEntriesRequest, RaftType};
-use crate::session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError};
+use crate::session::session_state_storage::{SessionState, SessionStateStorage};
 use crate::settings::Settings;
 
 use super::raft_manager::RaftManagerError;
@@ -219,18 +219,26 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
     }
 
     async fn create_session_state(&self, tenant_id: &str, client_id: &str, inflight_duration: u64) {
-        self.execute_command(SessionStateRequest::CreateSessionState {
+        let res = self.execute_command(SessionStateRequest::CreateSessionState {
             tenant_id: tenant_id.to_string(),
             client_id: client_id.to_string(),
             inflight_duration_secs: inflight_duration,
         }).await;
+
+        if res.is_err() {
+            warn!("raft create session state grpc error: {}", res.unwrap_err());
+        }
     }
 
     async fn delete_session_state(&self, tenant_id: &str, client_id: &str) {
-        self.execute_command(SessionStateRequest::DeleteSessionState {
+        let res = self.execute_command(SessionStateRequest::DeleteSessionState {
             tenant_id: tenant_id.to_string(),
             client_id: client_id.to_string(),
         }).await;
+
+        if res.is_err() {
+            warn!("raft delete session state grpc error: {}", res.unwrap_err());
+        }
     }
 
     async fn inflight_register_rx_packet(&self, tenant_id: &str, client_id: &str, packet: MqttPacketV3) -> Result<(), RaftManagerError> {
@@ -303,11 +311,15 @@ impl SessionStateRaftManagerTrait for SessionStateRaftManager {
     }
 
     async fn inflight_next_state(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) {
-        self.execute_command(SessionStateRequest::InflightNextState {
+        let res  = self.execute_command(SessionStateRequest::InflightNextState {
             tenant_id: tenant_id.to_string(),
             client_id: client_id.to_string(),
             packet_identifier: packet_identifier.into(),
         }).await;
+
+        if res.is_err() {
+            warn!("raft inflight next state error: {}", res.unwrap_err());
+        }
     }
 
     async fn inflight_clean_finished_items(&self, tenant_id: &str, client_id: &str) {

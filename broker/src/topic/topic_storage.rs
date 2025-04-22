@@ -1182,7 +1182,7 @@ mod tests {
         let mut topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
-        let result = topic_storage.subscribe(
+        let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientA".to_string(),
             "a/#/c".to_string(),
