@@ -34,8 +34,8 @@ impl RaftService for RaftServiceImpl {
 
         let ret = self
             .raft_manager
-            .session_actor_map_raft()
-            .raft()
+            .topic_raft()
+            .raft
             .ensure_linearizable()
             .await;
 
