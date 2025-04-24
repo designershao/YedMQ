@@ -184,16 +184,29 @@ pub struct Cluster {
 
     pub rpc: RPC,
 
+    pub nodes: Vec<Node>
+
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct Node {
+    pub id: u64,
+    pub rpc_address: String,
+    pub api_address: String,
+}
+
+
 impl Default for Cluster {
+
     fn default() -> Self {
+        let rpc = RPC::default();
         Self {
             cluster_name: "YedMQ".to_string(),
             heartbeat_interval: 10,
             store_dir: "./store".to_string(),
             node_id: 1,
-            rpc: RPC::default(),
+            rpc: rpc.clone(),
+            nodes: vec![]
         }
     }
 }
@@ -298,5 +311,6 @@ mod tests {
         assert_eq!("0.0.0.0:1883", s.listener.tcp.external);
         assert_eq!(DefaultAuthenticationValue::Allow, s.mqtt.default_authentication);
         assert_eq!(DefaultAuthorizationValue::Allow, s.mqtt.default_authorization);
+        assert_eq!(1001, s.cluster.nodes[0].id);
     }
 }
