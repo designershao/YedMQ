@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-use log::{info, warn};
+use log::info;
 use mockall::automock;
 use openraft::{
     error::{CheckIsLeaderError, ClientWriteError, Infallible, InitializeError},
@@ -16,11 +16,9 @@ use openraft::{
 };
 use raft_network_impl::Network;
 use tokio::sync::{watch, Mutex, RwLock};
-use tonic::transport::Channel;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
-    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType},
     settings::Settings,
     topic::topic_storage::{Subscription, TopicStorage},
 };

@@ -30,7 +30,14 @@ use yedmq_mqtt::{
 use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
-    inflight::InflightError, plugin_manager::{PluginService, SubscribeReturnCode}, raft::{raft_manager::{RaftManagerError, RaftManagerTrait}, NodeId}, router::RouterCmd, settings::Session, topic::topic_manager::TopicManagerTrait
+    inflight::InflightError,
+    plugin_manager::{PluginService, SubscribeReturnCode},
+    raft::{
+        raft_manager::{RaftManagerError, RaftManagerTrait},
+        NodeId,
+    },
+    router::RouterCmd,
+    topic::topic_manager::TopicManagerTrait,
 };
 
 use super::{
@@ -146,7 +153,6 @@ pub enum ActivityState {
 }
 
 pub struct SessionActor {
-
     current_node_id: NodeId,
 
     tenant_id: String,
@@ -381,14 +387,21 @@ async fn do_handle_publish(
 
             // if not clean session, should sync inflight rx packet to raft
             if !clean_session {
-                raft_manager
-                    .session_state_raft()
+                let res = raft_manager
+                    .get_session_state_raft_client()
                     .inflight_register_rx_packet(
                         &client_info.tenant_id,
                         &client_info.client_identifier,
                         MqttPacketV3::Publish(publish_packet.clone()),
                     )
                     .await;
+
+                if res.is_err() {
+                    warn!("inflight register rx packet error, {}", res.unwrap_err());
+                    return HandlePublishResult {
+                        inflight_packet: None
+                    };
+                }
             }
 
             let packet = session_state_guard
@@ -541,7 +554,7 @@ impl SessionActor {
             state: session_state,
             raft_manager,
             session_lifecycle_tx,
-            current_node_id
+            current_node_id,
         }
     }
 
@@ -703,10 +716,18 @@ impl SessionActor {
                         .subscriptions
                         .insert(topic.clone(), qos);
 
-                    raft_manager
-                        .session_state_raft()
-                        .subscribe_topic(tenant_id.clone(), client_id.clone(), topic, qos_v)
+                    let res = raft_manager
+                        .get_session_state_raft_client()
+                        .subscribe_topic(tenant_id.clone(), client_id.clone(), topic.clone(), qos_v)
                         .await;
+
+                    if res.is_err() {
+                        warn!(
+                            "persistent session add subscribe topic {} error, {}",
+                            topic.clone(),
+                            res.unwrap_err()
+                        );
+                    }
                 }
             }
         }
@@ -739,14 +760,21 @@ impl SessionActor {
                     session_state.write().await.subscriptions.remove(&topic);
                 }
                 if !clean_session {
-                    raft_manager
-                        .session_state_raft()
+                    let res = raft_manager.session_state_raft()
                         .unsubscribe_topic(
                             client_info.tenant_id.clone(),
                             client_info.client_identifier.clone(),
-                            topic,
+                            topic.clone(),
                         )
                         .await;
+
+                    if res.is_err() {
+                        warn!(
+                            "persistent session add unsubscribe topic {} error, {}",
+                            topic.clone(),
+                            res.unwrap_err()
+                        );
+                    }
                 }
             }
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
@@ -791,14 +819,16 @@ impl SessionActor {
                         .next_state(pubrel_packet.variable_header.packet_identifier)
                         .await;
                     if !clean_session {
-                        raft_manager
-                            .session_state_raft()
+                        let res = raft_manager.get_session_state_raft_client()
                             .inflight_next_state(
                                 &client_info.tenant_id,
                                 &client_info.client_identifier,
                                 pubrel_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+                        if res.is_err() {
+                            warn!("handle pubrel inflight next state error {}", res.unwrap_err())
+                        }
                     }
                 }
             }
@@ -842,14 +872,18 @@ impl SessionActor {
                         .await;
 
                     if !clean_session {
-                        raft_manager
-                            .session_state_raft()
+                        let res = raft_manager
+                            .get_session_state_raft_client()
                             .inflight_next_state(
                                 &client_info.tenant_id,
                                 &client_info.client_identifier,
                                 pubrec_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+
+                        if res.is_err() {
+                            warn!("handle pubrec inflight next state error {}", res.unwrap_err())
+                        }
                     }
                 }
             }
@@ -892,14 +926,17 @@ impl SessionActor {
                         .next_state(puback_packet.variable_header.packet_identifier)
                         .await;
                     if !clean_session {
-                        raft_manager
-                            .session_state_raft()
+                        let res = raft_manager
+                            .get_session_state_raft_client()
                             .inflight_next_state(
                                 &client_info.tenant_id,
                                 &client_info.client_identifier,
                                 puback_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+                        if res.is_err() {
+                            warn!("handle puback inflight next state error, {}", res.unwrap_err())
+                        }
                     }
                 }
             }
@@ -942,14 +979,17 @@ impl SessionActor {
                         .next_state(pubcomp_packet.variable_header.packet_identifier)
                         .await;
                     if !clean_session {
-                        raft_manager
-                            .session_state_raft()
+                        let res = raft_manager
+                            .get_session_state_raft_client()
                             .inflight_next_state(
                                 &client_info.tenant_id,
                                 &client_info.client_identifier,
                                 pubcomp_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+                        if res.is_err() {
+                            warn!("handle pubcom inflight next state error {}", res.unwrap_err());
+                        }
                     }
                 }
             }
@@ -1063,7 +1103,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
                                 let mut session_state_guard = session_state.write().await;
 
-                                let mut packet_identifier = packet.variable_header.packet_identifier;
+                                let mut packet_identifier =
+                                    packet.variable_header.packet_identifier;
 
                                 let res = raft_manager
                                     .session_state_raft()
@@ -1076,9 +1117,11 @@ impl Handler<SessionActorMessage> for SessionActor {
 
                                 if let Err(e) = res {
                                     match e {
-                                        RaftManagerError::SessionStateError(SessionStateStorageError::InflightError(
-                                            InflightError::PacketIdentifierHasExisted,
-                                        )) => {
+                                        RaftManagerError::SessionStateError(
+                                            SessionStateStorageError::InflightError(
+                                                InflightError::PacketIdentifierHasExisted,
+                                            ),
+                                        ) => {
                                             let packet_id = session_state_guard
                                                 .inflight
                                                 .allocate_packet_id()
@@ -1097,12 +1140,14 @@ impl Handler<SessionActorMessage> for SessionActor {
                                                     .await;
                                             } else {
                                                 warn!("infligh has no more packet id available");
-                                                return ;
+                                                return;
                                             }
                                         }
-                                        RaftManagerError::SessionStateError(SessionStateStorageError::SessionStateNotExisted {
-                                            client_id,
-                                        }) => {
+                                        RaftManagerError::SessionStateError(
+                                            SessionStateStorageError::SessionStateNotExisted {
+                                                client_id,
+                                            },
+                                        ) => {
                                             warn!(
                                                 "session state not existed for client id: {}",
                                                 client_id
@@ -1123,20 +1168,27 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 if let Err(e) = res {
                                     error!("failed to send packet to client: {}", e);
                                 } else {
-                                    raft_manager
-                                        .session_state_raft()
-                                        .inflight_next_state(&tenant_id, &client_id, packet_identifier.unwrap())
+                                    let res = raft_manager
+                                        .get_session_state_raft_client()
+                                        .inflight_next_state(
+                                            &tenant_id,
+                                            &client_id,
+                                            packet_identifier.unwrap(),
+                                        )
                                         .await;
+                                    if res.is_err() {
+                                        warn!("handle message inflight next state error, {}", res.unwrap_err())
+                                    }
                                 }
                             } else {
-                               let res = conn
-                                   .send(ConnectionActorMessage::WritePacketToClient(
-                                       yedmq_mqtt::MqttPacketV3::Publish(packet),
-                                   ))
-                                   .await;
-                               if let Err(e) = res  {
-                                   error!("failed to send packet to client: {}", e);
-                               }
+                                let res = conn
+                                    .send(ConnectionActorMessage::WritePacketToClient(
+                                        yedmq_mqtt::MqttPacketV3::Publish(packet),
+                                    ))
+                                    .await;
+                                if let Err(e) = res {
+                                    error!("failed to send packet to client: {}", e);
+                                }
                             }
                         }
                         .into_actor(self)
@@ -1157,14 +1209,17 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         .pending_messages
                                         .push(MqttPacketV3::Publish(publish_packet.clone()));
                                     if !clean_session {
-                                        raft_manager
-                                            .session_state_raft()
+                                        let res = raft_manager
+                                            .get_session_state_raft_client()
                                             .append_to_pending_queue(
                                                 &client_info.tenant_id,
                                                 &client_info.client_identifier,
                                                 MqttPacketV3::Publish(publish_packet.clone()),
                                             )
                                             .await;
+                                        if res.is_err() {
+                                            warn!("append to pending queue error, {}", res.unwrap_err())
+                                        }
                                     }
                                 }
                                 .into_actor(self)
@@ -1275,16 +1330,18 @@ impl Handler<SessionActorMessage> for SessionActor {
                             QoS::ExactlyOnce => 2,
                             QoS::AtMostOnce => 0,
                         };
-                        raft_manager
-                            .topic_raft()
-                            .subscribe_topic(
-                                current_node_id,
+                        let res = raft_manager
+                            .get_topic_raft_client()
+                            .handle_subscribe(
                                 tenant_id.clone(),
                                 client_identifier.clone(),
                                 topic.clone(),
                                 qos_v,
                             )
                             .await;
+                        if res.is_err() {
+                            warn!("handle subscribe topic error {}", res.unwrap_err())
+                        }
                     }
                     info!(
                         "finish update topic subscribe for session {}",
@@ -1452,7 +1509,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1559,7 +1616,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1684,7 +1741,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1784,7 +1841,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         );
         let session_actor_addr = session_actor.start();
 
@@ -1861,7 +1918,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1955,7 +2012,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -2047,7 +2104,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -2118,7 +2175,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2188,7 +2245,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2269,7 +2326,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2345,7 +2402,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2408,7 +2465,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2492,7 +2549,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2577,7 +2634,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
         let client_publish_packet =
@@ -2609,7 +2666,6 @@ mod tests {
             _ => assert!(false),
         }
     }
-
 
     #[actix::test]
     async fn when_receive_outbound_message_which_qos_is_0_should_send_to_connection_actor() {
@@ -2656,7 +2712,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
@@ -2727,7 +2783,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
-            123
+            123,
         )
         .start();
 
