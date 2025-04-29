@@ -8,9 +8,12 @@ use std::{
     sync::Arc,
 };
 
-use log::info;
+use log::{info, warn};
 use mockall::automock;
-use openraft::Config;
+use openraft::{
+    error::{CheckIsLeaderError, ClientWriteError, Infallible, InitializeError},
+    Config,
+};
 use raft_network_impl::Network;
 use tokio::sync::{watch, Mutex, RwLock};
 use tonic::transport::Channel;
@@ -18,21 +21,29 @@ use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
     protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType},
-    settings::{Cluster, Settings},
-    topic::topic_storage::TopicStorage,
+    settings::Settings,
+    topic::topic_storage::{Subscription, TopicStorage},
 };
 
 use super::{
+    raft_manager::RaftManagerError,
     topic::{
         store::new_storage,
         types::{Request, TopicRaft},
     },
-    Node, NodeId, RaftCommandExecutor,
+    Node, NodeId,
 };
 
 #[async_trait::async_trait]
 #[automock]
 pub trait TopicRaftManagerTrait {
+
+    async fn get_leader(&self) -> Option<Node>;
+
+    async fn get_node_by_id(&self, node_id: NodeId) -> Option<Node>;
+
+    async fn init_cluster(&self) -> Result<(), RaftManagerError<InitializeError<NodeId, Node>>>;
+
     async fn subscribe_topic(
         &self,
         node_id: NodeId,
@@ -40,7 +51,7 @@ pub trait TopicRaftManagerTrait {
         client_identifier: String,
         topic: String,
         qos: u8,
-    );
+    ) -> Result<(), RaftManagerError<openraft::error::ClientWriteError<NodeId, Node>>>;
 
     async fn unsubscribe_topic(
         &self,
@@ -48,105 +59,40 @@ pub trait TopicRaftManagerTrait {
         tenant_id: String,
         client_identifier: String,
         topic: String,
-    );
+    ) -> Result<(), RaftManagerError<openraft::error::ClientWriteError<NodeId, Node>>>;
 
     async fn register_retain_publish_packet(
         &self,
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: MqttPacketV3,
-    );
+    ) -> Result<(), RaftManagerError<openraft::error::ClientWriteError<NodeId, Node>>>;
 
-    async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String);
+    async fn clean_retain_publish_packet(
+        &self,
+        tenant_id: String,
+        topic_filter: String,
+    ) -> Result<(), RaftManagerError<openraft::error::ClientWriteError<NodeId, Node>>>;
 
-    async fn create_tenant(&self, tenant_id: String);
+    async fn create_tenant(
+        &self,
+        tenant_id: String,
+    ) -> Result<(), RaftManagerError<openraft::error::ClientWriteError<NodeId, Node>>>;
 
-    fn current_node_id(&self) -> NodeId;
+    async fn get_subscriptions_ensure_linearizable(
+        &self,
+        tenant_id: String,
+        topic: String,
+    ) -> std::result::Result<
+        Vec<Arc<Subscription>>,
+        RaftManagerError<openraft::error::CheckIsLeaderError<NodeId, Node>>,
+    >;
 
-    async fn get_node_by_id(&self, id: NodeId) -> Option<Node>;
-}
-
-#[async_trait::async_trait]
-impl RaftCommandExecutor<types::Request, types::Response> for RaftManager {
-
-    // Check if the current node is the leader
-    async fn is_leader(&self) -> bool {
-        let leader_node_id = self.get_leader_node_id().await;
-        if leader_node_id.is_none() {
-            return false;
-        } else {
-            let leader_node_id = leader_node_id.unwrap();
-            let current_node_id = self.current_node_id();
-            leader_node_id == current_node_id
-        }
-    }
-
-    // Get the current leader node information
-    async fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().await.and_then(|id| {
-            self.raft
-                .metrics()
-                .borrow()
-                .membership_config
-                .nodes()
-                .find(|x| *x.0 == id)
-                .and_then(|x| Some(x.1.clone()))
-        })
-    }
-
-    // Execute command as leader
-    async fn execute_as_leader(&self, command: types::Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
-        let res = self.raft.client_write(command).await;
-        if let Err(e) = res {
-            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
-                "ClientWrite failed: {:?}",
-                e
-            )));
-        }       
-
-        let r = res.unwrap();
-        let res = r.data;
-        Ok(res)
-    }
-
-    // Create an RPC client for communication with a target node
-    async fn create_rpc_client(&self, addr: String) -> Result<RaftServiceClient<Channel>, super::raft_manager::RaftManagerError> {
-        match super::create_rpc_client_with_retry(addr).await {
-            Ok(client) => Ok(client),
-            Err(_) => Err(super::raft_manager::RaftManagerError::InternalError("Create rpc client failed".into())),
-        }
-    }
-
-    // Send command to another node
-    async fn send_command_to_node(&self, mut client: RaftServiceClient<Channel>, command: types::Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
-        let append_request = AppendEntriesRequest {
-            data: serde_json::to_string(&command).unwrap(),
-            raft_type: RaftType::Topic.into(),
-        };
-
-        match client.append_entries(append_request).await {
-            Ok(rpc_response) =>{
-                let response = rpc_response.into_inner();
-                let data = serde_json::from_str(&response.data).unwrap();
-                Ok(data)
-            },
-            Err(e) => {
-                return Err(super::raft_manager::RaftManagerError::InternalError(format!(
-                    "AppendEntries failed: {:?}",
-                    e
-                )));
-            },
-
-        }
-    }
-
+    fn raft(&self) -> &TopicRaft;
 }
 
 #[async_trait::async_trait]
 impl TopicRaftManagerTrait for RaftManager {
-    fn current_node_id(&self) -> NodeId {
-        self.settings.cluster.node_id
-    }
 
     async fn get_node_by_id(&self, id: NodeId) -> Option<Node> {
         self.raft
@@ -158,6 +104,54 @@ impl TopicRaftManagerTrait for RaftManager {
             .and_then(|x| Some(x.1.clone()))
     }
 
+    async fn get_leader(&self) -> Option<Node>{
+        self.raft.current_leader().await.and_then(|id| {
+            self.raft
+                .metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .find(|x| *x.0 == id)
+                .and_then(|x| Some(x.1.clone()))
+        })
+    }
+
+    async fn init_cluster(
+        &self,
+    ) -> Result<(), RaftManagerError<InitializeError<NodeId, Node>>> {
+        let mut cluster_nodes = BTreeMap::new();
+        cluster_nodes.insert(
+            self.settings.cluster.node_id,
+            Node {
+                rpc_addr: self.settings.cluster.rpc.external.to_string(),
+                api_addr: self.settings.listener.api.external.to_string(),
+            },
+        );
+
+        self.raft.initialize(cluster_nodes).await?;
+        Ok(())
+    }
+
+    fn raft(&self) -> &TopicRaft {
+        &self.raft
+    }
+
+    async fn get_subscriptions_ensure_linearizable(
+        &self,
+        tenant_id: String,
+        topic: String,
+    ) -> std::result::Result<
+        Vec<Arc<Subscription>>,
+        RaftManagerError<CheckIsLeaderError<NodeId, Node>>,
+    > {
+        self.raft.ensure_linearizable().await?;
+        let topic_storage_guard = self.topic_storage.read().await;
+        let subscriptions = topic_storage_guard
+            .get_subscriptions(tenant_id, topic)
+            .unwrap();
+        Ok(subscriptions)
+    }
+
     async fn subscribe_topic(
         &self,
         node_id: NodeId,
@@ -165,15 +159,23 @@ impl TopicRaftManagerTrait for RaftManager {
         client_identifier: String,
         topic: String,
         qos: u8,
-    ) {
-        self.execute_command(Request::SubscribeTopic {
+    ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
+        let command = Request::SubscribeTopic {
             node_id,
             tenant_id,
             client_identifier,
             topic,
             qos,
-        })
-        .await;
+        };
+        let res = self.raft.client_write(command).await?;
+        match res.data {
+            types::Response::None => return Ok(()),
+            _ => {
+                return Err(RaftManagerError::InternalError(
+                    "response is not topic response None".to_string(),
+                ))
+            }
+        }
     }
 
     async fn unsubscribe_topic(
@@ -182,14 +184,23 @@ impl TopicRaftManagerTrait for RaftManager {
         tenant_id: String,
         client_identifier: String,
         topic: String,
-    ) {
-        self.execute_command(Request::UnsubscribeTopic {
+    ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
+        let command = Request::UnsubscribeTopic {
             node_id,
             tenant_id,
             client_identifier,
             topic,
-        })
-        .await;
+        };
+
+        let res = self.raft.client_write(command).await?;
+        match res.data {
+            types::Response::None => return Ok(()),
+            _ => {
+                return Err(RaftManagerError::InternalError(
+                    "response is not topic response None".to_string(),
+                ))
+            }
+        }
     }
 
     async fn register_retain_publish_packet(
@@ -197,31 +208,64 @@ impl TopicRaftManagerTrait for RaftManager {
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: MqttPacketV3,
-    ) {
-        self.execute_command(Request::RegisterRetainPublishPacket {
+    ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
+        let command = Request::RegisterRetainPublishPacket {
             tenant_id,
             source_client_identifier,
             publish_packet,
-        })
-        .await;
+        };
+
+        let res = self.raft.client_write(command).await?;
+        match res.data {
+            types::Response::None => return Ok(()),
+            _ => {
+                return Err(RaftManagerError::InternalError(
+                    "response is not topic response None".to_string(),
+                ))
+            }
+        }
     }
 
-    async fn clean_retain_publish_packet(&self, tenant_id: String, topic_filter: String) {
-        self.execute_command(Request::CleanRetainPublishPacket {
+    async fn clean_retain_publish_packet(
+        &self,
+        tenant_id: String,
+        topic_filter: String,
+    ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
+        let command = Request::CleanRetainPublishPacket {
             tenant_id,
             topic_filter,
-        })
-        .await;
+        };
+
+        let res = self.raft.client_write(command).await?;
+        match res.data {
+            types::Response::None => return Ok(()),
+            _ => {
+                return Err(RaftManagerError::InternalError(
+                    "response is not topic response None".to_string(),
+                ))
+            }
+        }
     }
 
-    async fn create_tenant(&self, tenant_id: String) {
-        self.execute_command(Request::CreateTenant { tenant_id })
-            .await;
+    async fn create_tenant(
+        &self,
+        tenant_id: String,
+    ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
+        let command = Request::CreateTenant { tenant_id };
+        let res = self.raft.client_write(command).await?;
+        match res.data {
+            types::Response::None => return Ok(()),
+            _ => {
+                return Err(RaftManagerError::InternalError(
+                    "response is not topic response None".to_string(),
+                ))
+            }
+        }
     }
 }
 
 pub struct RaftManager {
-    pub raft: TopicRaft,
+    pub raft: Arc<TopicRaft>,
 
     pub topic_storage: Arc<RwLock<TopicStorage>>,
 
@@ -236,6 +280,8 @@ pub struct RaftManager {
     running_rx: watch::Receiver<()>,
 
     running_tx: watch::Sender<()>,
+    
+    raft_client: Arc<dyn crate::raft::client::topic::TopicRaftClientTrait>
 }
 
 impl Drop for RaftManager {
@@ -245,18 +291,31 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-    pub async fn stop(&self) -> Result<(), super::raft_manager::RaftManagerError> {
+    pub fn get_raft_client(&self) -> Arc<dyn crate::raft::client::topic::TopicRaftClientTrait> {
+        self.raft_client.clone()
+    }
+
+    async fn get_raft_config(heartbeat_interval: u64) -> Config {
+        Config {
+            cluster_name: "yedmq_topic_cluster".to_string(),
+            ..Default::default()
+        }
+    }
+
+    pub async fn stop(&self) -> Result<(), super::raft_manager::RaftManagerError<Infallible>> {
         let mut rx = self.raft.metrics();
 
         self.raft.shutdown().await.map_err(|e| {
-            super::raft_manager::RaftManagerError::InternalError(format!("Failed to shutdown raft, {}", e))
+            super::raft_manager::RaftManagerError::InternalError(format!(
+                "Failed to shutdown raft, {}",
+                e
+            ))
         })?;
 
         if let Err(e) = self.running_tx.send(()) {
-            return Err(super::raft_manager::RaftManagerError::InternalError(format!(
-                "Failed to shutdown raft, {}",
-                e
-            )));
+            return Err(super::raft_manager::RaftManagerError::InternalError(
+                format!("Failed to shutdown raft, {}", e),
+            ));
         }
 
         loop {
@@ -267,9 +326,9 @@ impl RaftManager {
         }
 
         for j in self.join_handles.lock().await.iter_mut() {
-            let _rst = j
-                .await
-                .map_err(|e| super::raft_manager::RaftManagerError::InternalError(format!("{}", e)))?;
+            let _rst = j.await.map_err(|e| {
+                super::raft_manager::RaftManagerError::InternalError(format!("{}", e))
+            })?;
         }
 
         info!("Raft shutdown: id={}", self.settings.cluster.node_id);
@@ -296,10 +355,13 @@ impl RaftManager {
         )
         .await
         .unwrap();
+        let raft_arc = Arc::new(raft);
         let (tx, rx) = watch::channel::<()>(());
 
+        let raft_client = crate::raft::client::topic::TopicRaftClient::new(raft_arc.clone());
+
         let manager = RaftManager {
-            raft,
+            raft: raft_arc.clone(),
             current_leader: Arc::new(RwLock::new(None)),
             nodes: Arc::new(RwLock::new(HashMap::new())),
             join_handles: Mutex::new(vec![]),
@@ -307,6 +369,7 @@ impl RaftManager {
             running_tx: tx,
             settings,
             topic_storage,
+            raft_client: Arc::new(raft_client)
         };
 
         manager.start_monitor_raft_metrics();
@@ -324,58 +387,5 @@ impl RaftManager {
                 *state = rx.borrow().current_leader;
             }
         });
-    }
-
-    pub async fn init_cluster(&self) -> Result<(), super::raft_manager::RaftManagerError> {
-        let mut cluster_nodes = BTreeMap::new();
-        cluster_nodes.insert(
-            self.settings.cluster.node_id,
-            Node {
-                rpc_addr: self.settings.cluster.rpc.external.to_string(),
-                api_addr: self.settings.listener.api.external.to_string(),
-            },
-        );
-
-        self.raft.initialize(cluster_nodes).await.map_err(|e| {
-            super::raft_manager::RaftManagerError::InternalError(format!("Failed to initialize cluster, {:?}", e))
-        })
-    }
-
-    pub async fn is_leader(&self) -> bool {
-        let leader_node_id = self.get_leader_node_id().await;
-        if leader_node_id.is_none() {
-            return false;
-        } else {
-            let leader_node_id = leader_node_id.unwrap();
-            let current_node_id = self.current_node_id();
-            leader_node_id == current_node_id
-        }
-    }
-
-    pub async fn get_leader_node_id(&self) -> Option<NodeId> {
-        self.raft.current_leader().await
-    }
-
-    pub async fn get_leader(&self) -> Option<Node> {
-        self.get_leader_node_id().await.and_then(|id| {
-            self.raft
-                .metrics()
-                .borrow()
-                .membership_config
-                .nodes()
-                .find(|x| *x.0 == id)
-                .and_then(|x| Some(x.1.clone()))
-        })
-    }
-
-    pub async fn execute_command(&self, command: Request) -> Result<types::Response, super::raft_manager::RaftManagerError> {
-        super::execute_raft_command(self, command, 3).await
-    }
-
-    async fn get_raft_config(heartbeat_interval: u64) -> Config {
-        Config {
-            cluster_name: "yedmq_topic_cluster".to_string(),
-            ..Default::default()
-        }
     }
 }

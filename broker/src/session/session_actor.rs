@@ -30,7 +30,7 @@ use yedmq_mqtt::{
 use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
-    inflight::InflightError, plugin_manager::{PluginService, SubscribeReturnCode}, raft::raft_manager::{RaftManagerError, RaftManagerTrait}, router::RouterCmd, settings::Session, topic::topic_manager::TopicManagerTrait
+    inflight::InflightError, plugin_manager::{PluginService, SubscribeReturnCode}, raft::{raft_manager::{RaftManagerError, RaftManagerTrait}, NodeId}, router::RouterCmd, settings::Session, topic::topic_manager::TopicManagerTrait
 };
 
 use super::{
@@ -146,6 +146,9 @@ pub enum ActivityState {
 }
 
 pub struct SessionActor {
+
+    current_node_id: NodeId,
+
     tenant_id: String,
 
     client_id: String,
@@ -249,13 +252,25 @@ impl Actor for SessionActor {
                     .await;
             }
 
-            while let Some(packet) = raft_manager
-                .session_state_raft()
-                .pop_from_pending_queue(tenant_id.clone(), client_id.clone())
-                .await
-            {
-                session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+            //
+            loop {
+                match raft_manager.get_session_state_raft_client().pop_from_pending_queue(tenant_id.clone(), client_id.clone()).await {
+                    Ok(packet) => {
+                        if packet.is_some() {
+                            session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet.unwrap()));
+                        } else {
+                            return
+                        }
+                    },
+                    Err(e) => {
+                        warn!("session state raft client pop from pending queue error, {}", e);
+                        return
+                    },
+                }
+
             }
+            //
+
         }
         .into_actor(self)
         .wait(ctx);
@@ -504,6 +519,7 @@ impl SessionActor {
         session_state: Arc<RwLock<SessionState>>,
         raft_manager: Arc<dyn RaftManagerTrait>,
         session_lifecycle_tx: Sender<SessionLifecycleMessage>,
+        current_node_id: NodeId,
     ) -> Self {
         SessionActor {
             topic_manager,
@@ -525,6 +541,7 @@ impl SessionActor {
             state: session_state,
             raft_manager,
             session_lifecycle_tx,
+            current_node_id
         }
     }
 
@@ -1241,6 +1258,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let raft_manager = self.raft_manager.clone();
                 let tenant_id = self.tenant_id.clone();
                 let client_identifier = self.client_id.clone();
+                let current_node_id = self.current_node_id;
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for msg in session_state_guard.pending_messages.drain(..) {
@@ -1251,7 +1269,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                         "start update topic subscribe for session {}",
                         client_identifier
                     );
-                    let node_id = raft_manager.topic_raft().current_node_id();
                     for (topic, qos) in session_state_guard.subscriptions.iter() {
                         let qos_v = match qos {
                             QoS::AtLeastOnce => 1,
@@ -1261,7 +1278,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         raft_manager
                             .topic_raft()
                             .subscribe_topic(
-                                node_id,
+                                current_node_id,
                                 tenant_id.clone(),
                                 client_identifier.clone(),
                                 topic.clone(),
@@ -1412,10 +1429,6 @@ mod tests {
             .packet_identifier(123)
             .build();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -1439,6 +1452,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         );
         let session_actor_addr = session_actor.start();
 
@@ -1514,33 +1528,13 @@ mod tests {
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
 
         let mut topic_raft_manager_mock = crate::raft::topic::MockTopicRaftManagerTrait::new();
-        topic_raft_manager_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
-        topic_raft_manager_mock
-            .expect_subscribe_topic()
-            .returning(|_, _, _, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_topic_raft()
             .return_const(Box::new(topic_raft_manager_mock));
 
-        session_actor_map_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
-        raft_manager_mock
-            .expect_session_actor_map_raft()
-            .return_const(Box::new(session_actor_map_mock));
-
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
-
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_session_state_raft()
@@ -1565,6 +1559,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         );
         let session_actor_addr = session_actor.start();
 
@@ -1654,20 +1649,10 @@ mod tests {
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
 
         let mut topic_raft_manager_mock = crate::raft::topic::MockTopicRaftManagerTrait::new();
-        topic_raft_manager_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
-        topic_raft_manager_mock
-            .expect_subscribe_topic()
-            .returning(|_, _, _, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_topic_raft()
             .return_const(Box::new(topic_raft_manager_mock));
-
-        session_actor_map_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
 
         raft_manager_mock
             .expect_session_actor_map_raft()
@@ -1675,17 +1660,6 @@ mod tests {
 
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
-
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_session_state_raft()
@@ -1710,6 +1684,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         );
         let session_actor_addr = session_actor.start();
 
@@ -1779,26 +1754,12 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
-        session_actor_map_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
 
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
-
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_session_state_raft()
@@ -1823,6 +1784,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         );
         let session_actor_addr = session_actor.start();
 
@@ -1876,17 +1838,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -1910,6 +1861,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -1980,17 +1932,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2014,6 +1955,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -2082,17 +2024,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2116,6 +2047,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
@@ -2163,17 +2095,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2197,6 +2118,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2237,25 +2159,11 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
-        session_actor_map_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
-
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_session_state_raft()
@@ -2280,6 +2188,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2337,17 +2246,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2371,6 +2269,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2423,17 +2322,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2457,6 +2345,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2489,26 +2378,12 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
         let mut session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
-        session_actor_map_mock
-            .expect_current_node_id()
-            .return_const(123 as u64);
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
 
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
-
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
 
         raft_manager_mock
             .expect_session_state_raft()
@@ -2533,6 +2408,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2593,17 +2469,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2627,6 +2492,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2688,17 +2554,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2722,6 +2577,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
         let client_publish_packet =
@@ -2777,17 +2633,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2811,6 +2656,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 
@@ -2858,17 +2704,6 @@ mod tests {
         let mut mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
-        mock_session_state_raft_manager
-            .expect_pop_from_pending_queue()
-            .returning(|_, _| Box::pin(async move { None }));
-        mock_session_state_raft_manager
-            .expect_inflight_next_state()
-            .returning(|_, _, _| Box::pin(async move {}));
-
-        mock_session_state_raft_manager
-            .expect_append_to_pending_queue()
-            .returning(|_, _, _| Box::pin(async move {}));
-
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
@@ -2892,6 +2727,7 @@ mod tests {
             )))),
             Arc::new(raft_manager_mock),
             session_lifecycle_tx,
+            123
         )
         .start();
 

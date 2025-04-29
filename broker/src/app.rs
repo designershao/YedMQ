@@ -5,6 +5,8 @@ use actix::Addr;
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
+use crate::raft::client::topic::TopicRaftClient;
+use crate::raft::raft_manager::RaftManagerTrait;
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_actor_map_storage::SessionClock;
 use crate::session::session_state_storage::SessionStateStorage;
@@ -54,6 +56,7 @@ impl YedMQApp {
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
 
+
         let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
 
         let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
@@ -78,6 +81,7 @@ impl YedMQApp {
             app.settings.clone(),
             app.raft_manager.clone(),
             session_clock.clone(),
+            app.settings.cluster.node_id
         )
         .start();
         //
@@ -95,7 +99,8 @@ impl YedMQApp {
             app.raft_manager.clone(),
             router_sender.clone(),
             session_manager.clone().recipient(),
-            session_manager.clone().recipient()
+            session_manager.clone().recipient(),
+            settings.cluster.node_id
         )
         .await
         .unwrap();
@@ -109,6 +114,7 @@ impl YedMQApp {
             session_manager_recipient: session_manager.recipient(),
             router_receiver: router_receiver,
             raft_manager: app.raft_manager.clone(),
+            current_node_id: settings.cluster.node_id,
         };
 
         let router_join_handle = actix::spawn(async move {
@@ -238,10 +244,11 @@ impl YedMQApp {
 
         // init topic manager
         info!("start load topic manager");
+
         let topic_manager = Arc::new(RwLock::new(TopicManager::new(
             topic_storage.clone(),
-            raft_manager.clone(),
             settings.cluster.node_id,
+            raft_manager.get_topic_raft_client(),
         )));
         info!("topic manager load succeed");
         //

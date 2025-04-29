@@ -49,7 +49,7 @@ mod tests {
 
     use crate::{
         plugin_manager::PluginManager,
-        raft::raft_manager::RaftManager,
+        raft::raft_manager::{RaftManager, RaftManagerTrait},
         session::{
             session_actor_map_storage::SessionClock,
             session_manager_actor::SessionManagerActor,
@@ -128,7 +128,7 @@ mod tests {
         raft_manager: Arc<RaftManager>,
         test_node_id: u64,
     ) -> TopicManager {
-        TopicManager::new(topic_storage.clone(), raft_manager.clone(), test_node_id)
+        TopicManager::new(topic_storage.clone(), test_node_id, raft_manager.get_topic_raft_client())
     }
 
     async fn mock_app(settings: Arc<crate::settings::Settings>) -> crate::app::YedMQApp {
@@ -161,6 +161,7 @@ mod tests {
             settings.clone(),
             raft_manager.clone(),
             session_clock.clone(),
+            settings.cluster.node_id
         )
         .start();
 

@@ -2,7 +2,7 @@ use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
 use actix::Recipient;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use log::{debug, warn};
+use log::debug;
 use openraft::{
     storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
     AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader,

@@ -6,6 +6,7 @@ use crate::protobuf::{
     VoteResponse,
 };
 use crate::raft::raft_manager::RaftManager;
+use crate::raft::NodeId;
 use crate::router::RouterCmd;
 use actix::Recipient;
 use log::info;
@@ -13,6 +14,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 pub struct RaftServiceImpl {
+    pub current_node_id: NodeId,
+
     pub raft_manager: Arc<RaftManager>,
 
     pub router_sender: Sender<RouterCmd>,
@@ -32,28 +35,22 @@ impl RaftService for RaftServiceImpl {
     ) -> Result<tonic::Response<crate::protobuf::GetSubscriptionResponse>, tonic::Status> {
         let request = request.into_inner();
 
-        let ret = self
+        let res = self
             .raft_manager
             .topic_raft()
-            .raft
-            .ensure_linearizable()
+            .get_subscriptions_ensure_linearizable(request.tenant_id, request.topic)
             .await;
 
-        match ret {
-            Ok(_) => {
-                let topic_storage_guard = self.raft_manager.topic_raft().topic_storage.read().await;
-                let tenant_id = request.tenant_id;
-                let topic = request.topic;
-                let subscriptions = topic_storage_guard
-                    .get_subscriptions(tenant_id, topic)
-                    .unwrap();
-                let subscriptions_result = subscriptions.iter().map(|sub| {
-                    crate::protobuf::Subscription {
-                        qos:sub.qos as u32, 
-                        node_id: sub.node_id, 
-                        client_id: sub.client_identifier.clone() 
-                    }
-                });
+        match res {
+            Ok(subscriptions) => {
+                let subscriptions_result =
+                    subscriptions
+                        .iter()
+                        .map(|sub| crate::protobuf::Subscription {
+                            qos: sub.qos as u32,
+                            node_id: sub.node_id,
+                            client_id: sub.client_identifier.clone(),
+                        });
                 let res = crate::protobuf::GetSubscriptionResponse {
                     success: true,
                     error: None,
@@ -62,22 +59,31 @@ impl RaftService for RaftServiceImpl {
                 Ok(tonic::Response::new(res))
             }
             Err(e) => {
-                let res = crate::protobuf::GetSubscriptionResponse {
-                    success: false,
-                    error: Some(crate::protobuf::ErrorDetail {
-                        code: 500,
-                        message: e.to_string(),
-                        node: self
-                            .raft_manager
-                            .session_actor_map_raft()
-                            .current_node_id()
-                            .to_string(),
-                    }),
-                    subscriptions: vec![],
+                let err_res = match e {
+                    crate::raft::raft_manager::RaftManagerError::Raft(raft_err) => {
+                        let err = raft_err.api_error().unwrap();
+                        crate::protobuf::GetSubscriptionResponse {
+                            success: false,
+                            error: Some(crate::protobuf::ErrorDetail {
+                                code: crate::protobuf::ErrorCode::NotLeader as i32,
+                                message: err.to_string(),
+                                node: self.current_node_id.to_string(),
+                            }),
+                            subscriptions: vec![],
+                        }
+                    }
+                    _ => crate::protobuf::GetSubscriptionResponse {
+                        success: false,
+                        error: Some(crate::protobuf::ErrorDetail {
+                            code: crate::protobuf::ErrorCode::InternalError as i32,
+                            message: e.to_string(),
+                            node: self.current_node_id.to_string(),
+                        }),
+                        subscriptions: vec![],
+                    },
                 };
-
-                Ok(tonic::Response::new(res))
-            }   
+                Ok(tonic::Response::new(err_res))
+            }
         }
     }
 
@@ -88,28 +94,17 @@ impl RaftService for RaftServiceImpl {
     {
         let request = request.into_inner();
 
-        let ret = self
+        let res = self
             .raft_manager
-            .session_actor_map_raft()
-            .raft()
-            .ensure_linearizable()
+            .session_state_raft()
+            .inflight_get_current_packet_ensure_linearizable(
+                &request.tenant_id,
+                &request.client_id,
+                request.packet_id as u16,
+            )
             .await;
-        match ret {
-            Ok(_) => {
-                let client_id = request.client_id;
-                let tenant_id = request.tenant_id;
-                let packet_id = request.packet_id;
-
-                let state_storage_guard = self
-                    .raft_manager
-                    .session_state_raft()
-                    .session_state_storage
-                    .read()
-                    .await;
-                let packet_opt = state_storage_guard
-                    .inflight_get_current_packet(tenant_id, client_id, packet_id as u16)
-                    .await;
-
+        match res {
+            Ok(packet_opt) => {
                 let r = packet_opt.and_then(|packet| Some(serde_json::to_string(&packet).unwrap()));
 
                 let res = crate::protobuf::InflightGetCurrentPacketResponse {
@@ -121,21 +116,30 @@ impl RaftService for RaftServiceImpl {
                 Ok(tonic::Response::new(res))
             }
             Err(e) => {
-                let res = crate::protobuf::InflightGetCurrentPacketResponse {
-                    success: false,
-                    error: Some(crate::protobuf::ErrorDetail {
-                        code: 500,
-                        message: e.to_string(),
-                        node: self
-                            .raft_manager
-                            .session_actor_map_raft()
-                            .current_node_id()
-                            .to_string(),
-                    }),
-                    packet: None,
+                let err_resp = match e {
+                    crate::raft::raft_manager::RaftManagerError::Raft(e) => {
+                        crate::protobuf::InflightGetCurrentPacketResponse {
+                            success: false,
+                            error: Some(crate::protobuf::ErrorDetail {
+                                code: crate::protobuf::ErrorCode::NotLeader as i32,
+                                message: e.api_error().unwrap().to_string(),
+                                node: self.current_node_id.to_string(),
+                            }),
+                            packet: None,
+                        }
+                    }
+                    _ => crate::protobuf::InflightGetCurrentPacketResponse {
+                        success: false,
+                        error: Some(crate::protobuf::ErrorDetail {
+                            code: crate::protobuf::ErrorCode::InternalError as i32,
+                            message: e.to_string(),
+                            node: self.current_node_id.to_string(),
+                        }),
+                        packet: None,
+                    },
                 };
 
-                Ok(tonic::Response::new(res))
+                Ok(tonic::Response::new(err_resp))
             }
         }
     }
@@ -144,45 +148,47 @@ impl RaftService for RaftServiceImpl {
         &self,
         request: tonic::Request<crate::protobuf::SessionExistedRequest>,
     ) -> Result<tonic::Response<crate::protobuf::SessionExistedResponse>, tonic::Status> {
-        let ret = self
+        let request = request.into_inner();
+
+        let res = self
             .raft_manager
-            .session_actor_map_raft()
-            .raft()
-            .ensure_linearizable()
+            .session_state_raft()
+            .session_state_exists_ensure_linearizable(&request.tenant_id, &request.client_id)
             .await;
-        match ret {
-            Ok(_) => {
-                let request = request.into_inner();
-                let client_id = request.client_id;
-                let tenant_id = request.tenant_id;
-                let session_state = self
-                    .raft_manager
-                    .session_state_raft()
-                    .session_state_exists_from_local_raft_store(&tenant_id, &client_id)
-                    .await;
+
+        match res {
+            Ok(r) => {
                 let res = crate::protobuf::SessionExistedResponse {
                     success: true,
                     error: None,
-                    session_existed: session_state,
+                    session_existed: r,
                 };
                 Ok(tonic::Response::new(res))
             }
             Err(e) => {
-                let res = crate::protobuf::SessionExistedResponse {
-                    success: false,
-                    error: Some(crate::protobuf::ErrorDetail {
-                        code: 500,
-                        message: e.to_string(),
-                        node: self
-                            .raft_manager
-                            .session_actor_map_raft()
-                            .current_node_id()
-                            .to_string(),
-                    }),
-                    session_existed: false,
+                let err_resp = match e {
+                    crate::raft::raft_manager::RaftManagerError::Raft(e) => {
+                        crate::protobuf::SessionExistedResponse {
+                            success: false,
+                            error: Some(crate::protobuf::ErrorDetail {
+                                code: crate::protobuf::ErrorCode::NotLeader as i32,
+                                message: e.api_error().unwrap().to_string(),
+                                node: self.current_node_id.to_string(),
+                            }),
+                            session_existed: false,
+                        }
+                    }
+                    _ => crate::protobuf::SessionExistedResponse {
+                        success: false,
+                        error: Some(crate::protobuf::ErrorDetail {
+                            code: crate::protobuf::ErrorCode::InternalError as i32,
+                            message: e.to_string(),
+                            node: self.current_node_id.to_string(),
+                        }),
+                        session_existed: false,
+                    },
                 };
-
-                Ok(tonic::Response::new(res))
+                Ok(tonic::Response::new(err_resp))
             }
         }
     }
@@ -192,60 +198,56 @@ impl RaftService for RaftServiceImpl {
         &self,
         request: tonic::Request<crate::protobuf::GetSessionStateRequest>,
     ) -> Result<tonic::Response<crate::protobuf::GetSessionStateResponse>, tonic::Status> {
-        let ret = self
-            .raft_manager
-            .session_actor_map_raft()
-            .raft()
-            .ensure_linearizable()
-            .await;
-        match ret {
-            Ok(_) => {
-                let request = request.into_inner();
-                let client_id = request.client_id;
-                let tenant_id = request.tenant_id;
+        let request = request.into_inner();
 
-                let session_state = self
-                    .raft_manager
-                    .session_state_raft()
-                    .get_session_state_from_local_raft_store(&tenant_id, &client_id)
-                    .await;
-                match session_state {
-                    Some(session_state) => {
-                        let session_state = session_state.read().await.clone();
-                        let data = serde_json::to_string(&session_state).unwrap();
-                        let res = crate::protobuf::GetSessionStateResponse {
-                            success: true,
-                            error: None,
-                            session_state_data: Some(data),
-                        };
-                        Ok(tonic::Response::new(res))
-                    }
-                    None => {
-                        let res = crate::protobuf::GetSessionStateResponse {
-                            success: true,
-                            error: None,
-                            session_state_data: None,
-                        };
-                        Ok(tonic::Response::new(res))
-                    }
+        let res = self
+            .raft_manager
+            .session_state_raft()
+            .get_session_state_ensure_linearizable(&request.tenant_id, &request.client_id)
+            .await;
+
+        match res {
+            Ok(r) => {
+                if let Some(session_state) = r {
+                    let res = crate::protobuf::GetSessionStateResponse {
+                        success: true,
+                        error: None,
+                        session_state_data: Some(serde_json::to_string(&session_state).unwrap()),
+                    };
+                    Ok(tonic::Response::new(res))
+                } else {
+                    let res = crate::protobuf::GetSessionStateResponse {
+                        success: true,
+                        error: None,
+                        session_state_data: None,
+                    };
+                    Ok(tonic::Response::new(res))
                 }
             }
             Err(e) => {
-                let res = crate::protobuf::GetSessionStateResponse {
-                    success: false,
-                    error: Some(crate::protobuf::ErrorDetail {
-                        code: 500,
-                        message: e.to_string(),
-                        node: self
-                            .raft_manager
-                            .session_actor_map_raft()
-                            .current_node_id()
-                            .to_string(),
-                    }),
-                    session_state_data: None,
+                let err_resp = match e {
+                    crate::raft::raft_manager::RaftManagerError::Raft(e) => {
+                        crate::protobuf::GetSessionStateResponse {
+                            success: false,
+                            error: Some(crate::protobuf::ErrorDetail {
+                                code: crate::protobuf::ErrorCode::NotLeader as i32,
+                                message: e.api_error().unwrap().to_string(),
+                                node: self.current_node_id.to_string(),
+                            }),
+                            session_state_data: None
+                        }
+                    },
+                    _ => crate::protobuf::GetSessionStateResponse {
+                        success: false,
+                        error: Some(crate::protobuf::ErrorDetail {
+                            code: crate::protobuf::ErrorCode::InternalError as i32,
+                            message: e.to_string(),
+                            node: self.current_node_id.to_string(),
+                        }),
+                        session_state_data: None
+                    },
                 };
-
-                Ok(tonic::Response::new(res))
+                Ok(tonic::Response::new(err_resp))
             }
         }
     }
@@ -272,14 +274,14 @@ impl RaftService for RaftServiceImpl {
                     .get_session_actor_map(&tenant_id, &client_id)
                     .await;
 
-                if let Some(session_actor_map_entry) =  session_actor_map_entry {
+                if let Some(session_actor_map_entry) = session_actor_map_entry {
                     let res = crate::protobuf::GetSessionActorMapResponse {
                         success: true,
                         error: None,
                         node_id: Some(session_actor_map_entry.node_id),
                         version: Some(crate::protobuf::SessionVersion {
                             node_id: session_actor_map_entry.node_id,
-                            counter: session_actor_map_entry.version.counter
+                            counter: session_actor_map_entry.version.counter,
                         }),
                     };
                     Ok(tonic::Response::new(res))
@@ -299,14 +301,10 @@ impl RaftService for RaftServiceImpl {
                     error: Some(crate::protobuf::ErrorDetail {
                         code: 500,
                         message: e.to_string(),
-                        node: self
-                            .raft_manager
-                            .session_actor_map_raft()
-                            .current_node_id()
-                            .to_string(),
+                        node: self.current_node_id.to_string(),
                     }),
                     node_id: None,
-                    version: None
+                    version: None,
                 };
 
                 Ok(tonic::Response::new(res))
@@ -337,11 +335,7 @@ impl RaftService for RaftServiceImpl {
                 error: Some(ErrorDetail {
                     code: ErrorCode::InternalError.into(),
                     message: e.to_string(),
-                    node: self
-                        .raft_manager
-                        .session_actor_map_raft()
-                        .current_node_id()
-                        .to_string(),
+                    node: self.current_node_id.to_string(),
                 }),
             };
             Ok(tonic::Response::new(res))
@@ -377,11 +371,7 @@ impl RaftService for RaftServiceImpl {
                 error: Some(ErrorDetail {
                     code: ErrorCode::InternalError.into(),
                     message: e.to_string(),
-                    node: self
-                        .raft_manager
-                        .session_actor_map_raft()
-                        .current_node_id()
-                        .to_string(),
+                    node: self.current_node_id.to_string(),
                 }),
             };
             Ok(tonic::Response::new(res))
@@ -415,11 +405,7 @@ impl RaftService for RaftServiceImpl {
                 error: Some(ErrorDetail {
                     code: ErrorCode::InternalError.into(),
                     message: e.to_string(),
-                    node: self
-                        .raft_manager
-                        .session_actor_map_raft()
-                        .current_node_id()
-                        .to_string(),
+                    node: self.current_node_id.to_string(),
                 }),
             };
             Ok(tonic::Response::new(res))
@@ -447,7 +433,7 @@ impl RaftService for RaftServiceImpl {
                     let resp = self
                         .raft_manager
                         .topic_raft()
-                        .raft
+                        .raft()
                         .append_entries(append_req)
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -488,7 +474,7 @@ impl RaftService for RaftServiceImpl {
                     let resp = self
                         .raft_manager
                         .session_state_raft()
-                        .raft
+                        .raft()
                         .append_entries(append_req)
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -513,7 +499,7 @@ impl RaftService for RaftServiceImpl {
                     let resp = self
                         .raft_manager
                         .topic_raft()
-                        .raft
+                        .raft()
                         .client_write(append_req)
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -554,7 +540,7 @@ impl RaftService for RaftServiceImpl {
                     let resp = self
                         .raft_manager
                         .session_state_raft()
-                        .raft
+                        .raft()
                         .client_write(append_req)
                         .await
                         .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -587,7 +573,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .topic_raft()
-                    .raft
+                    .raft()
                     .install_snapshot(install_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -613,7 +599,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .session_state_raft()
-                    .raft
+                    .raft()
                     .install_snapshot(install_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -645,7 +631,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .topic_raft()
-                    .raft
+                    .raft()
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;
@@ -671,7 +657,7 @@ impl RaftService for RaftServiceImpl {
                 let resp = self
                     .raft_manager
                     .session_state_raft()
-                    .raft
+                    .raft()
                     .vote(vote_req)
                     .await
                     .map_err(|x| tonic::Status::internal(x.to_string()))?;

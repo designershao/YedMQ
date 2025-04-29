@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::sync::Arc;
 
 use actix::Recipient;
 use log::info;
@@ -8,34 +8,20 @@ use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
     protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
-    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::{Cluster, Settings},
+    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::Settings,
     topic::topic_storage::TopicStorage,
 };
 
-use super::service::raft_service::RaftServiceImpl;
+use super::{service::raft_service::RaftServiceImpl, NodeId};
 
 #[derive(Debug, Error)]
-pub enum RaftManagerError {
-    #[error("node unavailable, details: {0}")]
-    NodeUnavailable(String),
+pub enum RaftManagerError<E: std::error::Error + 'static> {
 
-    #[error("election failure, details: {0}")]
-    ElectionFailure(String),
+    #[error("raft error: {0}")]
+    Raft(#[from] openraft::error::RaftError<NodeId, E>),
 
-    #[error("log sync error, details: {0}")]
-    LogSyncError(String),
-
-    #[error("timeout error, details: {0}")]
-    TimeoutError(String),
-
-    #[error("network error, details: {0}")]
-    NetworkError(String),
-
-    #[error("internal error, details: {0}")]
+    #[error("internal error: {0}")]
     InternalError(String),
-
-    #[error("unknown error, details: {0}")]
-    Unknown(String),
 
     #[error("session state error, details: {0}")]
     SessionStateError(#[from] crate::session::session_state_storage::SessionStateStorageError),
@@ -50,9 +36,28 @@ pub trait RaftManagerTrait {
 
     fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait;
 
+    fn get_session_actor_map_raft_client(&self) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait>;
+
+    fn get_topic_raft_client(&self) -> Arc<dyn crate::raft::client::topic::TopicRaftClientTrait>;
+
+    fn get_session_state_raft_client(&self) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait>;
+
 }
 
 impl RaftManagerTrait for RaftManager {
+
+    fn get_session_actor_map_raft_client(&self) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait>{
+        self.session_actor_map_raft.get().unwrap().get_raft_client()
+    }
+
+    fn get_topic_raft_client(&self) -> Arc<dyn crate::raft::client::topic::TopicRaftClientTrait> {
+        self.topic_raft.get().unwrap().get_raft_client()
+    }
+
+    fn get_session_state_raft_client(&self) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait> {
+        self.session_state_raft.get().unwrap().get_raft_client()
+    }
+
     fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
         self.session_actor_map_raft.get().unwrap()
     }
@@ -90,7 +95,7 @@ impl Drop for RaftManager {
 
 impl RaftManager {
 
-    pub fn topic_raft(&self) -> &crate::raft::topic::RaftManager {
+    pub fn topic_raft(&self) -> &dyn crate::raft::topic::TopicRaftManagerTrait {
         self.topic_raft.get().unwrap()
     }
 
@@ -98,7 +103,7 @@ impl RaftManager {
         self.session_actor_map_raft.get().unwrap()
     }
 
-    pub fn session_state_raft(&self) -> &crate::raft::session_state::SessionStateRaftManager {
+    pub fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait {
         self.session_state_raft.get().unwrap()
     }
 
@@ -157,7 +162,8 @@ impl RaftManager {
         raft_manager: Arc<RaftManager>,
         router_sender: Sender<RouterCmd>,
         session_manager_actor_force_disconnect_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
-        session_manager_actor_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>
+        session_manager_actor_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+        current_node_id: NodeId,
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
 
@@ -165,7 +171,8 @@ impl RaftManager {
             raft_manager: raft_manager.clone(),
             router_sender,
             session_manager_actor_force_disconnect_recipient,
-            session_manager_actor_force_stop_recipient
+            session_manager_actor_force_stop_recipient,
+            current_node_id
         };
 
         let addr_str = raft_manager.settings.cluster.rpc.external.to_string();

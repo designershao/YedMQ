@@ -8,6 +8,7 @@ use tokio::{select, sync::RwLock};
 use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
+use crate::raft::NodeId;
 use crate::{
     session::session_manager_actor::SendMessageToSession,
     topic::topic_manager::TopicManagerTrait,
@@ -39,6 +40,7 @@ pub struct Router {
     pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
     pub router_receiver: tokio::sync::mpsc::Receiver<RouterCmd>,
     pub raft_manager: Arc<dyn crate::raft::raft_manager::RaftManagerTrait>,
+    pub current_node_id: NodeId,
 }
 
 impl Router {
@@ -153,7 +155,7 @@ impl Router {
                 .await
                 .unwrap();
             for item in subscriptions.iter() {
-                if item.node_id == self.raft_manager.topic_raft().current_node_id() {
+                if item.node_id == self.current_node_id {
                     let client_identifier = item.client_identifier.clone();
                     let packet = packet.clone();
                     if let MqttPacketV3::Publish(mut publish_packet) = packet {
@@ -210,7 +212,7 @@ impl Router {
             }
             let subscriptions = subscriptions.unwrap();
             for item in subscriptions.iter() {
-                if item.node_id != self.raft_manager.topic_raft().current_node_id() {
+                if item.node_id != self.current_node_id {
                     // not the current node, send to other node
                     let router_cmd = RouterCmd::RoutePacketFromOtherNode {
                         tenant_identifier: tenant_identifier.clone(),
@@ -336,9 +338,6 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
         let mut mock_topic_raft_manager = crate::raft::topic::MockTopicRaftManagerTrait::new();
-        mock_topic_raft_manager
-            .expect_current_node_id()
-            .return_const(123 as u64);
 
         raft_manager_mock
             .expect_topic_raft()
@@ -359,6 +358,7 @@ mod tests {
             topic_manager: topic_manager.clone(),
             router_receiver: router_receiver,
             raft_manager: raft_manager.clone(),
+            current_node_id: 123
         };
 
         let publish_packet = PublishPacketBuilder::new("/a/b".into(), vec![]).qos(2).build();
@@ -400,9 +400,6 @@ mod tests {
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
         let mut mock_topic_raft_manager = crate::raft::topic::MockTopicRaftManagerTrait::new();
-        mock_topic_raft_manager
-            .expect_current_node_id()
-            .return_const(123 as u64);
 
         raft_manager_mock
             .expect_topic_raft()
@@ -423,6 +420,7 @@ mod tests {
             topic_manager: topic_manager.clone(),
             router_receiver: router_receiver,
             raft_manager: raft_manager.clone(),
+            current_node_id: 123
         };
 
         let publish_packet = PublishPacketBuilder::new("/a/b".into(), vec![]).build();

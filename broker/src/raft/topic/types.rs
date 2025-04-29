@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{
-    raft::{Node, NodeId},
-    topic::topic_storage::Subscription,
-};
+use crate::raft::{Node, NodeId};
 
 pub type TopicRaft = openraft::Raft<TypeConfig>;
 
@@ -43,10 +40,6 @@ pub enum Request {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Response {
-    get_topic_subscriptions_response { subscriptions: Vec<Subscription> },
-
-    get_topic_router_response { nodes: Vec<Node> },
-
     None,
 }
 

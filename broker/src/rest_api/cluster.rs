@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, Json};
 use log::{info, warn};
-use openraft::{docs::cluster_control::node_lifecycle, RaftMetrics};
+use openraft::RaftMetrics;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     app::YedMQApp,
-    raft::{raft_manager::RaftManagerTrait, topic::TopicRaftManagerTrait, Node},
+    raft::Node,
 };
 
 #[derive(Debug, Serialize)]
@@ -53,7 +53,7 @@ pub async fn add_learner(
     let res = app_state
         .raft_manager
         .topic_raft()
-        .raft
+        .raft()
         .add_learner(node_id, node.clone(), true)
         .await;
     if let Err(e) = res {
@@ -72,7 +72,7 @@ pub async fn add_learner(
     let res = app_state
         .raft_manager
         .session_state_raft()
-        .raft
+        .raft()
         .add_learner(node_id, node.clone(), true)
         .await;
 
@@ -87,36 +87,19 @@ pub async fn topic_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let topic_raft_leader_node_id = app_state.raft_manager.topic_raft().get_leader_node_id().await;
-    if topic_raft_leader_node_id.is_none() {
-        warn!("topic raft leader not found");
-        return (
-            StatusCode::NOT_FOUND,
-            format!("topic raft leader not found"),
-        );
+
+    info!("topic change member ship payload: {:#?}", payload.members.clone());
+    let res = app_state
+        .raft_manager
+        .topic_raft()
+        .raft()
+        .change_membership(payload.members.clone(), true)
+        .await;
+    if let Err(e) = res {
+        warn!("topic raft change membership error: {}", e);
+        return (StatusCode::BAD_REQUEST, format!("{}", e));
     } else {
-        let topic_raft_leader_node_id = topic_raft_leader_node_id.unwrap();
-        if topic_raft_leader_node_id != app_state.raft_manager.topic_raft().current_node_id() {
-            warn!("not the topic raft leader node");
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("not the topic raft leader node"),
-            );
-        } else {
-            info!("topic change member ship payload: {:#?}", payload.members.clone());
-            let res = app_state
-                .raft_manager
-                .topic_raft()
-                .raft
-                .change_membership(payload.members.clone(), true)
-                .await;
-            if let Err(e) = res {
-                warn!("topic raft change membership error: {}", e);
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
-            } else {
-                return (StatusCode::OK, format!(""));
-            }
-        }
+        return (StatusCode::OK, format!(""));
     }
 }
 
@@ -124,40 +107,17 @@ pub async fn session_actor_map_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let session_actor_map_raft_leader_node_id = app_state
+
+    let res = app_state
         .raft_manager
         .session_actor_map_raft()
-        .get_leader_node_id().await;
-    if session_actor_map_raft_leader_node_id.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("session actor map raft leader not found"),
-        );
+        .raft()
+        .change_membership(payload.members.clone(), true)
+        .await;
+    if let Err(e) = res {
+        return (StatusCode::BAD_REQUEST, format!("{}", e));
     } else {
-        let session_actor_map_raft_leader_node_id = session_actor_map_raft_leader_node_id.unwrap();
-        if session_actor_map_raft_leader_node_id
-            != app_state
-                .raft_manager
-                .session_actor_map_raft()
-                .current_node_id()
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("not the topic raft leader node"),
-            );
-        } else {
-            let res = app_state
-                .raft_manager
-                .session_actor_map_raft()
-                .raft()
-                .change_membership(payload.members.clone(), true)
-                .await;
-            if let Err(e) = res {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
-            } else {
-                return (StatusCode::OK, format!(""));
-            }
-        }
+        return (StatusCode::OK, format!(""));
     }
 }
 
@@ -165,40 +125,16 @@ pub async fn session_state_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let session_state_raft_leader_node_id = app_state
+    let res = app_state
         .raft_manager
         .session_state_raft()
-        .get_leader_node_id().await;
-    if session_state_raft_leader_node_id.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            format!("session actor map raft leader not found"),
-        );
+        .raft()
+        .change_membership(payload.members.clone(), true)
+        .await;
+    if let Err(e) = res {
+        return (StatusCode::BAD_REQUEST, format!("{}", e));
     } else {
-        let session_state_raft_leader_node_id = session_state_raft_leader_node_id.unwrap();
-        if session_state_raft_leader_node_id
-            != app_state
-                .raft_manager
-                .session_state_raft()
-                .current_node_id()
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("not the topic raft leader node"),
-            );
-        } else {
-            let res = app_state
-                .raft_manager
-                .session_state_raft()
-                .raft
-                .change_membership(payload.members.clone(), true)
-                .await;
-            if let Err(e) = res {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e));
-            } else {
-                return (StatusCode::OK, format!(""));
-            }
-        }
+        return (StatusCode::OK, format!(""));
     }
 }
 
@@ -277,7 +213,7 @@ pub async fn metrics(
     let topic_metrics = app_state
         .raft_manager
         .topic_raft()
-        .raft
+        .raft()
         .metrics()
         .borrow()
         .clone();
@@ -291,7 +227,7 @@ pub async fn metrics(
     let session_state_metrics = app_state
         .raft_manager
         .session_state_raft()
-        .raft
+        .raft()
         .metrics()
         .borrow()
         .clone();

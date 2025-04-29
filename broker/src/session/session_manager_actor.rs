@@ -4,8 +4,7 @@ use crate::{
     plugin_manager::PluginService,
     protobuf::{raft_service_client::RaftServiceClient, SessionActorForceStopRequest},
     raft::{
-        raft_manager::{RaftManagerError, RaftManagerTrait},
-        NodeId,
+        raft_manager::{RaftManagerError, RaftManagerTrait}, Node, NodeId
     },
     router::RouterCmd,
     session::session_actor::SessionActor,
@@ -17,6 +16,7 @@ use actix::{
     ResponseFuture, WrapFuture,
 };
 use log::{error, info, warn};
+use openraft::error::{ClientWriteError, Infallible};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::{
@@ -47,7 +47,7 @@ pub enum SessionManagerError {
     SessionHasExisted(String),
 
     #[error("raft error {0} ")]
-    RaftErr(#[from] RaftManagerError),
+    RaftErr(#[from] RaftManagerError<ClientWriteError<NodeId,Node>>),
 
     #[error("newer session has existed")]
     NewerSessionExisted,
@@ -92,6 +92,8 @@ pub struct SessionManagerActor {
     settings: Arc<Settings>,
 
     session_clock: Arc<SessionClock>,
+
+    current_node_id: NodeId,
 }
 
 impl SessionManagerActor {
@@ -102,6 +104,7 @@ impl SessionManagerActor {
         settings: Arc<Settings>,
         raft_manager: Arc<dyn RaftManagerTrait>,
         session_clock: Arc<SessionClock>,
+        current_node_id: NodeId
     ) -> SessionManagerActor {
         SessionManagerActor {
             sessions: HashMap::new(),
@@ -112,6 +115,7 @@ impl SessionManagerActor {
             settings,
             raft_manager,
             session_clock,
+            current_node_id
         }
     }
 }
@@ -429,6 +433,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
         let raft_manager = self.raft_manager.clone();
         let session_clock = self.session_clock.clone();
+        let current_node_id = self.current_node_id;
 
         let future = async move {
             // Force previous session to disconnect if exists
@@ -439,7 +444,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             if let Some(entry) = &session_actor_map_entry {
                 info!("previous session actor map node id: {}", entry.node_id);
-                if entry.node_id != raft_manager.session_actor_map_raft().current_node_id() {
+                if entry.node_id != current_node_id {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
                         entry.node_id,
@@ -477,8 +482,6 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             } else {
                 info!("previous session actor map node id not found");
             }
-
-            let current_node_id = raft_manager.session_actor_map_raft().current_node_id();
 
             info!(
                 "start register session actor map tenant_id: {}, client_id: {}, node_id: {}",
@@ -582,7 +585,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             .get_session_state(&msg.tenant_id, &msg.client_id)
                             .await
                             .unwrap();
-                        session_state = Arc::new(RwLock::new(session_state_from_raft));
+                        session_state = Arc::new(RwLock::new(session_state_from_raft.unwrap()));
                     }
                     //
                 } else {
@@ -636,6 +639,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 session_state,
                 raft_manager,
                 session_lifecycle_tx,
+                current_node_id
             );
 
             let session_actor_addr = session_actor.start();

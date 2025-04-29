@@ -5,6 +5,7 @@ package openraftpb;
 enum ErrorCode {
   UNKNOWN = 0;
   INTERNAL_ERROR = 1;
+  NOT_LEADER = 2;
 }
 
 service RaftService {

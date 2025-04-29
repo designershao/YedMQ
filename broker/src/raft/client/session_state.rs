@@ -63,7 +63,7 @@ impl RaftClient<crate::raft::session_state::types::SessionStateTypeConfig>
 
 #[async_trait::async_trait]
 #[automock]
-pub trait SessionStateRaftClientTrait {
+pub trait SessionStateRaftClientTrait: Sync + Send {
     async fn pop_from_pending_queue(
         &self,
         tenant_id: String,

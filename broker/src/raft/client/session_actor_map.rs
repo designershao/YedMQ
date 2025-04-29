@@ -19,7 +19,7 @@ impl SessionActorMapRaftClient {
 }
 
 #[async_trait::async_trait]
-pub trait SessionActorMapRaftClientTrait {
+pub trait SessionActorMapRaftClientTrait: Sync + Send {
 
     async fn register_session_actor_map(
         &self,
