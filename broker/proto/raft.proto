@@ -32,6 +32,8 @@ service RaftService {
 
   rpc InflightGetCurrentPacket(InflightGetCurrentPacketRequest) returns (InflightGetCurrentPacketResponse);
 
+  rpc InflightGetNextStatePacket(InflightGetNextStatePacketRequest) returns (InflightGetNextStatePacketResponse);
+
 }
 
 message ErrorDetail {
@@ -69,6 +71,26 @@ message GetSubscriptionResponse {
   ErrorDetail error = 2;
 
   repeated Subscription subscriptions = 3;
+
+}
+
+message InflightGetNextStatePacketResponse {
+
+  bool success = 1;
+
+  ErrorDetail error = 2;
+
+  optional string packet = 3;
+
+}
+
+message InflightGetNextStatePacketRequest {
+
+  string tenant_id = 1;
+
+  string client_id = 2;
+
+  uint64 packet_id = 3;
 
 }
 

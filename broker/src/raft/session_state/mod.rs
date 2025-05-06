@@ -93,6 +93,13 @@ pub trait SessionStateRaftManagerTrait {
         packet_identifier: u16,
     ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>>;
 
+    async fn inflight_get_next_state_packet_ensure_linearizable(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        packet_identifier: u16,
+    ) -> Result<Option<MqttPacketV3>, RaftManagerError<CheckIsLeaderError<NodeId, Node>>>;
+
     async fn inflight_clean_finished_items(
         &self,
         tenant_id: &str,
@@ -141,6 +148,21 @@ pub trait SessionStateRaftManagerTrait {
 
 #[async_trait::async_trait]
 impl SessionStateRaftManagerTrait for SessionStateRaftManager {
+
+    async fn inflight_get_next_state_packet_ensure_linearizable(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        packet_identifier: u16,
+    ) -> Result<Option<MqttPacketV3>, RaftManagerError<CheckIsLeaderError<NodeId, Node>>> {
+        self.raft.ensure_linearizable().await?;
+        let session_state_guard = self.session_state_storage.read().await;
+        let r = session_state_guard
+            .inflight_get_next_state_packet(tenant_id.to_string(), client_id.to_string(), packet_identifier)
+            .await;
+        Ok(r)
+    }
+
 
     async fn get_leader(&self) -> Option<Node>{
         self.raft.current_leader().await.and_then(|id| {

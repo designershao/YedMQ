@@ -854,11 +854,14 @@ impl SessionActor {
         let client_info = self.get_plugin_client_info();
 
         async move {
+
             let mut session_state_guard = session_state.write().await;
+
             let next_state_packet = session_state_guard
                 .inflight
                 .get_next_state_packet(pubrec_packet.variable_header.packet_identifier)
                 .await;
+
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
@@ -866,12 +869,12 @@ impl SessionActor {
                 {
                     warn!("handle pubrec write packet to client error: {}", e);
                 } else {
-                    session_state_guard
-                        .inflight
-                        .next_state(pubrec_packet.variable_header.packet_identifier)
-                        .await;
-
-                    if !clean_session {
+                    if clean_session {
+                        session_state_guard
+                            .inflight
+                            .next_state(pubrec_packet.variable_header.packet_identifier)
+                            .await;
+                    } else {
                         let res = raft_manager
                             .get_session_state_raft_client()
                             .inflight_next_state(
@@ -886,6 +889,8 @@ impl SessionActor {
                         }
                     }
                 }
+            } else {
+                
             }
         }
         .into_actor(self)
@@ -909,11 +914,22 @@ impl SessionActor {
         let client_info = self.get_plugin_client_info();
 
         async move {
+            let mut next_state_packet = None;
+
             let mut session_state_guard = session_state.write().await;
-            let next_state_packet = session_state_guard
-                .inflight
-                .get_next_state_packet(puback_packet.variable_header.packet_identifier)
-                .await;
+
+            let next_state_packet_result = raft_manager.get_session_state_raft_client().inflight_get_next_state_packet(
+                &client_info.tenant_id, 
+                &client_info.client_identifier, 
+                puback_packet.variable_header.packet_identifier
+            ).await;
+            
+            if next_state_packet_result.is_err() {
+                warn!("session state raft client get next state packet error {}", next_state_packet_result.unwrap_err())
+            } else {
+                next_state_packet = next_state_packet_result.unwrap();
+            }
+
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
@@ -921,11 +937,12 @@ impl SessionActor {
                 {
                     warn!("handle puback write packet to client error: {}", e);
                 } else {
-                    session_state_guard
-                        .inflight
-                        .next_state(puback_packet.variable_header.packet_identifier)
-                        .await;
-                    if !clean_session {
+                    if clean_session {
+                        session_state_guard
+                            .inflight
+                            .next_state(puback_packet.variable_header.packet_identifier)
+                            .await;
+                    } else {
                         let res = raft_manager
                             .get_session_state_raft_client()
                             .inflight_next_state(
@@ -934,8 +951,14 @@ impl SessionActor {
                                 puback_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+
                         if res.is_err() {
-                            warn!("handle puback inflight next state error, {}", res.unwrap_err())
+                            warn!("handle puback inflight next state error {}", res.unwrap_err())
+                        } else {
+                            session_state_guard
+                                .inflight
+                                .next_state(puback_packet.variable_header.packet_identifier)
+                                .await;
                         }
                     }
                 }
@@ -962,23 +985,27 @@ impl SessionActor {
         let client_info = self.get_plugin_client_info();
 
         async move {
+
             let mut session_state_guard = session_state.write().await;
+
             let next_state_packet = session_state_guard
                 .inflight
                 .get_next_state_packet(pubcomp_packet.variable_header.packet_identifier)
                 .await;
+
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
                     .send(ConnectionActorMessage::WritePacketToClient(packet))
                     .await
                 {
-                    warn!("handle pubcmp write packet to client error: {}", e);
+                    warn!("handle pubcomp write packet to client error: {}", e);
                 } else {
-                    session_state_guard
-                        .inflight
-                        .next_state(pubcomp_packet.variable_header.packet_identifier)
-                        .await;
-                    if !clean_session {
+                    if clean_session {
+                        session_state_guard
+                            .inflight
+                            .next_state(pubcomp_packet.variable_header.packet_identifier)
+                            .await;
+                    } else {
                         let res = raft_manager
                             .get_session_state_raft_client()
                             .inflight_next_state(
@@ -987,8 +1014,14 @@ impl SessionActor {
                                 pubcomp_packet.variable_header.packet_identifier.into(),
                             )
                             .await;
+
                         if res.is_err() {
-                            warn!("handle pubcom inflight next state error {}", res.unwrap_err());
+                            warn!("handle pubcomp inflight next state error {}", res.unwrap_err())
+                        } else {
+                            session_state_guard
+                                .inflight
+                                .next_state(pubcomp_packet.variable_header.packet_identifier)
+                                .await;
                         }
                     }
                 }
@@ -1099,6 +1132,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         let raft_manager = self.raft_manager.clone();
                         let tenant_id = self.tenant_id.clone();
                         let client_id = self.client_id.clone();
+                        let clean_session = self.clean_session;
                         async move {
                             if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
                                 let mut session_state_guard = session_state.write().await;
@@ -1106,60 +1140,79 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 let mut packet_identifier =
                                     packet.variable_header.packet_identifier;
 
-                                let res = raft_manager
-                                    .session_state_raft()
-                                    .inflight_register_tx_packet(
-                                        &tenant_id,
-                                        &client_id,
-                                        MqttPacketV3::Publish(packet.clone()),
-                                    )
-                                    .await;
-
-                                if let Err(e) = res {
-                                    match e {
-                                        RaftManagerError::SessionStateError(
-                                            SessionStateStorageError::InflightError(
-                                                InflightError::PacketIdentifierHasExisted,
-                                            ),
-                                        ) => {
-                                            let packet_id = session_state_guard
-                                                .inflight
-                                                .allocate_packet_id()
-                                                .await;
-                                            if let Some(packet_id) = packet_id {
-                                                packet.variable_header.packet_identifier =
-                                                    Some(packet_id);
-                                                packet_identifier.replace(packet_id);
-                                                let _ = raft_manager
-                                                    .session_state_raft()
-                                                    .inflight_register_tx_packet(
-                                                        &tenant_id,
-                                                        &client_id,
-                                                        MqttPacketV3::Publish(packet.clone()),
-                                                    )
+                                if clean_session {
+                                    let res = session_state_guard.inflight.register_with_tx_packet(
+                                        &MqttPacketV3::Publish(packet.clone()),
+                                    ).await;
+                                    if res.is_err() {
+                                        match res.unwrap_err() {
+                                            InflightError::PacketIdentifierHasExisted => {
+                                                let packet_id = session_state_guard
+                                                    .inflight
+                                                    .allocate_packet_id()
                                                     .await;
-                                            } else {
-                                                warn!("infligh has no more packet id available");
+                                                if let Some(packet_id) = packet_id {
+                                                    packet.variable_header.packet_identifier =
+                                                        Some(packet_id);
+                                                    packet_identifier.replace(packet_id);
+                                                    session_state_guard.inflight.register_with_tx_packet(
+                                                        &MqttPacketV3::Publish(packet.clone())
+                                                    ).await.unwrap();
+                                                } else {
+                                                    error!("inflight allocate packet id error");
+                                                    return
+                                                }
+                                            },
+                                        }
+                                    }
+                                } else {
+                                    let res = raft_manager
+                                        .get_session_state_raft_client()    
+                                        .inflight_register_tx_packet(
+                                            &tenant_id,
+                                            &client_id,
+                                            MqttPacketV3::Publish(packet.clone()),
+                                        )
+                                        .await;
+                                    if let Err(e) = res {
+                                        match e {
+                                            crate::raft::client::base::RaftClientError::SessionStateStorageError(
+                                                SessionStateStorageError::InflightError(InflightError::PacketIdentifierHasExisted)
+                                            ) => {
+                                                let packet_id = session_state_guard
+                                                    .inflight
+                                                    .allocate_packet_id()
+                                                    .await;
+                                                if let Some(packet_id) = packet_id {
+                                                    packet.variable_header.packet_identifier =
+                                                        Some(packet_id);
+                                                    packet_identifier.replace(packet_id);
+                                                    let _ = raft_manager
+                                                        .get_session_state_raft_client()
+                                                        .inflight_register_tx_packet(
+                                                            &tenant_id,
+                                                            &client_id,
+                                                            MqttPacketV3::Publish(packet.clone()),
+                                                        )
+                                                        .await;
+                                                } else {
+                                                    warn!("infligh has no more packet id available");
+                                                    return;
+                                                }
+
+                                            },
+                                            _ => {
+                                                error!("raft client unexpected error: {}", e);
                                                 return;
                                             }
                                         }
-                                        RaftManagerError::SessionStateError(
-                                            SessionStateStorageError::SessionStateNotExisted {
-                                                client_id,
-                                            },
-                                        ) => {
-                                            warn!(
-                                                "session state not existed for client id: {}",
-                                                client_id
-                                            );
-                                            return;
-                                        }
-                                        _ => {
-                                            error!("raft manager error: {}", e);
-                                            return;
-                                        }
                                     }
+                                    session_state_guard.inflight.register_with_tx_packet(
+                                        &MqttPacketV3::Publish(packet.clone()),
+                                    ).await.unwrap();
                                 }
+
+
                                 let res = conn
                                     .send(ConnectionActorMessage::WritePacketToClient(
                                         yedmq_mqtt::MqttPacketV3::Publish(packet),
@@ -1313,7 +1366,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let raft_manager = self.raft_manager.clone();
                 let tenant_id = self.tenant_id.clone();
                 let client_identifier = self.client_id.clone();
-                let current_node_id = self.current_node_id;
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for msg in session_state_guard.pending_messages.drain(..) {
@@ -1425,8 +1477,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        plugin_manager::{MockPluginService, SubscribeAuthorizationResult},
-        topic::topic_manager::MockTopicManagerTrait,
+        plugin_manager::{MockPluginService, SubscribeAuthorizationResult}, raft::client::session_state, topic::topic_manager::MockTopicManagerTrait
     };
 
     struct MockConnectionActor {
@@ -1461,9 +1512,11 @@ mod tests {
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
 
         let mut plugin_service = MockPluginService::new();
+
         plugin_service
             .expect_do_publish_authorizate()
             .returning(|_, _| std::result::Result::Ok(true));
+
         plugin_service.expect_do_on_publish().returning(|_, _| ());
 
         let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
@@ -1476,19 +1529,49 @@ mod tests {
 
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
-        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
+        let mut session_state_raft_client_mock = crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
 
-        let mut mock_session_state_raft_manager =
-            crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Err(
+                    crate::raft::client::base::RaftClientError::SessionStateStorageError(
+                        SessionStateStorageError::InflightError(
+                            InflightError::PacketIdentifierHasExisted
+                        )
+                    )
+                )
+            }));
+        
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+
+
+        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
         let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
             .qos(2)
             .packet_identifier(123)
             .build();
 
+        let session_state_raft_client_mock_arc = Arc::new(session_state_raft_client_mock);
+
         raft_manager_mock
-            .expect_session_state_raft()
-            .return_const(Box::new(mock_session_state_raft_manager));
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
 
         let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
 
@@ -1558,6 +1641,7 @@ mod tests {
         }
     }
 
+
     #[actix::test]
     pub async fn when_session_reactive_should_process_the_outbound_uncomplete_qos_2_message() {
         let mock_topic_manager = MockTopicManagerTrait::new();
@@ -1580,22 +1664,55 @@ mod tests {
 
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
+        let mut topic_raft_client_mock = crate::raft::client::topic::MockTopicRaftClientTrait::new();
+
+        topic_raft_client_mock
+            .expect_handle_subscribe()
+            .returning(|_,_,_,_| {
+                Box::pin(
+                    async {
+                        Ok(())
+                    }
+                )
+            });
+
+        let mut session_state_raft_client_mock = crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut session_actor_map_mock =
-            crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
 
-        let mut topic_raft_manager_mock = crate::raft::topic::MockTopicRaftManagerTrait::new();
+        let session_state_raft_client_mock_arc = Arc::new(session_state_raft_client_mock);
 
         raft_manager_mock
-            .expect_topic_raft()
-            .return_const(Box::new(topic_raft_manager_mock));
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
 
-        let mut mock_session_state_raft_manager =
-            crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
+        let topic_raft_client_mock_arc = Arc::new(topic_raft_client_mock);
 
         raft_manager_mock
-            .expect_session_state_raft()
-            .return_const(Box::new(mock_session_state_raft_manager));
+            .expect_get_topic_raft_client()
+            .returning(move || topic_raft_client_mock_arc.clone());
 
         let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
 
@@ -1668,6 +1785,8 @@ mod tests {
 
         let msg = message_rx.recv().await.unwrap();
 
+        println!("{:?}", msg);
+
         match msg {
             ConnectionActorMessage::WritePacketToClient(pubrel) => match pubrel {
                 yedmq_mqtt::MqttPacketV3::Pubrel(pubrel) => {
@@ -1681,6 +1800,10 @@ mod tests {
 
     #[actix::test]
     pub async fn when_session_reactive_should_send_message_which_qos_is_not_0() {
+        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+            .qos(1)
+            .build();
+
         let mock_topic_manager = MockTopicManagerTrait::new();
 
         let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
@@ -1702,10 +1825,54 @@ mod tests {
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut session_actor_map_mock =
+        let session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
 
-        let mut topic_raft_manager_mock = crate::raft::topic::MockTopicRaftManagerTrait::new();
+        let topic_raft_manager_mock = crate::raft::topic::MockTopicRaftManagerTrait::new();
+
+        let mut session_state_raft_client_mock = crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(|_,_| {
+                Box::pin(
+                    async {
+                        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
+                            .qos(1)
+                            .build();
+                        Ok(Some(MqttPacketV3::Publish(client_publish_packet)))
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_append_to_pending_queue()
+            .returning(|_, _, _| {
+                Box::pin(
+                    async {
+                        Ok(())
+                    }
+                )
+            });
+
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        
+
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
 
         raft_manager_mock
             .expect_topic_raft()
@@ -1715,7 +1882,11 @@ mod tests {
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -1749,10 +1920,6 @@ mod tests {
             .send(SessionActorMessage::ClientDisconnected)
             .await
             .unwrap();
-
-        let client_publish_packet = PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into())
-            .qos(1)
-            .build();
 
         session_actor_addr
             .send(SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(
@@ -1798,7 +1965,7 @@ mod tests {
             .returning(|_, _| std::result::Result::Ok(true));
         plugin_service.expect_do_on_publish().returning(|_, _| ());
 
-        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+        let (message_tx, _) = tokio::sync::mpsc::channel(10);
 
         let connection_actor = MockConnectionActor {
             message_sender: message_tx,
@@ -1809,13 +1976,34 @@ mod tests {
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut session_actor_map_mock =
+
+        let mut session_state_raft_client_mock = crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+        
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
+
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
 
-        let mut mock_session_state_raft_manager =
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -1892,12 +2080,40 @@ mod tests {
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
+
+        let mut mock_session_state_raft_client =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+        mock_session_state_raft_client
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        mock_session_state_raft_client
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        mock_session_state_raft_client
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(mock_session_state_raft_client);
 
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
 
         let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
 
@@ -1986,12 +2202,44 @@ mod tests {
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
+
+        let mut mock_session_state_raft_client =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        mock_session_state_raft_client
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        mock_session_state_raft_client
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        mock_session_state_raft_client
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
 
         raft_manager_mock
             .expect_session_state_raft()
             .return_const(Box::new(mock_session_state_raft_manager));
+
+        let session_state_raft_client_mock_arc =
+            Arc::new(mock_session_state_raft_client);
+        
+        
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
 
         let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
 
@@ -2076,9 +2324,37 @@ mod tests {
 
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2148,8 +2424,38 @@ mod tests {
         let connection_recipient = connection_actor.recipient();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut mock_session_state_raft_manager =
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2212,14 +2518,44 @@ mod tests {
         let connection_recipient = connection_actor.recipient();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut session_actor_map_mock =
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
+
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
-        let mut mock_session_state_raft_manager =
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2298,9 +2634,38 @@ mod tests {
 
         let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2374,9 +2739,39 @@ mod tests {
 
         let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2432,14 +2827,46 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
-        let mut session_actor_map_mock =
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let session_actor_map_mock =
             crate::raft::session_actor_map::MockSessionActorMapRaftManagerTrait::new();
+
         raft_manager_mock
             .expect_session_actor_map_raft()
             .return_const(Box::new(session_actor_map_mock));
 
-        let mut mock_session_state_raft_manager =
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2521,9 +2948,38 @@ mod tests {
 
         let (router_tx, mut _router_rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2605,10 +3061,71 @@ mod tests {
         let connection_recipient = connection_actor.recipient();
 
         let (router_tx, mut router_rx) = tokio::sync::mpsc::channel(10);
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
 
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
+        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2684,9 +3201,39 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
 
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock
@@ -2755,9 +3302,41 @@ mod tests {
         let connection_recipient = connection_actor.recipient();
 
         let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
         let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
 
-        let mut mock_session_state_raft_manager =
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+
+        let mock_session_state_raft_manager =
             crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
 
         raft_manager_mock

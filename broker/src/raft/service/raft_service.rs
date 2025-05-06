@@ -87,6 +87,65 @@ impl RaftService for RaftServiceImpl {
         }
     }
 
+    async fn inflight_get_next_state_packet(
+        &self,
+        request: tonic::Request<crate::protobuf::InflightGetNextStatePacketRequest>
+    ) -> Result<tonic::Response<crate::protobuf::InflightGetNextStatePacketResponse>, tonic::Status>
+    {
+        let request = request.into_inner();
+
+        let res = self
+            .raft_manager
+            .session_state_raft()
+            .inflight_get_next_state_packet_ensure_linearizable(
+                &request.tenant_id,
+                &request.client_id,
+                request.packet_id as u16,
+            )
+            .await;
+
+        match res {
+            Ok(packet_opt) => {
+                let r = packet_opt.and_then(|packet| Some(serde_json::to_string(&packet).unwrap()));
+
+                let res = crate::protobuf::InflightGetNextStatePacketResponse {
+                    success: true,
+                    packet: r,
+                    error: None,
+                };
+
+                Ok(tonic::Response::new(res))
+            }
+            Err(e) => {
+                let err_resp = match e {
+                    crate::raft::raft_manager::RaftManagerError::Raft(e) => {
+                        crate::protobuf::InflightGetNextStatePacketResponse {
+                            success: false,
+                            error: Some(crate::protobuf::ErrorDetail {
+                                code: crate::protobuf::ErrorCode::NotLeader as i32,
+                                message: e.api_error().unwrap().to_string(),
+                                node: self.current_node_id.to_string(),
+                            }),
+                            packet: None,
+                        }
+                    }
+                    _ => crate::protobuf::InflightGetNextStatePacketResponse {
+                        success: false,
+                        error: Some(crate::protobuf::ErrorDetail {
+                            code: crate::protobuf::ErrorCode::InternalError as i32,
+                            message: e.to_string(),
+                            node: self.current_node_id.to_string(),
+                        }),
+                        packet: None,
+                    },
+                };
+
+                Ok(tonic::Response::new(err_resp))
+            }
+        }
+
+    }
+
     async fn inflight_get_current_packet(
         &self,
         request: tonic::Request<crate::protobuf::InflightGetCurrentPacketRequest>,

@@ -132,6 +132,32 @@ impl SessionStateStorage {
         }
     }
 
+    pub async fn inflight_get_next_state_packet(&self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
+        if self.inner.get(&tenant_id).is_none() {
+            return None;
+        }
+
+        if !self
+            .inner
+            .get(&tenant_id)
+            .unwrap()
+            .get(&client_id)
+            .is_none()
+        {
+            let state = self
+                .inner
+                .get(&tenant_id)
+                .unwrap()
+                .get(&client_id)
+                .unwrap()
+                .write()
+                .await;
+            state.inflight.get_next_state_packet(packet_identifier).await
+        } else {
+            None
+        }
+    }
+
     pub async fn inflight_get_current_packet(&self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
         if self.inner.get(&tenant_id).is_none() {
             return None;

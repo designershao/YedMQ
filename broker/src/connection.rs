@@ -33,7 +33,7 @@ pub enum ConnectionError {
     UnknownIOError(#[from] std::io::Error),
 }
 
-#[derive(Message)]
+#[derive(Message, Debug)]
 #[rtype(result = "()")]
 pub enum ConnectionActorMessage {
     WritePacketToClient(MqttPacketV3),

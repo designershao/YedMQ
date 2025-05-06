@@ -4,11 +4,10 @@ use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
-    protobuf::{
+    inflight::InflightError, protobuf::{
         raft_service_client::RaftServiceClient, AppendEntriesRequest, ErrorCode, ErrorDetail,
         InstallSnapshotRequest, RaftType, VoteRequest,
-    },
-    raft::NodeTrait,
+    }, raft::NodeTrait, session::session_state_storage::SessionStateStorageError
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -29,6 +28,14 @@ pub enum RaftClientError {
         message: String,
         node: String,
     },
+    #[error("SessionStateStorage error: {0}")]
+    SessionStateStorageError(#[from] SessionStateStorageError),
+
+    #[error("Failed to serialize data: {0}")]
+    SerializationError(String),
+    
+    #[error("Failed to deserialize data: {0}")]
+    DeserializationError(String),
 }
 
 pub type Result<T> = std::result::Result<T, RaftClientError>;

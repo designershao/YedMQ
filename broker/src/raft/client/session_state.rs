@@ -10,7 +10,7 @@ use crate::{
     session::session_state_storage::SessionState,
 };
 
-use super::base::{BaseRaftClient, RaftClient};
+use super::base::{BaseRaftClient, RaftClient, RaftClientError};
 
 pub struct SessionStateRaftClient {
     base_client: BaseRaftClient<crate::raft::session_state::types::SessionStateTypeConfig>,
@@ -117,6 +117,12 @@ pub trait SessionStateRaftClientTrait: Sync + Send {
         packet_identifier: u16,
     ) -> super::base::Result<Option<MqttPacketV3>>;
 
+    async fn inflight_get_next_state_packet(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        packet_identifier: u16,
+    ) -> super::base::Result<Option<MqttPacketV3>>;
 
     async fn inflight_next_state(&self, tenant_id: &str, client_id: &str, packet_identifier: u16) -> super::base::Result<()>;
 
@@ -276,9 +282,18 @@ impl SessionStateRaftClientTrait for SessionStateRaftClient {
 
         let data = serde_json::to_string(&request).unwrap();
 
-        self.append_entries(data).await?;
+        let res = self.append_entries(data).await?;
 
-        Ok(())
+        let session_state_response = serde_json::from_str::<SessionStateResponse>(res.as_str())
+            .map_err(|e| RaftClientError::DeserializationError(format!("Failed to deserialize response: {}", e)))?;
+
+        match session_state_response {
+            SessionStateResponse::InflightRegisterRxPacketResponse(result) => {
+                result?;
+                Ok(())
+            }
+            _ => Err(RaftClientError::InternalError("response type is not session state response".to_string()))
+        }
     }
 
     async fn inflight_register_tx_packet(
@@ -295,11 +310,55 @@ impl SessionStateRaftClientTrait for SessionStateRaftClient {
 
         let data = serde_json::to_string(&request).unwrap();
 
-        self.append_entries(data).await?;
+        let res = self.append_entries(data).await?;
 
-        Ok(())
+        let session_state_response = serde_json::from_str::<SessionStateResponse>(res.as_str())
+            .map_err(|e| RaftClientError::DeserializationError(format!("Failed to deserialize response: {}", e)))?;
+
+        match session_state_response {
+            SessionStateResponse::InflightRegisterRxPacketResponse(result) => {
+                result?;
+                Ok(())
+            }
+            _ => Err(RaftClientError::InternalError("response type is not session state response".to_string()))
+        }
     }
 
+    async fn inflight_get_next_state_packet(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+        packet_identifier: u16,
+    ) -> super::base::Result<Option<MqttPacketV3>> {
+        let mut client = self.get_client().await.unwrap();
+        let res = client
+            .inflight_get_current_packet(crate::protobuf::InflightGetCurrentPacketRequest {
+                tenant_id: tenant_id.to_string(),
+                client_id: client_id.to_string(),
+                packet_id: packet_identifier.into(),
+            })
+            .await;
+        if let Ok(res) = res {
+            let response = res.into_inner();
+            if response.success {
+                Ok(response.packet.and_then(|packet| {
+                    let packet: MqttPacketV3 = serde_json::from_str(&packet).unwrap();
+                    Some(packet)
+                }))
+            } else {
+                let err_detail = response.error.unwrap();
+                let error = super::base::RaftClientError::ServiceError {
+                    code: err_detail.code(),
+                    message: err_detail.message.clone(),
+                    node: err_detail.node,
+                };
+                std::result::Result::Err(error)
+            }
+        } else {
+            std::result::Result::Err(super::base::RaftClientError::GrpcError(res.unwrap_err()))
+        }        
+
+    }
 
     async fn inflight_get_current_packet(
         &self,
