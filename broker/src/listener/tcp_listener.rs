@@ -54,7 +54,7 @@ mod tests {
             session_actor_map_storage::SessionClock,
             session_manager_actor::SessionManagerActor,
         },
-        settings::Settings,
+        settings::{Node, Settings, RPC},
         topic::{topic_manager::TopicManager, topic_storage::TopicStorage},
     };
 
@@ -75,6 +75,10 @@ mod tests {
         let resend_duration_secs = 10;
 
         let tcp_port = random_tcp_port();
+
+        let rpc_port = random_tcp_port();
+
+        let api_port = random_tcp_port();
 
         let settings = Settings {
             session: crate::settings::Session {
@@ -99,7 +103,7 @@ mod tests {
                     key_file: "".to_string(),
                 },
                 api: crate::settings::Api {
-                    external: "".to_string(),
+                    external: format!("0.0.0.0:{}", api_port).to_string(),
                     auth: crate::settings::AuthConfig { users: vec![] },
                 },
             },
@@ -113,7 +117,22 @@ mod tests {
                 default_authorization: crate::settings::DefaultAuthorizationValue::Allow,
                 inflight_retry_interval_secs: 10
             },
-            cluster: crate::settings::Cluster::default(),
+            cluster: crate::settings::Cluster {
+                node_id: 1001,
+                cluster_name: "YedMQTest".to_string(),
+                heartbeat_interval: 10,
+                store_dir: test_temp_store_dir,
+                rpc: RPC {
+                    external: format!("0.0.0.0:{}", rpc_port).to_string(),
+                },
+                nodes: vec![
+                    Node { 
+                        id: 1001, 
+                        rpc_address: format!("0.0.0.0:{}", rpc_port).to_string(),
+                        api_address: format!("0.0.0.0:{}", api_port).to_string(), 
+                    }
+                ],
+            }
         };
 
         let settings = Arc::new(settings);

@@ -303,6 +303,7 @@ where
                             )
                             .await;
                             if let Ok(session) = session_res {
+                                self_addr.send(UpdateSession { session: session.clone() }).await.unwrap();
                                 loop {
                                     let packet =
                                         read_packet(&reader, &mut buffer, max_message_size).await;

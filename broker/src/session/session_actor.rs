@@ -1060,7 +1060,7 @@ impl SessionActor {
         self.will_message = None;
     }
 
-    fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+    fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context, callback_fn: ThenCallback<SessionActor, ()>) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
         let router_sender = self.router_sender.clone();
@@ -1083,6 +1083,7 @@ impl SessionActor {
             }
         }
         .into_actor(self)
+        .then(callback_fn)
         .wait(ctx);
     }
 }
@@ -1284,15 +1285,17 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::KeepAliveExpred => {
                 // send will message and clean up
-                self.send_will_message(ctx);
-                if let Some(recipient) = &self.conn_recipient {
-                    recipient.do_send(ConnectionActorMessage::Disconnect);
-                    if !self.clean_session {
-                        self.set_state(ctx, ActivityState::Inactive);
-                    } else {
-                        self.force_stop(ctx);
+                self.send_will_message(ctx, |_, actor, ctx| {
+                    if let Some(recipient) = &actor.conn_recipient {
+                        recipient.do_send(ConnectionActorMessage::Disconnect);
+                        if !actor.clean_session {
+                            actor.set_state(ctx, ActivityState::Inactive);
+                        } else {
+                            actor.force_stop(ctx);
+                        }
                     }
-                }
+                    fut::ready(())
+                });
             }
             SessionActorMessage::InflightRetry => {
                 let session_state = self.state.clone();
@@ -1338,12 +1341,14 @@ impl Handler<SessionActorMessage> for SessionActor {
                 }
             }
             SessionActorMessage::UnexpectClientDisconnected => {
-                self.send_will_message(ctx);
-                if !self.clean_session {
-                    self.set_state(ctx, ActivityState::Inactive);
-                } else {
-                    self.force_stop(ctx);
-                }
+                self.send_will_message(ctx, |_, actor, ctx| {
+                    if !actor.clean_session {
+                        actor.set_state(ctx, ActivityState::Inactive);
+                    } else {
+                        actor.force_stop(ctx);
+                    }
+                    fut::ready(())
+                });
             }
             SessionActorMessage::Reconnect {
                 conn,

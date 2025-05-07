@@ -569,6 +569,21 @@ impl SessionStateRaftManager {
         )
         .await
         .unwrap();
+
+        // init raft cluster nodes
+        let mut cluster_nodes = BTreeMap::new();
+        for item in settings.cluster.nodes.iter() {
+            cluster_nodes.insert(
+                item.id,
+                Node {
+                    rpc_addr: item.rpc_address.to_string(),
+                    api_addr: item.api_address.to_string(),
+                },
+            );
+        }
+        raft.initialize(cluster_nodes).await.unwrap();
+        //
+
         let raft_arc = Arc::new(raft);
 
         let raft_client = Arc::new(crate::raft::client::session_state::SessionStateRaftClient::new(raft_arc.clone()));

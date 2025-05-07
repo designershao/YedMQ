@@ -1,5 +1,5 @@
-use std::path::PathBuf;
-use std::time;
+use std::path::{Path, PathBuf};
+use std::{env, fs, time};
 use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
@@ -13,10 +13,20 @@ fn random_tcp_port() -> u16 {
 }
 
 fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
+    // Generate a random temporary directory
+    let tmp_dir = env::temp_dir();
+    let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&random_dir).unwrap();
+    let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
+
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
     let tcp_port = random_tcp_port();
+
+    let rpc_port = random_tcp_port();
+
+    let api_port = random_tcp_port();
 
     let settings = Settings {
         session: yedmq::settings::Session {
@@ -41,7 +51,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
                 key_file: "".to_string(),
             },
             api: yedmq::settings::Api {
-                external: format!("0.0.0.0:{}", tcp_port + 4).to_string(),
+                external: format!("0.0.0.0:{}", api_port).to_string(),
                 auth: yedmq::settings::AuthConfig { users: vec![] },
             },
         },
@@ -55,7 +65,22 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
             default_authorization: yedmq::settings::DefaultAuthorizationValue::Allow,
             inflight_retry_interval_secs: 10
         },
-        cluster: yedmq::settings::Cluster::default(),
+        cluster: yedmq::settings::Cluster {
+            node_id: 1001,
+            cluster_name: "YedMQTest".to_string(),
+            heartbeat_interval: 10,
+            store_dir: test_temp_store_dir,
+            rpc: yedmq::settings::RPC {
+                external: format!("0.0.0.0:{}", rpc_port).to_string(),
+            },
+            nodes: vec![
+                yedmq::settings::Node { 
+                    id: 1001, 
+                    rpc_address: format!("0.0.0.0:{}", rpc_port).to_string(),
+                    api_address: format!("0.0.0.0:{}", api_port).to_string(), 
+                }
+            ],
+        }
     };
     settings
 }

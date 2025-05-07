@@ -52,22 +52,13 @@ pub struct YedMQApp {
 }
 
 impl YedMQApp {
-
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
 
-
         let (router_sender, router_receiver) = tokio::sync::mpsc::channel(10);
-
-        let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
-
-        app.raft_manager.init_session_state_raft(session_state_storage.clone()).await;
-
-        app.raft_manager.init_topic_raft(app.topic_storage.clone()).await;
 
         let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
 
-        //
         info!("start router task");
 
         // init session manager
@@ -81,7 +72,7 @@ impl YedMQApp {
             app.settings.clone(),
             app.raft_manager.clone(),
             session_clock.clone(),
-            app.settings.cluster.node_id
+            app.settings.cluster.node_id,
         )
         .start();
         //
@@ -100,7 +91,7 @@ impl YedMQApp {
             router_sender.clone(),
             session_manager.clone().recipient(),
             session_manager.clone().recipient(),
-            settings.cluster.node_id
+            settings.cluster.node_id,
         )
         .await
         .unwrap();
@@ -234,12 +225,20 @@ impl YedMQApp {
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
 
         // init raft manager
-        let raft_manager = Arc::new(
-            crate::raft::raft_manager::RaftManager::new(
-                settings.clone(),
-            )
-            .await,
-        );
+        let raft_manager =
+            Arc::new(crate::raft::raft_manager::RaftManager::new(settings.clone()).await);
+
+        let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
+
+        raft_manager
+            .init_session_state_raft(session_state_storage.clone())
+            .await;
+
+        println!("raft manager init session state raft succeed");
+        raft_manager
+            .init_topic_raft(topic_storage.clone())
+            .await;
+
         //
 
         // init topic manager
