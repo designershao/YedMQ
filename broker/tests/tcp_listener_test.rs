@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs, time};
 use std::{sync::Arc, time::Duration};
+use rumqttc::{ConnectReturnCode, MqttOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
 
@@ -534,4 +535,139 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
 
     unexpect_disconnect_join.await.unwrap();
     sub_will_join.await.unwrap();
+}
+
+#[actix::test]
+pub async fn test_when_tcp_client_publish_qos_1_message_broker_should_send_message_to_subscriber() {
+
+    let resend_duration_secs = 10;
+
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let app = Arc::new(YedMQApp::new(settings.clone()).await);
+
+    YedMQApp::start(app.clone()).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let external_address = settings.listener.tcp.external.clone();
+    let tcp_port = external_address.split(":").collect::<Vec<&str>>()[1].to_string();
+
+    println!("tcp_port={}", tcp_port);
+
+    let mut mqttoptions = MqttOptions::new("test-subscribe", "0.0.0.0", tcp_port.parse::<u16>().unwrap());
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+    let (sub_client, mut sub_event_pool) = rumqttc::AsyncClient::new(mqttoptions, 10);
+
+    sub_client.subscribe("test", rumqttc::QoS::AtMostOnce).await.unwrap();
+
+    actix::spawn(async move {
+        let mut mqttoptions = MqttOptions::new("test-publisher", "0.0.0.0", tcp_port.parse::<u16>().unwrap());
+        mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+        let (pub_client, mut event_pool) = rumqttc::AsyncClient::new(mqttoptions, 10);
+
+        tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
+
+        pub_client.publish("test", rumqttc::QoS::AtMostOnce, false, "test".to_string().as_bytes()).await.unwrap();
+
+        println!("publish message succeed");
+        loop {
+            let notification = event_pool.poll().await.unwrap();
+            println!("notification={:?}", notification);
+        }
+    });
+
+    let timeout = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let notification = sub_event_pool.poll().await.unwrap();
+            println!("notification={:?}", notification);
+            match notification {
+                rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(connack)) => {
+                    assert_eq!(connack.code, ConnectReturnCode::Success);
+                }
+                rumqttc::Event::Incoming(rumqttc::Packet::Publish(publish)) => {
+                    assert_eq!(publish.topic, "test");
+                    assert_eq!(std::str::from_utf8(&publish.payload).unwrap(), "test");
+                    return;
+                }
+                _ => assert!(true),
+            }
+        }
+    }).await;
+    match timeout {
+        Ok(_) => println!("Test finished within timeout"),
+        Err(_elapsed) => panic!("Test timed out waiting for Publish message"),
+    }
+}
+
+#[actix::test]
+pub async fn test_when_tcp_client_publish_qos_2_message_broker_should_send_message_to_subscriber() {
+
+    let resend_duration_secs = 10;
+
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let app = Arc::new(YedMQApp::new(settings.clone()).await);
+
+    YedMQApp::start(app.clone()).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let external_address = settings.listener.tcp.external.clone();
+    let tcp_port = external_address.split(":").collect::<Vec<&str>>()[1].to_string();
+
+    println!("tcp_port={}", tcp_port);
+
+    let mut mqttoptions = MqttOptions::new("test-subscribe", "0.0.0.0", tcp_port.parse::<u16>().unwrap());
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+    let (sub_client, mut sub_event_pool) = rumqttc::AsyncClient::new(mqttoptions, 10);
+
+    sub_client.subscribe("test", rumqttc::QoS::ExactlyOnce).await.unwrap();
+
+    actix::spawn(async move {
+        let mut mqttoptions = MqttOptions::new("test-publisher", "0.0.0.0", tcp_port.parse::<u16>().unwrap());
+        mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+        let (pub_client, mut event_pool) = rumqttc::AsyncClient::new(mqttoptions, 10);
+
+        tokio::time::sleep(Duration::from_secs(2)).await; // wait subscriber
+
+        pub_client.publish("test", rumqttc::QoS::ExactlyOnce, false, "test".to_string().as_bytes()).await.unwrap();
+
+        println!("publish message succeed");
+        loop {
+            let notification = event_pool.poll().await.unwrap();
+            println!("notification={:?}", notification);
+        }
+    });
+
+    let timeout = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let notification = sub_event_pool.poll().await.unwrap();
+            println!("notification={:?}", notification);
+            match notification {
+                rumqttc::Event::Incoming(p) => {
+                    match p {
+                        rumqttc::Packet::Publish(publish) => {
+                            assert_eq!(publish.topic, "test");
+                            assert_eq!(std::str::from_utf8(&publish.payload).unwrap(), "test");
+                        },
+                        rumqttc::Packet::PubRel(_) => {
+                            // ensure pubrel packet received, finish the whole qos2 process
+                            return;
+                        },
+                        _ => {}
+                    }
+                }
+                _ => {},
+            }
+        }
+    }).await;
+    match timeout {
+        Ok(_) => println!("Test finished within timeout"),
+        Err(_elapsed) => panic!("Test timed out waiting for Publish message"),
+    }
 }
