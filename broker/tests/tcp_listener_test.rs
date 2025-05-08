@@ -5,7 +5,7 @@ use rumqttc::{ConnectReturnCode, MqttOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yedmq::app::YedMQApp;
 
-use yedmq::{listener::tcp_listener::MqttTcpListener, settings::Settings};
+use yedmq::settings::Settings;
 use yedmq_mqtt::{v3::subscribe::TopicFilter, MqttPacketV3};
 
 fn random_tcp_port() -> u16 {
@@ -33,6 +33,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
         session: yedmq::settings::Session {
             qos_expired_secs: qos_expired_secs,
             packet_resend_interval_secs: resend_duration_sec,
+            session_clock_path: format!("{}/clock", random_dir.to_str().unwrap()),
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
@@ -149,12 +150,6 @@ pub async fn test_tcp_client_subscribe_and_publish() {
 
     let connect_address = settings.listener.tcp.external.clone();
     let connect_address_cloned = connect_address.clone();
-
-    let listener = MqttTcpListener { app: app.clone() };
-
-    actix::spawn(async move {
-        listener.run().await.unwrap();
-    });
 
     // ensure listener start
     let sleep_duration = time::Duration::from_millis(1000);
@@ -312,12 +307,6 @@ pub async fn test_tcp_client_invalid_connect_packet_should_disconnect() {
 
     let connect_address = settings.listener.tcp.external.clone();
 
-    let listener = MqttTcpListener { app: app.clone() };
-
-    actix::spawn(async move {
-        listener.run().await.unwrap();
-    });
-
     // subscriber process
     let invalid_connect_join = actix::spawn(async move {
         let variable_header = yedmq_mqtt::v3::connect::VariableHeader {
@@ -388,12 +377,6 @@ pub async fn test_when_tcp_client_unexpected_disconnect_broker_should_send_will_
     YedMQApp::start(app.clone()).await;
 
     let connect_address = settings.listener.tcp.external.clone();
-
-    let listener = MqttTcpListener { app: app.clone() };
-
-    actix::spawn(async move {
-        listener.run().await.unwrap();
-    });
 
     // ensure listener start
     let sleep_duration = time::Duration::from_millis(1000);

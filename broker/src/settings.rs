@@ -76,14 +76,16 @@ impl Default for Mqtt {
 #[derive(Debug,Deserialize)]
 pub struct Session {
     pub qos_expired_secs: u64, // qos context expired seconds
-    pub packet_resend_interval_secs: u64 // session packet resend interval seconds
+    pub packet_resend_interval_secs: u64, // session packet resend interval seconds
+    pub session_clock_path: String, // session clock path 
 }
 
 impl Default for Session {
     fn default() -> Self {
         Self {
             qos_expired_secs: 10,
-            packet_resend_interval_secs: 10
+            packet_resend_interval_secs: 10,
+            session_clock_path: "./clock".to_string(),
         }
     }
 }
@@ -274,6 +276,7 @@ impl Settings {
             .set_default("mqtt.sys_topic_interval_secs", 10)? 
             .set_default("session.qos_expired_secs", 10)?
             .set_default("session.packet_resend_interval_secs", 10)?
+            .set_default("session.session_clock_path", "./clock")?
             .set_default("plugin.dir", "./plugins")?
             .set_default("listener.tcp.external", "0.0.0.0:1883")?
             .set_default("listener.tcp_tls.external", "0.0.0.0:8883")?

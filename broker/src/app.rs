@@ -5,7 +5,6 @@ use actix::Addr;
 use log::{info, warn};
 use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
 
-use crate::raft::client::topic::TopicRaftClient;
 use crate::raft::raft_manager::RaftManagerTrait;
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_actor_map_storage::SessionClock;
@@ -62,7 +61,7 @@ impl YedMQApp {
         info!("start router task");
 
         // init session manager
-        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, "./clock"));
+        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, settings.session.session_clock_path.clone()));
         session_clock.restore().await.unwrap();
 
         let session_manager = SessionManagerActor::new(
