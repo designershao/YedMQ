@@ -316,7 +316,7 @@ impl SessionStateRaftClientTrait for SessionStateRaftClient {
             .map_err(|e| RaftClientError::DeserializationError(format!("Failed to deserialize response: {}", e)))?;
 
         match session_state_response {
-            SessionStateResponse::InflightRegisterRxPacketResponse(result) => {
+            SessionStateResponse::InflightRegisterTxPacketResponse(result) => {
                 result?;
                 Ok(())
             }

@@ -254,7 +254,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .await
                             .inflight_register_rx_packet(tenant_id, client_id, packet)
                             .await;
-                        replies.push(SessionStateResponse::None);
+                        replies.push(SessionStateResponse::InflightRegisterRxPacketResponse(Ok(())));
                     }
                     types::SessionStateRequest::InflightRegisterTxPacket {
                         tenant_id,
