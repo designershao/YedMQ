@@ -918,17 +918,23 @@ impl SessionActor {
 
             let mut session_state_guard = session_state.write().await;
 
-            let next_state_packet_result = raft_manager.get_session_state_raft_client().inflight_get_next_state_packet(
-                &client_info.tenant_id, 
-                &client_info.client_identifier, 
-                puback_packet.variable_header.packet_identifier
-            ).await;
-            
-            if next_state_packet_result.is_err() {
-                warn!("session state raft client get next state packet error {}", next_state_packet_result.unwrap_err())
+
+            if clean_session {
+                next_state_packet = session_state_guard.inflight.get_next_state_packet(puback_packet.variable_header.packet_identifier).await;
             } else {
-                next_state_packet = next_state_packet_result.unwrap();
+                let next_state_packet_result = raft_manager.get_session_state_raft_client().inflight_get_next_state_packet(
+                    &client_info.tenant_id, 
+                    &client_info.client_identifier, 
+                    puback_packet.variable_header.packet_identifier
+                ).await;
+                
+                if next_state_packet_result.is_err() {
+                    warn!("session state raft client get next state packet error {}", next_state_packet_result.unwrap_err())
+                } else {
+                    next_state_packet = next_state_packet_result.unwrap();
+                }
             }
+
 
             if let Some(packet) = next_state_packet {
                 if let Err(e) = conn
@@ -961,6 +967,13 @@ impl SessionActor {
                                 .await;
                         }
                     }
+                }
+            } else {
+                if clean_session {
+                    session_state_guard.inflight.clean_finished_items().await;
+                } else {
+                    raft_manager.get_session_state_raft_client().inflight_clean_finished_items(&client_info.tenant_id, &client_info.client_identifier).await.unwrap();
+                    session_state_guard.inflight.clean_finished_items().await;
                 }
             }
         }
@@ -1166,6 +1179,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             },
                                         }
                                     }
+                                    session_state_guard.inflight.next_state(packet_identifier.unwrap()).await;
                                 } else {
                                     let res = raft_manager
                                         .get_session_state_raft_client()    
@@ -1208,9 +1222,24 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             }
                                         }
                                     }
+                                    let res = raft_manager
+                                        .get_session_state_raft_client()
+                                        .inflight_next_state(
+                                            &tenant_id,
+                                            &client_id,
+                                            packet_identifier.unwrap(),
+                                        )
+                                        .await;
+
+                                    if res.is_err() {
+                                        error!("handle message inflight next state error, {}", res.unwrap_err());
+                                        return;
+                                    }
+
                                     session_state_guard.inflight.register_with_tx_packet(
                                         &MqttPacketV3::Publish(packet.clone()),
                                     ).await.unwrap();
+                                    session_state_guard.inflight.next_state(packet_identifier.unwrap()).await;
                                 }
 
 
@@ -1482,7 +1511,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        plugin_manager::{MockPluginService, SubscribeAuthorizationResult}, raft::client::session_state, topic::topic_manager::MockTopicManagerTrait
+        plugin_manager::{MockPluginService, SubscribeAuthorizationResult}, raft::client::session_state::{self, SessionStateRaftClientTrait}, topic::topic_manager::MockTopicManagerTrait
     };
 
     struct MockConnectionActor {
@@ -3381,4 +3410,171 @@ mod tests {
             }
         }
     }
+
+
+    #[actix::test]
+    async fn when_persistent_session_reconnect_should_send_pending_queue_to_client_correctly() {
+
+        let mock_topic_manager = MockTopicManagerTrait::new();
+
+        let mock_topic_manager = Arc::new(RwLock::new(mock_topic_manager));
+
+        let mut plugin_service = MockPluginService::new();
+
+        plugin_service
+            .expect_do_publish_authorizate()
+            .returning(|_, _| std::result::Result::Ok(true));
+        plugin_service.expect_do_on_publish().returning(|_, _| ());
+
+        let (message_tx, mut message_rx) = tokio::sync::mpsc::channel(10);
+
+        let connection_actor = MockConnectionActor {
+            message_sender: message_tx,
+        }
+        .start();
+        let connection_recipient = connection_actor.recipient();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(10);
+
+        let mut session_state_raft_client_mock =
+            crate::raft::client::session_state::MockSessionStateRaftClientTrait::new();
+
+        session_state_raft_client_mock
+            .expect_pop_from_pending_queue()
+            .returning(move |_,_| {
+                Box::pin(
+                    async {
+                        Ok(None)
+                    }
+                )
+            });
+
+        session_state_raft_client_mock
+            .expect_append_to_pending_queue()
+            .returning(|_,_,_| {
+                Box::pin(
+                    async {
+                        Ok(())
+                    }
+                )
+            });
+        session_state_raft_client_mock
+            .expect_inflight_register_tx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_register_rx_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_next_state()
+            .returning(|_,_,_| Box::pin(async {
+                Ok(())
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_get_next_state_packet()
+            .returning(|_, _, _| Box::pin(async {
+                Ok(None)
+            }));
+        session_state_raft_client_mock
+            .expect_inflight_clean_finished_items()
+            .returning(|_, _| Box::pin(async {
+                Ok(())
+            }));
+
+        let session_state_raft_client_mock_arc =
+            Arc::new(session_state_raft_client_mock);
+
+        let mut raft_manager_mock = crate::raft::raft_manager::MockRaftManagerTrait::new();
+
+        raft_manager_mock
+            .expect_get_session_state_raft_client()
+            .returning(move || session_state_raft_client_mock_arc.clone());
+
+
+        let mock_session_state_raft_manager =
+            crate::raft::session_state::MockSessionStateRaftManagerTrait::new();
+
+        raft_manager_mock
+            .expect_session_state_raft()
+            .return_const(Box::new(mock_session_state_raft_manager));
+
+        let (session_lifecycle_tx, _session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
+
+        let session_actor = SessionActor::new(
+            "tenant_a".to_string(),
+            "client_a".to_string(),
+            false,
+            mock_topic_manager,
+            Arc::new(plugin_service),
+            tx,
+            INFLIGHT_RETRY,
+            None,
+            KEEP_ALIVE + 30, // ensure the keep alive not expired during the unit test
+            connection_recipient.clone(),
+            "127.0.0.1:1883".parse().unwrap(),
+            Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
+                INFLIGHT_RETRY,
+            )))),
+            Arc::new(raft_manager_mock),
+            session_lifecycle_tx,
+            123,
+        )
+        .start();
+        
+        session_actor.send(SessionActorMessage::ClientDisconnected).await.unwrap();
+
+        session_actor.send(SessionActorMessage::OutboundMessage(
+            MqttPacketV3::Publish(
+                PublishPacketBuilder::new("/a/b/c".to_string(), "hello".into()).packet_identifier(145).qos(1).build(),
+            ),
+        )).await.unwrap();
+
+        session_actor.send(SessionActorMessage::Reconnect { 
+            conn: connection_recipient, 
+            keep_alive: KEEP_ALIVE, 
+            clean_session: false, 
+            username: Some("test".to_string()), 
+            will_message: None, 
+            socket_addr: "0.0.0.0:1883".parse().unwrap(), 
+        }).await.unwrap();
+
+        let msg = message_rx.recv().await.unwrap();
+        println!("msg: {:?}", msg);
+        match msg {
+            ConnectionActorMessage::WritePacketToClient(packet) => match packet {
+                MqttPacketV3::Publish(publish_packet) => {
+                    assert_eq!(publish_packet.variable_header.topic_name, "/a/b/c");
+                    assert_eq!(publish_packet.payload.payload, "hello".as_bytes().to_vec());
+                }
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+
+        // write puback
+        let puback_packet = PubAckPacket::new(145);
+        session_actor
+            .send(SessionActorMessage::InboundPacket(MqttPacketV3::Puback(
+                puback_packet,
+            )))
+            .await
+            .unwrap();
+
+
+        let timeout = tokio::time::timeout(Duration::from_secs(20), async {
+            let msg_unexpect = message_rx.recv().await.unwrap();
+            println!("msg_unexpect: {:?}", msg_unexpect);
+        }).await;
+
+        match timeout {
+            Ok(_) => panic!("Test finished within timeout"),
+            Err(_elapsed) => println!("Test finished after timeout"),
+        }
+
+    }
+
+
 }
