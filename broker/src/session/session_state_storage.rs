@@ -204,7 +204,7 @@ impl SessionStateStorage {
                 .unwrap()
                 .write()
                 .await;
-            state.inflight.next_state(packet_identifier).await;
+            state.inflight.next_state(packet_identifier);
         }
     }
 

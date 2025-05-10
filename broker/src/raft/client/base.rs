@@ -4,7 +4,7 @@ use tokio::sync::Mutex;
 use tonic::transport::{Channel, Endpoint};
 
 use crate::{
-    inflight::InflightError, protobuf::{
+    protobuf::{
         raft_service_client::RaftServiceClient, AppendEntriesRequest, ErrorCode, ErrorDetail,
         InstallSnapshotRequest, RaftType, VoteRequest,
     }, raft::NodeTrait, session::session_state_storage::SessionStateStorageError

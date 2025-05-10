@@ -135,11 +135,20 @@ impl Inflight {
         }
     }
 
-    pub async fn next_state(&mut self, packet_identifier: u16) {
+    pub fn get_inflight_current_state(&self, packet_identifier: u16) -> Option<InflightState> {
+        let ctx = self.inner.get(&packet_identifier);
+        if let Some(ctx_item) = ctx {
+            Some(ctx_item.state.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn next_state(&mut self, packet_identifier: u16) {
         let ctx = self.inner.get_mut(&packet_identifier);
         if let Some(ctx_item) = ctx {
             ctx_item.to_next();
-        }
+        }  
     }
 
     // Clean all finished qos packet identifier
@@ -149,7 +158,7 @@ impl Inflight {
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Serialize, Deserialize)]
-enum InflightState {
+pub enum InflightState {
     WaitPubrel,
     WaitPubcomp,
     WaitPubrec,
@@ -287,7 +296,7 @@ mod tests {
 
         assert_eq!(state, super::InflightState::WaitPuback);
 
-        inflight.next_state(packet_identifier).await;
+        inflight.next_state(packet_identifier);
 
 
         let packet = inflight.get_current_packet(packet_identifier).await;
@@ -358,7 +367,7 @@ mod tests {
             _ => assert!(false)
         }
 
-        inflight.next_state(packet_identifier).await;
+        inflight.next_state(packet_identifier);
 
         let state = get_state(&inflight, packet_identifier).await;
 
@@ -376,7 +385,7 @@ mod tests {
             _ => assert!(false)
         }
 
-        inflight.next_state(packet_identifier).await;
+        inflight.next_state(packet_identifier);
 
         let state = get_state(&inflight, packet_identifier).await;
 
@@ -419,7 +428,7 @@ mod tests {
             _ => assert!(false)
         }
 
-        inflight.next_state(packet_identifier).await;        
+        inflight.next_state(packet_identifier);        
 
         let state = get_state(&inflight, packet_identifier).await;
 
@@ -437,7 +446,7 @@ mod tests {
             _ => assert!(false)
         }
 
-        inflight.next_state(packet_identifier).await;        
+        inflight.next_state(packet_identifier);        
 
 
         let state = get_state(&inflight, packet_identifier).await;
@@ -468,4 +477,5 @@ mod tests {
         assert!(res.is_err());
         
     }
+
 }
