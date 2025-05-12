@@ -1,10 +1,5 @@
-use backoff::{backoff::Backoff, ExponentialBackoff};
-use log::warn;
 use serde::{Deserialize, Serialize};
-use tonic::transport::Channel;
-use std::{fmt::Display, io::Cursor, time::Duration};
-
-use crate::protobuf::raft_service_client::RaftServiceClient;
+use std::{fmt::Display, io::Cursor};
 
 pub mod raft_manager;
 pub mod service;
@@ -50,38 +45,3 @@ impl Display for Node {
 }
 
 pub type SnapshotData = Cursor<Vec<u8>>;
-
-async fn create_rpc_client_with_retry(addr: String) -> anyhow::Result<RaftServiceClient<Channel>> {
-    let mut backoff = ExponentialBackoff {
-        initial_interval: Duration::from_millis(100),
-        max_interval: Duration::from_secs(10),
-        multiplier: 2.0,
-        max_elapsed_time: Some(Duration::from_secs(60)),
-        ..ExponentialBackoff::default()
-    };
-
-    let channel = loop {
-        match tonic::transport::Endpoint::from_shared(addr.clone())?
-            .connect()
-            .await
-        {
-            Ok(channel) => break channel,
-            Err(e) => {
-                if let Some(duration) = backoff.next_backoff() {
-                    warn!(
-                        "RPC client connection failed: {}. Retrying in {:?}...",
-                        e, duration
-                    );
-                    tokio::time::sleep(duration).await;
-                } else {
-                    return Err(anyhow::anyhow!(format!(
-                        "Failed to connect after retries: {}",
-                        e
-                    )));
-                }
-            }
-        }
-    };
-
-    Ok(RaftServiceClient::new(channel))
-}

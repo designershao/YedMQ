@@ -233,8 +233,8 @@ impl SessionActorMapRaftManager {
     pub async fn new(
         settings: Arc<Settings>,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_manager_force_stop_recipient: Recipient<
-            crate::session::session_manager_actor::ForceStop,
+        session_manager_remove_duplicate_session_by_clock_recipient: Recipient<
+            crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
         >,
         session_clock: Arc<SessionClock>,
     ) -> Self {
@@ -249,7 +249,7 @@ impl SessionActorMapRaftManager {
             &dir,
             session_actor_map_storage.clone(),
             cluster_cfg.node_id,
-            session_manager_force_stop_recipient,
+            session_manager_remove_duplicate_session_by_clock_recipient,
             session_clock,
         )
         .await;

@@ -40,8 +40,8 @@ pub struct StateMachineData {
 
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
-    session_manager_force_stop_recipient:
-        Recipient<crate::session::session_manager_actor::ForceStop>,
+    session_manager_remove_duplicate_sessions_by_clock_recipient:
+        Recipient<crate::session::session_manager_actor::RemoveDuplicateSessionsByClock>,
 
     node_id: NodeId,
 
@@ -115,8 +115,8 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
         node_id: NodeId,
-        session_manager_force_stop_recipient: Recipient<
-            crate::session::session_manager_actor::ForceStop,
+        session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
+            crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
         >,
         session_clock: Arc<SessionClock>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
@@ -129,7 +129,7 @@ impl StateMachineStore {
             node_id,
             snapshot_idx: 0,
             db,
-            session_manager_force_stop_recipient,
+            session_manager_remove_duplicate_sessions_by_clock_recipient,
             session_clock,
         };
 
@@ -242,10 +242,20 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write().await;
                         let res = session_actor_map_storage
-                            .register_session_actor(tenant_id, session_id, node_id, &version);
+                            .register_session_actor(tenant_id.clone(), session_id.clone(), node_id, &version);
                         match res {
                             Ok(()) => {
                                 // Check local node , force stop the session if the session version is older
+                                if node_id != self.node_id {
+                                    self.session_manager_remove_duplicate_sessions_by_clock_recipient
+                                        .send(crate::session::session_manager_actor::RemoveDuplicateSessionsByClock {
+                                            tenant_id,
+                                            client_id: session_id,
+                                            session_version: version.clone(),
+                                        })
+                                        .await
+                                        .unwrap();
+                                }
                                 //
 
                                 // update current node session clock
@@ -563,8 +573,8 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
-    session_manager_force_stop_recipient: Recipient<
-        crate::session::session_manager_actor::ForceStop,
+    session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
+        crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
     >,
     session_clock: Arc<SessionClock>,
 ) -> (LogStore, StateMachineStore) {
@@ -586,7 +596,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         db,
         topic_storage,
         current_node_id,
-        session_manager_force_stop_recipient,
+        session_manager_remove_duplicate_sessions_by_clock_recipient,
         session_clock,
     )
     .await

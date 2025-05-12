@@ -69,7 +69,6 @@ impl Inflight {
                         packet_identifier,
                         InflightState::WaitPubrec
                     ).packet(packet).build();
-                    //let mut inner = self.inner.write().await;
                     self.inner.insert(packet_identifier, item);
                 } 
                 if qos == 1 {
@@ -77,7 +76,6 @@ impl Inflight {
                         packet_identifier,
                         InflightState::WaitPuback
                     ).packet(packet).build();
-                    //let mut inner = self.inner.write().await;
                     self.inner.insert(packet_identifier, item);
                 }
             }

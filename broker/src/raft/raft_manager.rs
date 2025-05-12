@@ -7,8 +7,13 @@ use thiserror::Error;
 use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
-    protobuf::raft_service_server::RaftServiceServer, router::RouterCmd,
-    session::{session_actor_map_storage::{SessionActorMapStorage, SessionClock}, session_state_storage::SessionStateStorage}, settings::Settings,
+    protobuf::raft_service_server::RaftServiceServer,
+    router::RouterCmd,
+    session::{
+        session_actor_map_storage::{SessionActorMapStorage, SessionClock},
+        session_state_storage::SessionStateStorage,
+    },
+    settings::Settings,
     topic::topic_storage::TopicStorage,
 };
 
@@ -16,7 +21,6 @@ use super::{service::raft_service::RaftServiceImpl, NodeId};
 
 #[derive(Debug, Error)]
 pub enum RaftManagerError<E: std::error::Error + 'static> {
-
     #[error("raft error: {0}")]
     Raft(#[from] openraft::error::RaftError<NodeId, E>),
 
@@ -29,24 +33,29 @@ pub enum RaftManagerError<E: std::error::Error + 'static> {
 
 #[automock]
 pub trait RaftManagerTrait {
-
-    fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait;
+    fn session_actor_map_raft(
+        &self,
+    ) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait;
 
     fn topic_raft(&self) -> &dyn crate::raft::topic::TopicRaftManagerTrait;
 
     fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait;
 
-    fn get_session_actor_map_raft_client(&self) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait>;
+    fn get_session_actor_map_raft_client(
+        &self,
+    ) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait>;
 
     fn get_topic_raft_client(&self) -> Arc<dyn crate::raft::client::topic::TopicRaftClientTrait>;
 
-    fn get_session_state_raft_client(&self) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait>;
-
+    fn get_session_state_raft_client(
+        &self,
+    ) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait>;
 }
 
 impl RaftManagerTrait for RaftManager {
-
-    fn get_session_actor_map_raft_client(&self) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait>{
+    fn get_session_actor_map_raft_client(
+        &self,
+    ) -> Arc<dyn crate::raft::client::session_actor_map::SessionActorMapRaftClientTrait> {
         self.session_actor_map_raft.get().unwrap().get_raft_client()
     }
 
@@ -54,11 +63,15 @@ impl RaftManagerTrait for RaftManager {
         self.topic_raft.get().unwrap().get_raft_client()
     }
 
-    fn get_session_state_raft_client(&self) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait> {
+    fn get_session_state_raft_client(
+        &self,
+    ) -> Arc<dyn crate::raft::client::session_state::SessionStateRaftClientTrait> {
         self.session_state_raft.get().unwrap().get_raft_client()
     }
 
-    fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
+    fn session_actor_map_raft(
+        &self,
+    ) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
         self.session_actor_map_raft.get().unwrap()
     }
 
@@ -94,56 +107,63 @@ impl Drop for RaftManager {
 }
 
 impl RaftManager {
-
     pub fn topic_raft(&self) -> &dyn crate::raft::topic::TopicRaftManagerTrait {
         self.topic_raft.get().unwrap()
     }
 
-    pub fn session_actor_map_raft(&self) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
+    pub fn session_actor_map_raft(
+        &self,
+    ) -> &dyn crate::raft::session_actor_map::SessionActorMapRaftManagerTrait {
         self.session_actor_map_raft.get().unwrap()
     }
 
-    pub fn session_state_raft(&self) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait {
+    pub fn session_state_raft(
+        &self,
+    ) -> &dyn crate::raft::session_state::SessionStateRaftManagerTrait {
         self.session_state_raft.get().unwrap()
     }
 
     pub async fn init_topic_raft(&self, topic_storage: Arc<RwLock<TopicStorage>>) {
-
         let topic_raft_manager =
-            crate::raft::topic::RaftManager::new(self.settings.clone(), topic_storage.clone()).await;
+            crate::raft::topic::RaftManager::new(self.settings.clone(), topic_storage.clone())
+                .await;
         let _ = self.topic_raft.set(topic_raft_manager);
     }
 
-    pub async fn init_session_state_raft(&self, session_state_storage: Arc<RwLock<SessionStateStorage>>) {
-        let session_state_raft_manager = 
-            crate::raft::session_state::SessionStateRaftManager::new(
-                self.settings.clone(),
-                session_state_storage.clone(),
-            )
-            .await;
+    pub async fn init_session_state_raft(
+        &self,
+        session_state_storage: Arc<RwLock<SessionStateStorage>>,
+    ) {
+        let session_state_raft_manager = crate::raft::session_state::SessionStateRaftManager::new(
+            self.settings.clone(),
+            session_state_storage.clone(),
+        )
+        .await;
         let _ = self.session_state_raft.set(session_state_raft_manager);
     }
 
-    pub async fn init_session_actor_map_raft(&self,
+    pub async fn init_session_actor_map_raft(
+        &self,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-         session_manager_actor_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
-         session_clock: Arc<SessionClock>,
-        ) {
-
+        session_manager_remove_duplicate_session_by_clock_recipient: Recipient<
+            crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
+        >,
+        session_clock: Arc<SessionClock>,
+    ) {
         let session_actor_map_raft_manager =
             crate::raft::session_actor_map::SessionActorMapRaftManager::new(
                 self.settings.clone(),
                 session_actor_map_storage.clone(),
-                session_manager_actor_recipient,
-                session_clock
+                session_manager_remove_duplicate_session_by_clock_recipient,
+                session_clock,
             )
             .await;
-        let _ = self.session_actor_map_raft.set(session_actor_map_raft_manager);
+        let _ = self
+            .session_actor_map_raft
+            .set(session_actor_map_raft_manager);
     }
 
-    pub async fn new(
-        settings: Arc<Settings>,
-    ) -> Self {
+    pub async fn new(settings: Arc<Settings>) -> Self {
         let (tx, rx) = watch::channel::<()>(());
 
         let manager = RaftManager {
@@ -161,8 +181,12 @@ impl RaftManager {
     pub async fn start_grpc(
         raft_manager: Arc<RaftManager>,
         router_sender: Sender<RouterCmd>,
-        session_manager_actor_force_disconnect_recipient: Recipient<crate::session::session_manager_actor::ForceDisconnect>,
-        session_manager_actor_force_stop_recipient: Recipient<crate::session::session_manager_actor::ForceStop>,
+        session_manager_actor_force_disconnect_recipient: Recipient<
+            crate::session::session_manager_actor::ForceDisconnect,
+        >,
+        session_manager_actor_force_stop_recipient: Recipient<
+            crate::session::session_manager_actor::ForceStop,
+        >,
         current_node_id: NodeId,
     ) -> anyhow::Result<()> {
         let mut rx = raft_manager.running_rx.clone();
@@ -172,7 +196,7 @@ impl RaftManager {
             router_sender,
             session_manager_actor_force_disconnect_recipient,
             session_manager_actor_force_stop_recipient,
-            current_node_id
+            current_node_id,
         };
 
         let addr_str = raft_manager.settings.cluster.rpc.external.to_string();

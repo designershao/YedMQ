@@ -16,7 +16,7 @@ use actix::{
     ResponseFuture, WrapFuture,
 };
 use log::{error, info, warn};
-use openraft::error::{ClientWriteError, Infallible};
+use openraft::error::ClientWriteError;
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::{
@@ -164,6 +164,46 @@ impl Actor for SessionManagerActor {
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("session manager stopped");
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct RemoveDuplicateSessionsByClock {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub session_version: SessionVersion,
+}
+
+impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: RemoveDuplicateSessionsByClock, ctx: &mut Self::Context) -> Self::Result {
+        info!("remove duplicate session {}", msg.client_id);
+        let tenant_sessions = self.sessions.get(&msg.tenant_id);
+        if let Some(tenant_sessions) = tenant_sessions {
+            let tenant_sessions = tenant_sessions.clone();
+            let self_addr = ctx.address();
+            async move {
+                let tenant_sessions = tenant_sessions.read().await;
+                let session = tenant_sessions.get(&msg.client_id);
+                if let Some(session) = session {
+                    if msg.session_version.is_newer_than(&session.session_version) {
+                        let _ = self_addr.send(ForceStop {
+                            tenant_id: msg.tenant_id.clone(),
+                            client_id: msg.client_id.clone(),
+                        })
+                        .await
+                        .unwrap();
+                        info!("remove duplicate session {} succeed", msg.client_id);
+                    }
+                }
+            }
+            .into_actor(self)
+            .wait(ctx);
+        } else {
+            warn!("tenant {} not found", msg.tenant_id);
+        }
     }
 }
 
@@ -593,7 +633,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         "session {} not exists in cluster, create new session state",
                         msg.client_id
                     );
-                    raft_manager
+                    let res = raft_manager
                         .session_state_raft()
                         .create_session_state(
                             &msg.tenant_id,
@@ -601,16 +641,31 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             settings.mqtt.sys_topic_interval_secs,
                         )
                         .await;
-                    let connack = ConnAckPacketBuilder::new()
-                        .set_return_code(ConnackReturnCode::Accpet)
-                        .set_session_present(false)
-                        .build();
-                    msg.connection_addr
-                        .send(ConnectionActorMessage::WritePacketToClient(
-                            MqttPacketV3::Connack(connack),
-                        ))
-                        .await
-                        .unwrap();
+
+                    if res.is_err() {
+                        error!("create session state failed: {}", res.unwrap_err());
+                        let connack = ConnAckPacketBuilder::new()
+                            .set_return_code(ConnackReturnCode::ServerUnavailable)
+                            .set_session_present(false)
+                            .build();
+                        msg.connection_addr
+                            .send(ConnectionActorMessage::WritePacketToClient(
+                                MqttPacketV3::Connack(connack),
+                            ))
+                            .await
+                            .unwrap();
+                    } else {
+                        let connack = ConnAckPacketBuilder::new()
+                            .set_return_code(ConnackReturnCode::Accpet)
+                            .set_session_present(false)
+                            .build();
+                        msg.connection_addr
+                            .send(ConnectionActorMessage::WritePacketToClient(
+                                MqttPacketV3::Connack(connack),
+                            ))
+                            .await
+                            .unwrap();
+                    }
                 }
             } else {
                 let connack = ConnAckPacketBuilder::new()

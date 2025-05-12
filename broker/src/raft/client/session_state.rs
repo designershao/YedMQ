@@ -332,7 +332,7 @@ impl SessionStateRaftClientTrait for SessionStateRaftClient {
     ) -> super::base::Result<Option<MqttPacketV3>> {
         let mut client = self.get_client().await.unwrap();
         let res = client
-            .inflight_get_current_packet(crate::protobuf::InflightGetCurrentPacketRequest {
+            .inflight_get_next_state_packet(crate::protobuf::InflightGetNextStatePacketRequest {
                 tenant_id: tenant_id.to_string(),
                 client_id: client_id.to_string(),
                 packet_id: packet_identifier.into(),
