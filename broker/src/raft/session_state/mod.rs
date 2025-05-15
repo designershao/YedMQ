@@ -581,7 +581,9 @@ impl SessionStateRaftManager {
                 },
             );
         }
-        raft.initialize(cluster_nodes).await.unwrap();
+        if !raft.is_initialized().await.unwrap() {
+            raft.initialize(cluster_nodes).await.unwrap();
+        }
         //
 
         let raft_arc = Arc::new(raft);

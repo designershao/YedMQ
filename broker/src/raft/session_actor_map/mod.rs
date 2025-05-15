@@ -277,7 +277,9 @@ impl SessionActorMapRaftManager {
                 },
             );
         }
-        raft.initialize(cluster_nodes).await.unwrap();
+        if !raft.is_initialized().await.unwrap() {
+            raft.initialize(cluster_nodes).await.unwrap();
+        }
         //
 
         let (tx, rx) = watch::channel::<()>(());
