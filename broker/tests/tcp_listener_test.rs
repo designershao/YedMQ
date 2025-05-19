@@ -654,3 +654,66 @@ pub async fn test_when_tcp_client_publish_qos_2_message_broker_should_send_messa
         Err(_elapsed) => panic!("Test timed out waiting for Publish message"),
     }
 }
+
+
+#[actix::test]
+pub async fn test_when_persistent_session_reconnect_broker_should_set_connack_session_present_flag() {
+
+    let resend_duration_secs = 10;
+
+    let settings = Arc::new(get_test_settings(2, resend_duration_secs));
+
+    let app = Arc::new(YedMQApp::new(settings.clone()).await);
+
+    YedMQApp::start(app.clone()).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let external_address = settings.listener.tcp.external.clone();
+    let tcp_port = external_address.split(":").collect::<Vec<&str>>()[1].to_string();
+
+    let mut mqttoptions = MqttOptions::new("test-publisher", "0.0.0.0", tcp_port.parse::<u16>().unwrap());
+    mqttoptions.set_clean_session(false);
+    mqttoptions.set_keep_alive(Duration::from_secs(5));
+
+    let (pub_client, mut event_pool) = rumqttc::AsyncClient::new(mqttoptions.clone(), 10);
+
+    loop {
+        let notification = event_pool.poll().await.unwrap();
+        println!("notification={:?}", notification);
+        match notification {
+            rumqttc::Event::Incoming(p) => {
+                match p {
+                    rumqttc::Packet::ConnAck(p) => {
+                        assert_eq!(p.session_present, false);
+                        break;
+                    },
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let _ = pub_client.disconnect().await;
+
+    let (_, mut event_pool) = rumqttc::AsyncClient::new(mqttoptions, 10);
+
+    loop {
+        let notification = event_pool.poll().await.unwrap();
+        println!("notification={:?}", notification);
+        match notification {
+            rumqttc::Event::Incoming(p) => {
+                match p {
+                    rumqttc::Packet::ConnAck(p) => {
+                        assert_eq!(p.session_present, true);
+                        return;
+                    },
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+}
