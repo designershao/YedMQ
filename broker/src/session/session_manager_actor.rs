@@ -4,7 +4,7 @@ use crate::{
     plugin_manager::PluginService,
     protobuf::{raft_service_client::RaftServiceClient, SessionActorForceStopRequest},
     raft::{
-        raft_manager::{RaftManagerError, RaftManagerTrait}, Node, NodeId
+        client::base::RaftClientError, raft_manager::{RaftManagerError, RaftManagerTrait}, Node, NodeId
     },
     router::RouterCmd,
     session::session_actor::SessionActor,
@@ -48,6 +48,9 @@ pub enum SessionManagerError {
 
     #[error("raft error {0} ")]
     RaftErr(#[from] RaftManagerError<ClientWriteError<NodeId,Node>>),
+
+    #[error("raft client error {0}")]
+    RaftClientErr(#[from] RaftClientError),
 
     #[error("newer session has existed")]
     NewerSessionExisted,
@@ -531,7 +534,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             let session_version = session_clock.next();
 
             let res = raft_manager
-                .session_actor_map_raft()
+                .get_session_actor_map_raft_client()
                 .register_session_actor_map(
                     &msg.tenant_id,
                     &msg.client_id,
@@ -553,7 +556,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
                     _ => {}
                 },
-                Err(e) => return Err(SessionManagerError::RaftErr(e)),
+                Err(e) => return Err(SessionManagerError::RaftClientErr(e)),
             }
 
             info!(
@@ -621,7 +624,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         );
                         // not in current node, recover from raft
                         let session_state_from_raft = raft_manager
-                            .session_state_raft()
+                            .get_session_state_raft_client()
                             .get_session_state(&msg.tenant_id, &msg.client_id)
                             .await
                             .unwrap();
@@ -634,7 +637,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         msg.client_id
                     );
                     let res = raft_manager
-                        .session_state_raft()
+                        .get_session_state_raft_client()
                         .create_session_state(
                             &msg.tenant_id,
                             &msg.client_id,
