@@ -147,7 +147,7 @@ impl Actor for SessionManagerActor {
                             client_id
                         );
                         let session_version = session_clock.next();
-                        let res = raft_manager.session_actor_map_raft().unregister_session_actor_map(
+                        let res = raft_manager.get_session_actor_map_raft_client().unregister_session_actor_map(
                             &tenant_id, 
                             &client_id, 
                             session_version).await;
