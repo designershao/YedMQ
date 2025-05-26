@@ -172,6 +172,33 @@ impl Actor for SessionManagerActor {
 
 #[derive(Message)]
 #[rtype(result = "()")]
+pub struct RemoveExpiredSession {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<RemoveExpiredSession> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: RemoveExpiredSession, ctx: &mut Self::Context) -> Self::Result {
+        info!("remove expired session {}", msg.client_id);
+        let self_addr = ctx.address();
+        async move {
+            let _ = self_addr.send(ForceStop {
+                tenant_id: msg.tenant_id.clone(),
+                client_id: msg.client_id.clone(),
+            })
+            .await
+            .unwrap();
+            info!("remove expired session {} succeed", msg.client_id);
+        }
+        .into_actor(self)
+        .wait(ctx);
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
 pub struct RemoveDuplicateSessionsByClock {
     pub tenant_id: String,
     pub client_id: String,

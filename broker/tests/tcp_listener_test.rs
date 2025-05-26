@@ -82,6 +82,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
                     api_address: format!("0.0.0.0:{}", api_port).to_string(), 
                 }
             ],
+            session_ttl: 10
         }
     };
     settings

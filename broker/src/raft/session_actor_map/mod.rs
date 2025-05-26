@@ -1,17 +1,22 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 
 use actix::Recipient;
-use log::info;
+use log::{error, info};
 use mockall::automock;
 use openraft::error::{ClientWriteError, Infallible, InitializeError};
 use openraft::Config;
 use raft_network_impl::Network;
 use store::new_storage;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::{watch, Mutex, RwLock};
+use tokio::{select, time};
 use types::{SessionActorMapResponse, SessionActorMapTypeConfig};
 
+use crate::session::session_actor;
 use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionClock, SessionVersion};
 use crate::settings::Settings;
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
@@ -236,6 +241,8 @@ impl SessionActorMapRaftManager {
         session_manager_remove_duplicate_session_by_clock_recipient: Recipient<
             crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
         >,
+        session_manager_remove_expired_session: Recipient<
+            crate::session::session_manager_actor::RemoveExpiredSession>,
         session_clock: Arc<SessionClock>,
     ) -> Self {
         let cluster_cfg = &settings.cluster;
@@ -250,7 +257,9 @@ impl SessionActorMapRaftManager {
             session_actor_map_storage.clone(),
             cluster_cfg.node_id,
             session_manager_remove_duplicate_session_by_clock_recipient,
+            session_manager_remove_expired_session,
             session_clock,
+            cluster_cfg.session_ttl
         )
         .await;
 
@@ -308,13 +317,82 @@ impl SessionActorMapRaftManager {
         let leader_state = self.current_leader.clone();
         let mut rx = self.raft.metrics();
 
+        let current_node_id = self.settings.cluster.node_id;
+
+        let session_actor_map_storage = self.session_actor_map_storage.clone();
+        let raft = self.raft.clone();
+
         actix::spawn(async move {
+            let mut session_ttl_monitor_quit_tx = None;
+
             loop {
                 let _ = rx.changed().await;
+
                 let mut state = leader_state.write().await;
+
+                if let Some(current_leader_node_id) = rx.borrow().current_leader {
+                    // if leader changed and current node is leader node then start session ttl monitor
+                    if current_leader_node_id == current_node_id {
+                        if let Some(prev_leader_id) = state.as_ref() {
+                            if prev_leader_id != &current_leader_node_id {
+                                // prev leader is not current leader
+                                // start session ttl monitor
+                                session_ttl_monitor_quit_tx = Some(Self::start_session_ttl_monitor(session_actor_map_storage.clone(), raft.clone()));
+                            }
+                        } else {
+                            // prev leader is none
+                            // start session ttl monitor
+                            session_ttl_monitor_quit_tx = Some(Self::start_session_ttl_monitor(session_actor_map_storage.clone(), raft.clone()));
+                        }
+                    } else {
+                        if let Some(prev_leader_id) = state.as_ref() {
+                            if prev_leader_id == &current_leader_node_id {
+                                // prev leader is current leader
+                                // stop session ttl monitor
+                                if let Some(tx) = session_ttl_monitor_quit_tx.take() {
+                                    if let Err(e) = tx.send(()) {
+                                        error!("Failed to stop session ttl monitor, channel closed.");
+                                    } else {
+                                        session_ttl_monitor_quit_tx = None;
+                                        info!("Session TTL monitor stopped.");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 *state = rx.borrow().current_leader;
+
             }
         });
+    }
+
+    fn start_session_ttl_monitor(session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>, raft: Arc<SessionActorMapRaft>) -> tokio::sync::oneshot::Sender<()> {
+
+        let (quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
+
+        actix::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(10));
+            loop {
+                select! {
+                    _ = interval.tick() => {
+                        let expired_sessions = session_actor_map_storage.read().await.get_all_expired_sessions();
+                        let res = raft.client_write(
+                            types::SessionActorMapRequest::CleanExpiredSessions { sessions: expired_sessions }
+                        ).await;
+                        if let Err(e) = res {
+                            error!("Failed to clean expired sessions: {}", e);
+                        }
+                    },
+                    _ = &mut quit_rx => {
+                        break
+                    }
+                }
+            }
+        });
+
+        quit_tx
     }
 
 }

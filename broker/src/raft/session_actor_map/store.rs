@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     raft::{Node, NodeId},
-    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock},
+    session::{self, session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock}},
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};
@@ -43,6 +43,9 @@ pub struct StateMachineStore {
     session_manager_remove_duplicate_sessions_by_clock_recipient:
         Recipient<crate::session::session_manager_actor::RemoveDuplicateSessionsByClock>,
 
+    session_manager_remove_exipred_sessions_recipient:
+        Recipient<crate::session::session_manager_actor::RemoveExpiredSession>,
+
     node_id: NodeId,
 
     pub data: StateMachineData,
@@ -50,6 +53,8 @@ pub struct StateMachineStore {
     snapshot_idx: u64,
 
     session_clock: Arc<SessionClock>,
+
+    session_ttl: u64,
 
     db: Arc<DB>,
 }
@@ -118,7 +123,10 @@ impl StateMachineStore {
         session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
             crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
         >,
+        session_manager_remove_exipred_sessions_recipient: Recipient<
+            crate::session::session_manager_actor::RemoveExpiredSession>,
         session_clock: Arc<SessionClock>,
+        session_ttl: u64,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -126,10 +134,12 @@ impl StateMachineStore {
                 last_membership: Default::default(),
                 state: State { session_actor_map },
             },
+            session_ttl,
             node_id,
             snapshot_idx: 0,
             db,
             session_manager_remove_duplicate_sessions_by_clock_recipient,
+            session_manager_remove_exipred_sessions_recipient,
             session_clock,
         };
 
@@ -242,7 +252,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write().await;
                         let res = session_actor_map_storage
-                            .register_session_actor(tenant_id.clone(), session_id.clone(), node_id, &version);
+                            .register_session_actor(tenant_id.clone(), session_id.clone(), node_id, &version, self.session_ttl);
                         match res {
                             Ok(()) => {
                                 // Check local node , force stop the session if the session version is older
@@ -283,6 +293,32 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             .unregister_session_actor(tenant_id.clone(), session_id.clone());
                         self.session_clock.bump(&session_version);
                         self.session_clock.persist().await.unwrap();
+                        replies.push(SessionActorMapResponse::None);
+                    }
+                    types::SessionActorMapRequest::CleanExpiredSessions { sessions } => {
+                        let mut session_actor_map_storage =
+                            self.data.state.session_actor_map.write().await;
+                        for session in sessions {
+                            session_actor_map_storage
+                                .unregister_session_actor(session.tenant_id.clone(), session.session_id.clone());
+                            // Force stop the session if the session is expired
+                            if session.node_id == self.node_id {
+                                self.session_manager_remove_exipred_sessions_recipient
+                                    .send(crate::session::session_manager_actor::RemoveExpiredSession {
+                                        tenant_id: session.tenant_id,
+                                        client_id: session.session_id,
+                                    })
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        replies.push(SessionActorMapResponse::None);
+                    }
+                    types::SessionActorMapRequest::SessionLeaseRenewRequest { sessions } => {
+                        let mut session_actor_map_storage =
+                            self.data.state.session_actor_map.write().await;
+                        session_actor_map_storage
+                            .session_lease_renew(sessions, self.session_ttl);
                         replies.push(SessionActorMapResponse::None);
                     }
                 },
@@ -576,7 +612,10 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
         crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
     >,
+    session_manager_remove_exipred_sessions_recipient: Recipient<
+        crate::session::session_manager_actor::RemoveExpiredSession>,
     session_clock: Arc<SessionClock>,
+    session_ttl: u64
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -597,7 +636,9 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         topic_storage,
         current_node_id,
         session_manager_remove_duplicate_sessions_by_clock_recipient,
+        session_manager_remove_exipred_sessions_recipient,
         session_clock,
+        session_ttl
     )
     .await
     .unwrap();

@@ -80,6 +80,7 @@ impl YedMQApp {
             .init_session_actor_map_raft(
                 session_actor_map_storage,
                 session_manager.clone().recipient(),
+                session_manager.clone().recipient(),
                 session_clock,
             )
             .await;

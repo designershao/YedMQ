@@ -186,7 +186,9 @@ pub struct Cluster {
 
     pub rpc: RPC,
 
-    pub nodes: Vec<Node>
+    pub nodes: Vec<Node>,
+
+    pub session_ttl: u64
 
 }
 
@@ -208,7 +210,8 @@ impl Default for Cluster {
             store_dir: "./store".to_string(),
             node_id: 1,
             rpc: rpc.clone(),
-            nodes: vec![]
+            nodes: vec![],
+            session_ttl: 10
         }
     }
 }
@@ -290,6 +293,7 @@ impl Settings {
             .set_default("cluster.cluster_name", "YedMQ")?  
             .set_default("cluster.heartbeat_interval", 10)?
             .set_default("cluster.rpc.external", "0.0.0.0:3457")?
+            .set_default("cluster.session_ttl", 10)?
             .add_source(
                 File::with_name("/etc/yedmq/config.toml").required(false)
             )

@@ -148,6 +148,8 @@ impl RaftManager {
         session_manager_remove_duplicate_session_by_clock_recipient: Recipient<
             crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
         >,
+        session_manager_remove_expired_sessions_recipient: Recipient<
+            crate::session::session_manager_actor::RemoveExpiredSession>,
         session_clock: Arc<SessionClock>,
     ) {
         let session_actor_map_raft_manager =
@@ -155,6 +157,7 @@ impl RaftManager {
                 self.settings.clone(),
                 session_actor_map_storage.clone(),
                 session_manager_remove_duplicate_session_by_clock_recipient,
+                session_manager_remove_expired_sessions_recipient,
                 session_clock,
             )
             .await;

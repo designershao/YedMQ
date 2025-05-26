@@ -1,9 +1,9 @@
-use std::{collections::HashMap, path::Path, sync::atomic::{AtomicU64, Ordering}};
+use std::{collections::HashMap, path::Path, sync::atomic::{AtomicU64, Ordering}, time::SystemTime};
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
-use crate::raft::NodeId;
+use crate::raft::{session_actor_map::types::{ExpiredSession, RenewSession}, NodeId};
 
 #[derive(Debug,thiserror::Error)]
 pub enum SessionActorMapError {
@@ -120,6 +120,8 @@ pub struct SessionActorMapEntry {
 
     pub version: SessionVersion,
 
+    pub expiration_timestamp: u64,
+
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -134,6 +136,32 @@ impl SessionActorMapStorage {
         }
     }
 
+    pub fn session_lease_renew(&mut self, sessions: Vec<RenewSession>, session_ttl: u64) {
+        for renew in sessions {
+            if let Some(session_tenant) = self.inner.get_mut(&renew.tenant_id) {
+                if let Some(session_entry) = session_tenant.get_mut(&renew.session_id) {
+                    session_entry.expiration_timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() + session_ttl;
+                } 
+            } 
+        }
+    }
+
+    pub fn get_all_expired_sessions(&self) -> Vec<ExpiredSession> {
+        let mut result = Vec::new();
+        for (tenant_id, sessions) in self.inner.iter() {
+            for (session_id, session) in sessions.iter() {
+                if session.expiration_timestamp < std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() {
+                    result.push(ExpiredSession {
+                        tenant_id: tenant_id.clone(),
+                        session_id: session_id.clone(),
+                        node_id: session.node_id.clone(),
+                    });
+                }
+            }
+        }
+        result
+    }
+
     pub fn get_session_actor_map(&self, tenant_id: &str, client_id: &str) -> Option<SessionActorMapEntry> {
         self.inner
             .get(tenant_id)
@@ -141,7 +169,7 @@ impl SessionActorMapStorage {
             .cloned()   
     }
 
-    pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId, version: &SessionVersion) -> Result<(), SessionActorMapError> {
+    pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId, version: &SessionVersion, session_ttl: u64) -> Result<(), SessionActorMapError> {
         let session_tenant = self.inner.entry(tenant_id.clone()).or_insert(HashMap::new());
         if session_tenant.contains_key(&session_id) {
             let existing_entry = session_tenant.get(&session_id).unwrap();
@@ -151,7 +179,8 @@ impl SessionActorMapStorage {
         }             
         let session_actor_map_entry = SessionActorMapEntry {
             node_id,
-            version: version.clone()
+            version: version.clone(),
+            expiration_timestamp:  SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() + session_ttl,
         };
         session_tenant.insert(session_id.clone(), session_actor_map_entry);
         Ok(())
