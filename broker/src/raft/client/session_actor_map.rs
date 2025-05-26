@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tonic::transport::Channel;
 
-use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::types::SessionActorMapResponse, NodeId}, session::session_actor_map_storage::SessionVersion};
+use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::types::{RenewSession, SessionActorMapResponse}, NodeId}, session::session_actor_map_storage::SessionVersion};
 
 use super::base::{BaseRaftClient, RaftClient, RaftClientError};
 
@@ -34,6 +34,11 @@ pub trait SessionActorMapRaftClientTrait: Sync + Send {
         tenant_id: &str,
         client_id: &str,
         version: SessionVersion,
+    ) -> Result<SessionActorMapResponse, RaftClientError>;
+
+    async fn renew_session_lease(
+        &self, 
+        sessions: Vec<RenewSession>
     ) -> Result<SessionActorMapResponse, RaftClientError>;
 }
 
@@ -76,6 +81,22 @@ impl RaftClient<crate::raft::session_actor_map::types::SessionActorMapTypeConfig
 
 #[async_trait::async_trait]
 impl SessionActorMapRaftClientTrait for SessionActorMapRaftClient {
+
+    async fn renew_session_lease(
+        &self, 
+        sessions: Vec<RenewSession>
+    ) -> Result<SessionActorMapResponse, RaftClientError> {
+
+        let request = crate::raft::session_actor_map::types::SessionActorMapRequest::SessionLeaseRenewRequest { 
+            sessions,
+        };
+
+        let data = serde_json::to_string(&request).unwrap();
+
+        let r = self.append_entries(data).await?;
+
+        Ok(serde_json::from_str(&r.as_str()).unwrap())
+    }
 
     async fn register_session_actor_map(
         &self,
