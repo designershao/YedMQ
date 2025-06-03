@@ -231,16 +231,29 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
 
     fn handle(&mut self, msg: RemoveExpiredSession, ctx: &mut Self::Context) -> Self::Result {
         info!("remove expired session {}", msg.client_id);
-        let self_addr = ctx.address();
+        let tenant_sessions = self.sessions.get(&msg.tenant_id);
+        if tenant_sessions.is_none() {
+            warn!("tenant {} not found", msg.tenant_id);
+            return;
+        }
+        let tenant_sessions = tenant_sessions.unwrap().clone();
         async move {
-            let _ = self_addr
-                .send(ForceStop {
-                    tenant_id: msg.tenant_id.clone(),
-                    client_id: msg.client_id.clone(),
-                })
-                .await
-                .unwrap();
-            info!("remove expired session {} succeed", msg.client_id);
+            let mut tenant_sessions = tenant_sessions.write().await;
+            let session = tenant_sessions.get(&msg.client_id);
+            if let Some(session) = session {
+                session
+                    .session_actor_message_recipient
+                    .do_send(SessionActorMessage::ForceStop);
+                info!(
+                    "force stop session {} remove from local node session map",
+                    msg.client_id
+                );
+                tenant_sessions.remove(&msg.client_id);
+                info!("remove expired session {} succeed", msg.client_id);
+            } else {
+                warn!("session {} not found in tenant {}, maybe this node has rebooted or the session has been removed", msg.client_id, msg.tenant_id);
+                return;
+            }
         }
         .into_actor(self)
         .wait(ctx);
@@ -428,6 +441,7 @@ impl Handler<ForceStop> for SessionManagerActor {
     type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
     fn handle(&mut self, msg: ForceStop, _ctx: &mut Self::Context) -> Self::Result {
+        info!("force stop session {}", msg.client_id);
         if self.sessions.contains_key(&msg.tenant_id) == false {
             return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }

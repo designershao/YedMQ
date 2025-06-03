@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use log::warn;
 use mockall::automock;
 use tonic::transport::Channel;
 use yedmq_mqtt::MqttPacketV3;
@@ -147,7 +148,13 @@ impl TopicRaftClientTrait for TopicRaftClient {
         tenant_id: String,
         msg_topic: String,
     ) -> Result<Vec<Arc<Subscription>>, RaftClientError> {
-        let mut client = self.get_client().await.unwrap();
+        let client = self.get_client().await;
+        if client.is_err() {
+            warn!("Failed to get client: {:?}", client);
+            return Ok(Vec::new());
+        }
+
+        let mut client = client.unwrap();
 
         let request = crate::protobuf::GetSubscriptionRequest {
             tenant_id: tenant_id.to_string(),
