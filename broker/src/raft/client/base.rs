@@ -110,6 +110,15 @@ where
         }
         Ok(())
     }
+
+    async fn is_connected_to_leader(&self, current_addr: &str) -> bool {
+        if let Some(current_leader) = self.get_leader().await {
+            current_addr == current_leader.rpc_addr()
+        } else {
+            false
+        }
+    }
+
 }
 
 #[async_trait::async_trait]
@@ -191,16 +200,20 @@ where
     }
 
     async fn get_client(&self) -> Result<RaftServiceClient<Channel>> {
-        let conn_guard = self.current_connection.lock().await;
+        let mut conn_guard = self.current_connection.lock().await;
 
-        if let Some((_, ref client)) = *conn_guard {
-            return Ok(client.clone());
+        if let Some((current_addr, _)) = &*conn_guard {
+            if !self.is_connected_to_leader(current_addr).await {
+                *conn_guard = None;
+            }
         }
 
-        drop(conn_guard);
-        self.reconnect().await?;
+        if conn_guard.is_none() {
+            drop(conn_guard);
+            self.reconnect().await?;
+            conn_guard = self.current_connection.lock().await;
+        }
 
-        let conn_guard = self.current_connection.lock().await;
         if let Some((_, ref client)) = *conn_guard {
             Ok(client.clone())
         } else {
