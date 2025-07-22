@@ -187,7 +187,7 @@ impl Handler<Subscribe> for TopicManagerActor {
                 msg.topic_filter,
                 msg.qos
             ).await.map_err(|e| {
-                TopicError::InternalError(e.to_string())
+                TopicError::RaftClientError(e)
             })
         }.into_actor(self))
     }
@@ -204,7 +204,7 @@ impl Handler<Unsubscribe> for TopicManagerActor {
                 msg.client_id,
                 msg.topic_filter
             ).await.map_err(|e| {
-                TopicError::InternalError(e.to_string())
+                TopicError::RaftClientError(e)
             })
         }.into_actor(self))
     }
@@ -386,7 +386,9 @@ impl Handler<UpdateCacheEvent> for TopicManagerActor {
 
 #[cfg(test)]
 mod tests {
-    use crate::raft::client::topic::MockTopicRaftClientTrait;
+    use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+
+    use crate::raft::client::{base::RaftClientError, topic::MockTopicRaftClientTrait};
 
     use super::*;
 
@@ -478,6 +480,201 @@ mod tests {
             limit: 10,
         }).await.unwrap();
         assert_eq!(response.total, 1);
+    }
+
+    #[actix::test]
+    async fn when_receive_set_retain_publish_packet_then_update_cache() {
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(MockTopicRaftClientTrait::new()),
+            node_id: NodeId::default(),
+        }.start();
+
+        topic_manager.send(CreateTenant {
+            tenant_id: "tenant1".to_string(),
+        }).await.unwrap();
+
+        let retain_publish_packet = PublishPacketBuilder::new("/a/b".to_string(), "test message".as_bytes().to_vec())
+            .qos(1)
+            .retain(true)
+            .build();
+
+        let event = SetRetainPublishPacket {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            publish_packet: MqttPacketV3::Publish(retain_publish_packet),
+        };
+
+        let result = topic_manager.send(event).await.unwrap();
+        assert!(result.is_ok());
+
+        let result = topic_manager.send(GetRetainPublishPacket {
+            tenant_id: "tenant1".to_string(),
+            topic: "/a/b".to_string(),
+        }).await.unwrap().unwrap();
+
+        assert_eq!(result.len(), 1);
+        if let MqttPacketV3::Publish(packet) = &*result[0] {
+            assert_eq!(packet.variable_header.topic_name, "/a/b");
+            assert_eq!(packet.payload.payload, "test message".as_bytes());
+            assert_eq!(packet.fix_header.qos, Some(1));
+            assert_eq!(packet.fix_header.retain, Some(true));
+        } else {
+            panic!("Expected MqttPacketV3::Publish");   
+        }
+    }
+
+    #[actix::test]
+    async fn when_receive_get_subscriptions_then_return_subscriptions() {
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(MockTopicRaftClientTrait::new()),
+            node_id: NodeId::default(),
+        }.start();
+
+        topic_manager.send(CreateTenant {
+            tenant_id: "tenant1".to_string(),
+        }).await.unwrap();
+
+        topic_manager.send(UpdateCacheEvent::Subscribe {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            topic_filter: "topic1".to_string(),
+            qos: 1,
+        }).await.unwrap().unwrap();
+
+        let response = topic_manager.send(GetSubscriptions {
+            tenant_id: "tenant1".to_string(),
+            topic: "topic1".to_string(),
+        }).await.unwrap().unwrap();
+
+        assert_eq!(response.subscriptions.len(), 1);
+        assert_eq!(response.subscriptions[0].client_identifier, "client1");
+    }
+
+    #[actix::test]
+    async fn when_subscribe_if_topic_raft_client_succeeds_then_return_ok() {
+        let mut topic_raft_client = MockTopicRaftClientTrait::new();
+
+        // Mock the raft client's subscribe method to return Ok
+        topic_raft_client.expect_handle_subscribe()
+            .withf(move |tenant_id, client_id, topic_filter, qos| {
+                tenant_id == &"tenant1".to_string() &&
+                client_id == &"client1".to_string() &&
+                topic_filter == &"topic1".to_string() &&
+                *qos == 1
+            })
+            .returning(|_, _, _, _| Box::pin(async {
+                Ok(())
+            }));
+
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(topic_raft_client),
+            node_id: NodeId::default(),
+        }.start();
+
+        let subscribe_msg = Subscribe {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            topic_filter: "topic1".to_string(),
+            qos: 1,
+        };
+
+
+        let result = topic_manager.send(subscribe_msg).await.unwrap();
+        assert!(result.is_ok());
+    }
+
+    #[actix::test]
+    async fn when_subscribe_if_topic_raft_client_fails_then_return_error() {
+        let mut topic_raft_client = MockTopicRaftClientTrait::new();
+
+        // Mock the raft client's subscribe method to return an error
+        topic_raft_client.expect_handle_subscribe()
+            .withf(move |tenant_id, client_id, topic_filter, qos| {
+                tenant_id == &"tenant1".to_string() &&
+                client_id == &"client1".to_string() &&
+                topic_filter == &"topic1".to_string() &&
+                *qos == 1
+            })
+            .returning(|_, _, _, _| Box::pin(async {
+                Err(RaftClientError::InternalError("Mock error".to_string()))
+            }));
+
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(topic_raft_client),
+            node_id: NodeId::default(),
+        }.start();
+
+        let subscribe_msg = Subscribe {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            topic_filter: "topic1".to_string(),
+            qos: 1,
+        };
+
+        let result = topic_manager.send(subscribe_msg).await.unwrap();
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, TopicError::RaftClientError(_)));
+    }
+
+    #[actix::test]
+    async fn when_unsubscribe_if_topic_raft_client_succeeds_then_return_ok() {
+        let mut topic_raft_client = MockTopicRaftClientTrait::new();
+        // Mock the raft client's unsubscribe method to return Ok
+        topic_raft_client.expect_handle_unsubscribe()
+            .withf(move |tenant_id, client_id, topic_filter| {
+                tenant_id == &"tenant1".to_string() &&
+                client_id == &"client1".to_string() &&
+                topic_filter == &"topic1".to_string()
+            })
+            .returning(|_, _, _| Box::pin(async {
+                Ok(())
+            }));        
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(topic_raft_client),
+            node_id: NodeId::default(),
+        }.start();  
+        let unsubscribe_msg = Unsubscribe {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            topic_filter: "topic1".to_string(),
+        };
+        let result = topic_manager.send(unsubscribe_msg).await.unwrap();
+        assert!(result.is_ok());    
+    }
+
+    #[actix::test]
+    async fn when_unsubscribe_if_topic_raft_client_fails_then_return_error() {
+        let mut topic_raft_client = MockTopicRaftClientTrait::new();
+        // Mock the raft client's unsubscribe method to return an error
+        topic_raft_client.expect_handle_unsubscribe()
+            .withf(move |tenant_id, client_id, topic_filter| {
+                tenant_id == &"tenant1".to_string() &&
+                client_id == &"client1".to_string() &&
+                topic_filter == &"topic1".to_string()
+            })
+            .returning(|_, _, _| Box::pin(async {
+                Err(RaftClientError::InternalError("Mock error".to_string()))
+            }));        
+        let topic_manager = TopicManagerActor {
+            local_topic_cache: Arc::new(RwLock::new(TopicStorage::new())),
+            topic_raft_client: Arc::new(topic_raft_client),
+            node_id: NodeId::default(),
+        }.start();  
+        let unsubscribe_msg = Unsubscribe {
+            tenant_id: "tenant1".to_string(),
+            client_id: "client1".to_string(),
+            topic_filter: "topic1".to_string(),
+        };
+        let result = topic_manager.send(unsubscribe_msg).await.unwrap();
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(matches!(error, TopicError::RaftClientError(_)));
     }
 
 }
