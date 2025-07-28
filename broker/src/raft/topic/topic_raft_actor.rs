@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, path::Path, sync::Arc};
+use std::{cell::OnceCell, clone, path::Path, sync::Arc};
 
 use actix::prelude::*;
 use openraft::{error::{ClientWriteError, RaftError}, Config};
@@ -33,6 +33,9 @@ pub enum TopicRaftError {
     #[error("Actor not ready: {0}")]
     NotReady(String),
 
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
     #[error("Raft initialization error: {0}")]
     RaftInitializationError(String),
 
@@ -41,11 +44,12 @@ pub enum TopicRaftError {
 pub struct TopicRaftActor {
     raft: Arc<OnceCell<TopicRaft>>,
     settings: Arc<crate::settings::Settings>,
-    state: Arc<RwLock<ActorState>>,
+    state: ActorState,
+    pending_messages: Vec<Box<dyn std::any::Any + Send>>,
 }
 
 impl TopicRaftActor {
-    async fn initialize_raft(settings: Arc<crate::settings::Settings>) -> TopicRaft {
+    async fn initialize_raft(settings: Arc<crate::settings::Settings>) -> Result<TopicRaft,TopicRaftError>  {
         let raft_config = Config {
             cluster_name: "yedmq_topic_cluster".to_string(),
             ..Default::default()
@@ -67,9 +71,11 @@ impl TopicRaftActor {
             network,
             log_store,
             state_machine_store,
-        )
-        .await
-        .unwrap()
+        ).await.map_err(|e| TopicRaftError::RaftInitializationError(e.to_string()))
+    }
+
+    fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
+        // TODO: Handle pending messages
     }
 }
 
@@ -79,7 +85,8 @@ impl Default for TopicRaftActor {
         Self {
             raft: Arc::new(OnceCell::new()),
             settings: Arc::new(settings),
-            state: Arc::new(RwLock::new(ActorState::Initializing)),
+            state: ActorState::Initializing,
+            pending_messages: Vec::new(),
         }
     }
 }
@@ -88,10 +95,11 @@ impl SystemService for TopicRaftActor {
     fn service_started(&mut self, ctx: &mut Context<Self>) {
         let raft = self.raft.clone();
         let settings = self.settings.clone();
+        let addr = ctx.address();
 
         ctx.spawn(async move {
             let raft_instance = Self::initialize_raft(settings).await;
-            let _ = raft.set(raft_instance);
+            addr.do_send(InitializationComplete(raft_instance));
         }.into_actor(self));
     }
 }
@@ -104,6 +112,29 @@ impl Actor for TopicRaftActor {
 }
 
 #[derive(Message)]
+#[rtype(result="()")]
+struct InitializationComplete(Result<TopicRaft, TopicRaftError>);
+
+impl Handler<InitializationComplete> for TopicRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
+        match msg.0 {
+            Ok(raft_instance) => {
+                let _ = self.raft.set(raft_instance);
+                self.state = ActorState::Running;
+                log::info!("TopicRaftActor initialized successfully.");
+                self.process_pending_messages(ctx);
+            },
+            Err(e) => {
+                log::error!("Failed to initialize TopicRaftActor: {}", e);
+                self.state = ActorState::Failed(e);
+            }
+        }
+    }
+}
+
+#[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Subscribe{
     node_id: NodeId,
@@ -119,20 +150,40 @@ impl Handler<Subscribe> for TopicRaftActor {
 
 
     fn handle(&mut self, msg: Subscribe, _: &mut Self::Context) -> Self::Result {
-        let raft = self.raft.clone();
-        Box::pin(async move {
-            let command = crate::raft::topic::types::Request::SubscribeTopic {
-                node_id: msg.node_id,
-                tenant_id: msg.tenant_id,
-                client_identifier: msg.client_identifier,
-                topic: msg.topic,
-                qos: msg.qos,
-            };
-            raft.get().unwrap().client_write(
-                command
-            ).await?;
-            Ok(())
-        }.into_actor(self))
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            },
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = crate::raft::topic::types::Request::SubscribeTopic {
+                            node_id: msg.node_id,
+                            tenant_id: msg.tenant_id,
+                            client_identifier: msg.client_identifier,
+                            topic: msg.topic,
+                            qos: msg.qos,
+                        };
+                        raft_instance.client_write(command).await?;
+                        Ok(())
+                    } else {
+                        Err(TopicRaftError::NotInitialized)
+                    }
+                }.into_actor(self));
+            },
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { 
+                    Err(TopicRaftError::ServiceUnavailable(e.to_string())) 
+                }.into_actor(self));
+            },
+            ActorState::Stopped => {
+                return Box::pin(async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }.into_actor(self));
+            },
+        };
     }
 }
 
