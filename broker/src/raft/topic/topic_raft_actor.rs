@@ -1,21 +1,110 @@
-use std::sync::Arc;
+use std::{cell::OnceCell, path::Path, sync::Arc};
 
 use actix::prelude::*;
-use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse};
+use openraft::{error::{ClientWriteError, RaftError}, Config};
+use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::raft::{topic::types::{TopicRaft, TypeConfig}, Node, NodeId};
+use crate::{raft::{topic::{raft_network_impl::Network, store::new_storage, types::TopicRaft}, Node, NodeId}, topic::topic_storage::{TopicStorage}};
+
+#[derive(Debug, Clone)]
+pub enum ActorState {
+    Initializing,
+    Running,
+    Failed(TopicRaftError),
+    Stopped,
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum TopicRaftError {
+
+    #[error("Invalid topic name: {topic}")]
+    InvalidTopicName { topic: String },
+
+    #[error("Raft errror: {0}")]
+    Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+
+    #[error("Network error: {0}")]
+    Network(#[from] openraft::error::NetworkError),
+
+    #[error("Actor not initialized")]
+    NotInitialized,
+
+    #[error("Actor not ready: {0}")]
+    NotReady(String),
+
+    #[error("Raft initialization error: {0}")]
+    RaftInitializationError(String),
+
+}
 
 pub struct TopicRaftActor {
-    raft: Arc<TopicRaft>,
+    raft: Arc<OnceCell<TopicRaft>>,
+    settings: Arc<crate::settings::Settings>,
+    state: Arc<RwLock<ActorState>>,
 }
+
+impl TopicRaftActor {
+    async fn initialize_raft(settings: Arc<crate::settings::Settings>) -> TopicRaft {
+        let raft_config = Config {
+            cluster_name: "yedmq_topic_cluster".to_string(),
+            ..Default::default()
+        };
+
+        let dir = Path::new(&settings.cluster.store_dir);
+
+        let config = Arc::new(raft_config.validate().unwrap());
+
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+
+        let (log_store, state_machine_store) = new_storage(&dir, topic_storage).await;
+
+        let network = Network {};
+
+        openraft::Raft::new(
+            settings.cluster.node_id,
+            config.clone(),
+            network,
+            log_store,
+            state_machine_store,
+        )
+        .await
+        .unwrap()
+    }
+}
+
+impl Default for TopicRaftActor {
+    fn default() -> Self {
+        let settings = crate::settings::Settings::default();
+        Self {
+            raft: Arc::new(OnceCell::new()),
+            settings: Arc::new(settings),
+            state: Arc::new(RwLock::new(ActorState::Initializing)),
+        }
+    }
+}
+
+impl SystemService for TopicRaftActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
+        let raft = self.raft.clone();
+        let settings = self.settings.clone();
+
+        ctx.spawn(async move {
+            let raft_instance = Self::initialize_raft(settings).await;
+            let _ = raft.set(raft_instance);
+        }.into_actor(self));
+    }
+}
+
+impl Supervised for TopicRaftActor{}
+
 
 impl Actor for TopicRaftActor {
     type Context = Context<Self>;
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>")]
+#[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Subscribe{
     node_id: NodeId,
     tenant_id: String,
@@ -26,7 +115,8 @@ pub struct Subscribe{
 
 impl Handler<Subscribe> for TopicRaftActor {
 
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>>;
+    type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
+
 
     fn handle(&mut self, msg: Subscribe, _: &mut Self::Context) -> Self::Result {
         let raft = self.raft.clone();
@@ -38,15 +128,16 @@ impl Handler<Subscribe> for TopicRaftActor {
                 topic: msg.topic,
                 qos: msg.qos,
             };
-            raft.client_write(
+            raft.get().unwrap().client_write(
                 command
-            ).await
+            ).await?;
+            Ok(())
         }.into_actor(self))
     }
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>")]
+#[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Unsubscribe {
     node_id: NodeId,
     tenant_id: String,
@@ -56,7 +147,7 @@ pub struct Unsubscribe {
 
 impl Handler<Unsubscribe> for TopicRaftActor {
 
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>>;
+    type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
 
     fn handle(&mut self, msg: Unsubscribe, _: &mut Self::Context) -> Self::Result {
         let raft = self.raft.clone();
@@ -67,15 +158,16 @@ impl Handler<Unsubscribe> for TopicRaftActor {
                 client_identifier: msg.client_identifier,
                 topic: msg.topic,
             };
-            raft.client_write(
+            raft.get().unwrap().client_write(
                 command
-            ).await
+            ).await?;
+            Ok(())
         }.into_actor(self))
     }
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>")]
+#[rtype(result = "Result<(), TopicRaftError>")]
 pub struct RegisterRetainPublishPacket {
     tenant_id: String,
     client_id: String,
@@ -84,7 +176,7 @@ pub struct RegisterRetainPublishPacket {
 
 impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
 
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>>;
+    type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
 
     fn handle(&mut self, msg: RegisterRetainPublishPacket, _: &mut Self::Context) -> Self::Result {
         let raft = self.raft.clone();
@@ -94,15 +186,16 @@ impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
                 source_client_identifier: msg.client_id,
                 publish_packet: msg.publish_packet,
             };
-            raft.client_write(
+            raft.get().unwrap().client_write(
                 command
-            ).await
+            ).await?;
+            Ok(())
         }.into_actor(self))
     }
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>")]
+#[rtype(result = "Result<(), TopicRaftError>")]
 pub struct CleanRetainPublishPacket {
     tenant_id: String,
     topic_filter: String,
@@ -110,7 +203,7 @@ pub struct CleanRetainPublishPacket {
 
 impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
 
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<TypeConfig>, RaftError<NodeId, ClientWriteError<NodeId, Node>>>>;
+    type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
 
     fn handle(&mut self, msg: CleanRetainPublishPacket, _: &mut Self::Context) -> Self::Result {
         let raft = self.raft.clone();
@@ -119,9 +212,10 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
                 tenant_id: msg.tenant_id,
                 topic_filter: msg.topic_filter,
             };
-            raft.client_write(
+            raft.get().unwrap().client_write(
                 command
-            ).await
+            ).await?;
+            Ok(())
         }.into_actor(self))
     }
 }
