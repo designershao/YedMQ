@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
+    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType},
     raft::{
         topic::{raft_network_impl::Network, store::new_storage, types::TopicRaft},
         Node, NodeId,
@@ -29,11 +30,17 @@ pub enum TopicRaftError {
     #[error("Invalid topic name: {topic}")]
     InvalidTopicName { topic: String },
 
+    #[error("Not leader, current leader: {leader:?}")]
+    NotLeader { leader: Option<Node> },
+
     #[error("Raft errror: {0}")]
     Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
 
     #[error("Network error: {0}")]
     Network(#[from] openraft::error::NetworkError),
+
+    #[error("gRPC error: {0}")]
+    GRPC(String),
 
     #[error("Actor not initialized")]
     NotInitialized,
@@ -46,19 +53,23 @@ pub enum TopicRaftError {
 
     #[error("Raft initialization error: {0}")]
     RaftInitializationError(String),
+
+    #[error("No leader available")]
+    NoLeaderAvailable,
 }
 
 pub struct TopicRaftActor {
-    raft: Arc<OnceCell<TopicRaft>>,
+    raft: OnceCell<Arc<TopicRaft>>,
     settings: Arc<crate::settings::Settings>,
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
+    topic_storage: OnceCell<Arc<RwLock<TopicStorage>>>,
 }
 
 impl TopicRaftActor {
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
-    ) -> Result<TopicRaft, TopicRaftError> {
+    ) -> Result<(TopicRaft, Arc<RwLock<TopicStorage>>), TopicRaftError> {
         let raft_config = Config {
             cluster_name: "yedmq_topic_cluster".to_string(),
             ..Default::default()
@@ -70,11 +81,11 @@ impl TopicRaftActor {
 
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
 
-        let (log_store, state_machine_store) = new_storage(&dir, topic_storage).await;
+        let (log_store, state_machine_store) = new_storage(&dir, topic_storage.clone()).await;
 
         let network = Network {};
 
-        openraft::Raft::new(
+        let raft = openraft::Raft::new(
             settings.cluster.node_id,
             config.clone(),
             network,
@@ -82,7 +93,8 @@ impl TopicRaftActor {
             state_machine_store,
         )
         .await
-        .map_err(|e| TopicRaftError::RaftInitializationError(e.to_string()))
+        .map_err(|e| TopicRaftError::RaftInitializationError(e.to_string()))?;
+        Ok((raft, topic_storage))
     }
 
     fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
@@ -101,16 +113,88 @@ impl TopicRaftActor {
         }
     }
 
+    async fn try_local_write(
+        raft: &TopicRaft,
+        command: crate::raft::topic::types::Request,
+    ) -> Result<(), TopicRaftError> {
+        raft.client_write(command).await.map_err(|e| {
+            log::error!("Failed to write command to raft: {}", e);
+            if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
+                e_inner,
+            )) = e
+            {
+                TopicRaftError::NotLeader {
+                    leader: e_inner.leader_node,
+                }
+            } else {
+                TopicRaftError::Raft(e)
+            }
+        })?;
+        Ok(())
+    }
+
+    async fn handle_raft_write(
+        raft: &TopicRaft,
+        request: crate::raft::topic::types::Request,
+    ) -> Result<(), TopicRaftError> {
+        match Self::try_local_write(raft, request.clone()).await {
+            Ok(_) => Ok(()),
+            Err(TopicRaftError::NotLeader { leader }) => {
+                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                if let Some(leader_node) = leader {
+                    Self::forward_to_leader(leader_node.rpc_addr, request).await
+                } else {
+                    Err(TopicRaftError::NoLeaderAvailable)
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to handle raft write: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    async fn forward_to_leader(
+        current_leader_rpc_addr: String,
+        msg: crate::raft::topic::types::Request,
+    ) -> Result<(), TopicRaftError> {
+        Self::send_to_remote_actor(current_leader_rpc_addr, msg).await
+    }
+
+    async fn send_to_remote_actor(
+        leader_addr: String,
+        msg: crate::raft::topic::types::Request,
+    ) -> Result<(), TopicRaftError> {
+        let mut client = RaftServiceClient::connect(leader_addr).await.map_err(|e| {
+            log::error!("Failed to connect to leader {}", e);
+            TopicRaftError::GRPC(e.to_string())
+        })?;
+
+        let data = serde_json::to_string(&msg).unwrap();
+
+        let request = AppendEntriesRequest {
+            data,
+            raft_type: RaftType::Topic.into(),
+        };
+
+        client.append_entries(request).await.map_err(|e| {
+            log::error!("Failed to send append entries request to leader: {}", e);
+            TopicRaftError::GRPC(e.to_string())
+        })?;
+
+        Ok(())
+    }
 }
 
 impl Default for TopicRaftActor {
     fn default() -> Self {
         let settings = crate::settings::Settings::default();
         Self {
-            raft: Arc::new(OnceCell::new()),
+            raft: OnceCell::new(),
             settings: Arc::new(settings),
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
+            topic_storage: OnceCell::new(),
         }
     }
 }
@@ -138,15 +222,16 @@ impl Actor for TopicRaftActor {
 
 #[derive(Message, Clone)]
 #[rtype(result = "()")]
-struct InitializationComplete(Result<TopicRaft, TopicRaftError>);
+struct InitializationComplete(Result<(TopicRaft, Arc<RwLock<TopicStorage>>), TopicRaftError>);
 
 impl Handler<InitializationComplete> for TopicRaftActor {
     type Result = ();
 
     fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
         match msg.0 {
-            Ok(raft_instance) => {
-                let _ = self.raft.set(raft_instance);
+            Ok((raft_instance, topic_storage)) => {
+                let _ = self.raft.set(Arc::new(raft_instance));
+                let _ = self.topic_storage.set(topic_storage);
                 self.state = ActorState::Running;
                 log::info!("TopicRaftActor initialized successfully.");
                 self.process_pending_messages(ctx);
@@ -194,7 +279,7 @@ impl Handler<Subscribe> for TopicRaftActor {
                                 topic: msg.topic,
                                 qos: msg.qos,
                             };
-                            raft_instance.client_write(command).await?;
+                            Self::handle_raft_write(raft_instance, command).await?;
                             Ok(())
                         } else {
                             Err(TopicRaftError::NotInitialized)
@@ -253,7 +338,7 @@ impl Handler<Unsubscribe> for TopicRaftActor {
                                 client_identifier: msg.client_identifier,
                                 topic: msg.topic,
                             };
-                            raft_instance.client_write(command).await?;
+                            Self::handle_raft_write(raft_instance, command).await?;
                             Ok(())
                         } else {
                             Err(TopicRaftError::NotInitialized)
@@ -304,14 +389,18 @@ impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
                 let raft = self.raft.clone();
                 return Box::pin(
                     async move {
-                        let command =
-                            crate::raft::topic::types::Request::RegisterRetainPublishPacket {
-                                tenant_id: msg.tenant_id,
-                                source_client_identifier: msg.client_id,
-                                publish_packet: msg.publish_packet,
-                            };
-                        raft.get().unwrap().client_write(command).await?;
-                        Ok(())
+                        if let Some(raft_instance) = raft.get() {
+                            let command =
+                                crate::raft::topic::types::Request::RegisterRetainPublishPacket {
+                                    tenant_id: msg.tenant_id,
+                                    source_client_identifier: msg.client_id,
+                                    publish_packet: msg.publish_packet,
+                                };
+                            Self::handle_raft_write(raft_instance, command).await?;
+                            Ok(())
+                        } else {
+                            Err(TopicRaftError::NotInitialized)
+                        }
                     }
                     .into_actor(self),
                 );
@@ -357,13 +446,17 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
                 let raft = self.raft.clone();
                 return Box::pin(
                     async move {
-                        let command =
-                            crate::raft::topic::types::Request::CleanRetainPublishPacket {
-                                tenant_id: msg.tenant_id,
-                                topic_filter: msg.topic_filter,
-                            };
-                        raft.get().unwrap().client_write(command).await?;
-                        Ok(())
+                        if let Some(raft_instance) = raft.get() {
+                            let command =
+                                crate::raft::topic::types::Request::CleanRetainPublishPacket {
+                                    tenant_id: msg.tenant_id,
+                                    topic_filter: msg.topic_filter,
+                                };
+                            Self::handle_raft_write(raft_instance, command).await?;
+                            Ok(())
+                        } else {
+                            Err(TopicRaftError::NotInitialized)
+                        }
                     }
                     .into_actor(self),
                 );
