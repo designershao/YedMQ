@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package yedmqpb;
+
+// RaftService defines RPCs for Raft consensus protocol operations.
+service RaftService {
+
+  // Append log entries to the Raft log.
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+
+  // Request a vote from other nodes in the Raft cluster.
+  rpc Vote(VoteRequest) returns (VoteResponse);
+
+  // Install a snapshot to synchronize state between nodes.
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+
+}
+
+// RaftType specifies the type of Raft data being operated on.
+enum RaftType {
+  TOPIC = 0;               // Topic metadata
+  SESSION_ACTOR_MAP = 1;   // Session actor mapping
+  SESSION_STATE = 2;       // Session state data
+}
+
+// Request message for appending entries to the Raft log.
+message AppendEntriesRequest {
+  string data = 1;         // Serialized log entry data
+  RaftType raft_type = 2;  // Type of Raft data
+}
+
+// Response message for AppendEntries RPC.
+message AppendEntriesResponse {
+  bool success = 1;        // Operation success flag
+  ErrorDetail error = 2;   // Error details if any
+  string data = 3;         // Additional response data
+}
+
+// Request message for requesting a vote.
+message VoteRequest {
+  string data = 1;         // Serialized vote request data
+  RaftType raft_type = 2;  // Type of Raft data
+}
+
+// Response message for Vote RPC.
+message VoteResponse {
+  bool success = 1;        // Operation success flag
+  ErrorDetail error = 2;   // Error details if any
+  string data = 3;         // Additional response data
+}
+
+// Request message for installing a snapshot.
+message InstallSnapshotRequest {
+  string data = 1;         // Serialized snapshot data
+  RaftType raft_type = 2;  // Type of Raft data
+}
+
+// Response message for InstallSnapshot RPC.
+message InstallSnapshotResponse {
+  bool success = 1;        // Operation success flag
+  ErrorDetail error = 2;   // Error details if any
+  string data = 3;         // Additional response data
+}

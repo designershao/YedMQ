@@ -1,0 +1,329 @@
+syntax = "proto3";
+
+import "raft_protocol.proto";
+import "common.proto";
+
+package yedmqpb;
+
+// ClusterService defines all RPCs for cluster management and MQTT broker operations.
+service ClusterService {
+
+    // Store an offline message for a persistent client which is not currently connected.
+    rpc StoreOfflineMessage(StoreOfflineMessageRequest) returns (StoreOfflineMessageResponse);
+
+    // Pop (retrieve and remove) an offline message for a persistent client which is not currently connected.
+    rpc PopOfflineMessage(PopOfflineMessageRequest) returns (PopOfflineMessageResponse);
+
+    // Get the session state for a client.
+    rpc GetSessionState(GetSessionStateRequest) returns (GetSessionStateResponse);
+
+    // Create a new session state for a client.
+    rpc CreateSessionState(CreateSessionStateRequest) returns (CreateSessionStateResponse);
+
+    // Delete the session state for a client.
+    rpc DeleteSessionState(DeleteSessionStateRequest) returns (DeleteSessionStateResponse);
+
+    // Register a received inflight packet for a client.
+    rpc RegisterInflightRxPacket(RegisterInflightRxPacketRequest) returns (RegisterInflightRxPacketResponse);
+
+    // Register a transmitted inflight packet for a client.
+    rpc RegisterInflightTxPacket(RegisterInflightTxPacketRequest) returns (RegisterInflightTxPacketResponse);
+
+    // Advance the state of an inflight packet.
+    rpc AdvanceInflightState(AdvanceInflightStateRequest) returns (AdvanceInflightStateResponse);
+
+    // Get the current inflight packet for a client.
+    rpc GetCurrentInflightPacket(GetCurrentInflightPacketRequest) returns (GetCurrentInflightPacketResponse);
+
+    // Get the next inflight packet for a client.
+    rpc GetNextInflightPacket(GetNextInflightPacketRequest) returns (GetNextInflightPacketResponse);
+
+    // Subscribe a client to a topic.
+    rpc SubscribeTopic(SubscribeTopicRequest) returns (SubscribeTopicResponse);
+
+    // Unsubscribe a client from a topic.
+    rpc UnsubscribeTopic(UnsubscribeTopicRequest) returns (UnsubscribeTopicResponse);
+
+    // Get all subscribers for a specific topic.
+    rpc GetSubscribersByTopic(GetSubscribersByTopicRequest) returns (GetSubscribersByTopicResponse);
+
+    // Register a retained publish message for a topic.
+    rpc RegisterRetainPublishMessage(RegisterRetainPublishMessageRequest) returns (RegisterRetainPublishMessageResponse);
+
+    // Clean (remove) the retained publish message for a topic.
+    rpc CleanRetainPublishMessage(CleanRetainPublishMessageRequest) returns (CleanRetainPublishMessageResponse);
+
+    // Create a new tenant in the system.
+    rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+
+    // Register a session actor mapping for a client.
+    rpc RegisterSessionActorMap(RegisterSessionActorMapRequest) returns (RegisterSessionActorMapResponse);
+
+    // Unregister a session actor mapping for a client.
+    rpc UnRegisterSessionActorMap(UnregisterSessionActorMapRequest) returns (UnregisterSessionActorMapResponse);
+
+    // Renew the session lease for a client.
+    rpc RenewSessionLease(RenewSessionLeaseRequest) returns (RenewSessionLeaseResponse);
+
+}
+
+// Request to store an offline message for a client.
+message StoreOfflineMessageRequest {
+    string tenant_id = 1; // Tenant identifier
+    string client_id = 2; // Client identifier
+    string payload = 3;   // Message payload
+}
+
+// Response for storing an offline message.
+message StoreOfflineMessageResponse {
+    bool success = 1;         // Operation success flag
+    ErrorDetail error = 2;    // Error details if any
+}
+
+// Request to pop an offline message for a client.
+message PopOfflineMessageRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+}
+
+// Response for popping an offline message.
+message PopOfflineMessageResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    optional string payload = 3; // The popped message payload
+}
+
+// Request to get the session state for a client.
+message GetSessionStateRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+}
+
+// Response for getting the session state.
+message GetSessionStateResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    optional string payload = 3; // Session state data
+}
+
+// Request to create a session state for a client.
+message CreateSessionStateRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    string payload = 3; // Session state data
+}
+
+// Response for creating a session state.
+message CreateSessionStateResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to delete a session state for a client.
+message DeleteSessionStateRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+}
+
+// Response for deleting a session state.
+message DeleteSessionStateResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to register a received inflight packet.
+message RegisterInflightRxPacketRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    string payload = 3; // Packet data
+}
+
+// Response for registering a received inflight packet.
+message RegisterInflightRxPacketResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to register a transmitted inflight packet.
+message RegisterInflightTxPacketRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    string payload = 3; // Packet data
+}
+
+// Response for registering a transmitted inflight packet.
+message RegisterInflightTxPacketResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to advance the state of an inflight packet.
+message AdvanceInflightStateRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    uint64 packet_id = 3; // Packet identifier
+}
+
+// Response for advancing the inflight packet state.
+message AdvanceInflightStateResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to get the current inflight packet.
+message GetCurrentInflightPacketRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    string packet_id = 3;
+}
+
+// Response for getting the current inflight packet.
+message GetCurrentInflightPacketResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    optional string packet = 3; // Packet data
+}
+
+// Request to get the next inflight packet.
+message GetNextInflightPacketRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    uint64 packet_id = 3;
+}
+
+// Response for getting the next inflight packet.
+message GetNextInflightPacketResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    optional string packet = 3; // Packet data
+}
+
+// Request to subscribe a client to a topic.
+message SubscribeTopicRequest {
+    uint64 node_id = 1;    // Node identifier
+    string tenant_id = 2;
+    string client_id = 3;
+    string topic = 4;      // Topic name
+    uint32 qos = 5;        // Quality of Service level
+}
+
+// Response for subscribing to a topic.
+message SubscribeTopicResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to unsubscribe a client from a topic.
+message UnsubscribeTopicRequest {
+    uint64 node_id = 1;
+    string tenant_id = 2;
+    string client_id = 3;
+    string topic = 4;
+}
+
+// Response for unsubscribing from a topic.
+message UnsubscribeTopicResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to get all subscribers for a topic.
+message GetSubscribersByTopicRequest {
+    string tenant_id = 1;
+    string topic = 2;
+}
+
+// Subscriber information.
+message Subscriber {
+    uint64 node_id = 1;
+    uint32 qos = 2;
+    string client_id = 3;
+}
+
+// Response for getting subscribers by topic.
+message GetSubscribersByTopicResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    repeated Subscriber payload = 3; // List of subscribers
+}
+
+// Request to register a retained publish message.
+message RegisterRetainPublishMessageRequest {
+    string tenant_id = 1;
+    string topic = 2;
+    string payload = 3; // Message payload
+}
+
+// Response for registering a retained publish message.
+message RegisterRetainPublishMessageResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to clean a retained publish message.
+message CleanRetainPublishMessageRequest {
+    string tenant_id = 1;
+    string topic = 2;
+}
+
+// Response for cleaning a retained publish message.
+message CleanRetainPublishMessageResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to create a new tenant.
+message CreateTenantRequest {
+    string tenant_id = 1;
+}
+
+// Response for creating a tenant.
+message CreateTenantResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Session version information.
+message SessionVersion {
+    uint64 counter = 1; // Version counter
+    uint64 node_id = 2; // Node identifier
+}
+
+// Request to register a session actor mapping.
+message RegisterSessionActorMapRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    uint64 node_id = 3;
+    SessionVersion session_version = 4;
+}
+
+// Response for registering a session actor mapping.
+message RegisterSessionActorMapResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to unregister a session actor mapping.
+message UnregisterSessionActorMapRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+    SessionVersion session_version = 3;
+}
+
+// Response for unregistering a session actor mapping.
+message UnregisterSessionActorMapResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
+
+// Request to renew a session lease.
+message RenewSessionLeaseRequest {
+    string tenant_id = 1;
+    string client_id = 2;
+}
+
+// Response for renewing a session lease.
+message RenewSessionLeaseResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+}
