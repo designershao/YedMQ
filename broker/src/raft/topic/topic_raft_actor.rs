@@ -1,5 +1,6 @@
 use std::{cell::OnceCell, path::Path, sync::Arc};
 
+use actix::dev::MessageResponse;
 use actix::prelude::*;
 use openraft::{
     error::{ClientWriteError, RaftError},
@@ -111,6 +112,20 @@ impl TopicRaftActor {
                 log::warn!("Unknown pending message type: {:?}", msg);
             }
         }
+    }
+
+    async fn try_local_linearizable_read(
+        raft: &TopicRaft,
+    ) -> Result<(), TopicRaftError> {
+        raft.ensure_linearizable().await.map_err(|e| {
+            log::error!("Failed to ensure linearizable read: {}", e);
+            if let Some(leader) = e.forward_to_leader() {
+                TopicRaftError::NotLeader { leader: leader.leader_node.clone() }
+            } else {
+                TopicRaftError::NotLeader { leader: None }
+            }
+        })?;
+        Ok(())
     }
 
     async fn try_local_write(
@@ -475,5 +490,350 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
                 );
             }
         }
+    }
+}
+
+pub struct SubscriptionInfo {
+    pub node_id: NodeId,
+    pub client_identifier: String,
+    pub qos: u8,
+}
+
+pub struct GetSubscriptionsResponse {
+    subscriptions: Vec<SubscriptionInfo>,
+}
+
+impl<A, M> MessageResponse<A, M> for GetSubscriptionsResponse
+where
+    A: Actor,
+    M: Message<Result = GetSubscriptionsResponse>,
+{
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
+        if let Some(tx) = tx {
+            let _ = tx.send(self);
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<GetSubscriptionsResponse, TopicRaftError>")]
+pub struct GetSubscriptions {
+    tenant_id: String,
+    topic: String,
+}
+
+impl Handler<GetSubscriptions> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<GetSubscriptionsResponse, TopicRaftError>>;
+
+    fn handle(&mut self, msg: GetSubscriptions, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let topic_storage = self.topic_storage.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(_) = raft.get() {
+                            if let Some(topic_storage) = topic_storage.get() {
+                                let storage = topic_storage.read().await;
+                                let subscriptions = storage
+                                    .get_subscriptions(msg.tenant_id, msg.topic)
+                                    .map(|x| {
+                                        let info = x
+                                            .iter()
+                                            .map(move |x| SubscriptionInfo {
+                                                node_id: x.node_id,
+                                                client_identifier: x.client_identifier.clone(),
+                                                qos: x.qos,
+                                            })
+                                            .collect();
+                                        GetSubscriptionsResponse {
+                                            subscriptions: info,
+                                        }
+                                    })
+                                    .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+
+                                Ok(subscriptions)
+                            } else {
+                                Err(TopicRaftError::NotInitialized)
+                            }
+                        } else {
+                            Err(TopicRaftError::NotInitialized)
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<GetSubscriptionsResponse, TopicRaftError>")]
+pub struct GetSubscriptionsEnsureLinearizable {
+    tenant_id: String,
+    topic: String,
+}
+
+
+impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<GetSubscriptionsResponse, TopicRaftError>>;
+
+    fn handle(&mut self, msg: GetSubscriptionsEnsureLinearizable, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let topic_storage = self.topic_storage.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            match Self::try_local_linearizable_read(raft_instance).await {
+                                Ok(_) => {
+                                    if let Some(topic_storage) = topic_storage.get() {
+                                        let storage = topic_storage.read().await;
+                                        let subscriptions = storage
+                                            .get_subscriptions(msg.tenant_id, msg.topic)
+                                            .map(|x| {
+                                                let info = x
+                                                    .iter()
+                                                    .map(move |x| SubscriptionInfo {
+                                                        node_id: x.node_id,
+                                                        client_identifier: x.client_identifier.clone(),
+                                                        qos: x.qos,
+                                                    })
+                                                    .collect();
+                                                GetSubscriptionsResponse {
+                                                    subscriptions: info,
+                                                }
+                                            })
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+
+                                        Ok(subscriptions)
+                                    } else {
+                                        Err(TopicRaftError::NotInitialized)
+                                    }
+                                },
+                                Err(TopicRaftError::NotLeader { leader }) => {
+                                    log::error!("Failed to ensure linearizable read, current node is not leader");
+                                    if let Some(leader) = leader {
+                                        let mut client = RaftServiceClient::connect(leader.rpc_addr.clone()).await
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                        client.get_subscriptions(crate::protobuf::GetSubscriptionRequest {
+                                            tenant_id: msg.tenant_id,
+                                            topic: msg.topic,
+                                        }).await
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))
+                                            .and_then(|response| {
+                                                let subscriptions = response.into_inner().subscriptions.into_iter()
+                                                    .map(|x| SubscriptionInfo {
+                                                        node_id: x.node_id,
+                                                        client_identifier: x.client_id,
+                                                        qos: x.qos as u8,
+                                                    })
+                                                    .collect();
+                                                Ok(GetSubscriptionsResponse { subscriptions })
+                                            })
+                                    } else {
+                                        Err(TopicRaftError::NoLeaderAvailable)
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to ensure linearizable read: {}", e);
+                                    Err(e)
+                                }
+                            }
+                        } else {
+                            return Err(TopicRaftError::NotInitialized);
+                        }
+                    }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }
+        };
+    }
+}
+
+
+#[derive(Message)]
+#[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+pub struct GetRetainPublishPacket {
+    tenant_id: String,
+    topic: String,
+}
+
+impl Handler<GetRetainPublishPacket> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>>;
+
+    fn handle(&mut self, msg: GetRetainPublishPacket, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let topic_storage = self.topic_storage.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(_) = raft.get() {
+                            if let Some(topic_storage) = topic_storage.get() {
+                                let storage = topic_storage.read().await;
+                                let packets = storage
+                                    .get_retain_publish_packet(msg.tenant_id, msg.topic)
+                                    .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                Ok(packets)
+                            } else {
+                                Err(TopicRaftError::NotInitialized)
+                            }
+                        } else {
+                            Err(TopicRaftError::NotInitialized)
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }
+        };
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+pub struct GetRetainPublishPacketEnsureLinearizable {
+    tenant_id: String,
+    topic: String,
+}
+
+impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>>;
+
+    fn handle(&mut self, msg: GetRetainPublishPacketEnsureLinearizable, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let topic_storage = self.topic_storage.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            match Self::try_local_linearizable_read(raft_instance).await {
+                                Ok(_) => {
+                                    if let Some(topic_storage) = topic_storage.get() {
+                                        let storage = topic_storage.read().await;
+                                        let packets = storage
+                                            .get_retain_publish_packet(msg.tenant_id, msg.topic)
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                        Ok(packets)
+                                    } else {
+                                        Err(TopicRaftError::NotInitialized)
+                                    }
+                                },
+                                Err(TopicRaftError::NotLeader { leader }) => {
+                                    log::error!("Failed to ensure linearizable read, current node is not leader");
+                                    if let Some(leader) = leader {
+                                        let mut client = RaftServiceClient::connect(leader.rpc_addr.clone()).await
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                        client.get_retain_publish_packet(crate::protobuf::GetRetainPublishPacketRequest {
+                                            tenant_id: msg.tenant_id,
+                                            topic: msg.topic,
+                                        }).await
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))
+                                            .and_then(|response| {
+                                                Ok(response.into_inner().packets.into_iter()
+                                                    .map(|x| Arc::new(x))
+                                                    .collect())
+                                            })
+                                    } else {
+                                        Err(TopicRaftError::NoLeaderAvailable)
+                                    }
+                                },
+                                Err(e) => {
+                                    log::error!("Failed to ensure linear read: {}", e);
+                                    Err(e)
+                                }
+                            }
+                        } else {
+                            return Err(TopicRaftError::NotInitialized);
+                        }
+                    }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }
+        };
     }
 }
