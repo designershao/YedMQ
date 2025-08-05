@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::{fmt::Display, io::Cursor};
 
 pub mod raft_manager;
-pub mod service;
 pub mod session_actor_map;
 pub mod session_state;
 pub mod topic;

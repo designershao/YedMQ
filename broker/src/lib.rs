@@ -11,6 +11,8 @@ pub mod app;
 pub mod raft;
 pub mod connection;
 
+pub mod rpc;
+
 pub mod protobuf {
-    tonic::include_proto!("openraftpb");
+    tonic::include_proto!("yedmqpb");
 }

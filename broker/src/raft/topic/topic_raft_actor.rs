@@ -17,6 +17,7 @@ use crate::{
     },
     topic::topic_storage::TopicStorage,
 };
+use crate::protobuf::cluster_service_client::ClusterServiceClient;
 
 #[derive(Debug, Clone)]
 pub enum ActorState {
@@ -646,15 +647,15 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
-                                        let mut client = RaftServiceClient::connect(leader.rpc_addr.clone()).await
+                                        let mut client = ClusterServiceClient::connect(leader.rpc_addr.clone()).await
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
-                                        client.get_subscriptions(crate::protobuf::GetSubscriptionRequest {
+                                        client.get_subscribers_by_topic(crate::protobuf::GetSubscribersByTopicRequest {
                                             tenant_id: msg.tenant_id,
                                             topic: msg.topic,
                                         }).await
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))
                                             .and_then(|response| {
-                                                let subscriptions = response.into_inner().subscriptions.into_iter()
+                                                let subscriptions = response.into_inner().payload.into_iter()
                                                     .map(|x| SubscriptionInfo {
                                                         node_id: x.node_id,
                                                         client_identifier: x.client_id,
@@ -794,18 +795,27 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
-                                        let mut client = RaftServiceClient::connect(leader.rpc_addr.clone()).await
+                                        let mut client = ClusterServiceClient::connect(leader.rpc_addr.clone()).await
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
-                                        client.get_retain_publish_packet(crate::protobuf::GetRetainPublishPacketRequest {
+                                        let response = client.get_retain_publish_message(crate::protobuf::GetRetainPublishMessageRequest {
                                             tenant_id: msg.tenant_id,
                                             topic: msg.topic,
                                         }).await
-                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))
-                                            .and_then(|response| {
-                                                Ok(response.into_inner().packets.into_iter()
-                                                    .map(|x| Arc::new(x))
-                                                    .collect())
-                                            })
+                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                        
+                                        let inner = response.into_inner();
+                                        if inner.success {
+                                            if let Some(payload) = inner.payload {
+                                                // 反序列化 payload 为 Vec<Arc<MqttPacketV3>>
+                                                let packets: Vec<Arc<MqttPacketV3>> = serde_json::from_str(&payload)
+                                                    .map_err(|e| TopicRaftError::GRPC(format!("Failed to deserialize payload: {}", e)))?;
+                                                Ok(packets)
+                                            } else {
+                                                Ok(vec![])
+                                            }
+                                        } else {
+                                            Err(TopicRaftError::GRPC(format!("Failed to get retain publish message: {:?}", inner.error)))
+                                        }
                                     } else {
                                         Err(TopicRaftError::NoLeaderAvailable)
                                     }

@@ -49,10 +49,13 @@ service ClusterService {
 
     // Register a retained publish message for a topic.
     rpc RegisterRetainPublishMessage(RegisterRetainPublishMessageRequest) returns (RegisterRetainPublishMessageResponse);
-
+    
+    // Get the retained publish message for a topic.
+    rpc GetRetainPublishMessage(GetRetainPublishMessageRequest) returns (GetRetainPublishMessageResponse);
+    
     // Clean (remove) the retained publish message for a topic.
     rpc CleanRetainPublishMessage(CleanRetainPublishMessageRequest) returns (CleanRetainPublishMessageResponse);
-
+    
     // Create a new tenant in the system.
     rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
 
@@ -258,6 +261,19 @@ message RegisterRetainPublishMessageRequest {
 message RegisterRetainPublishMessageResponse {
     bool success = 1;
     ErrorDetail error = 2;
+}
+
+// Request to get a retained publish message.
+message GetRetainPublishMessageRequest {
+    string tenant_id = 1;
+    string topic = 2;
+}
+
+// Response for getting a retained publish message.
+message GetRetainPublishMessageResponse {
+    bool success = 1;
+    ErrorDetail error = 2;
+    optional string payload = 3; // The retained message payload
 }
 
 // Request to clean a retained publish message.
