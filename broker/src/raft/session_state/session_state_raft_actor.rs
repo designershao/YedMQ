@@ -5,7 +5,7 @@ use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, 
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::{ raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::session_state_storage::{SessionState, SessionStateStorage}, settings::Session};
+use crate::{protobuf::{ cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{client::session_state, session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::{self, session_state_storage::{self, SessionState, SessionStateStorage}}, settings::Session};
 
 
 #[derive(Debug, Clone)]
@@ -105,6 +105,7 @@ impl SessionStateRaftActor {
         })?;
         Ok(())
     }
+
 
     async fn try_local_write(
         raft: &SessionStateRaft,
@@ -359,6 +360,728 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                         .into_actor(self),
                 );
             }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<SessionState>, SessionStateRaftError>")]
+pub struct GetSessionState {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<GetSessionState> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<SessionState>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetSessionState, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(_) = raft.get() {
+                        if let Some(session_state_storage) = session_state_storage.get() {
+                            let session_state_storage = session_state_storage.read().await;
+                            let session_state = session_state_storage
+                                .get_session_state(&msg.tenant_id, &msg.client_id)
+                                .await;
+                            if let Some(session_state) = session_state {
+                                Ok(Some(session_state.read().await.clone()))
+                            } else {
+                                Ok(None)
+                            }
+                        } else {
+                            Err(SessionStateRaftError::NotInitialized)
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<SessionState>, SessionStateRaftError>")]
+pub struct GetSessionStateEnsureLinearizable {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<SessionState>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetSessionStateEnsureLinearizable, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        match Self::try_local_linearizable_read(raft_instance).await {
+                            Ok(_) => {
+                                if let Some(session_state_storage) = session_state_storage.get() {
+                                    let session_state_storage = session_state_storage.read().await;
+                                    let session_state = session_state_storage
+                                        .get_session_state(&msg.tenant_id, &msg.client_id)
+                                        .await;
+                                    if let Some(session_state) = session_state {
+                                        Ok(Some(session_state.read().await.clone()))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                } else {
+                                    Err(SessionStateRaftError::NotInitialized)
+                                }
+                            },
+                            Err(SessionStateRaftError::NotLeader { leader }) => {
+                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                if let Some(leader_node) = leader {
+                                    let mut client = ClusterServiceClient::connect(leader_node.rpc_addr.clone()).await.map_err(|e| {
+                                        log::error!("Failed to connect to leader {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    })?;
+                                    client.get_session_state(crate::protobuf::GetSessionStateRequest {
+                                        tenant_id: msg.tenant_id,
+                                        client_id: msg.client_id,
+                                    }).await.map_err(|e| {
+                                        log::error!("Failed to get session state from leader: {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    }).and_then(|res| {
+                                        let inner = res.into_inner();
+                                        if inner.success {
+                                            if let Some(payload) = inner.payload {
+                                                let session_state = serde_json::from_str(&payload).unwrap();
+                                                Ok(Some(session_state))
+                                            } else {
+                                                Ok(None)
+                                            }
+                                        } else {
+                                            Err(SessionStateRaftError::GRPC(inner.error.unwrap().message))
+                                        }
+                                    })
+                                } else {
+                                    Err(SessionStateRaftError::NoLeaderAvailable)
+                                }
+                            },
+                            Err(e) => {
+                                log::error!("Failed to ensure linearizable read: {}", e);
+                                Err(e)    
+                            }
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct CreateSessionState {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub inflight_duration: u64,
+}
+
+impl Handler<CreateSessionState> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: CreateSessionState, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::CreateSessionState { 
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id, 
+                            inflight_duration_secs: msg.inflight_duration 
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct DeleteSessionState {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<DeleteSessionState> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: DeleteSessionState, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::DeleteSessionState { 
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id 
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct RegisterInflightRxPacket {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub inflight_rx_packet: MqttPacketV3,
+}
+
+impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: RegisterInflightRxPacket, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::InflightRegisterRxPacket {  
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id, 
+                            packet: msg.inflight_rx_packet
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+
+
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct RegisterInflightTxPacket {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub inflight_tx_packet: MqttPacketV3,
+}
+
+impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: RegisterInflightTxPacket, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::InflightRegisterTxPacket {  
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id, 
+                            packet: msg.inflight_tx_packet
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+// Advance to the next state of inflight packet
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct AdvanceInflightState {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet_id: u64,
+}
+
+impl Handler<AdvanceInflightState> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: AdvanceInflightState, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::InflightNextState {   
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id, 
+                            packet_identifier: msg.packet_id
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+pub struct GetCurrentInflightPacket {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet_id: u64,
+}
+
+impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetCurrentInflightPacket, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        if let Some(session_state_storage) = session_state_storage.get() {
+                            let session_state_storage = session_state_storage.read().await;
+                            let inflight_packet = session_state_storage
+                                .inflight_get_current_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
+                            Ok(inflight_packet)
+                        } else {
+                            Err(SessionStateRaftError::NotInitialized)
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );  
+            }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+pub struct GetCurrentInflightPacketLinearizable {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet_id: u64,
+}
+
+impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetCurrentInflightPacketLinearizable, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        match Self::try_local_linearizable_read(raft_instance).await {
+                            Ok(_) => {
+                                if let Some(session_state_storage) = session_state_storage.get() {
+                                    let session_state_storage = session_state_storage.read().await;
+                                    let inflight_packet = session_state_storage
+                                        .inflight_get_current_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
+                                    Ok(inflight_packet)
+                                } else {
+                                    Err(SessionStateRaftError::NotInitialized)
+                                }
+                            },
+                            Err(SessionStateRaftError::NotLeader { leader }) => {
+                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                if let Some(leader_node) = leader {
+                                    let mut client = ClusterServiceClient::connect(leader_node.rpc_addr).await.map_err(|e| {
+                                        log::error!("Failed to connect to leader {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    })?;
+                                    let response = client.get_current_inflight_packet(
+                                        crate::protobuf::GetCurrentInflightPacketRequest {
+                                            tenant_id: msg.tenant_id,
+                                            client_id: msg.client_id,
+                                            packet_id: msg.packet_id.try_into().unwrap(),
+                                        }
+                                    ).await.map_err(|e| {
+                                        log::error!("Failed to get current inflight packet from leader: {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    })?;
+                                    let inner = response.into_inner();
+                                    if inner.success {
+                                        if let Some(packet) = inner.packet {
+                                            let packet = serde_json::from_str(&packet).unwrap();
+                                            Ok(Some(packet))
+                                        } else {
+                                            Ok(None)
+                                        }
+                                    } else {
+                                        Err(SessionStateRaftError::GRPC(inner.error.unwrap().message))
+                                    }
+                                } else {
+                                    Err(SessionStateRaftError::NoLeaderAvailable)
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to ensure linearizable read: {}", e);
+                                Err(e)    
+                            }
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+pub struct GetNextInflightPacket{
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet_id: u64,
+}
+
+impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetNextInflightPacket, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(_) = raft.get() {
+                        if let Some(session_state_storage) = session_state_storage.get() {
+                            let session_state_storage = session_state_storage.read().await;
+                            let inflight_packet = session_state_storage
+                                .inflight_get_next_state_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
+                            Ok(inflight_packet)
+                        } else {
+                            Err(SessionStateRaftError::NotInitialized)
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );  
+            }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+pub struct GetNextInflightPacketLinearizable {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub packet_id: u64,
+}
+
+impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: GetNextInflightPacketLinearizable, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_state_storage = self.session_state_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        match Self::try_local_linearizable_read(raft_instance).await {
+                            Ok(_) => {
+                                if let Some(session_state_storage) = session_state_storage.get() {
+                                    let session_state_storage = session_state_storage.read().await;
+                                    let inflight_packet = session_state_storage
+                                        .inflight_get_next_state_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
+                                    Ok(inflight_packet)
+                                } else {
+                                    Err(SessionStateRaftError::NotInitialized)
+                                }
+                            },
+                            Err(SessionStateRaftError::NotLeader { leader: leader_node }) => {
+                                if let Some(leader_node) = leader_node {
+                                    let mut client = ClusterServiceClient::connect(leader_node.rpc_addr).await.map_err(|e| {
+                                        log::error!("Failed to connect to leader {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    })?;
+
+                                    let request = crate::protobuf::GetNextInflightPacketRequest {
+                                        tenant_id: msg.tenant_id.clone(),
+                                        client_id: msg.client_id.clone(),
+                                        packet_id: msg.packet_id,
+                                    };
+
+                                    let response = client.get_next_inflight_packet(request).await.map_err(|e| {
+                                        log::error!("Failed to get next inflight packet: {}", e);
+                                        SessionStateRaftError::GRPC(e.to_string())
+                                    })?;
+                                    let inner = response.into_inner();
+                                    if inner.success {
+                                        if let Some(packet) = inner.packet {
+                                            let packet = serde_json::from_str(&packet).unwrap();
+                                            Ok(Some(packet))
+                                        } else {
+                                            Ok(None)
+                                        }
+                                    } else {
+                                        return Err(SessionStateRaftError::GRPC(inner.error.unwrap().message));
+                                    }
+                                } else {
+                                    Err(SessionStateRaftError::NoLeaderAvailable)
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to ensure linearizable read: {}", e);
+                                Err(SessionStateRaftError::NotLeader { leader: None })
+                            }
+                        }
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );  
+            }
         }
     }
 }

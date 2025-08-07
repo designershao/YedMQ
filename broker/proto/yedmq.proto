@@ -177,7 +177,7 @@ message AdvanceInflightStateResponse {
 message GetCurrentInflightPacketRequest {
     string tenant_id = 1;
     string client_id = 2;
-    string packet_id = 3;
+    uint64 packet_id = 3;
 }
 
 // Response for getting the current inflight packet.
