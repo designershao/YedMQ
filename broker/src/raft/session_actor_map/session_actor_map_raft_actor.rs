@@ -1,0 +1,569 @@
+use std::{cell::OnceCell, path::Path, sync::Arc};
+
+use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
+use axum::response::Response;
+use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, Config};
+use tokio::sync::RwLock;
+use yedmq_mqtt::MqttPacketV3;
+use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry}};
+
+use crate::{protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
+
+
+#[derive(Debug, Clone)]
+pub enum ActorState {
+    Initializing,
+    Running,
+    Failed(SessionActorMapRaftError),
+    Stopped,
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum SessionActorMapRaftError {
+    #[error("Invalid topic name: {topic}")]
+    InvalidTopicName { topic: String },
+
+    #[error("Not leader, current leader: {leader:?}")]
+    NotLeader { leader: Option<Node> },
+
+    #[error("Raft errror: {0}")]
+    Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+
+    #[error("Network error: {0}")]
+    Network(#[from] openraft::error::NetworkError),
+
+    #[error("gRPC error: {0}")]
+    GRPC(String),
+
+    #[error("Actor not initialized")]
+    NotInitialized,
+
+    #[error("Actor not ready: {0}")]
+    NotReady(String),
+
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    #[error("Raft initialization error: {0}")]
+    RaftInitializationError(String),
+
+    #[error("No leader available")]
+    NoLeaderAvailable,
+
+    #[error("Unexpected response type: {0}")]
+    UnexpectedResponseType(String),
+}
+
+pub struct SessionActorMapRaftActor {
+    raft: OnceCell<Arc<SessionActorMapRaft>>,
+    settings: Arc<crate::settings::Settings>,
+    state: ActorState,
+    pending_messages: Vec<Box<dyn std::any::Any + Send>>,
+    session_actor_map_storage: OnceCell<Arc<RwLock<SessionActorMapStorage>>>,
+}
+
+
+impl SessionActorMapRaftActor {
+    async fn initialize_raft(
+        settings: Arc<crate::settings::Settings>,
+    ) -> Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError> {
+        let raft_config = Config {
+            cluster_name: "yedmq_topic_cluster".to_string(),
+            ..Default::default()
+        };
+
+        let dir = Path::new(&settings.cluster.store_dir);
+
+        let config = Arc::new(raft_config.validate().unwrap());
+
+        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
+
+        let (log_store, state_machine_store) = new_storage(&dir, session_actor_map_storage.clone()).await;
+
+        let network = Network {};
+
+        let raft = openraft::Raft::new(
+            settings.cluster.node_id,
+            config.clone(),
+            network,
+            log_store,
+            state_machine_store,
+        )
+        .await
+        .map_err(|e| SessionActorMapRaftError::RaftInitializationError(e.to_string()))?;
+        Ok((raft, session_actor_map_storage))
+    }
+
+    async fn try_local_linearizable_read(
+        raft: &SessionActorMapRaft,
+    ) -> Result<(), SessionActorMapRaftError> {
+        raft.ensure_linearizable().await.map_err(|e| {
+            log::error!("Failed to ensure linearizable read: {}", e);
+            if let Some(leader) = e.forward_to_leader() {
+                SessionActorMapRaftError::NotLeader { leader: leader.leader_node.clone() }
+            } else {
+                SessionActorMapRaftError::NotLeader { leader: None }
+            }
+        })?;
+        Ok(())
+    }
+
+
+    async fn try_local_write(
+        raft: &SessionActorMapRaft,
+        command: crate::raft::session_actor_map::types::SessionActorMapRequest,
+    ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
+        let res = raft.client_write(command).await.map_err(|e| {
+            log::error!("Failed to write command to raft: {}", e);
+            if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
+                e_inner,
+            )) = e
+            {
+                SessionActorMapRaftError::NotLeader {
+                    leader: e_inner.leader_node,
+                }
+            } else {
+                SessionActorMapRaftError::Raft(e)
+            }
+        })?;
+        Ok(res)
+    }
+
+    async fn handle_raft_write(
+        raft: &SessionActorMapRaft,
+        request: crate::raft::session_actor_map::types::SessionActorMapRequest,
+    ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
+        match Self::try_local_write(raft, request.clone()).await {
+            Ok(r) => Ok(r),
+            Err(SessionActorMapRaftError::NotLeader { leader }) => {
+                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                if let Some(leader_node) = leader {
+                    Self::forward_to_leader(leader_node.rpc_addr, request).await
+                } else {
+                    Err(SessionActorMapRaftError::NoLeaderAvailable)
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to handle raft write: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    async fn forward_to_leader(
+        current_leader_rpc_addr: String,
+        msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
+    ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
+        Self::send_to_remote_actor(current_leader_rpc_addr, msg).await
+    }
+
+    async fn send_to_remote_actor(
+        leader_addr: String,
+        msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
+    ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
+        let mut client = RaftServiceClient::connect(leader_addr).await.map_err(|e| {
+            log::error!("Failed to connect to leader {}", e);
+            SessionActorMapRaftError::GRPC(e.to_string())
+        })?;
+
+        let data = serde_json::to_string(&msg).unwrap();
+
+        let request = AppendEntriesRequest {
+            data,
+            raft_type: RaftType::SessionActorMap.into(),
+        };
+
+        let res= client.append_entries(request).await.map_err(|e| {
+            log::error!("Failed to send append entries request to leader: {}", e);
+            SessionActorMapRaftError::GRPC(e.to_string())
+        })?;
+
+        let inner_res = res.into_inner();
+        if inner_res.success {
+            let res = inner_res.data;
+            Ok(serde_json::from_str(&res).unwrap())
+        } else {
+            Err(SessionActorMapRaftError::GRPC(inner_res.error.unwrap().message))
+        }
+    }
+
+    fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
+        for msg in self.pending_messages.drain(..) {
+            if let Some(msg) = msg.downcast_ref::<RenewSession>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<RegisterSessionActorMap>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<UnregisterSessionActorMap>() {
+                ctx.notify(msg.clone());
+            } else {
+                log::warn!("Unknown message type in pending messages: {:?}", msg);
+            }
+        }
+    }
+
+}
+
+impl Default for SessionActorMapRaftActor {
+    fn default() -> Self {
+        let settings = crate::settings::Settings::default();
+        Self {
+            raft: OnceCell::new(),
+            settings: Arc::new(settings),
+            state: ActorState::Initializing,
+            pending_messages: Vec::new(),
+            session_actor_map_storage: OnceCell::new(),
+        }
+    }
+}
+
+impl SystemService for SessionActorMapRaftActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let addr = ctx.address();
+
+        ctx.spawn(
+            async move {
+                let raft_instance = Self::initialize_raft(settings).await;
+                addr.do_send(InitializationComplete(raft_instance));
+            }
+            .into_actor(self),
+        );
+    }
+}
+
+impl Supervised for SessionActorMapRaftActor {}
+
+impl Actor for SessionActorMapRaftActor {
+    type Context = Context<Self>;
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "()")]
+struct InitializationComplete(Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError>);
+
+impl Handler<InitializationComplete> for SessionActorMapRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
+        match msg.0 {
+            Ok((raft_instance, session_actor_map_storage)) => {
+                let _ = self.raft.set(Arc::new(raft_instance));
+                let _ = self.session_actor_map_storage.set(session_actor_map_storage);
+                self.state = ActorState::Running;
+                log::info!("TopicRaftActor initialized successfully.");
+                self.process_pending_messages(ctx);
+            }
+            Err(e) => {
+                log::error!("Failed to initialize TopicRaftActor: {}", e);
+                self.state = ActorState::Failed(e);
+            }
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<(), SessionActorMapRaftError>")]
+pub struct RenewSession {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<RenewSession> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: RenewSession, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = super::types::SessionActorMapRequest::SessionLeaseRenewRequest {
+                            sessions: vec![
+                                super::types::RenewSession {
+                                    tenant_id: msg.tenant_id.clone(),
+                                    session_id: msg.client_id.clone(),
+                                }
+                            ]
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<(), SessionActorMapRaftError>")]
+pub struct RegisterSessionActorMap {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub node_id: NodeId,
+    pub version: SessionVersion,
+}
+
+impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: RegisterSessionActorMap, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = super::types::SessionActorMapRequest::RegisterSession { 
+                            tenant_id: msg.tenant_id.clone(),
+                            session_id: msg.client_id.clone(),
+                            node_id: msg.node_id,
+                            version: msg.version,
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<(), SessionActorMapRaftError>")]
+pub struct UnregisterSessionActorMap {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub version: SessionVersion,
+}
+
+impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: UnregisterSessionActorMap, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = super::types::SessionActorMapRequest::UnregisterSession { 
+                            tenant_id: msg.tenant_id.clone(),
+                            session_id: msg.client_id.clone(),
+                            session_version: msg.version,
+                        };
+                        Self::handle_raft_write(raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<Option<SessionActorMapEntry>, SessionActorMapRaftError>")]
+pub struct GetSessionActorMap {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<GetSessionActorMap> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<SessionActorMapEntry>, SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: GetSessionActorMap, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_actor_map_storage = self.session_actor_map_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(_) = raft.get() {
+                        if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
+                            let storage = session_actor_map_storage.read().await;
+                            let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
+                            Ok(entry)
+                        } else {
+                            Err(SessionActorMapRaftError::NotInitialized)
+                        }
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<Option<SessionActorMapEntry>, SessionActorMapRaftError>")]
+pub struct GetSessionActorMapLinearizable {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<Option<SessionActorMapEntry>, SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: GetSessionActorMapLinearizable, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let session_actor_map_storage = self.session_actor_map_storage.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        match Self::try_local_linearizable_read(raft_instance).await {
+                            Ok(_) => {
+                                if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
+                                    let storage = session_actor_map_storage.read().await;
+                                    let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
+                                    Ok(entry)
+                                } else {
+                                    Err(SessionActorMapRaftError::NotInitialized)
+                                }
+                            }
+                            Err(SessionActorMapRaftError::NotLeader { leader }) => {
+                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                if let Some(leader_node) = leader {
+                                    let mut client = ClusterServiceClient::connect(leader_node.rpc_addr).await.map_err(|e| {
+                                        log::error!("Failed to connect to leader: {}", e);
+                                        SessionActorMapRaftError::GRPC(e.to_string())
+                                    })?;
+                                    client.get_session_actor_map(
+                                        crate::protobuf::GetSessionActorMapRequest {
+                                            tenant_id: msg.tenant_id.clone(),
+                                            client_id: msg.client_id.clone(),
+                                        }
+                                    ).await.map_err(|e| {
+                                        log::error!("Failed to get session actor map from leader: {}", e);
+                                        SessionActorMapRaftError::GRPC(e.to_string())
+                                    }).and_then(|res| {
+                                        let inner_res = res.into_inner();
+                                        if inner_res.success {
+                                            if inner_res.payload.is_none() {
+                                                Ok(None)
+                                            } else {
+                                                let entry = serde_json::from_str(&inner_res.payload.unwrap()).unwrap();
+                                                Ok(Some(entry))
+                                            }
+                                        } else {
+                                            Err(SessionActorMapRaftError::GRPC(inner_res.error.unwrap().message))
+                                        }
+                                    })
+                                } else {
+                                    Err(SessionActorMapRaftError::NoLeaderAvailable)
+                                }
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();                
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}

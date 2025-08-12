@@ -29,6 +29,7 @@ use super::Node;
 pub mod raft_network_impl;
 pub mod store;
 pub mod types;
+pub mod session_actor_map_raft_actor;
 
 pub type SessionActorMapRaft = openraft::Raft<SessionActorMapTypeConfig>;
 

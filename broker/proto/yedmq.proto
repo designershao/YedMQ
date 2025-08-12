@@ -68,6 +68,9 @@ service ClusterService {
     // Renew the session lease for a client.
     rpc RenewSessionLease(RenewSessionLeaseRequest) returns (RenewSessionLeaseResponse);
 
+    // Get session actor map
+    rpc GetSessionActorMap(GetSessionActorMapRequest) returns (GetSessionActorMapResponse);
+
 }
 
 // Request to store an offline message for a client.
@@ -342,4 +345,17 @@ message RenewSessionLeaseRequest {
 message RenewSessionLeaseResponse {
     bool success = 1;
     ErrorDetail error = 2;
+}
+
+// Request to get the session actor map for a client.
+message GetSessionActorMapRequest {
+    string tenant_id = 1; // Tenant identifier
+    string client_id = 2; // Client identifier
+}
+
+// Response for getting the session actor map.
+message GetSessionActorMapResponse {
+    bool success = 1; // Operation success flag
+    ErrorDetail error = 2; // Error details if any
+    optional string payload = 3;
 }

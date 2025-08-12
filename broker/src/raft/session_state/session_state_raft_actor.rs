@@ -187,6 +187,23 @@ impl SessionStateRaftActor {
 
     fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
         for msg in self.pending_messages.drain(..) {
+            if let Some(msg) = msg.downcast_ref::<StoreOfflineMessage>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<PopOfflineMessage>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<CreateSessionState>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<RegisterInflightRxPacket>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<RegisterInflightTxPacket>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<AdvanceInflightState>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<DeleteSessionState>() {
+                ctx.notify(msg.clone());
+            } else {
+                log::warn!("Unknown pending message type: {:?}", msg);
+            }
         }
     }
 
@@ -250,7 +267,7 @@ impl Handler<InitializationComplete> for SessionStateRaftActor {
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct StoreOfflineMessage {
     pub tenant_id: String,
@@ -304,7 +321,7 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
 }
 
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
 pub struct PopOfflineMessage {
     pub tenant_id: String,
@@ -520,7 +537,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct CreateSessionState {
     pub tenant_id: String,
@@ -573,7 +590,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct DeleteSessionState {
     pub tenant_id: String,
@@ -624,7 +641,7 @@ impl Handler<DeleteSessionState> for SessionStateRaftActor {
     }
 }
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct RegisterInflightRxPacket {
     pub tenant_id: String,
@@ -679,7 +696,7 @@ impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
 
 
 
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct RegisterInflightTxPacket {
     pub tenant_id: String,
@@ -733,7 +750,7 @@ impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
 }
 
 // Advance to the next state of inflight packet
-#[derive(Message)]
+#[derive(Message, Clone)]
 #[rtype(result="Result<(), SessionStateRaftError>")]
 pub struct AdvanceInflightState {
     pub tenant_id: String,
