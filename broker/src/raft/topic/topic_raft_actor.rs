@@ -322,7 +322,6 @@ impl Handler<Subscribe> for TopicRaftActor {
 #[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Unsubscribe {
-    pub node_id: NodeId,
     pub tenant_id: String,
     pub client_identifier: String,
     pub topic: String,

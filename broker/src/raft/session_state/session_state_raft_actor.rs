@@ -5,7 +5,7 @@ use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, 
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::{ cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{client::session_state, session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::{self, session_state_storage::{self, SessionState, SessionStateStorage}}, settings::Session};
+use crate::{inflight::InflightError, protobuf::{ cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{client::session_state, session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::{self, session_state_storage::{self, SessionState, SessionStateStorage, SessionStateStorageError}}, settings::Session};
 
 
 #[derive(Debug, Clone)]
@@ -50,6 +50,12 @@ pub enum SessionStateRaftError {
 
     #[error("Unexpected response type: {0}")]
     UnexpectedResponseType(String),
+
+    #[error("Session state not existed: {0}")]
+    SessionStateNotExisted(String),
+
+    #[error("Packet identifier has existed: {0}")]
+    InflightError(#[from] InflightError)
 }
 
 pub struct SessionStateRaftActor {
@@ -162,7 +168,19 @@ impl SessionStateRaftActor {
         request: crate::raft::session_state::types::SessionStateRequest,
     ) -> Result<ClientWriteResponse<SessionStateTypeConfig>, SessionStateRaftError> {
         match Self::try_local_write(raft, request.clone()).await {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                match r.data {
+                    SessionStateResponse::InflightRegisterRxPacketResponse(Err(SessionStateStorageError::InflightError(e))) => {
+                        Err(SessionStateRaftError::InflightError(e))
+                    }
+                    SessionStateResponse::InflightRegisterTxPacketResponse(Err(SessionStateStorageError::SessionStateNotExisted { client_id })) => {
+                        Err(SessionStateRaftError::SessionStateNotExisted(format!("Session state not existed for client_id: {}", client_id)))
+                    }
+                    _ => {
+                        Ok(r)
+                    }
+                }
+            },
             Err(SessionStateRaftError::NotLeader { leader }) => {
                 log::warn!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
@@ -1099,6 +1117,58 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                         .into_actor(self),
                 );  
             }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct InflightCleanFinishedItems {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<InflightCleanFinishedItems> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+    
+    fn handle(&mut self, msg: InflightCleanFinishedItems, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Ok(()) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::InflightCleanFinishItems {
+                            tenant_id: msg.tenant_id, 
+                            client_id: msg.client_id 
+                        };
+                        Self::handle_raft_write(&raft_instance, command).await?;
+                        Ok(())
+                    } else {
+                        log::error!("Raft instance not initialized");
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
         }
     }
 }
