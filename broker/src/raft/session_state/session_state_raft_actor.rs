@@ -60,6 +60,36 @@ pub struct SessionStateRaftActor {
     session_state_storage: OnceCell<Arc<RwLock<SessionStateStorage>>>
 }
 
+impl Default for SessionStateRaftActor {
+    fn default() -> Self {
+        let settings = crate::settings::Settings::default();
+        Self {
+            raft: OnceCell::new(),
+            settings: Arc::new(settings),
+            state: ActorState::Initializing,
+            pending_messages: Vec::new(),
+            session_state_storage: OnceCell::new(),
+        }
+    }
+}
+
+impl SystemService for SessionStateRaftActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let addr = ctx.address();
+
+        ctx.spawn(
+            async move {
+                let raft_instance = Self::initialize_raft(settings).await;
+                addr.do_send(InitializationComplete(raft_instance));
+            }
+                .into_actor(self),
+        );
+    }
+}
+
+impl Supervised for SessionStateRaftActor {}
+
 
 impl SessionStateRaftActor {
     async fn initialize_raft(
@@ -208,36 +238,6 @@ impl SessionStateRaftActor {
     }
 
 }
-
-impl Default for SessionStateRaftActor {
-    fn default() -> Self {
-        let settings = crate::settings::Settings::default();
-        Self {
-            raft: OnceCell::new(),
-            settings: Arc::new(settings),
-            state: ActorState::Initializing,
-            pending_messages: Vec::new(),
-            session_state_storage: OnceCell::new(),
-        }
-    }
-}
-
-impl SystemService for SessionStateRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = self.settings.clone();
-        let addr = ctx.address();
-
-        ctx.spawn(
-            async move {
-                let raft_instance = Self::initialize_raft(settings).await;
-                addr.do_send(InitializationComplete(raft_instance));
-            }
-            .into_actor(self),
-        );
-    }
-}
-
-impl Supervised for SessionStateRaftActor {}
 
 impl Actor for SessionStateRaftActor {
     type Context = Context<Self>;
@@ -542,7 +542,6 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
 pub struct CreateSessionState {
     pub tenant_id: String,
     pub client_id: String,
-    pub inflight_duration: u64,
 }
 
 impl Handler<CreateSessionState> for SessionStateRaftActor {
@@ -557,13 +556,14 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let inflight_duration = self.settings.mqtt.inflight_retry_interval_secs;
                 return Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = SessionStateRequest::CreateSessionState { 
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id, 
-                            inflight_duration_secs: msg.inflight_duration 
+                            inflight_duration_secs: inflight_duration 
                         };
                         Self::handle_raft_write(raft_instance, command).await?;
                         Ok(())
