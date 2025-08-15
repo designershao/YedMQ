@@ -263,11 +263,10 @@ impl Handler<InitializationComplete> for TopicRaftActor {
 #[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Subscribe {
-    node_id: NodeId,
-    tenant_id: String,
-    client_identifier: String,
-    topic: String,
-    qos: u8,
+    pub tenant_id: String,
+    pub client_identifier: String,
+    pub topic: String,
+    pub qos: u8,
 }
 
 impl Handler<Subscribe> for TopicRaftActor {
@@ -289,7 +288,6 @@ impl Handler<Subscribe> for TopicRaftActor {
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let command = crate::raft::topic::types::Request::SubscribeTopic {
-                                node_id: msg.node_id,
                                 tenant_id: msg.tenant_id,
                                 client_identifier: msg.client_identifier,
                                 topic: msg.topic,
@@ -324,10 +322,10 @@ impl Handler<Subscribe> for TopicRaftActor {
 #[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct Unsubscribe {
-    node_id: NodeId,
-    tenant_id: String,
-    client_identifier: String,
-    topic: String,
+    pub node_id: NodeId,
+    pub tenant_id: String,
+    pub client_identifier: String,
+    pub topic: String,
 }
 
 impl Handler<Unsubscribe> for TopicRaftActor {
@@ -383,9 +381,9 @@ impl Handler<Unsubscribe> for TopicRaftActor {
 #[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct RegisterRetainPublishPacket {
-    tenant_id: String,
-    client_id: String,
-    publish_packet: MqttPacketV3,
+    pub tenant_id: String,
+    pub client_id: String,
+    pub publish_packet: MqttPacketV3,
 }
 
 impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
@@ -441,8 +439,8 @@ impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
 #[derive(Message, Clone, Debug)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct CleanRetainPublishPacket {
-    tenant_id: String,
-    topic_filter: String,
+    pub tenant_id: String,
+    pub topic_filter: String,
 }
 
 impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
@@ -495,13 +493,12 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
 }
 
 pub struct SubscriptionInfo {
-    pub node_id: NodeId,
     pub client_identifier: String,
     pub qos: u8,
 }
 
 pub struct GetSubscriptionsResponse {
-    subscriptions: Vec<SubscriptionInfo>,
+    pub subscriptions: Vec<SubscriptionInfo>,
 }
 
 impl<A, M> MessageResponse<A, M> for GetSubscriptionsResponse
@@ -523,8 +520,8 @@ where
 #[derive(Message)]
 #[rtype(result = "Result<GetSubscriptionsResponse, TopicRaftError>")]
 pub struct GetSubscriptions {
-    tenant_id: String,
-    topic: String,
+    pub tenant_id: String,
+    pub topic: String,
 }
 
 impl Handler<GetSubscriptions> for TopicRaftActor {
@@ -553,7 +550,6 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                                         let info = x
                                             .iter()
                                             .map(move |x| SubscriptionInfo {
-                                                node_id: x.node_id,
                                                 client_identifier: x.client_identifier.clone(),
                                                 qos: x.qos,
                                             })
@@ -628,7 +624,6 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                                 let info = x
                                                     .iter()
                                                     .map(move |x| SubscriptionInfo {
-                                                        node_id: x.node_id,
                                                         client_identifier: x.client_identifier.clone(),
                                                         qos: x.qos,
                                                     })
@@ -657,7 +652,6 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                             .and_then(|response| {
                                                 let subscriptions = response.into_inner().payload.into_iter()
                                                     .map(|x| SubscriptionInfo {
-                                                        node_id: x.node_id,
                                                         client_identifier: x.client_id,
                                                         qos: x.qos as u8,
                                                     })
@@ -700,8 +694,8 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
 #[derive(Message)]
 #[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
 pub struct GetRetainPublishPacket {
-    tenant_id: String,
-    topic: String,
+    pub tenant_id: String,
+    pub topic: String,
 }
 
 impl Handler<GetRetainPublishPacket> for TopicRaftActor {
@@ -758,8 +752,8 @@ impl Handler<GetRetainPublishPacket> for TopicRaftActor {
 #[derive(Message)]
 #[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
 pub struct GetRetainPublishPacketEnsureLinearizable {
-    tenant_id: String,
-    topic: String,
+    pub tenant_id: String,
+    pub topic: String,
 }
 
 impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {

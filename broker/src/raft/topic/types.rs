@@ -11,7 +11,6 @@ pub type TopicRaft = openraft::Raft<TypeConfig>;
 pub enum Request {
     // Subscribe topic
     SubscribeTopic {
-        node_id: NodeId,
         tenant_id: String,
         client_identifier: String,
         topic: String,

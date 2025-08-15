@@ -56,9 +56,6 @@ service ClusterService {
     // Clean (remove) the retained publish message for a topic.
     rpc CleanRetainPublishMessage(CleanRetainPublishMessageRequest) returns (CleanRetainPublishMessageResponse);
     
-    // Create a new tenant in the system.
-    rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
-
     // Register a session actor mapping for a client.
     rpc RegisterSessionActorMap(RegisterSessionActorMapRequest) returns (RegisterSessionActorMapResponse);
 
@@ -256,7 +253,7 @@ message GetSubscribersByTopicResponse {
 // Request to register a retained publish message.
 message RegisterRetainPublishMessageRequest {
     string tenant_id = 1;
-    string topic = 2;
+    string client_id = 2;
     string payload = 3; // Message payload
 }
 
@@ -287,17 +284,6 @@ message CleanRetainPublishMessageRequest {
 
 // Response for cleaning a retained publish message.
 message CleanRetainPublishMessageResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
-
-// Request to create a new tenant.
-message CreateTenantRequest {
-    string tenant_id = 1;
-}
-
-// Response for creating a tenant.
-message CreateTenantResponse {
     bool success = 1;
     ErrorDetail error = 2;
 }

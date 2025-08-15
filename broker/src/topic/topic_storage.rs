@@ -77,7 +77,6 @@ fn extract_info_from_key(key: &str) -> (String, String) {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Subscription {
-    pub node_id: NodeId,
     pub client_identifier: String,
     pub qos: u8,
 }
@@ -232,10 +231,6 @@ pub struct TopicStorage {
     topic_info_recorder: RwLock<HashMap<String, HashMap<String, u8>>>,
 
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicStorageNode>>>>>,
-
-    // Represent node has topic
-    // Map<NodeId, Set<(topic, tenant_id, client_id)>
-    topic_nodes: Arc<RwLock<HashMap<NodeId, HashSet<(String, String, String)>>>>,
 }
 
 fn test_topic(topic: &String) -> bool {
@@ -341,7 +336,6 @@ impl TopicStorage {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.read().unwrap().to_serializable()))
                 .collect(),
-            topic_nodes: self.topic_nodes.read().unwrap().clone(),
         }
     }
 
@@ -360,7 +354,6 @@ impl TopicStorage {
                     })
                     .collect(),
             )),
-            topic_nodes: Arc::new(RwLock::new(data.topic_nodes)),
         }
     }
 
@@ -369,7 +362,6 @@ impl TopicStorage {
             retain_message_recorder: RwLock::new(HashMap::new()),
             topic_info_recorder: RwLock::new(HashMap::new()),
             topic_tree: Arc::new(RwLock::new(HashMap::new())),
-            topic_nodes: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -400,7 +392,6 @@ impl TopicStorage {
         client_identifier: String,
         topic_filter: String,
         qos: u8,
-        node_id: NodeId,
     ) -> Result<(), TopicError> {
         if !test_topic(&topic_filter) {
             return Err(TopicError::InvalidTopicFilter(topic_filter));
@@ -419,7 +410,6 @@ impl TopicStorage {
                 topic_patterns,
                 client_identifier.clone(),
                 qos,
-                node_id,
             );
             if result.is_err() {
                 return Err(result.err().unwrap());
@@ -436,16 +426,6 @@ impl TopicStorage {
                 }
                 //
 
-                // Add node_id to topic_nodes
-                let mut topic_nodes = self.topic_nodes.write().unwrap();
-                let topic_nodes_optional = topic_nodes.get_mut(&node_id);
-                if topic_nodes_optional.is_none() {
-                    topic_nodes.insert(node_id, HashSet::new());
-                }
-                let topic_nodes = topic_nodes.get_mut(&node_id).unwrap();
-                topic_nodes.insert((topic_filter, tenant_id, client_identifier));
-                //
-
                 Ok(())
             }
         }
@@ -456,7 +436,6 @@ impl TopicStorage {
         mut topic_partterns: Vec<String>,
         client_identifier: String,
         qos: u8,
-        node_id: NodeId,
     ) -> Result<(), TopicError> {
         if topic_partterns.len() > 0 {
             let topic_pattern = &topic_partterns[0];
@@ -465,18 +444,11 @@ impl TopicStorage {
                 .unwrap()
                 .find_or_create_leaf(topic_pattern.to_string());
             let topic_patterns_rest = topic_partterns.drain(1..).collect();
-            Self::recursion_subscribe(
-                topic_node_next,
-                topic_patterns_rest,
-                client_identifier,
-                qos,
-                node_id,
-            )
+            Self::recursion_subscribe(topic_node_next, topic_patterns_rest, client_identifier, qos)
         } else {
             topic_node.write().unwrap().add_subscription(Subscription {
                 client_identifier,
                 qos,
-                node_id,
             });
             Ok(())
         }
@@ -515,18 +487,6 @@ impl TopicStorage {
                 }
                 //
 
-                // Remove node_id from topic_nodes
-                let mut topic_nodes = self.topic_nodes.write().unwrap();
-                let topic_nodes_optional = topic_nodes.get_mut(&node_id);
-                if !topic_nodes_optional.is_none() {
-                    let topic_nodes = topic_nodes.get_mut(&node_id).unwrap();
-                    topic_nodes.remove(&(
-                        topic_filter.to_string(),
-                        tenant_id.to_string(),
-                        client_identifier.to_string(),
-                    ));
-                }
-                //
                 Ok(())
             }
         }
@@ -827,32 +787,6 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read().unwrap();
         tenant_topic_root_rwlock.keys().map(String::from).collect()
     }
-
-    // Remove node all subscriptions
-    pub fn remove_node(&mut self, node_id: NodeId) {
-        let mut topic_items = vec![];
-        {
-            let topic_nodes = self.topic_nodes.write().unwrap();
-            let topics = topic_nodes.get(&node_id);
-            if topics.is_some() {
-                let topics = topics.unwrap();
-                for (topic_filter, tenant_id, client_identifier) in topics {
-                    topic_items.push((
-                        topic_filter.clone(),
-                        tenant_id.clone(),
-                        client_identifier.clone(),
-                    ));
-                }
-            }
-        }
-        if topic_items.len() > 0 {
-            for (topic_filter, tenant_id, client_identifier) in topic_items {
-                let _ = self.unsubscribe(&tenant_id, &client_identifier, &topic_filter, node_id);
-            }
-            let mut topic_nodes = self.topic_nodes.write().unwrap();
-            topic_nodes.remove(&node_id);
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -868,7 +802,6 @@ struct SerializableTopicStorage {
     retain_message_recorder: HashMap<String, HashMap<String, (String, u8)>>,
     topic_info_recorder: HashMap<String, HashMap<String, u8>>,
     topic_tree: HashMap<String, SerializableTopicStorageNode>,
-    topic_nodes: HashMap<NodeId, HashSet<(String, String, String)>>,
 }
 
 #[cfg(test)]
@@ -895,20 +828,16 @@ mod tests {
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
-        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 1);
 
         let _ = topic_storage.subscribe(
             tenant_name.clone(),
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            2,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
-        assert_eq!(clients.unwrap().get(0).unwrap().node_id, 2);
     }
 
     #[test]
@@ -923,17 +852,14 @@ mod tests {
         topic_node.add_subscription(Subscription {
             client_identifier: "1".to_string(),
             qos: 0,
-            node_id: 1,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "2".to_string(),
             qos: 0,
-            node_id: 1,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "3".to_string(),
             qos: 0,
-            node_id: 1,
         });
 
         let subscriptions = topic_node.get_subscriptions();
@@ -999,13 +925,7 @@ mod tests {
         let mut topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
-        let _ = topic_storage.subscribe(
-            tenant_name,
-            "clientA".to_string(),
-            "a/b/c".to_string(),
-            0,
-            1,
-        );
+        let _ = topic_storage.subscribe(tenant_name, "clientA".to_string(), "a/b/c".to_string(), 0);
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
         let topic_info_recorder = topic_storage.topic_info_recorder.read().unwrap();
@@ -1038,7 +958,6 @@ mod tests {
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.unsubscribe(
             &tenant_name,
@@ -1071,7 +990,6 @@ mod tests {
             "clientA".to_string(),
             "a/b/#".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
@@ -1087,7 +1005,6 @@ mod tests {
             "clientA".to_string(),
             "a/+/c".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
@@ -1103,21 +1020,18 @@ mod tests {
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientB".to_string(),
             "a/b/#".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientC".to_string(),
             "a/+/+".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 3);
@@ -1133,42 +1047,36 @@ mod tests {
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientB".to_string(),
             "a/+/#".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientC".to_string(),
             "a/+/+".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientD".to_string(),
             "a/+/+/+".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientE".to_string(),
             "a/+".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientF".to_string(),
             "a/+/c".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
         let clients = clients.unwrap();
@@ -1187,7 +1095,6 @@ mod tests {
             "clientA".to_string(),
             "a/#/c".to_string(),
             0,
-            1,
         );
 
         let result = topic_storage.subscribe(
@@ -1195,7 +1102,6 @@ mod tests {
             "clientA".to_string(),
             "sport+".to_string(),
             0,
-            1,
         );
 
         match result.unwrap_err() {
@@ -1214,7 +1120,6 @@ mod tests {
             "clientA".to_string(),
             "sport+".to_string(),
             0,
-            1,
         );
 
         match result.unwrap_err() {
@@ -1243,21 +1148,18 @@ mod tests {
                 "clientA".to_string(),
                 "a/b/c".to_string(),
                 0,
-                1,
             );
             let _ = topic_storage_t_1.write().unwrap().subscribe(
                 "hello".to_string(),
                 "clientB".to_string(),
                 "a/+/#".to_string(),
                 0,
-                1,
             );
             let _ = topic_storage_t_1.write().unwrap().subscribe(
                 "hello".to_string(),
                 "clientC".to_string(),
                 "a/+/+".to_string(),
                 0,
-                1,
             );
         });
         let thread_3 = thread::spawn(move || {
@@ -1266,14 +1168,12 @@ mod tests {
                 "clientD".to_string(),
                 "a/+/+/+".to_string(),
                 0,
-                1,
             );
             let _ = topic_storage_t_2.write().unwrap().subscribe(
                 "hello".to_string(),
                 "clientE".to_string(),
                 "a/+".to_string(),
                 0,
-                1,
             );
         });
         let thread_2 = thread::spawn(move || {
@@ -1282,7 +1182,6 @@ mod tests {
                 "clientF".to_string(),
                 "a/+/c".to_string(),
                 0,
-                1,
             );
         });
 
@@ -1310,46 +1209,15 @@ mod tests {
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let _ = topic_storage.subscribe(
             "hello".to_string(),
             "clientA".to_string(),
             "a/b/c".to_string(),
             0,
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
-    }
-
-    #[test]
-    fn when_remove_node_should_remove_all_subscriptions() {
-        let mut topic_storage = TopicStorage::new();
-        let tenant_name = "hello".to_string();
-        topic_storage.create_tenant(&tenant_name);
-
-        let node_id = 1;
-
-        let _ = topic_storage.subscribe(
-            tenant_name.clone(),
-            "clientA".to_string(),
-            "a/b/c".to_string(),
-            0,
-            node_id,
-        );
-        let _ = topic_storage.subscribe(
-            tenant_name.clone(),
-            "clientA".to_string(),
-            "a/b".to_string(),
-            0,
-            node_id,
-        );
-        let _ = topic_storage.remove_node(node_id);
-        let clients = topic_storage.get_subscriptions(tenant_name.clone(), "a/b/c".to_string());
-        assert_eq!(clients.unwrap().len(), 0);
-        let clients = topic_storage.get_subscriptions(tenant_name.clone(), "a/b".to_string());
-        assert_eq!(clients.unwrap().len(), 0);
     }
 
     #[test]

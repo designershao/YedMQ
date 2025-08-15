@@ -160,7 +160,6 @@ impl TopicRaftManagerTrait for RaftManager {
         qos: u8,
     ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
         let command = Request::SubscribeTopic {
-            node_id,
             tenant_id,
             client_identifier,
             topic,

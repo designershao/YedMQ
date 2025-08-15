@@ -232,7 +232,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 },
                 EntryPayload::Normal(req) => match req {
                     Request::SubscribeTopic {
-                        node_id,
                         tenant_id,
                         client_identifier,
                         topic,
@@ -247,7 +246,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             client_identifier,
                             topic.clone(),
                             qos,
-                            node_id,
                         );
                         replies.push(Response::None);
                     }

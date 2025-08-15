@@ -78,7 +78,11 @@ impl SessionActorMapRaftActor {
 
         let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
 
-        let (log_store, state_machine_store) = new_storage(&dir, session_actor_map_storage.clone()).await;
+        let (log_store, state_machine_store) = new_storage(
+            &dir, 
+            session_actor_map_storage.clone(),
+            settings.cluster.node_id.clone(),
+        ).await;
 
         let network = Network {};
 
