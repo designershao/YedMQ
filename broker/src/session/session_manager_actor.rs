@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     plugin_manager::{PluginManager, PluginService},
-    protobuf::{raft_service_client::RaftServiceClient, SessionActorForceStopRequest},
+    protobuf::{cluster_service_server::ClusterService, raft_service_client::RaftServiceClient, ForceStopSessionActorRequest},
     raft::{
         client::base::RaftClientError,
         raft_manager::{RaftManagerError, RaftManagerTrait},
@@ -577,32 +577,29 @@ impl Message for CreateSessionMessage {
 // force disconnect
 async fn call_force_disconnect(
     node_id: NodeId,
-    raft_manager: Arc<dyn RaftManagerTrait>,
+    nodes: &Vec<crate::settings::Node>,
     tenant_id: String,
     client_id: String,
 ) -> Result<bool, tonic::transport::Error> {
     let max_retries = 3;
-    let node = raft_manager
-        .session_actor_map_raft()
-        .get_node_by_id(node_id)
-        .await
-        .unwrap();
 
-    let addr = format!("http://{}", node.rpc_addr);
+    let node = nodes
+        .iter()
+        .find(|node| node.id == node_id).unwrap();
 
-    let mut client = RaftServiceClient::connect(addr.clone()).await?;
+    let addr = format!("http://{}", node.rpc_address);
+
+    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone()).await?;
 
     for i in 0..max_retries {
         info!(
             "force disconnect session {} from node {} in {} retry",
             client_id, node_id, i
         );
-        let res = client
-            .session_actor_force_stop(SessionActorForceStopRequest {
-                tenant_id: tenant_id.clone(),
-                client_id: client_id.clone(),
-            })
-            .await;
+        let res = client.force_stop_session_actor(ForceStopSessionActorRequest {
+            tenant_id: tenant_id.clone(),
+            client_id: client_id.clone(),
+        }).await;
         if res.is_ok() {
             info!(
                 "force disconnect session {} from node {} succeed",
@@ -633,12 +630,16 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let session_clock = self.session_clock.get().unwrap().clone();
         let current_node_id = self.current_node_id;
 
+
         let future = async move {
             // Force previous session to disconnect if exists
-            let session_actor_map_entry = raft_manager
-                .session_actor_map_raft()
-                .get_session_actor_map(&msg.tenant_id, &msg.client_id)
-                .await;
+            let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+            let session_actor_map_entry = session_actor_map_raft_actor_addr.send(
+                session_actor_map_raft_actor::GetSessionActorMap{
+                    tenant_id: msg.tenant_id.clone(),
+                    client_id: msg.client_id.clone(),
+                }
+            ).await.unwrap().unwrap();
 
             if let Some(entry) = &session_actor_map_entry {
                 info!("previous session actor map node id: {}", entry.node_id);
@@ -646,6 +647,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
                         entry.node_id,
+                        settings.cluster.nodes.as_ref(),
                         msg.tenant_id.clone(),
                         msg.client_id.clone(),
                     )
@@ -747,77 +749,11 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     },
                 ).await.unwrap();
 
-                if res.unwrap().is_some() {
-                    let connack = ConnAckPacketBuilder::new()
-                        .set_return_code(ConnackReturnCode::Accpet)
-                        .set_session_present(true)
-                        .build();
-                    msg.connection_addr
-                        .send(ConnectionActorMessage::WritePacketToClient(
-                            MqttPacketV3::Connack(connack),
-                        ))
-                        .await
-                        .unwrap();
-                    // check session in current node
-                    if sessions_guard.contains_key(&msg.client_id) {
-                        info!(
-                            "session {} exists in current node, start reconnect",
-                            msg.client_id
-                        );
-                        sessions_guard
-                            .get(&msg.client_id)
-                            .unwrap()
-                            .session_actor_message_recipient
-                            .send(SessionActorMessage::Reconnect {
-                                conn: msg.connection_addr.clone(),
-                                keep_alive: msg.keep_alive,
-                                clean_session: msg.clean_session,
-                                username: msg.username.clone(),
-                                will_message: msg.will_message.clone(),
-                                socket_addr: msg.peer_addr,
-                            })
-                            .await
-                            .unwrap();
-                        let session_recipient = sessions_guard.get(&msg.client_id).unwrap();
-                        return Ok(session_recipient.session_actor_message_recipient.clone());
-                        // in current node, send reconnect
-                    } else {
-                        info!(
-                            "session {} not exists in current node, recover from raft",
-                            msg.client_id
-                        );
-                        // not in current node, recover from raft
-                        session_state = Arc::new(RwLock::new(res.unwrap().unwrap()));
-                    }
-                    //
-                } else {
-                    info!(
-                        "session {} not exists in cluster, create new session state",
-                        msg.client_id
-                    );
-                    let res = session_state_raft_actor_addr.send(
-                        crate::raft::session_state::session_state_raft_actor::CreateSessionState {
-                            tenant_id: msg.tenant_id.clone(),
-                            client_id: msg.client_id.clone(),
-                        },
-                    ).await.unwrap();
-
-                    if res.is_err() {
-                        error!("create session state failed: {}", res.unwrap_err());
-                        let connack = ConnAckPacketBuilder::new()
-                            .set_return_code(ConnackReturnCode::ServerUnavailable)
-                            .set_session_present(false)
-                            .build();
-                        msg.connection_addr
-                            .send(ConnectionActorMessage::WritePacketToClient(
-                                MqttPacketV3::Connack(connack),
-                            ))
-                            .await
-                            .unwrap();
-                    } else {
+                if let Ok(res) = res {
+                    if res.is_some() {
                         let connack = ConnAckPacketBuilder::new()
                             .set_return_code(ConnackReturnCode::Accpet)
-                            .set_session_present(false)
+                            .set_session_present(true)
                             .build();
                         msg.connection_addr
                             .send(ConnectionActorMessage::WritePacketToClient(
@@ -825,8 +761,78 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             ))
                             .await
                             .unwrap();
+                        // check session in current node
+                        if sessions_guard.contains_key(&msg.client_id) {
+                            info!(
+                                "session {} exists in current node, start reconnect",
+                                msg.client_id
+                            );
+                            sessions_guard
+                                .get(&msg.client_id)
+                                .unwrap()
+                                .session_actor_message_recipient
+                                .send(SessionActorMessage::Reconnect {
+                                    conn: msg.connection_addr.clone(),
+                                    keep_alive: msg.keep_alive,
+                                    clean_session: msg.clean_session,
+                                    username: msg.username.clone(),
+                                    will_message: msg.will_message.clone(),
+                                    socket_addr: msg.peer_addr,
+                                })
+                                .await
+                                .unwrap();
+                            let session_recipient = sessions_guard.get(&msg.client_id).unwrap();
+                            return Ok(session_recipient.session_actor_message_recipient.clone());
+                            // in current node, send reconnect
+                        } else {
+                            info!(
+                                "session {} not exists in current node, recover from raft",
+                                msg.client_id
+                            );
+                            // not in current node, recover from raft
+                            session_state = Arc::new(RwLock::new(res.unwrap()));
+                        }
+                        //
+                    } else {
+                        info!(
+                            "session {} not exists in cluster, create new session state",
+                            msg.client_id
+                        );
+                        let res = session_state_raft_actor_addr.send(
+                            crate::raft::session_state::session_state_raft_actor::CreateSessionState {
+                                tenant_id: msg.tenant_id.clone(),
+                                client_id: msg.client_id.clone(),
+                            },
+                        ).await.unwrap();
+
+                        if res.is_err() {
+                            error!("create session state failed: {}", res.unwrap_err());
+                            let connack = ConnAckPacketBuilder::new()
+                                .set_return_code(ConnackReturnCode::ServerUnavailable)
+                                .set_session_present(false)
+                                .build();
+                            msg.connection_addr
+                                .send(ConnectionActorMessage::WritePacketToClient(
+                                    MqttPacketV3::Connack(connack),
+                                ))
+                                .await
+                                .unwrap();
+                        } else {
+                            let connack = ConnAckPacketBuilder::new()
+                                .set_return_code(ConnackReturnCode::Accpet)
+                                .set_session_present(false)
+                                .build();
+                            msg.connection_addr
+                                .send(ConnectionActorMessage::WritePacketToClient(
+                                    MqttPacketV3::Connack(connack),
+                                ))
+                                .await
+                                .unwrap();
+                        }
                     }
+
                 }
+
             } else {
                 let connack = ConnAckPacketBuilder::new()
                     .set_return_code(ConnackReturnCode::Accpet)
