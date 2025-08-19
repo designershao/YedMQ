@@ -250,7 +250,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         replies.push(Response::None);
                     }
                     Request::UnsubscribeTopic {
-                        node_id,
                         tenant_id,
                         client_identifier,
                         topic,
@@ -261,7 +260,6 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             &tenant_id,
                             &client_identifier,
                             &topic,
-                            node_id,
                         );
                         replies.push(Response::None);
                     }

@@ -7,17 +7,11 @@ use thiserror::Error;
 use tokio::sync::{mpsc::Sender, watch, Mutex, OnceCell, RwLock};
 
 use crate::{
-    protobuf::raft_service_server::RaftServiceServer,
-    router::RouterCmd,
-    session::{
+    protobuf::raft_service_server::RaftServiceServer, raft::NodeId, session::{
         session_actor_map_storage::{SessionActorMapStorage, SessionClock},
         session_state_storage::SessionStateStorage,
-    },
-    settings::Settings,
-    topic::topic_storage::TopicStorage,
+    }, settings::Settings, topic::topic_storage::TopicStorage
 };
-
-use super::{service::raft_service::RaftServiceImpl, NodeId};
 
 #[derive(Debug, Error)]
 pub enum RaftManagerError<E: std::error::Error + 'static> {

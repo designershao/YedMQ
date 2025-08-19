@@ -459,7 +459,6 @@ impl TopicStorage {
         tenant_id: &String,
         client_identifier: &String,
         topic_filter: &String,
-        node_id: NodeId,
     ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
@@ -963,7 +962,6 @@ mod tests {
             &tenant_name,
             &"clientA".to_string(),
             &"a/b/c".to_string(),
-            1,
         );
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);

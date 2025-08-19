@@ -1,27 +1,28 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    plugin_manager::PluginService,
+    plugin_manager::{PluginManager, PluginService},
     protobuf::{raft_service_client::RaftServiceClient, SessionActorForceStopRequest},
     raft::{
         client::base::RaftClientError,
         raft_manager::{RaftManagerError, RaftManagerTrait},
-        session_actor_map::types::RenewSession,
+        session_actor_map::{
+            session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
+            types::RenewSession,
+        },
         Node, NodeId,
     },
-    router::RouterCmd,
     session::session_actor::SessionActor,
     settings::Settings,
-    topic::topic_manager::TopicManagerTrait,
 };
 use actix::{
     dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message, Recipient,
-    ResponseFuture, WrapFuture,
+    ResponseFuture, Supervised, SystemService, WrapFuture,
 };
 use log::{error, info, warn};
 use openraft::{error::ClientWriteError, metrics::Wait};
 use thiserror::Error;
-use tokio::sync::{mpsc::Sender, RwLock};
+use tokio::sync::{mpsc::Sender, OnceCell, RwLock};
 use yedmq_mqtt::{
     v3::connack::{ConnAckPacketBuilder, ConnackReturnCode},
     MqttPacketV3,
@@ -57,6 +58,9 @@ pub enum SessionManagerError {
 
     #[error("newer session has existed")]
     NewerSessionExisted,
+
+    #[error("session actor map error {0}")]
+    SessionActorMapError(#[from] crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError),
 }
 
 pub enum SessionLifecycleMessage {
@@ -80,47 +84,66 @@ struct SessionActorRecipientWrapper {
     session_version: SessionVersion,
 }
 
+impl Default for SessionManagerActor {
+    fn default() -> Self {
+        SessionManagerActor {
+            sessions: HashMap::new(),
+            plugin_manager: OnceCell::new(),
+            session_lifecycle_tx: None,
+            settings: Arc::new(Settings::default()),
+            session_clock: OnceCell::new(),
+            current_node_id: NodeId::default(),
+        }
+    }
+}
+
+
+impl SystemService for SessionManagerActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
+        let settings = self.settings.clone();
+        let addr = ctx.address();
+
+        ctx.spawn(
+            async move {
+                let res =
+                    SessionManagerActor::initialize(settings).await;
+                addr.do_send(InitializationComplete(res));
+            }.into_actor(self)
+        );
+    }
+}
+
+impl Supervised for SessionManagerActor {}
+
 pub struct SessionManagerActor {
     sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
-    raft_manager: Arc<dyn RaftManagerTrait>,
-
-    plugin_manager: Arc<dyn PluginService + 'static>,
-
-    topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
-
-    router_sender: Sender<RouterCmd>,
+    plugin_manager: OnceCell<Arc<dyn PluginService + 'static>>,
 
     session_lifecycle_tx: Option<Sender<SessionLifecycleMessage>>,
 
     settings: Arc<Settings>,
 
-    session_clock: Arc<SessionClock>,
+    session_clock: OnceCell<Arc<SessionClock>>,
 
     current_node_id: NodeId,
 }
 
 impl SessionManagerActor {
-    pub fn new(
-        plugin_manager: Arc<dyn PluginService + 'static>,
-        topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
-        router_sender: Sender<RouterCmd>,
-        settings: Arc<Settings>,
-        raft_manager: Arc<dyn RaftManagerTrait>,
-        session_clock: Arc<SessionClock>,
-        current_node_id: NodeId,
-    ) -> SessionManagerActor {
-        SessionManagerActor {
-            sessions: HashMap::new(),
-            plugin_manager,
-            topic_manager,
-            router_sender,
-            session_lifecycle_tx: None,
-            settings,
-            raft_manager,
-            session_clock,
-            current_node_id,
-        }
+    async fn initialize(
+        settings: Arc<crate::settings::Settings>,
+    ) -> Result<(PluginManager, SessionClock), SessionManagerError> {
+        // init plugin manager
+        info!("start load plugin manager");
+        let plugin_manager =
+            PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
+        let session_clock = SessionClock::new(
+            settings.cluster.node_id,
+            settings.session.session_clock_path.clone(),
+        );
+        session_clock.restore().await.unwrap();
+        //
+        Ok((plugin_manager, session_clock))
     }
 }
 
@@ -131,8 +154,8 @@ impl Actor for SessionManagerActor {
         let (session_lifecycle_tx, mut session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
         self.session_lifecycle_tx = Some(session_lifecycle_tx);
         let self_addr = ctx.address();
-        let raft_manager = self.raft_manager.clone();
-        let session_clock = self.session_clock.clone();
+        let session_clock = self.session_clock.get().unwrap().clone();
+        let session_actor_map_actor_addr = SessionActorMapRaftActor::from_registry();
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
                 match msg {
@@ -148,10 +171,13 @@ impl Actor for SessionManagerActor {
                             client_id
                         );
                         let session_version = session_clock.next();
-                        let res = raft_manager
-                            .get_session_actor_map_raft_client()
-                            .unregister_session_actor_map(&tenant_id, &client_id, session_version)
-                            .await;
+                        let res = session_actor_map_actor_addr.send(
+                            crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
+                                tenant_id: tenant_id.clone(),
+                                client_id: client_id.clone(),
+                                version: session_version.clone(),
+                            }
+                        ).await;
                         if let Err(err) = res {
                             error!("failed to unregister session actor map: {}", err);
                         }
@@ -182,40 +208,71 @@ impl Actor for SessionManagerActor {
 
 #[derive(Message)]
 #[rtype(result = "()")]
+struct InitializationComplete(Result<(PluginManager, SessionClock), SessionManagerError>);
+
+impl Handler<InitializationComplete> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
+        match msg.0 {
+            Ok((plugin_manager, session_clock)) => {
+                self.plugin_manager.set(Arc::new(plugin_manager));
+                self.session_clock.set(Arc::new(session_clock));
+                info!("session manager initialized successfully");
+            }
+            Err(e) => {
+                error!("failed to initialize session manager: {}", e);
+            }
+        }
+    }
+}
+
+
+
+#[derive(Message)]
+#[rtype(result = "()")]
 pub struct RenewSessionLease {}
 
 impl Handler<RenewSessionLease> for SessionManagerActor {
     type Result = ();
 
     fn handle(&mut self, _msg: RenewSessionLease, ctx: &mut Self::Context) -> Self::Result {
-        let raft_manager = self.raft_manager.clone();
-
         for (tenant_id, tenant_sessions) in self.sessions.iter() {
             let tenant_sessions = tenant_sessions.clone();
-            let raft_manager = raft_manager.clone();
             let tenant_id = tenant_id.clone();
             async move {
                 info!("renew session lease for tenant {}", tenant_id);
-                let sessions = tenant_sessions.read().await.iter().map(|(client_id, _)| {
-                    RenewSession{
+                let sessions = tenant_sessions
+                    .read()
+                    .await
+                    .iter()
+                    .map(|(client_id, _)| RenewSession {
                         tenant_id: tenant_id.clone(),
                         session_id: client_id.clone(),
+                    })
+                    .collect::<Vec<RenewSession>>();
+                let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+                for session in &sessions {
+                    info!(
+                        "renew session lease for tenant {} session {}",
+                        tenant_id, session.session_id
+                    );
+                    let res = session_actor_map_raft_actor_addr
+                        .send(session_actor_map_raft_actor::RenewSession {
+                            tenant_id: session.tenant_id.clone(),
+                            client_id: session.session_id.clone(),
+                        })
+                        .await;
+                    if let Err(err) = res {
+                        error!("failed to renew session lease: {}", err);
+                    } else {
+                        info!("renew session lease for tenant {} succeed", tenant_id);
                     }
-                }).collect::<Vec<RenewSession>>();
-                let res = raft_manager
-                    .get_session_actor_map_raft_client()
-                    .renew_session_lease(sessions)
-                    .await;
-                if let Err(err) = res {
-                    error!("failed to renew session lease: {}", err);
-                } else {
-                    info!("renew session lease for tenant {} succeed", tenant_id);
                 }
             }
             .into_actor(self)
             .wait(ctx);
         }
-
     }
 }
 
@@ -569,14 +626,11 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         }
 
         let sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
-        let topic_manager = self.topic_manager.clone();
         let plugin_manager = self.plugin_manager.clone();
-        let router_sender = self.router_sender.clone();
         let settings = self.settings.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone().unwrap().clone();
 
-        let raft_manager = self.raft_manager.clone();
-        let session_clock = self.session_clock.clone();
+        let session_clock = self.session_clock.get().unwrap().clone();
         let current_node_id = self.current_node_id;
 
         let future = async move {
@@ -592,7 +646,6 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
                         entry.node_id,
-                        raft_manager.clone(),
                         msg.tenant_id.clone(),
                         msg.client_id.clone(),
                     )
@@ -634,30 +687,35 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             let session_version = session_clock.next();
 
-            let res = raft_manager
-                .get_session_actor_map_raft_client()
-                .register_session_actor_map(
-                    &msg.tenant_id,
-                    &msg.client_id,
-                    current_node_id,
-                    session_version.clone(),
-                )
-                .await;
+            let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+
+            let res = session_actor_map_raft_actor_addr.send(
+                session_actor_map_raft_actor::RegisterSessionActorMap {
+                    tenant_id: msg.tenant_id.clone(),
+                    client_id: msg.client_id.clone(),
+                    node_id: current_node_id,
+                    version: session_version.clone(),
+                }
+            ).await.unwrap();
+
             match res {
-                Ok(response) => match response {
-                    crate::raft::session_actor_map::types::SessionActorMapResponse::Rejected {
-                        current_version,
-                        existing_version,
-                    } => {
-                        info!(
-                            "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
-                            msg.tenant_id, msg.client_id, current_version, existing_version
-                        );
-                        return Err(SessionManagerError::NewerSessionExisted);
+                Ok(response) => {}
+                Err(e) => {
+                    match e {
+                        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected { 
+                            current_version, 
+                            existing_version } => {
+                            info!(
+                                "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
+                                msg.tenant_id, msg.client_id, current_version, existing_version
+                            );
+                            return Err(SessionManagerError::NewerSessionExisted);
+                        },
+                        _ => {
+                            return Err(SessionManagerError::SessionActorMapError(e));
+                        }
                     }
-                    _ => {}
-                },
-                Err(e) => return Err(SessionManagerError::RaftClientErr(e)),
+                }
             }
 
             info!(
@@ -672,6 +730,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 settings.mqtt.inflight_retry_interval_secs,
             ))));
 
+            let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+
             if !msg.clean_session {
                 info!(
                     "session {} not clean session, into state recover or create logic.",
@@ -680,11 +740,14 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 // If raft store not existed, create new session state
                 // First check local sessions if exists send reconect
                 // If local sessions not existed, recover from raft store
-                let session_state_exist = raft_manager
-                    .session_state_raft()
-                    .session_state_exists(&msg.tenant_id, &msg.client_id)
-                    .await;
-                if session_state_exist {
+                let res = session_state_raft_actor_addr.send(
+                    crate::raft::session_state::session_state_raft_actor::GetSessionStateEnsureLinearizable {
+                        tenant_id: msg.tenant_id.clone(),
+                        client_id: msg.client_id.clone(),
+                    },
+                ).await.unwrap();
+
+                if res.unwrap().is_some() {
                     let connack = ConnAckPacketBuilder::new()
                         .set_return_code(ConnackReturnCode::Accpet)
                         .set_session_present(true)
@@ -724,12 +787,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             msg.client_id
                         );
                         // not in current node, recover from raft
-                        let session_state_from_raft = raft_manager
-                            .get_session_state_raft_client()
-                            .get_session_state(&msg.tenant_id, &msg.client_id)
-                            .await
-                            .unwrap();
-                        session_state = Arc::new(RwLock::new(session_state_from_raft.unwrap()));
+                        session_state = Arc::new(RwLock::new(res.unwrap().unwrap()));
                     }
                     //
                 } else {
@@ -737,14 +795,12 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         "session {} not exists in cluster, create new session state",
                         msg.client_id
                     );
-                    let res = raft_manager
-                        .get_session_state_raft_client()
-                        .create_session_state(
-                            &msg.tenant_id,
-                            &msg.client_id,
-                            settings.mqtt.sys_topic_interval_secs,
-                        )
-                        .await;
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::CreateSessionState {
+                            tenant_id: msg.tenant_id.clone(),
+                            client_id: msg.client_id.clone(),
+                        },
+                    ).await.unwrap();
 
                     if res.is_err() {
                         error!("create session state failed: {}", res.unwrap_err());
@@ -787,16 +843,13 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.tenant_id.clone(),
                 msg.client_id.clone(),
                 msg.clean_session,
-                topic_manager.clone(),
-                plugin_manager.clone(),
-                router_sender.clone(),
+                plugin_manager.get().unwrap().clone(),
                 50,
                 msg.will_message,
                 msg.keep_alive,
                 msg.connection_addr,
                 msg.peer_addr,
                 session_state,
-                raft_manager,
                 session_lifecycle_tx,
                 current_node_id,
             );

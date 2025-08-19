@@ -1,6 +1,6 @@
 pub mod session;
 pub mod inflight;
-pub mod router;
+pub mod router_actor;
 pub mod topic;
 pub mod settings;
 pub mod listener;

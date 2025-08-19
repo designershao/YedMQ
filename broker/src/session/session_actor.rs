@@ -32,9 +32,7 @@ use crate::{
     plugin_manager::{PluginService, SubscribeReturnCode},
     raft::{
         session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor, NodeId
-    },
-    router::RouterCmd,
-    topic::topic_manager::TopicManagerTrait,
+    }, router_actor::RouterActor,
 };
 
 use super::{
@@ -169,8 +167,6 @@ pub struct SessionActor {
     conn_recipient: Option<Recipient<ConnectionActorMessage>>,
 
     conn_addr: Option<SocketAddr>,
-
-    router_sender: Sender<RouterCmd>,
 
     keep_alive: u64,
 
@@ -365,7 +361,6 @@ async fn do_handle_publish(
     client_info: Client,
     plugin_manager: Arc<dyn PluginService>,
     session_state: Arc<RwLock<SessionState>>,
-    router_sender: Sender<RouterCmd>,
     clean_session: bool,
 ) -> HandlePublishResult {
     let publish_authorization = plugin_manager
@@ -439,13 +434,11 @@ async fn do_handle_publish(
             //
         }
         //
-        router_sender
-            .send(RouterCmd::RoutePacket {
-                tenant_identifier: client_info.tenant_id.clone(),
-                packet: MqttPacketV3::Publish(publish_packet.clone()),
-            })
-            .await
-            .unwrap();
+        let router_actor = RouterActor::from_registry();
+        router_actor.do_send(crate::router_actor::RoutePacket{
+            tenant_id: client_info.tenant_id.clone(),
+            packet: MqttPacketV3::Publish(publish_packet.clone()),
+        });
     }
 
     return result;
@@ -530,7 +523,6 @@ impl SessionActor {
         client_id: String,
         clean_session: bool,
         plugin_manager: Arc<dyn PluginService>,
-        router_sender: Sender<RouterCmd>,
         inflight_retry_duration_secs: u64,
         will_message: Option<WillMessage>,
         keep_alive: u64,
@@ -542,7 +534,6 @@ impl SessionActor {
     ) -> Self {
         SessionActor {
             plugin_manager,
-            router_sender,
             conn_recipient: Some(connection_actor_addr),
             conn_addr: Some(peer_addr),
             activity_state: ActivityState::Active,
@@ -646,7 +637,6 @@ impl SessionActor {
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
-        let router_sender = self.router_sender.clone();
         let clean_session = self.clean_session;
 
         async move {
@@ -655,7 +645,6 @@ impl SessionActor {
                 client_info,
                 plugin_manager,
                 session_state,
-                router_sender,
                 clean_session,
             )
             .await
@@ -1247,7 +1236,6 @@ impl SessionActor {
     fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context, callback_fn: ThenCallback<SessionActor, ()>) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
-        let router_sender = self.router_sender.clone();
         async move {
             if will_message.is_some() {
                 let will_message = will_message.as_ref().unwrap();
@@ -1258,12 +1246,12 @@ impl SessionActor {
                 .retain(will_message.will_retain)
                 .qos(will_message.will_qos)
                 .build();
-                let _ = router_sender
-                    .send(RouterCmd::RoutePacket {
-                        tenant_identifier: tenant_id,
+                let router_actor = RouterActor::from_registry();
+                router_actor
+                    .do_send(crate::router_actor::RoutePacket {
+                        tenant_id: tenant_id,
                         packet: MqttPacketV3::Publish(publish_packet),
-                    })
-                    .await;
+                    });
             }
         }
         .into_actor(self)

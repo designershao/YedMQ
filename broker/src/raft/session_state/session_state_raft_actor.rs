@@ -25,7 +25,10 @@ pub enum SessionStateRaftError {
     NotLeader { leader: Option<Node> },
 
     #[error("Raft errror: {0}")]
-    Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+    RaftClientWriteError(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+
+    #[error("Raft append entries error: {0}")]
+    RaftAppendEntriesError(#[from] RaftError<NodeId>),
 
     #[error("Network error: {0}")]
     Network(#[from] openraft::error::NetworkError),
@@ -157,7 +160,7 @@ impl SessionStateRaftActor {
                     leader: e_inner.leader_node,
                 }
             } else {
-                SessionStateRaftError::Raft(e)
+                SessionStateRaftError::RaftClientWriteError(e)
             }
         })?;
         Ok(res)
@@ -1169,6 +1172,47 @@ impl Handler<InflightCleanFinishedItems> for SessionStateRaftActor {
                         .into_actor(self),
                 );
             }            
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<openraft::raft::AppendEntriesResponse<NodeId>, SessionStateRaftError>")]
+pub struct AppendEntriesRequestMessage {
+    pub payload: openraft::raft::AppendEntriesRequest<super::types::SessionStateTypeConfig>
+}
+
+impl Handler<AppendEntriesRequestMessage> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<openraft::raft::AppendEntriesResponse<NodeId>, SessionStateRaftError>>;
+
+    fn handle(&mut self, msg: AppendEntriesRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.append_entries(msg.payload).await?;
+                            Ok(res)
+                        } else {
+                            Err(SessionStateRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
         }
     }
 }

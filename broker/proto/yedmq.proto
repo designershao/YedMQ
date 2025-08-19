@@ -68,6 +68,12 @@ service ClusterService {
     // Get session actor map
     rpc GetSessionActorMap(GetSessionActorMapRequest) returns (GetSessionActorMapResponse);
 
+    // Route a packet to the appropriate node or client.
+    rpc RoutePacket(RoutePacketRequest) returns (RoutePacketResponse);
+
+    // Force stop session actor
+    rpc ForceStopSessionActor(ForceStopSessionActorRequest) returns (ForceStopSessionActorResponse);
+
 }
 
 // Request to store an offline message for a client.
@@ -218,7 +224,6 @@ message SubscribeTopicResponse {
 
 // Request to unsubscribe a client from a topic.
 message UnsubscribeTopicRequest {
-    uint64 node_id = 1;
     string tenant_id = 2;
     string client_id = 3;
     string topic = 4;
@@ -238,7 +243,6 @@ message GetSubscribersByTopicRequest {
 
 // Subscriber information.
 message Subscriber {
-    uint64 node_id = 1;
     uint32 qos = 2;
     string client_id = 3;
 }
@@ -344,4 +348,24 @@ message GetSessionActorMapResponse {
     bool success = 1; // Operation success flag
     ErrorDetail error = 2; // Error details if any
     optional string payload = 3;
+}
+
+message RoutePacketRequest {
+    string tenant_id = 1; // Tenant identifier
+    string payload = 2; // MQTT packet to route
+}
+
+message RoutePacketResponse {
+    bool success = 1; // Operation success flag
+    ErrorDetail error = 2; // Error details if any
+}
+
+message ForceStopSessionActorRequest {
+    string tenant_id = 1; // Tenant identifier
+    string client_id = 2; // Client identifier
+}
+
+message ForceStopSessionActorResponse {
+    bool success = 1; // Operation success flag
+    ErrorDetail error = 2; // Error details if any
 }

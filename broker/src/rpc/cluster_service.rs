@@ -1,25 +1,15 @@
 use crate::protobuf::cluster_service_server::ClusterService;
 use crate::protobuf::{
-    AdvanceInflightStateRequest, AdvanceInflightStateResponse, CleanRetainPublishMessageRequest,
-    CleanRetainPublishMessageResponse, CreateSessionStateRequest, CreateSessionStateResponse,
-    DeleteSessionStateRequest, DeleteSessionStateResponse, GetCurrentInflightPacketRequest,
-    GetCurrentInflightPacketResponse, GetNextInflightPacketRequest, GetNextInflightPacketResponse,
-    GetRetainPublishMessageRequest, GetRetainPublishMessageResponse, GetSessionActorMapRequest,
-    GetSessionActorMapResponse, GetSessionStateRequest, GetSessionStateResponse,
-    GetSubscribersByTopicRequest, GetSubscribersByTopicResponse, PopOfflineMessageRequest,
-    PopOfflineMessageResponse, RegisterInflightRxPacketRequest, RegisterInflightRxPacketResponse,
-    RegisterInflightTxPacketRequest, RegisterInflightTxPacketResponse,
-    RegisterRetainPublishMessageRequest, RegisterRetainPublishMessageResponse,
-    RegisterSessionActorMapRequest, RegisterSessionActorMapResponse, RenewSessionLeaseRequest,
-    RenewSessionLeaseResponse, StoreOfflineMessageRequest, StoreOfflineMessageResponse,
-    SubscribeTopicRequest, SubscribeTopicResponse, UnregisterSessionActorMapRequest,
-    UnregisterSessionActorMapResponse, UnsubscribeTopicRequest, UnsubscribeTopicResponse,
+    AdvanceInflightStateRequest, AdvanceInflightStateResponse, CleanRetainPublishMessageRequest, CleanRetainPublishMessageResponse, CreateSessionStateRequest, CreateSessionStateResponse, DeleteSessionStateRequest, DeleteSessionStateResponse, ForceStopSessionActorRequest, ForceStopSessionActorResponse, GetCurrentInflightPacketRequest, GetCurrentInflightPacketResponse, GetNextInflightPacketRequest, GetNextInflightPacketResponse, GetRetainPublishMessageRequest, GetRetainPublishMessageResponse, GetSessionActorMapRequest, GetSessionActorMapResponse, GetSessionStateRequest, GetSessionStateResponse, GetSubscribersByTopicRequest, GetSubscribersByTopicResponse, PopOfflineMessageRequest, PopOfflineMessageResponse, RegisterInflightRxPacketRequest, RegisterInflightRxPacketResponse, RegisterInflightTxPacketRequest, RegisterInflightTxPacketResponse, RegisterRetainPublishMessageRequest, RegisterRetainPublishMessageResponse, RegisterSessionActorMapRequest, RegisterSessionActorMapResponse, RenewSessionLeaseRequest, RenewSessionLeaseResponse, StoreOfflineMessageRequest, StoreOfflineMessageResponse, SubscribeTopicRequest, SubscribeTopicResponse, UnregisterSessionActorMapRequest, UnregisterSessionActorMapResponse, UnsubscribeTopicRequest, UnsubscribeTopicResponse
 };
 use crate::raft::session_actor_map::session_actor_map_raft_actor;
 use crate::raft::session_state::session_state_raft_actor::{self, SessionStateRaftActor};
+use crate::router_actor::{RouteFromOtherNode, RoutePacket, RouterActor};
 use crate::session::session_actor_map_storage::SessionVersion;
+use crate::session::session_manager_actor::SessionManagerActor;
 use actix::SystemService;
 use tonic::{Request, Response, Status};
+use yedmq_mqtt::MqttPacketV3;
 
 struct ClusterServiceImpl;
 
@@ -275,7 +265,6 @@ impl ClusterService for ClusterServiceImpl {
             crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
         let inner = request.into_inner();
         let subscribe_topic_actor = crate::raft::topic::topic_raft_actor::Subscribe {
-            node_id: inner.node_id,
             tenant_id: inner.tenant_id.clone(),
             client_identifier: inner.client_id.clone(),
             topic: inner.topic.clone(),
@@ -300,7 +289,6 @@ impl ClusterService for ClusterServiceImpl {
             crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
         let inner = request.into_inner();
         let unsubscribe_topic_actor = crate::raft::topic::topic_raft_actor::Unsubscribe {
-            node_id: inner.node_id,
             tenant_id: inner.tenant_id.clone(),
             client_identifier: inner.client_id.clone(),
             topic: inner.topic.clone(),
@@ -339,7 +327,6 @@ impl ClusterService for ClusterServiceImpl {
             .subscriptions
             .iter()
             .map(|sub| crate::protobuf::Subscriber {
-                node_id: sub.node_id,
                 qos: sub.qos as u32,
                 client_id: sub.client_identifier.clone(),
             })
@@ -533,6 +520,48 @@ impl ClusterService for ClusterServiceImpl {
             success: true,
             error: None,
             payload,
+        }))
+    }
+
+    async fn route_packet(
+        &self,
+        request: Request<crate::protobuf::RoutePacketRequest>,
+    ) -> Result<Response<crate::protobuf::RoutePacketResponse>, Status> {
+        let inner = request.into_inner();
+        let packet: MqttPacketV3 = serde_json::from_str(&inner.payload)
+            .map_err(|e| Status::invalid_argument(format!("Invalid packet format: {}", e)))?;
+
+        let router_actor_addr = RouterActor::from_registry();
+        router_actor_addr
+            .send(RouteFromOtherNode {
+                tenant_id: inner.tenant_id.clone(),
+                packet
+            })
+            .await
+            .map_err(|e| Status::internal(format!("Failed to route packet: {}", e)))?;
+        
+        Ok(Response::new(crate::protobuf::RoutePacketResponse {
+            success: true,
+            error: None,
+        }))
+    }
+
+    async fn force_stop_session_actor(
+        &self,
+        request: Request<ForceStopSessionActorRequest>,
+    ) -> Result<Response<ForceStopSessionActorResponse>, Status> {
+        let session_manager_actor_addr = SessionManagerActor::from_registry();
+        let inner = request.into_inner();
+        session_manager_actor_addr.send(
+            crate::session::session_manager_actor::ForceStop {
+                tenant_id: inner.tenant_id.clone(),
+                client_id: inner.client_id.clone(),
+            }
+        ).await
+        .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?;
+        Ok(Response::new(ForceStopSessionActorResponse {
+            success: true,
+            error: None,
         }))
     }
 }

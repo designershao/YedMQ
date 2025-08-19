@@ -1,10 +1,8 @@
 use std::{cell::OnceCell, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
-use axum::response::Response;
 use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, Config};
 use tokio::sync::RwLock;
-use yedmq_mqtt::MqttPacketV3;
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry}};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
@@ -27,7 +25,10 @@ pub enum SessionActorMapRaftError {
     NotLeader { leader: Option<Node> },
 
     #[error("Raft errror: {0}")]
-    Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+    RaftClientWriteError(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+
+    #[error("Raft append entries error: {0}")]
+    RaftAppendEntriesError(#[from] RaftError<NodeId>),
 
     #[error("Network error: {0}")]
     Network(#[from] openraft::error::NetworkError),
@@ -52,6 +53,12 @@ pub enum SessionActorMapRaftError {
 
     #[error("Unexpected response type: {0}")]
     UnexpectedResponseType(String),
+
+    #[error("Session version rejected, current: {current_version}, existing: {existing_version}")]
+    SessionVersionRejected {
+        current_version: SessionVersion,
+        existing_version: SessionVersion,
+    },
 }
 
 pub struct SessionActorMapRaftActor {
@@ -127,7 +134,7 @@ impl SessionActorMapRaftActor {
                     leader: e_inner.leader_node,
                 }
             } else {
-                SessionActorMapRaftError::Raft(e)
+                SessionActorMapRaftError::RaftClientWriteError(e)
             }
         })?;
         Ok(res)
@@ -138,7 +145,17 @@ impl SessionActorMapRaftActor {
         request: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
         match Self::try_local_write(raft, request.clone()).await {
-            Ok(r) => Ok(r),
+            Ok(r) => {
+                match r.data {
+                    super::types::SessionActorMapResponse::None => Ok(r),
+                    super::types::SessionActorMapResponse::Rejected { current_version, existing_version } => {
+                        Err(SessionActorMapRaftError::SessionVersionRejected {
+                            current_version,
+                            existing_version,
+                        })
+                    },
+                }
+            },
             Err(SessionActorMapRaftError::NotLeader { leader }) => {
                 log::warn!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
@@ -260,6 +277,47 @@ impl Handler<InitializationComplete> for SessionActorMapRaftActor {
             Err(e) => {
                 log::error!("Failed to initialize TopicRaftActor: {}", e);
                 self.state = ActorState::Failed(e);
+            }
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<openraft::raft::AppendEntriesResponse<NodeId>, SessionActorMapRaftError>")]
+pub struct AppendEntriesRequestMessage {
+    pub payload: openraft::raft::AppendEntriesRequest<super::types::SessionActorMapTypeConfig>
+}
+
+impl Handler<AppendEntriesRequestMessage> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<openraft::raft::AppendEntriesResponse<NodeId>, SessionActorMapRaftError>>;
+
+    fn handle(&mut self, msg: AppendEntriesRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.append_entries(msg.payload).await?;
+                            Ok(res)
+                        } else {
+                            Err(SessionActorMapRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
             }
         }
     }

@@ -184,7 +184,6 @@ impl TopicRaftManagerTrait for RaftManager {
         topic: String,
     ) -> Result<(), RaftManagerError<ClientWriteError<NodeId, Node>>> {
         let command = Request::UnsubscribeTopic {
-            node_id,
             tenant_id,
             client_identifier,
             topic,

@@ -36,7 +36,10 @@ pub enum TopicRaftError {
     NotLeader { leader: Option<Node> },
 
     #[error("Raft errror: {0}")]
-    Raft(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+    RaftClientWriteError(#[from] RaftError<NodeId, ClientWriteError<NodeId, Node>>),
+
+    #[error("Raft append entries error: {0}")]
+    RaftAppendEntriesError(#[from] RaftError<NodeId>),
 
     #[error("Network error: {0}")]
     Network(#[from] openraft::error::NetworkError),
@@ -143,7 +146,7 @@ impl TopicRaftActor {
                     leader: e_inner.leader_node,
                 }
             } else {
-                TopicRaftError::Raft(e)
+                TopicRaftError::RaftClientWriteError(e)
             }
         })?;
         Ok(())
@@ -346,7 +349,6 @@ impl Handler<Unsubscribe> for TopicRaftActor {
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let command = crate::raft::topic::types::Request::UnsubscribeTopic {
-                                node_id: msg.node_id,
                                 tenant_id: msg.tenant_id,
                                 client_identifier: msg.client_identifier,
                                 topic: msg.topic,
@@ -838,5 +840,46 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                 );
             }
         };
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>")]
+pub struct AppendEntriesRequestMessage {
+    pub payload: openraft::raft::AppendEntriesRequest<super::types::TypeConfig>
+}
+
+impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>>;
+
+    fn handle(&mut self, msg: AppendEntriesRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.append_entries(msg.payload).await?;
+                            Ok(res)
+                        } else {
+                            Err(TopicRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
     }
 }

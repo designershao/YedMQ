@@ -18,7 +18,6 @@ pub enum Request {
     },
     // Unsubscribe topic
     UnsubscribeTopic {
-        node_id: NodeId,
         tenant_id: String,
         client_identifier: String,
         topic: String,
