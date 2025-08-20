@@ -1,11 +1,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use actix::Addr;
 use log::{info, warn};
-use tokio::sync::{mpsc::Sender, Mutex, OnceCell, RwLock};
+use tokio::sync::{ Mutex, RwLock};
 
-use crate::raft::raft_manager::RaftManagerTrait;
-use crate::session::session_state_storage::SessionStateStorage;
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
@@ -15,23 +12,16 @@ use crate::{
     plugin_manager::PluginManager,
     raft::Node,
     rest_api,
-    session::session_manager_actor::SessionManagerActor,
     settings::Settings,
     topic::{
-        topic_manager::{TopicManager, TopicManagerTrait},
         topic_storage::TopicStorage,
     },
 };
 
 // Representation of the application state.This struct can be shared around to share.
 pub struct YedMQApp {
-    pub session_manager: OnceCell<Addr<SessionManagerActor>>,
 
     pub plugin_manager: Arc<PluginManager>,
-
-    pub topic_manager: Arc<RwLock<dyn TopicManagerTrait>>,
-
-    pub topic_storage: Arc<RwLock<TopicStorage>>,
 
     pub topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>,
 
@@ -40,28 +30,11 @@ pub struct YedMQApp {
     pub settings: Arc<Settings>,
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
-
-    pub raft_manager: Arc<crate::raft::raft_manager::RaftManager>,
 }
 
 impl YedMQApp {
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
-
-        // start rpc server
-        crate::raft::raft_manager::RaftManager::start_grpc(
-            app.raft_manager.clone(),
-            router_sender.clone(),
-            session_manager.clone().recipient(),
-            session_manager.clone().recipient(),
-            settings.cluster.node_id,
-        )
-        .await
-        .unwrap();
-        info!("start grpc service succeed");
-        //
-
-        app.session_manager.set(session_manager.clone()).unwrap();
 
         //
 
@@ -70,7 +43,6 @@ impl YedMQApp {
         let sys_topic_task = metric::SysTopicTask::new(
             app.metric.clone(),
             settings.mqtt.sys_topic_interval_secs,
-            router_sender.clone(),
         );
         let sys_topic_task_join_handle = actix::spawn(async move {
             sys_topic_task.run().await;
@@ -172,43 +144,11 @@ impl YedMQApp {
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
 
         // init raft manager
-        let raft_manager =
-            Arc::new(crate::raft::raft_manager::RaftManager::new(settings.clone()).await);
-
-        let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
-
-        raft_manager
-            .init_session_state_raft(session_state_storage.clone())
-            .await;
-
-        println!("raft manager init session state raft succeed");
-        raft_manager
-            .init_topic_raft(topic_storage.clone())
-            .await;
-
-        //
-
-        // init topic manager
-        info!("start load topic manager");
-
-        let topic_manager = Arc::new(RwLock::new(TopicManager::new(
-            topic_storage.clone(),
-            settings.cluster.node_id,
-            raft_manager.get_topic_raft_client(),
-        )));
-        info!("topic manager load succeed");
-        //
-
         YedMQApp {
-            session_manager: OnceCell::new(),
             plugin_manager,
-            topic_manager,
-            raft_manager,
-            router_sender: OnceCell::new(),
             settings,
             metric,
             join_handles,
-            topic_storage,
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }

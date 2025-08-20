@@ -30,8 +30,11 @@ pub enum SessionStateRaftError {
     #[error("Raft append entries error: {0}")]
     RaftAppendEntriesError(#[from] RaftError<NodeId>),
 
+    #[error("Raft install snapshot error: {0}")]
+    RaftInstallSnapshotError(#[from] RaftError<NodeId, openraft::error::InstallSnapshotError>),
+
     #[error("Network error: {0}")]
-    Network(#[from] openraft::error::NetworkError),
+    RaftNetworkError(#[from] openraft::error::NetworkError),
 
     #[error("gRPC error: {0}")]
     GRPC(String),
@@ -1215,6 +1218,89 @@ impl Handler<AppendEntriesRequestMessage> for SessionStateRaftActor {
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.append_entries(msg.payload).await?;
+                            Ok(res)
+                        } else {
+                            Err(SessionStateRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<openraft::raft::InstallSnapshotResponse<NodeId>, SessionStateRaftError>")]
+pub struct InstallSnapshotRequestMessage {
+    pub payload: openraft::raft::InstallSnapshotRequest<super::types::SessionStateTypeConfig>
+}
+
+impl Handler<InstallSnapshotRequestMessage> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<openraft::raft::InstallSnapshotResponse<NodeId>, SessionStateRaftError>>; 
+
+    fn handle(&mut self, msg: InstallSnapshotRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.install_snapshot(msg.payload).await?;
+                            Ok(res)
+                        } else {
+                            Err(SessionStateRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
+    }
+}
+
+
+#[derive(Message, Clone)]
+#[rtype(result = "Result<openraft::raft::VoteResponse<NodeId>, SessionStateRaftError>")]
+pub struct VoteRequestMessage {
+    pub payload: openraft::raft::VoteRequest<NodeId>
+}
+
+impl Handler<VoteRequestMessage> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<openraft::raft::VoteResponse<NodeId>, SessionStateRaftError>>;
+
+    fn handle(&mut self, msg: VoteRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.vote(msg.payload).await?;
                             Ok(res)
                         } else {
                             Err(SessionStateRaftError::NotReady("Initializing".to_string()))

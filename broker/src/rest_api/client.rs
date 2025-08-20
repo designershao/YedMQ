@@ -7,6 +7,7 @@ use crate::{
         session_actor::ActivityState, session_manager_actor::{self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError}
     },
 };
+use actix::SystemService;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -32,10 +33,8 @@ pub async fn kickoff_client(
     State(app_state): State<Arc<YedMQApp>>,
     Path((tenant_id, client_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let session_manager = app_state.session_manager.clone();
-    let kickoff_result = session_manager
-        .get()
-        .unwrap()
+    let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
+    let kickoff_result = session_manager_actor_addr
         .send(ForceDisconnect {
             tenant_id: tenant_id.clone(),
             client_id: client_id.clone(),
@@ -81,10 +80,9 @@ pub async fn client_list(
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
-    let session_manager = app_state.session_manager.clone();
-    let session_list_result = session_manager
-    .get()
-    .unwrap().send(GetSessionInfoListWithPagination {
+    let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
+    let session_list_result = session_manager_actor_addr
+    .send(GetSessionInfoListWithPagination {
         tenant_id: tenant_id.clone(),
         offset_param,
         limit_param,

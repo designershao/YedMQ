@@ -23,7 +23,6 @@ impl MqttTcpListener {
                 4096,
                 peer_addr,
                 self.app.plugin_manager.clone(),
-                self.app.session_manager.get().unwrap().clone().recipient(),
             )
             .start();
         }

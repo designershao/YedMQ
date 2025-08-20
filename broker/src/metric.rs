@@ -2,9 +2,6 @@ use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
 use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
-use tokio::sync::mpsc::Sender;
-
-use crate::router::RouterCmd;
 
 pub struct Metric {
 
@@ -60,15 +57,13 @@ pub struct SysTopicTask{
 
     interval_secs: u64,
 
-    router_sender: Sender<RouterCmd> ,
-
 }
 
 
 impl SysTopicTask {
 
-    pub fn new(metric: Arc<Metric>, interval_secs: u64, router_sender: Sender<RouterCmd>) -> SysTopicTask {
-        SysTopicTask { metric, interval_secs, router_sender }
+    pub fn new(metric: Arc<Metric>, interval_secs: u64) -> SysTopicTask {
+        SysTopicTask { metric, interval_secs }
     }
 
     pub async fn run(&self) {
@@ -106,31 +101,6 @@ impl SysTopicTask {
             if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(uptime_packet))).await {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-        }
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test()]
-    async fn test_sys_topic() {
-        let metric = Arc::new(Metric::new());
-        let (router_sender, mut router_receiver) = tokio::sync::mpsc::channel(1000);
-
-        tokio::task::spawn(async move {
-            let sys_topic_task = SysTopicTask::new(metric.clone(), 3, router_sender);
-            sys_topic_task.run().await;
-        });
-
-        let msg = router_receiver.recv().await.unwrap();
-
-        if let RouterCmd::RoutePacketToAllTenants(_) = msg {
-            assert!(true)
-        } else{
-            assert!(false)
         }
     }
 }

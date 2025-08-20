@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::app::YedMQApp;
+use actix::SystemService;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -24,11 +25,13 @@ pub async fn clean_retain_message(
     State(app_state): State<Arc<YedMQApp>>,
     Path((tenant_id, topic_filter)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let r = app_state
-        .topic_manager
-        .write()
-        .await
-        .clean_retain_publish_packet(tenant_id, &topic_filter).await;
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let r = topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::CleanRetainPublishPacket {
+            tenant_id: tenant_id.clone(),
+            topic_filter: topic_filter.clone(),
+        },
+    ).await.unwrap();
     if let Err(err) = r {
         error!("clean retain message error: {}", err);
         let error_response = super::ErrorResponse {
