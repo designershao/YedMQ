@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::dev::MessageResponse;
 use actix::prelude::*;
@@ -99,6 +99,23 @@ impl TopicRaftActor {
         )
         .await
         .map_err(|e| TopicRaftError::RaftInitializationError(e.to_string()))?;
+
+        // init raft cluster nodes
+        let mut cluster_nodes = BTreeMap::new();
+        for item in settings.cluster.nodes.iter() {
+            cluster_nodes.insert(
+                item.id,
+                Node {
+                    rpc_addr: item.rpc_address.to_string(),
+                    api_addr: item.api_address.to_string(),
+                },
+            );
+        }
+        if !raft.is_initialized().await.unwrap() {
+            raft.initialize(cluster_nodes).await.unwrap();
+        }
+        //
+
         Ok((raft, topic_storage))
     }
 

@@ -1,4 +1,3 @@
-pub mod topic_manager;
 pub mod topic_storage;
 
 #[derive(Debug, thiserror::Error)]
@@ -17,9 +16,6 @@ pub enum TopicError {
 
     #[error("raft error {0}")]
     RaftError(#[from] openraft::error::RaftError<crate::raft::NodeId>),
-
-    #[error("raft client error: {0}")]
-    RaftClientError(#[from] crate::raft::client::base::RaftClientError),
 
     #[error("internal error {0}")]
     InternalError(String),

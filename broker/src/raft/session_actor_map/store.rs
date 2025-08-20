@@ -1,6 +1,6 @@
 use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
-use actix::Recipient;
+use actix::{Addr, Recipient, SystemService};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
 use openraft::{
@@ -40,12 +40,6 @@ pub struct StateMachineData {
 
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
-    session_manager_remove_duplicate_sessions_by_clock_recipient:
-        Recipient<crate::session::session_manager_actor::RemoveDuplicateSessionsByClock>,
-
-    session_manager_remove_exipred_sessions_recipient:
-        Recipient<crate::session::session_manager_actor::RemoveExpiredSession>,
-
     node_id: NodeId,
 
     pub data: StateMachineData,
@@ -120,11 +114,6 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
         node_id: NodeId,
-        session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
-            crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
-        >,
-        session_manager_remove_exipred_sessions_recipient: Recipient<
-            crate::session::session_manager_actor::RemoveExpiredSession>,
         session_clock: Arc<SessionClock>,
         session_ttl: u64,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
@@ -138,8 +127,6 @@ impl StateMachineStore {
             node_id,
             snapshot_idx: 0,
             db,
-            session_manager_remove_duplicate_sessions_by_clock_recipient,
-            session_manager_remove_exipred_sessions_recipient,
             session_clock,
         };
 
@@ -257,7 +244,8 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             Ok(()) => {
                                 // Check local node , force stop the session if the session version is older
                                 if node_id != self.node_id {
-                                    self.session_manager_remove_duplicate_sessions_by_clock_recipient
+                                    let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
+                                    session_manager_actor_addr
                                         .send(crate::session::session_manager_actor::RemoveDuplicateSessionsByClock {
                                             tenant_id,
                                             client_id: session_id,
@@ -303,7 +291,8 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                                 .unregister_session_actor(session.tenant_id.clone(), session.session_id.clone());
                             // Force stop the session if the session is expired
                             if session.node_id == self.node_id {
-                                self.session_manager_remove_exipred_sessions_recipient
+                                let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
+                                session_manager_actor_addr
                                     .send(crate::session::session_manager_actor::RemoveExpiredSession {
                                         tenant_id: session.tenant_id,
                                         client_id: session.session_id,
@@ -609,11 +598,6 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
-    session_manager_remove_duplicate_sessions_by_clock_recipient: Recipient<
-        crate::session::session_manager_actor::RemoveDuplicateSessionsByClock,
-    >,
-    session_manager_remove_exipred_sessions_recipient: Recipient<
-        crate::session::session_manager_actor::RemoveExpiredSession>,
     session_clock: Arc<SessionClock>,
     session_ttl: u64
 ) -> (LogStore, StateMachineStore) {
@@ -635,8 +619,6 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         db,
         topic_storage,
         current_node_id,
-        session_manager_remove_duplicate_sessions_by_clock_recipient,
-        session_manager_remove_exipred_sessions_recipient,
         session_clock,
         session_ttl
     )

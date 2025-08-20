@@ -4,8 +4,6 @@ use crate::{
     plugin_manager::{PluginManager, PluginService},
     protobuf::{cluster_service_server::ClusterService, raft_service_client::RaftServiceClient, ForceStopSessionActorRequest},
     raft::{
-        client::base::RaftClientError,
-        raft_manager::{RaftManagerError, RaftManagerTrait},
         session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
@@ -49,12 +47,6 @@ pub enum SessionManagerError {
 
     #[error("session {0} has existed")]
     SessionHasExisted(String),
-
-    #[error("raft error {0} ")]
-    RaftErr(#[from] RaftManagerError<ClientWriteError<NodeId, Node>>),
-
-    #[error("raft client error {0}")]
-    RaftClientErr(#[from] RaftClientError),
 
     #[error("newer session has existed")]
     NewerSessionExisted,

@@ -1,9 +1,9 @@
-use std::{cell::OnceCell, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
 use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, Config};
 use tokio::sync::RwLock;
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry}};
+use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry, SessionClock}};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
 
@@ -83,12 +83,16 @@ impl SessionActorMapRaftActor {
 
         let config = Arc::new(raft_config.validate().unwrap());
 
-        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
+        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, settings.session.session_clock_path.clone()));
+        session_clock.restore().await.unwrap();
 
+        let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
         let (log_store, state_machine_store) = new_storage(
             &dir, 
             session_actor_map_storage.clone(),
             settings.cluster.node_id.clone(),
+            session_clock.clone(),
+            settings.cluster.session_ttl,
         ).await;
 
         let network = Network {};
@@ -102,6 +106,23 @@ impl SessionActorMapRaftActor {
         )
         .await
         .map_err(|e| SessionActorMapRaftError::RaftInitializationError(e.to_string()))?;
+
+        // init raft cluster nodes
+        let mut cluster_nodes = BTreeMap::new();
+        for item in settings.cluster.nodes.iter() {
+            cluster_nodes.insert(
+                item.id,
+                Node {
+                    rpc_addr: item.rpc_address.to_string(),
+                    api_addr: item.api_address.to_string(),
+                },
+            );
+        }
+        if !raft.is_initialized().await.unwrap() {
+            raft.initialize(cluster_nodes).await.unwrap();
+        }
+        //
+
         Ok((raft, session_actor_map_storage))
     }
 

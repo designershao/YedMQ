@@ -1,11 +1,11 @@
-use std::{cell::OnceCell, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
 use openraft::{error::{ClientWriteError, RaftError}, raft::ClientWriteResponse, Config};
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{inflight::InflightError, protobuf::{ cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{client::session_state, session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::{self, session_state_storage::{self, SessionState, SessionStateStorage, SessionStateStorageError}}, settings::Session};
+use crate::{inflight::InflightError, protobuf::{ cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_state::{raft_network_impl::Network, store::new_storage, types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig}, SessionStateRaft}, Node, NodeId}, session::{self, session_state_storage::{self, SessionState, SessionStateStorage, SessionStateStorageError}}, settings::Session};
 
 
 #[derive(Debug, Clone)]
@@ -128,6 +128,23 @@ impl SessionStateRaftActor {
         )
         .await
         .map_err(|e| SessionStateRaftError::RaftInitializationError(e.to_string()))?;
+
+        // init raft cluster nodes
+        let mut cluster_nodes = BTreeMap::new();
+        for item in settings.cluster.nodes.iter() {
+            cluster_nodes.insert(
+                item.id,
+                Node {
+                    rpc_addr: item.rpc_address.to_string(),
+                    api_addr: item.api_address.to_string(),
+                },
+            );
+        }
+        if !raft.is_initialized().await.unwrap() {
+            raft.initialize(cluster_nodes).await.unwrap();
+        }
+        //
+
         Ok((raft, session_state_storage))
     }
 
