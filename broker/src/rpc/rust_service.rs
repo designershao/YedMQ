@@ -3,7 +3,7 @@ use tonic::{Request, Response, Status};
 use crate::protobuf::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse};
 use crate::protobuf::raft_service_server::RaftService;
 
-struct RustServiceImpl;
+pub struct RustServiceImpl;
 
 #[tonic::async_trait]
 impl RaftService for RustServiceImpl {

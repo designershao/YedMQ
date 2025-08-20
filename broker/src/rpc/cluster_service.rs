@@ -11,7 +11,7 @@ use actix::SystemService;
 use tonic::{Request, Response, Status};
 use yedmq_mqtt::MqttPacketV3;
 
-struct ClusterServiceImpl;
+pub struct ClusterServiceImpl;
 
 #[tonic::async_trait]
 impl ClusterService for ClusterServiceImpl {
