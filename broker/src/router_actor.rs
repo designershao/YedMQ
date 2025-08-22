@@ -223,3 +223,10 @@ impl Handler<RouteFromOtherNode> for RouterActor {
         }.into_actor(self))
     }
 }
+
+#[derive(Message)]
+#[rtype(result = "Result<(), RouterActorError>")]
+pub struct RoutePacketToAllTenants {
+    pub tenant_id: String,
+    pub packet: MqttPacketV3
+}

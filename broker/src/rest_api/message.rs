@@ -51,15 +51,17 @@ pub async fn retain_message_list(
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
-    let r = app_state
-        .topic_manager
-        .read()
-        .await
-        .get_retain_message_list_with_pagination(tenant_id.as_str(), offset_param, limit_param)
-        .await;
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let r = topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::GetRetainMessageListWithPagination {
+            tenant_id: tenant_id.clone(),
+            offset: offset_param,
+            limit: limit_param
+        }
+    ).await.unwrap();
 
     if let Err(err) = r {
-        if let Some(topic_error) = err.downcast_ref::<crate::topic::TopicError>() {
+        if let crate::raft::topic::topic_raft_actor::TopicRaftError::TopicError(topic_error) = err{
             let error_response = match topic_error {
                 crate::topic::TopicError::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
@@ -90,18 +92,18 @@ pub async fn retain_message_list(
         let retain_message_list = r.unwrap();
         let mut result = Vec::<RetainMessage>::new();
 
-        for (topic, client_identifier, qos) in retain_message_list.1 {
+        for retain_message in retain_message_list.data {
             let retain_message = RetainMessage {
-                topic,
-                qos,
-                client_identifier,
+                topic: retain_message.topic,
+                qos: retain_message.qos,
+                client_identifier: retain_message.client_id,
             };
             result.push(retain_message);
         }
         let meta = PaginationMeta {
             offset: offset_param,
             limit: limit_param,
-            total: retain_message_list.0,
+            total: retain_message_list.total,
         };
 
         let result = PaginationListResult { meta, data: result };

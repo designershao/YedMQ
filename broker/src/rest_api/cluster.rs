@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use actix::SystemService;
 use axum::{extract::State, http::StatusCode, Json};
 use log::{info, warn};
 use openraft::RaftMetrics;
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     app::YedMQApp,
-    raft::Node,
+    raft::{session_actor_map::session_actor_map_raft_actor, session_state::session_state_raft_actor, Node},
 };
 
 #[derive(Debug, Serialize)]
@@ -29,17 +30,24 @@ pub struct ChangeMembersRequest {
 }
 
 pub async fn init_cluster(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode, String) {
-    let _ = app_state.raft_manager.topic_raft().init_cluster().await;
-    let _ = app_state
-        .raft_manager
-        .session_actor_map_raft()
-        .init_cluster()
-        .await;
-    let _ = app_state
-        .raft_manager
-        .session_state_raft()
-        .init_cluster()
-        .await;
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let session_actor_map_raft_actor_addr =
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
+    let session_state_raft_actor_addr =
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+
+    topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::InitRaftClusterMessage {
+        }
+    ).await.unwrap();
+    session_actor_map_raft_actor_addr.send(
+        crate::raft::session_actor_map::session_actor_map_raft_actor::InitRaftClusterMessage {
+        }
+    ).await.unwrap();
+    session_state_raft_actor_addr.send(
+        crate::raft::session_state::session_state_raft_actor::InitRaftClusterMessage {
+        }
+    ).await.unwrap();
 
     (StatusCode::OK, format!(""))
 }
@@ -50,35 +58,32 @@ pub async fn add_learner(
 ) -> (StatusCode, String) {
     let node_id = payload.node_id;
     let node = payload.node;
-    let res = app_state
-        .raft_manager
-        .topic_raft()
-        .raft()
-        .add_learner(node_id, node.clone(), true)
-        .await;
-    if let Err(e) = res {
-        warn!("topic raft add learner error: {}", e);
-    }
-    let res = app_state
-        .raft_manager
-        .session_actor_map_raft()
-        .raft()
-        .add_learner(node_id, node.clone(), true)
-        .await;
-    if let Err(e) = res {
-        warn!("session actor map raft add learner error: {}", e);
-    }
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let session_actor_map_raft_actor_addr =
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
+    let session_state_raft_actor_addr =
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-    let res = app_state
-        .raft_manager
-        .session_state_raft()
-        .raft()
-        .add_learner(node_id, node.clone(), true)
-        .await;
+    topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::AddLearnerMessage {
+            node_id,
+            node: node.clone(),
+        }
+    ).await.unwrap();
 
-    if let Err(e) = res {
-        warn!("session state raft add learner error: {}", e);
-    }
+    session_actor_map_raft_actor_addr.send(
+        crate::raft::session_actor_map::session_actor_map_raft_actor::AddLearnerMessage {
+            node_id,
+            node: node.clone(),
+        }
+    ).await.unwrap();
+
+    session_state_raft_actor_addr.send(
+        crate::raft::session_state::session_state_raft_actor::AddLearnerMessage {
+            node_id,
+            node: node.clone(),
+        }
+    ).await.unwrap();
 
     (StatusCode::OK, format!(""))
 }
@@ -89,12 +94,13 @@ pub async fn topic_raft_change_membership(
 ) -> (StatusCode, String) {
 
     info!("topic change member ship payload: {:#?}", payload.members.clone());
-    let res = app_state
-        .raft_manager
-        .topic_raft()
-        .raft()
-        .change_membership(payload.members.clone(), true)
-        .await;
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let res = topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::ChangeMembershipMessage {
+            members: payload.members.clone(),
+        }
+    ).await.unwrap();
+
     if let Err(e) = res {
         warn!("topic raft change membership error: {}", e);
         return (StatusCode::BAD_REQUEST, format!("{}", e));
@@ -107,13 +113,14 @@ pub async fn session_actor_map_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
+    let session_actor_map_raft_actor_addr = session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
 
-    let res = app_state
-        .raft_manager
-        .session_actor_map_raft()
-        .raft()
-        .change_membership(payload.members.clone(), true)
-        .await;
+    let res = session_actor_map_raft_actor_addr.send(
+        session_actor_map_raft_actor::ChangeMembershipMessage {
+            members: payload.members.clone(),
+        }
+    ).await.unwrap();
+
     if let Err(e) = res {
         return (StatusCode::BAD_REQUEST, format!("{}", e));
     } else {
@@ -125,12 +132,12 @@ pub async fn session_state_raft_change_membership(
     State(app_state): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
-    let res = app_state
-        .raft_manager
-        .session_state_raft()
-        .raft()
-        .change_membership(payload.members.clone(), true)
-        .await;
+    let session_state_raft_actor_addr = session_state_raft_actor::SessionStateRaftActor::from_registry();
+    let res = session_state_raft_actor_addr.send(
+        session_state_raft_actor::ChangeMembershipMessage {
+            members: payload.members.clone(),
+        }
+    ).await.unwrap();
     if let Err(e) = res {
         return (StatusCode::BAD_REQUEST, format!("{}", e));
     } else {
@@ -146,15 +153,40 @@ pub async fn change_membership(
 
     let auth_info = &app_state.settings.listener.api.auth.users[0];
 
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+
+    let topic_raft_leader_node = topic_raft_actor_addr.send(
+        crate::raft::topic::topic_raft_actor::GetLeader{}
+    ).await.unwrap();
+
+    if let Err(e) = topic_raft_leader_node {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("get topic raft leader error: {}", e));
+    }
+
+    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+
+    let session_state_raft_leader_node = session_state_raft_actor_addr.send(
+        crate::raft::session_state::session_state_raft_actor::GetLeader{}
+    ).await.unwrap();
+
+    if let Err(e) = session_state_raft_leader_node {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("get session state raft leader error: {}", e));
+    }
+
+    let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
+
+    let session_actor_map_raft_leader_node = session_actor_map_raft_actor_addr.send(
+        crate::raft::session_actor_map::session_actor_map_raft_actor::GetLeader{}
+    ).await.unwrap();
+
+    if let Err(e) = session_actor_map_raft_leader_node {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("get session actor map raft leader error: {}", e));
+    }
+
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/topic/membership",
-            app_state
-                .raft_manager
-                .topic_raft()
-                .get_leader().await
-                .unwrap()
-                .api_addr
+            topic_raft_leader_node.unwrap().unwrap().api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
@@ -170,12 +202,7 @@ pub async fn change_membership(
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/session_actor_map/membership",
-            app_state
-                .raft_manager
-                .session_actor_map_raft()
-                .get_leader().await
-                .unwrap()
-                .api_addr
+            session_actor_map_raft_leader_node.unwrap().unwrap().api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
@@ -189,12 +216,7 @@ pub async fn change_membership(
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/session_state/membership",
-            app_state
-                .raft_manager
-                .session_state_raft()
-                .get_leader().await
-                .unwrap()
-                .api_addr
+            session_state_raft_leader_node.unwrap().unwrap().api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))

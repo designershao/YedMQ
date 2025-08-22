@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
+use actix::SystemService;
 use axum::{
     extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
 };
 use log::error;
 use serde::Serialize;
-use crate::app::YedMQApp;
+use crate::{app::YedMQApp, raft::topic::topic_raft_actor::{self, TopicRaftActor}};
 
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
@@ -25,16 +26,17 @@ pub async fn topic_list(
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
-    let topic_list_result = app_state
-        .topic_manager
-        .read()
-        .await
-        .get_topic_list_with_pagination(&tenant_id, offset_param, limit_param).await;
+    let topic_raft_actor_addr = TopicRaftActor::from_registry();
+    let topic_list_result = topic_raft_actor_addr.send(
+        topic_raft_actor::GetTopicListWithPagination{
+            tenant_id: tenant_id.clone(),
+            offset: offset_param,
+            limit: limit_param
+        }
+    ).await.unwrap();
 
     if let Err(err) = topic_list_result {
-
-        let error = err.downcast_ref::<crate::topic::TopicError>();
-        if let Some(topic_error) = error {
+        if let topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
             let error_response = match topic_error {
                 crate::topic::TopicError::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {
@@ -65,18 +67,18 @@ pub async fn topic_list(
         let topic_list = topic_list_result.unwrap();
         let mut result = Vec::<Topic>::new();
 
-        for (topic, client_id, qos) in topic_list.1 {
+        for topic_info in topic_list.data {
             let topic = Topic {
-                topic,
-                client_id,
-                qos,
+                topic: topic_info.topic,
+                client_id: topic_info.client_id,
+                qos: topic_info.qos,
             };
             result.push(topic);
         }
         let meta = PaginationMeta {
             offset: offset_param,
             limit: limit_param,
-            total: topic_list.0,
+            total: topic_list.total,
         };
 
         let result = PaginationListResult { meta, data: result };
