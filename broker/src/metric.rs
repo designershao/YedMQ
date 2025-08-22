@@ -1,7 +1,10 @@
 use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
+use actix::SystemService;
 use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+
+use crate::router_actor::{self, RouterActor};
 
 pub struct Metric {
 
@@ -88,17 +91,20 @@ impl SysTopicTask {
             let bytes_sent_packet = PublishPacketBuilder::new(broker_bytes_sent_topic.clone(), vec![bytes_sent.to_le_bytes()[0]]).build();
             let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(), vec![metric.get_uptime().to_le_bytes()[0]]).build();
 
+            let router_actor_addr = RouterActor::from_registry();
+
+
                 
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(clients_connected_packet))).await {
+            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(clients_connected_packet)}).await.unwrap() {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(bytes_received_packet))).await {
+            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(bytes_received_packet)}).await.unwrap() {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(bytes_sent_packet))).await {
+            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(bytes_sent_packet)}).await.unwrap() {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
-            if let Err(e) = self.router_sender.send(RouterCmd::RoutePacketToAllTenants(yedmq_mqtt::MqttPacketV3::Publish(uptime_packet))).await {
+            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(uptime_packet)}).await.unwrap() {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }
         }

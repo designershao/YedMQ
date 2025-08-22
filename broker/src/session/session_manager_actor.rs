@@ -931,3 +931,17 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
         Ok(())
     }
 }
+
+
+#[derive(Message)]
+#[rtype(result = "Vec<String>")]
+pub struct GetAllTenantIds {}
+
+impl Handler<GetAllTenantIds> for SessionManagerActor {
+    type Result = Vec<String>;
+
+    fn handle(&mut self, _msg: GetAllTenantIds, _ctx: &mut Self::Context) -> Self::Result {
+        self.sessions.keys().cloned().collect()
+    }
+}
+

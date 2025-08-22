@@ -3,7 +3,7 @@ use log::warn;
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::{session_manager_actor::SendMessageToSession}, settings::Node};
+use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::session_manager_actor::{self, SendMessageToSession}, settings::Node};
 
 #[derive(Clone,Debug,thiserror::Error)]
 pub enum RouterActorError {
@@ -227,6 +227,21 @@ impl Handler<RouteFromOtherNode> for RouterActor {
 #[derive(Message)]
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RoutePacketToAllTenants {
-    pub tenant_id: String,
     pub packet: MqttPacketV3
+}
+
+impl Handler<RoutePacketToAllTenants> for RouterActor {
+    type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
+
+    fn handle(&mut self, msg: RoutePacketToAllTenants, _ctx: &mut Self::Context) -> Self::Result {
+        return Box::pin(async move {
+            let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
+            let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
+            for tenant_id in tenant_ids {
+                Self::route_in_local_node(&tenant_id, &msg.packet);
+            }
+            Ok(())
+        }.into_actor(self));
+        
+    }
 }
