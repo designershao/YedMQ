@@ -232,27 +232,22 @@ pub async fn change_membership(
 pub async fn metrics(
     State(app_state): State<Arc<YedMQApp>>,
 ) -> (StatusCode, Json<RaftMetricsResponse>) {
-    let topic_metrics = app_state
-        .raft_manager
-        .topic_raft()
-        .raft()
-        .metrics()
-        .borrow()
-        .clone();
-    let session_actor_map_metrics = app_state
-        .raft_manager
-        .session_actor_map_raft()
-        .raft()
-        .metrics()
-        .borrow()
-        .clone();
-    let session_state_metrics = app_state
-        .raft_manager
-        .session_state_raft()
-        .raft()
-        .metrics()
-        .borrow()
-        .clone();
+    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
+    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+
+    let topic_metrics = topic_raft_actor_addr
+        .send(crate::raft::topic::topic_raft_actor::GetRaftMetrics{})
+        .await
+        .unwrap().unwrap();
+    let session_actor_map_metrics =session_actor_map_raft_actor_addr
+        .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetRaftMetrics{})
+        .await
+        .unwrap().unwrap();
+    let session_state_metrics = session_state_raft_actor_addr
+        .send(crate::raft::session_state::session_state_raft_actor::GetRaftMetrics{})
+        .await
+        .unwrap().unwrap();
 
     let response = RaftMetricsResponse {
         topic_raft: topic_metrics,

@@ -4,7 +4,7 @@ use actix::dev::MessageResponse;
 use actix::prelude::*;
 use nom::Err;
 use openraft::{
-    error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config
+    error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics
 };
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
@@ -1320,4 +1320,43 @@ impl Handler<GetLeader> for TopicRaftActor {
     }
 }
 
+
+#[derive(Message)]
+#[rtype(result = "Result<RaftMetrics<NodeId,Node>, TopicRaftError>")]
+pub struct GetRaftMetrics {}
+
+impl Handler<GetRaftMetrics> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId,Node>, TopicRaftError>>;
+
+    fn handle(&mut self, _msg: GetRaftMetrics, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let metrics_ref = raft_instance.metrics();
+                            let metrics = metrics_ref.borrow();
+                            Ok(metrics.clone())
+                        } else {
+                            Err(TopicRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
+    }
+}
 

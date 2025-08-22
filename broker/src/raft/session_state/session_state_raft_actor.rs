@@ -1,7 +1,7 @@
 use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
-use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config};
+use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
@@ -1503,3 +1503,40 @@ impl Handler<GetLeader> for SessionStateRaftActor {
     }
 }
 
+
+#[derive(Message)]
+#[rtype(result = "Result<RaftMetrics<NodeId,Node>, SessionStateRaftError>")]
+pub struct GetRaftMetrics {}
+
+impl Handler<GetRaftMetrics> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId,Node>, SessionStateRaftError>>;
+
+    fn handle(&mut self, _msg: GetRaftMetrics, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            Ok(raft_instance.metrics().borrow().clone())
+                        } else {
+                            Err(SessionStateRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionStateRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
+    }
+}

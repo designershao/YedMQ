@@ -1,7 +1,7 @@
 use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
-use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config};
+use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry, SessionClock}};
 
@@ -916,6 +916,44 @@ impl Handler<GetLeader> for SessionActorMapRaftActor {
                 return Box::pin(async move { Err(e) }.into_actor(self));
             }
         }
+    }
+}
+
+
+#[derive(Message)]
+#[rtype(result = "Result<RaftMetrics<NodeId,Node>, SessionActorMapRaftError>")]
+pub struct GetRaftMetrics{}
+
+impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId,Node>, SessionActorMapRaftError>>;
+
+    fn handle(&mut self, _msg: GetRaftMetrics, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            Ok(raft_instance.metrics().borrow().clone())
+                        } else {
+                            Err(SessionActorMapRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }       
     }
 }
 
