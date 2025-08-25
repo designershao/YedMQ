@@ -148,7 +148,6 @@ pub enum ActivityState {
 }
 
 pub struct SessionActor {
-    current_node_id: NodeId,
 
     tenant_id: String,
 
@@ -530,7 +529,6 @@ impl SessionActor {
         peer_addr: SocketAddr,
         session_state: Arc<RwLock<SessionState>>,
         session_lifecycle_tx: Sender<SessionLifecycleMessage>,
-        current_node_id: NodeId,
     ) -> Self {
         SessionActor {
             plugin_manager,
@@ -549,7 +547,6 @@ impl SessionActor {
             username: None,
             state: session_state,
             session_lifecycle_tx,
-            current_node_id,
         }
     }
 

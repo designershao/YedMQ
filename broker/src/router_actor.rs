@@ -1,13 +1,15 @@
+use actix::dev::MessageResponse;
 use actix::prelude::*;
 use log::warn;
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
+use std::collections::VecDeque;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::session_manager_actor::{self, SendMessageToSession}, settings::Node};
 
-#[derive(Clone,Debug,thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum RouterActorError {
-
     #[error("gRPC error: {0}")]
     GRPC(String),
 
@@ -17,11 +19,49 @@ pub enum RouterActorError {
     #[error("Topic raft error: {0}")]
     TopicRaftError(#[from] crate::raft::topic::topic_raft_actor::TopicRaftError),
 
+    #[error("Dead letter queue is full")]
+    DeadLetterQueueFull,
+
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct DeadLetterItem {
+    pub tenant_id: String,
+    pub packet: MqttPacketV3,
+    pub dest_addr: String,
+    pub retry_count: u32,
+    pub created_at: u64,
+    pub last_retry_at: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeadLetterConfig {
+    pub max_queue_size: usize,
+    pub max_retry_count: u32,
+    pub retry_interval_seconds: u64,
+    pub cleanup_interval_seconds: u64,
+    pub message_ttl_seconds: u64,
+}
+
+impl Default for DeadLetterConfig {
+    fn default() -> Self {
+        Self {
+            max_queue_size: 10000,
+            max_retry_count: 3,
+            retry_interval_seconds: 30,
+            cleanup_interval_seconds: 300, // 5 minutes
+            message_ttl_seconds: 86400,    // 24 hours
+        }
+    }
 }
 
 pub struct RouterActor {
     pub current_node_id: NodeId,
     pub settings: crate::settings::Settings,
+    pub dead_letter_queue: VecDeque<DeadLetterItem>,
+    pub dead_letter_config: DeadLetterConfig,
 }
 
 impl Default for RouterActor {
@@ -30,6 +70,8 @@ impl Default for RouterActor {
         RouterActor {
             current_node_id: settings.cluster.node_id,
             settings: settings,
+            dead_letter_queue: VecDeque::new(),
+            dead_letter_config: DeadLetterConfig::default(),
         }
     }
 }
@@ -38,12 +80,27 @@ impl SystemService for RouterActor {}
 
 impl Supervised for RouterActor {}
 
-
 impl Actor for RouterActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
         log::info!("RouterActor started with node id: {}", self.current_node_id);
+        
+        // Start dead letter queue retry timer
+        ctx.run_interval(
+            Duration::from_secs(self.dead_letter_config.retry_interval_seconds),
+            |act, _ctx| {
+                act.process_dead_letter_queue();
+            },
+        );
+
+        // Start dead letter queue cleanup timer
+        ctx.run_interval(
+            Duration::from_secs(self.dead_letter_config.cleanup_interval_seconds),
+            |act, _ctx| {
+                act.cleanup_expired_dead_letters();
+            },
+        );
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
@@ -83,8 +140,20 @@ impl RouterActor {
                                         continue;
                                     }
                                     let dest_addr = nodes[0].rpc_address.clone();
-                                    if let Err(e) = Self::route_to_other_nodes(&dest_addr,tenant_id, packet).await {
+                                    if let Err(e) = Self::route_to_other_nodes(&dest_addr, tenant_id, packet).await {
                                         warn!("Failed to route packet to {}: {}", dest_addr, e);
+                                        
+                                        // 检查是否为QoS 1或QoS 2消息，如果是则添加到死信队列
+                                        if Self::should_add_to_dead_letter_queue(packet) {
+                                            let router_addr = RouterActor::from_registry();
+                                            if let Err(dlq_err) = router_addr.send(AddToDeadLetterQueue {
+                                                tenant_id: tenant_id.clone(),
+                                                packet: packet.clone(),
+                                                dest_addr: dest_addr,
+                                            }).await {
+                                                warn!("Failed to add message to dead letter queue: {}", dlq_err);
+                                            }
+                                        }
                                     }
                                     continue;
                                 } else {
@@ -118,7 +187,7 @@ impl RouterActor {
             tenant_id: tenant_id.clone(),
             payload: serde_json::to_string(packet).map_err(|e| {
                 warn!("Failed to serialize packet: {}", e);
-                RouterActorError::GRPC(e.to_string())
+                RouterActorError::SerializationError(e.to_string())
             })?,
         };
         cluster_client.route_packet(Request::new(request)).await.map_err(|e| {
@@ -181,6 +250,128 @@ impl RouterActor {
         Ok(())
     }
 
+    // 检查消息是否应该添加到死信队列（QoS 1或QoS 2）
+    fn should_add_to_dead_letter_queue(packet: &MqttPacketV3) -> bool {
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            if let Some(qos) = publish_packet.fix_header.qos {
+                return qos >= 1; // QoS 1 or QoS 2
+            }
+        }
+        false
+    }
+
+    // 添加消息到死信队列
+    fn add_to_dead_letter_queue(&mut self, tenant_id: String, packet: MqttPacketV3, dest_addr: String) -> Result<(), RouterActorError> {
+        // 检查队列是否已满
+        if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
+            warn!("Dead letter queue is full, dropping oldest message");
+            self.dead_letter_queue.pop_front();
+        }
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let dead_letter_item = DeadLetterItem {
+            tenant_id,
+            packet,
+            dest_addr,
+            retry_count: 0,
+            created_at: now,
+            last_retry_at: now,
+        };
+
+        self.dead_letter_queue.push_back(dead_letter_item);
+        log::info!("Added message to dead letter queue, current queue size: {}", self.dead_letter_queue.len());
+        
+        Ok(())
+    }
+
+    // Process the dead letter queue
+    fn process_dead_letter_queue(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut items_to_retry = Vec::new();
+        let mut items_to_keep = VecDeque::new();
+
+        // Split the messages that need to be retried and the messages that need to be kept
+        while let Some(mut item) = self.dead_letter_queue.pop_front() {
+            if item.retry_count >= self.dead_letter_config.max_retry_count {
+                warn!("Message exceeded max retry count, dropping: tenant={}, dest={}", 
+                      item.tenant_id, item.dest_addr);
+                continue;
+            }
+
+            if now - item.last_retry_at >= self.dead_letter_config.retry_interval_seconds {
+                item.retry_count += 1;
+                item.last_retry_at = now;
+                items_to_retry.push(item);
+            } else {
+                items_to_keep.push_back(item);
+            }
+        }
+
+        self.dead_letter_queue = items_to_keep;
+
+        for item in items_to_retry {
+            let item_clone = item.clone();
+            let dest_addr = item.dest_addr.clone();
+            let tenant_id = item.tenant_id.clone();
+            let packet = item.packet.clone();
+
+            actix::spawn(async move {
+                match Self::route_to_other_nodes(&dest_addr, &tenant_id, &packet).await {
+                    Ok(_) => {
+                        log::info!("Successfully retried message from dead letter queue: tenant={}, dest={}", 
+                                  tenant_id, dest_addr);
+                    }
+                    Err(e) => {
+                        warn!("Failed to retry message from dead letter queue: tenant={}, dest={}, error={}", 
+                              tenant_id, dest_addr, e);
+                        
+                        // Readd message to dead letter queue
+                        let router_addr = RouterActor::from_registry();
+                        if let Err(dlq_err) = router_addr.send(ReaddToDeadLetterQueue {
+                            item: item_clone,
+                        }).await {
+                            warn!("Failed to readd message to dead letter queue: {}", dlq_err);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    // Clean up expired messages from the dead letter queue
+    fn cleanup_expired_dead_letters(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let initial_size = self.dead_letter_queue.len();
+        self.dead_letter_queue.retain(|item| {
+            now - item.created_at < self.dead_letter_config.message_ttl_seconds
+        });
+
+        let removed_count = initial_size - self.dead_letter_queue.len();
+        if removed_count > 0 {
+            log::info!("Cleaned up {} expired messages from dead letter queue", removed_count);
+        }
+    }
+
+    // Get stats for the dead letter queue
+    fn get_dead_letter_stats(&self) -> DeadLetterStats {
+        DeadLetterStats {
+            queue_size: self.dead_letter_queue.len(),
+            max_queue_size: self.dead_letter_config.max_queue_size,
+        }
+    }
+
 }
 
 #[derive(Message)]
@@ -189,7 +380,6 @@ pub struct RoutePacket {
     pub tenant_id: String,
     pub packet: MqttPacketV3
 }
-
 
 impl Handler<RoutePacket> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(),RouterActorError>>;
@@ -238,10 +428,78 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
             let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
             let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
             for tenant_id in tenant_ids {
-                Self::route_in_local_node(&tenant_id, &msg.packet);
+                Self::route_in_local_node(&tenant_id, &msg.packet).await?;
             }
             Ok(())
         }.into_actor(self));
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), RouterActorError>")]
+pub struct AddToDeadLetterQueue {
+    pub tenant_id: String,
+    pub packet: MqttPacketV3,
+    pub dest_addr: String,
+}
+
+impl Handler<AddToDeadLetterQueue> for RouterActor {
+    type Result = Result<(), RouterActorError>;
+
+    fn handle(&mut self, msg: AddToDeadLetterQueue, _ctx: &mut Self::Context) -> Self::Result {
+        self.add_to_dead_letter_queue(msg.tenant_id, msg.packet, msg.dest_addr)
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), RouterActorError>")]
+pub struct ReaddToDeadLetterQueue {
+    pub item: DeadLetterItem,
+}
+
+impl Handler<ReaddToDeadLetterQueue> for RouterActor {
+    type Result = Result<(), RouterActorError>;
+
+    fn handle(&mut self, msg: ReaddToDeadLetterQueue, _ctx: &mut Self::Context) -> Self::Result {
+        if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
+            return Err(RouterActorError::DeadLetterQueueFull);
+        }
         
+        self.dead_letter_queue.push_back(msg.item);
+        Ok(())
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "DeadLetterStats")]
+pub struct GetDeadLetterStats;
+
+#[derive(Debug, Clone)]
+pub struct DeadLetterStats {
+    pub queue_size: usize,
+    pub max_queue_size: usize,
+}
+
+impl<A, M> MessageResponse<A, M> for DeadLetterStats
+where
+    A: Actor,
+    M: Message<Result = DeadLetterStats>,
+{
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
+        if let Some(tx) = tx {
+            let _ = tx.send(self);
+        }
+    }
+}
+
+impl Handler<GetDeadLetterStats> for RouterActor {
+    type Result = DeadLetterStats;
+
+    fn handle(&mut self, _msg: GetDeadLetterStats, _ctx: &mut Self::Context) -> Self::Result {
+        self.get_dead_letter_stats()
     }
 }

@@ -2,13 +2,13 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
     plugin_manager::{PluginManager, PluginService},
-    protobuf::{cluster_service_server::ClusterService, raft_service_client::RaftServiceClient, ForceStopSessionActorRequest},
+    protobuf::ForceStopSessionActorRequest,
     raft::{
         session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
         },
-        Node, NodeId,
+        NodeId,
     },
     session::session_actor::SessionActor,
     settings::Settings,
@@ -849,7 +849,6 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.peer_addr,
                 session_state,
                 session_lifecycle_tx,
-                current_node_id,
             );
 
             let session_actor_addr = session_actor.start();
