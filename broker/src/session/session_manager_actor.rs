@@ -14,8 +14,7 @@ use crate::{
     settings::Settings,
 };
 use actix::{
-    dev::ContextFutureSpawner, Actor, AsyncContext, Context, Handler, Message, Recipient,
-    ResponseFuture, Supervised, SystemService, WrapFuture,
+    dev::{ContextFutureSpawner, MessageResponse}, Actor, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture
 };
 use log::{error, info, warn};
 use openraft::{error::ClientWriteError, metrics::Wait};
@@ -78,13 +77,15 @@ struct SessionActorRecipientWrapper {
 
 impl Default for SessionManagerActor {
     fn default() -> Self {
+        let settings: Arc<Settings> = Arc::new(Settings::new().unwrap());
+        let current_node_id = settings.cluster.node_id;
         SessionManagerActor {
             sessions: HashMap::new(),
             plugin_manager: OnceCell::new(),
             session_lifecycle_tx: None,
-            settings: Arc::new(Settings::default()),
+            settings,
             session_clock: OnceCell::new(),
-            current_node_id: NodeId::default(),
+            current_node_id,
         }
     }
 }
@@ -126,6 +127,7 @@ impl SessionManagerActor {
         settings: Arc<crate::settings::Settings>,
     ) -> Result<(PluginManager, SessionClock), SessionManagerError> {
         // init plugin manager
+        let _ = env_logger::try_init();
         info!("start load plugin manager");
         let plugin_manager =
             PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
@@ -146,7 +148,7 @@ impl Actor for SessionManagerActor {
         let (session_lifecycle_tx, mut session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
         self.session_lifecycle_tx = Some(session_lifecycle_tx);
         let self_addr = ctx.address();
-        let session_clock = self.session_clock.get().unwrap().clone();
+        let session_clock_once_cell = self.session_clock.clone();
         let session_actor_map_actor_addr = SessionActorMapRaftActor::from_registry();
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
@@ -162,25 +164,30 @@ impl Actor for SessionManagerActor {
                             "received session lifectcle message SessionStopped session {} stopped",
                             client_id
                         );
-                        let session_version = session_clock.next();
-                        let res = session_actor_map_actor_addr.send(
-                            crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
-                                tenant_id: tenant_id.clone(),
-                                client_id: client_id.clone(),
-                                version: session_version.clone(),
+                        let session_option = self_addr.send(GetLatestSessionClock{}).await.unwrap();
+                        if let Some(session_clock) = session_option {
+                            let session_version = session_clock.next();
+                            let res = session_actor_map_actor_addr.send(
+                                crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
+                                    tenant_id: tenant_id.clone(),
+                                    client_id: client_id.clone(),
+                                    version: session_version.clone(),
+                                }
+                            ).await;
+                            if let Err(err) = res {
+                                error!("failed to unregister session actor map: {}", err);
                             }
-                        ).await;
-                        if let Err(err) = res {
-                            error!("failed to unregister session actor map: {}", err);
+                            self_addr
+                                .send(RemoveSessionMessage {
+                                    tenant_id,
+                                    client_id,
+                                })
+                                .await
+                                .unwrap()
+                                .unwrap();
+                        } else {
+                            error!("failed to get session clock, perhaps session manager is not initialized");
                         }
-                        self_addr
-                            .send(RemoveSessionMessage {
-                                tenant_id,
-                                client_id,
-                            })
-                            .await
-                            .unwrap()
-                            .unwrap();
                     }
                 }
             }
@@ -208,8 +215,10 @@ impl Handler<InitializationComplete> for SessionManagerActor {
     fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
         match msg.0 {
             Ok((plugin_manager, session_clock)) => {
-                self.plugin_manager.set(Arc::new(plugin_manager));
-                self.session_clock.set(Arc::new(session_clock));
+                let r = self.plugin_manager.set(Arc::new(plugin_manager));
+                assert!(r.is_ok());
+                let r = self.session_clock.set(Arc::new(session_clock));
+                assert!(r.is_ok());
                 info!("session manager initialized successfully");
             }
             Err(e) => {
@@ -944,3 +953,35 @@ impl Handler<GetAllTenantIds> for SessionManagerActor {
     }
 }
 
+
+#[derive(Message)]
+#[rtype(result = "Option<Arc<SessionClock>>")]
+pub struct GetLatestSessionClock {}
+
+impl<A, M> MessageResponse<A, M> for SessionClock
+where
+    A: Actor,
+    M: Message<Result = SessionClock>,
+    {
+        fn handle(
+            self,
+            _ctx: &mut <A as Actor>::Context,
+            tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+        ) {
+            if let Some(tx) = tx {
+                let _ = tx.send(self);
+            }
+        }
+    }
+
+impl Handler<GetLatestSessionClock> for SessionManagerActor {
+    type Result = Option<Arc<SessionClock>>;
+
+    fn handle(&mut self, _msg: GetLatestSessionClock, _ctx: &mut Self::Context) -> Self::Result {
+        if let Some(session_clock) = self.session_clock.get() {
+            Some(session_clock.clone())
+        } else {
+            None
+        }
+    }
+}

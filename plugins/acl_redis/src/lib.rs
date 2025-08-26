@@ -26,7 +26,7 @@ impl AclRedis {
     pub fn new(
         context: yedmq_plugin::context::Context,
     ) -> std::result::Result<AclRedis, anyhow::Error> {
-        env_logger::init();
+        let _ = env_logger::try_init();
         let root_path = Path::new(context.get_current_plugin_dir());
         let redis_config_file = root_path.join("acl_redis.toml");
 

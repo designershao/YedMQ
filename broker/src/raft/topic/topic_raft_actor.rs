@@ -85,7 +85,7 @@ impl TopicRaftActor {
         settings: Arc<crate::settings::Settings>,
     ) -> Result<(TopicRaft, Arc<RwLock<TopicStorage>>), TopicRaftError> {
         let raft_config = Config {
-            cluster_name: "yedmq_topic_cluster".to_string(),
+            cluster_name: "yedmq_topic_raft_cluster".to_string(),
             ..Default::default()
         };
 
@@ -232,7 +232,7 @@ impl TopicRaftActor {
 
 impl Default for TopicRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::default();
+        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
             settings: Arc::new(settings),
@@ -1090,7 +1090,7 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
     fn handle(&mut self, msg: GetTopicListWithPagination, ctx: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
-                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
                 return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
             }
             ActorState::Running => {
@@ -1149,7 +1149,7 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
     fn handle(&mut self, _msg: InitRaftClusterMessage, ctx: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
-                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
                 return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
             }
             ActorState::Running => {
@@ -1198,7 +1198,7 @@ impl Handler<AddLearnerMessage> for TopicRaftActor {
     fn handle(&mut self, msg: AddLearnerMessage, ctx: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
-                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
                 return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
             }
@@ -1239,7 +1239,7 @@ impl Handler<ChangeMembershipMessage> for TopicRaftActor {
     fn handle(&mut self, msg: ChangeMembershipMessage, ctx: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
-                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
                 return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
             }

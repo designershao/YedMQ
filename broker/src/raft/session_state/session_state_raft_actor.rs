@@ -77,7 +77,7 @@ pub struct SessionStateRaftActor {
 
 impl Default for SessionStateRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::default();
+        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
             settings: Arc::new(settings),
@@ -111,7 +111,7 @@ impl SessionStateRaftActor {
         settings: Arc<crate::settings::Settings>,
     ) -> Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>), SessionStateRaftError> {
         let raft_config = Config {
-            cluster_name: "yedmq_topic_cluster".to_string(),
+            cluster_name: "yedmq_session_state_raft_cluster".to_string(),
             ..Default::default()
         };
 
@@ -299,11 +299,11 @@ impl Handler<InitializationComplete> for SessionStateRaftActor {
                 let _ = self.raft.set(Arc::new(raft_instance));
                 let _ = self.session_state_storage.set(session_state_storage);
                 self.state = ActorState::Running;
-                log::info!("TopicRaftActor initialized successfully.");
+                log::info!("SessionStateRaftActor initialized successfully.");
                 self.process_pending_messages(ctx);
             }
             Err(e) => {
-                log::error!("Failed to initialize TopicRaftActor: {}", e);
+                log::error!("Failed to initialize SessionStateRaftActor: {}", e);
                 self.state = ActorState::Failed(e);
             }
         }

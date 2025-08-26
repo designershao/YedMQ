@@ -1,6 +1,6 @@
 use actix::dev::MessageResponse;
 use actix::prelude::*;
-use log::warn;
+use log::{info, warn};
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
 use std::collections::VecDeque;
@@ -66,7 +66,7 @@ pub struct RouterActor {
 
 impl Default for RouterActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::default();
+        let settings = crate::settings::Settings::new().unwrap();
         RouterActor {
             current_node_id: settings.cluster.node_id,
             settings: settings,
@@ -135,6 +135,7 @@ impl RouterActor {
                                     // Route to other nodes
                                     let dest_node_id = session_actor_addr.node_id;
                                     let nodes = cluster_nodes.iter().filter(|n| n.id == dest_node_id).collect::<Vec<_>>();
+                                    info!("route packet to node {}", dest_node_id);
                                     if nodes.is_empty() {
                                         warn!("No node found with id: {}", dest_node_id);
                                         continue;

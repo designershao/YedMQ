@@ -25,7 +25,7 @@ struct MySqlConfig {
 
 impl AclMySql {
     pub fn new(context: yedmq_plugin::context::Context) -> std::result::Result<AclMySql, anyhow::Error> {
-        env_logger::init();
+        let _ = env_logger::try_init();
         let root_path = Path::new(context.get_current_plugin_dir());
         let mysql_config_file = root_path.join("acl_mysql.toml");
         if !mysql_config_file.exists() {

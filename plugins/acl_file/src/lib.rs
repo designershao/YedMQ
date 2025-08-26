@@ -154,7 +154,7 @@ impl AclRules {
 
 impl AclFile {
     pub fn new(context: context::Context) -> std::result::Result<AclFile, anyhow::Error> {
-        env_logger::init();
+        let _ = env_logger::try_init();
         let root_path = Path::new(context.get_current_plugin_dir());
         let acl_file_path = root_path.join("acl.json");
         if !acl_file_path.exists() {

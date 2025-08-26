@@ -1,6 +1,7 @@
 use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
+use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{self, SessionActorMapEntry, SessionClock}};
@@ -81,7 +82,7 @@ impl SessionActorMapRaftActor {
         settings: Arc<crate::settings::Settings>,
     ) -> Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError> {
         let raft_config = Config {
-            cluster_name: "yedmq_topic_cluster".to_string(),
+            cluster_name: "yedmq_session_actor_map_raft_cluster".to_string(),
             ..Default::default()
         };
 
@@ -252,7 +253,7 @@ impl SessionActorMapRaftActor {
 
 impl Default for SessionActorMapRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::default();
+        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
             settings: Arc::new(settings),
@@ -297,11 +298,11 @@ impl Handler<InitializationComplete> for SessionActorMapRaftActor {
                 let _ = self.raft.set(Arc::new(raft_instance));
                 let _ = self.session_actor_map_storage.set(session_actor_map_storage);
                 self.state = ActorState::Running;
-                log::info!("TopicRaftActor initialized successfully.");
+                log::info!("SessionActorMapActor initialized successfully.");
                 self.process_pending_messages(ctx);
             }
             Err(e) => {
-                log::error!("Failed to initialize TopicRaftActor: {}", e);
+                log::error!("Failed to initialize SessionActorMapActor: {}", e);
                 self.state = ActorState::Failed(e);
             }
         }
@@ -930,7 +931,7 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
     fn handle(&mut self, _msg: GetRaftMetrics, ctx: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
-                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                log::warn!("SessionActorMapRaftActor is initializing, message will be queued.");
                 return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
             }
             ActorState::Running => {

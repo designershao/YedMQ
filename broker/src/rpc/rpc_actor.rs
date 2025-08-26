@@ -16,7 +16,7 @@ impl Default for RpcActor {
 
 impl SystemService for RpcActor {
     fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = Settings::default();
+        let settings = Settings::new().unwrap();
         ctx.spawn(
             async move {
                 let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl{};
