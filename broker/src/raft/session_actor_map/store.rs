@@ -1,6 +1,6 @@
 use std::{io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 
-use actix::{Addr, Recipient, SystemService};
+use actix::SystemService;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
 use openraft::{
@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     raft::{Node, NodeId},
-    session::{self, session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock}},
+    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock},
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};

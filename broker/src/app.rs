@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use actix::{Actor, SystemRegistry};
 use log::{info, warn};
 use tokio::sync::{ Mutex, RwLock};
 
@@ -8,7 +7,7 @@ use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, plugin_manager::PluginManager, raft::{session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor, Node}, rest_api, router_actor::RouterActor, session::session_manager_actor::SessionManagerActor, settings::Settings, topic::topic_storage::TopicStorage
+    }, metric, plugin_manager::PluginManager, raft::Node, rest_api, settings::Settings
 };
 
 // Representation of the application state.This struct can be shared around to share.

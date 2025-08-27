@@ -2,7 +2,6 @@ use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::dev::MessageResponse;
 use actix::prelude::*;
-use nom::Err;
 use openraft::{
     error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics
 };

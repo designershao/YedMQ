@@ -4,7 +4,7 @@ use crate::protobuf::{
 };
 use crate::raft::session_actor_map::session_actor_map_raft_actor;
 use crate::raft::session_state::session_state_raft_actor::{self, SessionStateRaftActor};
-use crate::router_actor::{RouteFromOtherNode, RoutePacket, RouterActor};
+use crate::router_actor::{RouteFromOtherNode, RouterActor};
 use crate::session::session_actor_map_storage::SessionVersion;
 use crate::session::session_manager_actor::SessionManagerActor;
 use actix::SystemService;

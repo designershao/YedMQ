@@ -31,7 +31,7 @@ use crate::{
     inflight::{InflightError, InflightState},
     plugin_manager::{PluginService, SubscribeReturnCode},
     raft::{
-        session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor, NodeId
+        session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor
     }, router_actor::RouterActor,
 };
 

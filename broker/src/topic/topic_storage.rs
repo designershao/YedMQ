@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, RwLock},
 };
 
@@ -8,7 +8,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{raft::NodeId, topic::TopicError};
+use crate::topic::TopicError;
 
 /// Generates a key string that can be used to store subscriptions in a `SubscriptionMap`.
 ///

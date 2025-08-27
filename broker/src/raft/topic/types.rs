@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::raft::{Node, NodeId};
+use crate::raft::Node;
 
 pub type TopicRaft = openraft::Raft<TypeConfig>;
 

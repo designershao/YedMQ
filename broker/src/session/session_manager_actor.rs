@@ -17,7 +17,6 @@ use actix::{
     dev::{ContextFutureSpawner, MessageResponse}, Actor, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture
 };
 use log::{error, info, warn};
-use openraft::{error::ClientWriteError, metrics::Wait};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, OnceCell, RwLock};
 use yedmq_mqtt::{
