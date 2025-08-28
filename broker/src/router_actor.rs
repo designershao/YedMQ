@@ -111,7 +111,7 @@ impl Actor for RouterActor {
 impl RouterActor {
 
     async fn route(current_node_id: &NodeId, cluster_nodes: &Vec<Node>, tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
-        log::info!("Routing packet for tenant {}: {:?}", tenant_id, packet);
+        log::info!("in route logic Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
             let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
@@ -158,7 +158,7 @@ impl RouterActor {
                                     }
                                     continue;
                                 } else {
-                                    if let Err(e) = Self::route_in_local_node(tenant_id, packet).await {
+                                    if let Err(e) = Self::route_to_local_node_session(tenant_id,&item.client_identifier, packet).await {
                                         warn!("Failed to route packet in local node for tenant {}: {}", tenant_id, e);
                                     }
                                 }
@@ -198,9 +198,32 @@ impl RouterActor {
         Ok(())
     }
 
+    async fn route_to_local_node_session(tenant_id: &String, client_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
+        log::info!("Route to  local node session {} {} : {:?}",tenant_id, client_id, packet);
+        if let MqttPacketV3::Publish(publish_packet) = packet {
+            let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
+            if let Err(err) = session_manager_actor_addr
+                .send(SendMessageToSession {
+                    tenant_id: tenant_id.clone(),
+                    client_id: client_id.clone(),
+                    packet: MqttPacketV3::Publish(publish_packet.clone()),
+                })
+                .await
+            {
+                warn!(
+                    "tenant {} session {} send packet error, details: {}",
+                    tenant_id,
+                    client_id,
+                    err
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn route_in_local_node(tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
         // Implement the logic to route the packet within the local node
-        log::info!("Routing packet for tenant {}: {:?}", tenant_id, packet);
+        log::info!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
             let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
@@ -251,7 +274,7 @@ impl RouterActor {
         Ok(())
     }
 
-    // 检查消息是否应该添加到死信队列（QoS 1或QoS 2）
+    // Check if the packet should be added to the dead letter queue
     fn should_add_to_dead_letter_queue(packet: &MqttPacketV3) -> bool {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             if let Some(qos) = publish_packet.fix_header.qos {
@@ -261,9 +284,9 @@ impl RouterActor {
         false
     }
 
-    // 添加消息到死信队列
+    // Add the packet to the dead letter queue
     fn add_to_dead_letter_queue(&mut self, tenant_id: String, packet: MqttPacketV3, dest_addr: String) -> Result<(), RouterActorError> {
-        // 检查队列是否已满
+        // check if the dead letter queue is full
         if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
             warn!("Dead letter queue is full, dropping oldest message");
             self.dead_letter_queue.pop_front();
@@ -386,7 +409,7 @@ impl Handler<RoutePacket> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(),RouterActorError>>;
 
     fn handle(&mut self, msg: RoutePacket, _ctx: &mut Self::Context) -> Self::Result {
-        log::info!("Routing packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
+        log::info!("In handler Routing packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
         let current_node_id = self.current_node_id;
         let cluster_nodes = self.settings.cluster.nodes.clone();
         Box::pin(async move {
@@ -407,7 +430,7 @@ impl Handler<RouteFromOtherNode> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
 
     fn handle(&mut self, msg: RouteFromOtherNode, _ctx: &mut Self::Context) -> Self::Result {
-        log::info!("Routing packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
+        log::info!("In handler from other nodeRouting packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
         Box::pin(async move {
             Self::route_in_local_node(&msg.tenant_id, &msg.packet).await?;
             Ok(())

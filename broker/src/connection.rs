@@ -331,7 +331,7 @@ where
                         }
                     }
                 } else {
-                    println!("client first packet is not connect packet");
+                    info!("client first packet is not connect packet");
                     error!("client first packet is not connect packet");
                     let connack_packet = ConnAckPacketBuilder::new()
                         .set_return_code(connack::ConnackReturnCode::UnsupportedProtocolVersion)
@@ -388,7 +388,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn drop(&mut self) {
-        println!("🔥 ConnectionActor Dropped!");
+        info!("🔥 ConnectionActor Dropped!");
     }
 }
 

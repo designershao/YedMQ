@@ -376,7 +376,7 @@ async fn do_handle_publish(
         let mut session_state_guard = session_state.write().await;
 
         if publish_packet.fix_header.qos > Some(0) {
-            //let mut inflight = inflight.write().await;
+            info!("client {} start process packet {:?} ", client_info.client_identifier, publish_packet.clone());
             session_state_guard
                 .inflight
                 .register_with_rx_packet(&MqttPacketV3::Publish(publish_packet.clone()))
@@ -1375,9 +1375,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             }
                                         }
                                     }
-                                    session_state_guard.inflight.register_with_tx_packet(
-                                        &MqttPacketV3::Publish(packet.clone()),
-                                    ).await.unwrap();
                                 }
 
 
