@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
-    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType},
+    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType, WriteRequest},
     raft::{
         topic::{raft_network_impl::Network, store::new_storage, types::TopicRaft},
         Node, NodeId,
@@ -215,13 +215,13 @@ impl TopicRaftActor {
 
         let data = serde_json::to_string(&msg).unwrap();
 
-        let request = AppendEntriesRequest {
+        let request = WriteRequest {
             data,
             raft_type: RaftType::Topic.into(),
         };
 
-        client.append_entries(request).await.map_err(|e| {
-            log::error!("Failed to send append entries request to leader: {}", e);
+        client.write(request).await.map_err(|e| {
+            log::error!("Failed to send write request to leader: {}", e);
             TopicRaftError::GRPC(e.to_string())
         })?;
 
@@ -667,8 +667,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
-                                        let mut client = ClusterServiceClient::connect(leader.rpc_addr.clone()).await
-                                            .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
+                                        let mut client = ClusterServiceClient::connect(format!("http://{}", leader.rpc_addr.clone())).await.map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
                                         client.get_subscribers_by_topic(crate::protobuf::GetSubscribersByTopicRequest {
                                             tenant_id: msg.tenant_id,
                                             topic: msg.topic,
@@ -814,7 +813,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
-                                        let mut client = ClusterServiceClient::connect(leader.rpc_addr.clone()).await
+                                        let mut client = ClusterServiceClient::connect(format!("http://{}", leader.rpc_addr.clone())).await
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
                                         let response = client.get_retain_publish_message(crate::protobuf::GetRetainPublishMessageRequest {
                                             tenant_id: msg.tenant_id,
@@ -1301,6 +1300,47 @@ impl Handler<GetLeader> for TopicRaftActor {
                             } else {
                                 Ok(None)
                             }
+                        } else {
+                            Err(TopicRaftError::NotReady("Initializing".to_string()))
+                        }
+                    }
+                    .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(async move { Err(e) }.into_actor(self));
+            }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>")]
+pub struct DirectWriteToRaft {
+    pub command: super::types::Request,
+}
+
+impl Handler<DirectWriteToRaft> for TopicRaftActor {
+    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
+
+    fn handle(&mut self, msg: DirectWriteToRaft, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("TopicRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            let res = raft_instance.client_write(msg.command).await?;
+                            Ok(res)
                         } else {
                             Err(TopicRaftError::NotReady("Initializing".to_string()))
                         }

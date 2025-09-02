@@ -4,7 +4,7 @@ use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, S
 use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{SessionActorMapEntry, SessionClock}};
+use crate::{protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest}, session::session_actor_map_storage::{SessionActorMapEntry, SessionClock}};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
 
@@ -217,13 +217,13 @@ impl SessionActorMapRaftActor {
 
         let data = serde_json::to_string(&msg).unwrap();
 
-        let request = AppendEntriesRequest {
+        let request = WriteRequest {
             data,
             raft_type: RaftType::SessionActorMap.into(),
         };
 
-        let res= client.append_entries(request).await.map_err(|e| {
-            log::error!("Failed to send append entries request to leader: {}", e);
+        let res= client.write(request).await.map_err(|e| {
+            log::error!("Failed to send write request to leader: {}", e);
             SessionActorMapRaftError::GRPC(e.to_string())
         })?;
 
@@ -604,7 +604,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                             Err(SessionActorMapRaftError::NotLeader { leader }) => {
                                 log::warn!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
-                                    let mut client = ClusterServiceClient::connect(leader_node.rpc_addr).await.map_err(|e| {
+                                    let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
                                         log::error!("Failed to connect to leader: {}", e);
                                         SessionActorMapRaftError::GRPC(e.to_string())
                                     })?;
@@ -920,6 +920,54 @@ impl Handler<GetLeader> for SessionActorMapRaftActor {
         }
     }
 }
+
+#[derive(Message)]
+#[rtype(result = "Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError>")]
+pub struct DirectWriteToRaft {
+    pub command: super::types::SessionActorMapRequest,
+}
+
+impl Handler<DirectWriteToRaft> for SessionActorMapRaftActor {
+    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError>>;
+    
+    fn handle(&mut self, msg: DirectWriteToRaft, ctx: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                return Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let res = Self::handle_raft_write(raft_instance, msg.command).await?;
+                        Ok(res)
+                    } else {
+                        Err(SessionActorMapRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                );
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                return Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                );
+            }
+            ActorState::Stopped => {
+                return Box::pin(
+                    async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                );
+            }            
+        }
+    }
+}
+
+
 
 
 #[derive(Message)]

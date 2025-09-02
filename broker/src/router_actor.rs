@@ -180,7 +180,7 @@ impl RouterActor {
     }
 
     async fn route_to_other_nodes(dest_addr: &String, tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
-        let mut cluster_client = ClusterServiceClient::connect(dest_addr.clone()).await.map_err(|e| {
+        let mut cluster_client = ClusterServiceClient::connect(format!("http://{}", dest_addr.clone())).await.map_err(|e| {
             warn!("Failed to connect to cluster service at {}: {}", dest_addr, e);
             RouterActorError::GRPC(e.to_string())
         })?;

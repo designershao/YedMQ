@@ -16,6 +16,9 @@ service RaftService {
   // Install a snapshot to synchronize state between nodes.
   rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
 
+  // Write data to the Raft log (generic write operation).
+  rpc Write(WriteRequest) returns (WriteResponse);
+
 }
 
 // RaftType specifies the type of Raft data being operated on.
@@ -23,6 +26,19 @@ enum RaftType {
   TOPIC = 0;               // Topic metadata
   SESSION_ACTOR_MAP = 1;   // Session actor mapping
   SESSION_STATE = 2;       // Session state data
+}
+
+// Request message for writing data to the Raft log.
+message WriteRequest {
+  string data = 1;         // Serialized write request data
+  RaftType raft_type = 2;  // Type of Raft data
+}
+
+// Response message for Write RPC.
+message WriteResponse {
+  bool success = 1;        // Operation success flag
+  ErrorDetail error = 2;   // Error details if any
+  string data = 3;         // Additional response data
 }
 
 // Request message for appending entries to the Raft log.

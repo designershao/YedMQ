@@ -589,7 +589,7 @@ async fn call_force_disconnect(
 
     let addr = format!("http://{}", node.rpc_address);
 
-    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone()).await?;
+    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::connect(format!("http://{}", addr.clone())).await?;
 
     for i in 0..max_retries {
         info!(
