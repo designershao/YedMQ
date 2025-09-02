@@ -1,6 +1,7 @@
 use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
+use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, session::session_actor_map_storage::{SessionActorMapEntry, SessionClock}};
@@ -208,7 +209,8 @@ impl SessionActorMapRaftActor {
         leader_addr: String,
         msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
-        let mut client = RaftServiceClient::connect(leader_addr).await.map_err(|e| {
+        info!("Forwarding request to leader at {}", leader_addr);
+        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr)).await.map_err(|e| {
             log::error!("Failed to connect to leader {}", e);
             SessionActorMapRaftError::GRPC(e.to_string())
         })?;

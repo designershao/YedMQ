@@ -1,3 +1,3 @@
 mod cluster_service;
-mod rust_service;
-mod rpc_actor;
+mod raft_service;
+pub mod rpc_actor;

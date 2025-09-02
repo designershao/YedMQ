@@ -1,4 +1,5 @@
 use actix::SystemService;
+use log::{error, warn};
 use tonic::{Request, Response, Status};
 use crate::protobuf::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse};
 use crate::protobuf::raft_service_server::RaftService;
@@ -20,6 +21,7 @@ impl RaftService for RustServiceImpl {
                     .send(append_entries_message)
                     .await;
                 if let Err(e) = res {
+                    error!("append_entries SessionActorMap error: {}", e);
                     return Err(Status::internal(e.to_string()));
                 }
                 let res = res.unwrap();
@@ -33,6 +35,7 @@ impl RaftService for RustServiceImpl {
                         Ok(Response::new(res))
                     }
                     Err(e) => {
+                        warn!("append_entries SessionActorMap error: {}", e);
                         Err(Status::internal(e.to_string()))
                     }
                 }

@@ -232,7 +232,7 @@ impl SessionStateRaftActor {
         leader_addr: String,
         msg: crate::raft::session_state::types::SessionStateRequest,
     ) -> Result<ClientWriteResponse<SessionStateTypeConfig>, SessionStateRaftError> {
-        let mut client = RaftServiceClient::connect(leader_addr).await.map_err(|e| {
+        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr)).await.map_err(|e| {
             log::error!("Failed to connect to leader {}", e);
             SessionStateRaftError::GRPC(e.to_string())
         })?;

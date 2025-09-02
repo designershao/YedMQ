@@ -20,7 +20,7 @@ impl SystemService for RpcActor {
         ctx.spawn(
             async move {
                 let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl{};
-                let rpc_service = crate::rpc::rust_service::RustServiceImpl{};
+                let rpc_service = crate::rpc::raft_service::RustServiceImpl{};
                 Server::builder()
                     .add_service(ClusterServiceServer::new(cluster_service))
                     .add_service(RaftServiceServer::new(rpc_service))

@@ -1,13 +1,15 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use actix::SystemService;
 use log::{info, warn};
 use tokio::sync::{ Mutex, RwLock};
+use tonic::transport::Server;
 
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, plugin_manager::PluginManager, raft::Node, rest_api, settings::Settings
+    }, metric, plugin_manager::PluginManager, protobuf::{cluster_service_server::ClusterServiceServer, raft_service_server::RaftServiceServer}, raft::{session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor, Node}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::session_manager_actor::SessionManagerActor, settings::Settings
 };
 
 // Representation of the application state.This struct can be shared around to share.
@@ -32,6 +34,7 @@ impl YedMQApp {
         //
 
         // sys topic task
+        /*
         info!("start sys topic task");
         let sys_topic_task = metric::SysTopicTask::new(
             app.metric.clone(),
@@ -42,6 +45,18 @@ impl YedMQApp {
             Ok(())
         });
         info!("start sys topic task succeed");
+        */
+        //
+
+        // start system service
+        info!("start system service");
+        RpcActor::from_registry();
+        SessionManagerActor::from_registry();
+        TopicRaftActor::from_registry();
+        SessionActorMapRaftActor::from_registry();
+        SessionStateRaftActor::from_registry();
+        RouterActor::from_registry();
+        info!("start system service succeed");
         //
 
         // start api task
@@ -114,7 +129,7 @@ impl YedMQApp {
 
         let mut hn = app.join_handles.lock().await;
 
-        hn.push(sys_topic_task_join_handle);
+        //hn.push(sys_topic_task_join_handle);
         hn.push(tcp_listener_join);
         hn.push(tcp_tls_listener_join);
         hn.push(mqtt_ws_listener_join);

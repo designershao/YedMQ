@@ -208,7 +208,7 @@ impl TopicRaftActor {
         leader_addr: String,
         msg: crate::raft::topic::types::Request,
     ) -> Result<(), TopicRaftError> {
-        let mut client = RaftServiceClient::connect(leader_addr).await.map_err(|e| {
+        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr)).await.map_err(|e| {
             log::error!("Failed to connect to leader {}", e);
             TopicRaftError::GRPC(e.to_string())
         })?;
