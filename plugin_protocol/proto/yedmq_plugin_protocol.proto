@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+package yedmq.plugin_protocol;
+
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";

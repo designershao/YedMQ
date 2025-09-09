@@ -8,9 +8,12 @@ license = "Apache-2.0"
 serde = { version = "1.0.114", features = ["derive", "rc"] }
 anyhow = "1.0"
 toml = "0.8.6"
+tokio = { version = "1.29.1", features = ["full"] }
+prost = "0.13.4"
+prost-types = "0.13.4"
 
 [build-dependencies]
-prost-build = "0.14.1"
+prost-build = "0.13.4"
 
 [dev-dependencies]
 tempfile = "3.21.0"

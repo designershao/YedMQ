@@ -14,10 +14,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = Config::new();
     config
         .out_dir(PathBuf::from(env::var("OUT_DIR").unwrap()))
-        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".", "#[serde(rename_all = \"camelCase\")]")
-        .type_attribute("ErrorInfo", "#[derive(Clone, PartialEq)]")
-        .type_attribute("ProtocolMessage", "#[derive(Clone)]")
         .compile_protos(proto_files, &[proto_root])?;
 
     for proto_file in proto_files {
