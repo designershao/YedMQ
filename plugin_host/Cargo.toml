@@ -1,0 +1,10 @@
+[package]
+name = "yedmq-plugin-host"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+
+[build-dependencies]
+prost-build = "0.14.1"
