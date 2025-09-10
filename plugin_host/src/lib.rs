@@ -1,4 +1,21 @@
 pub mod manager;
 mod loader;
+mod protocol_frame;
+
+use prost_types::Timestamp;
+use uuid::Uuid;
+use chrono::Utc;
 
 include!(concat!(env!("OUT_DIR"), "/yedmq.plugin_protocol.rs"));
+
+pub fn create_timestamp() -> Timestamp {
+    let now = Utc::now();
+    Timestamp {
+        seconds: now.timestamp(),
+        nanos: now.timestamp_subsec_nanos() as i32,
+    }
+}
+
+pub fn create_message_id() -> String {
+    Uuid::new_v4().to_string()
+}
