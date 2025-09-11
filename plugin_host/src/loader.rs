@@ -1,4 +1,5 @@
-use std::{collections::HashMap, fs, path::{Path, PathBuf}, process::Command};
+use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use tokio::process::Command;
 
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, Context};
@@ -195,7 +196,7 @@ mod tests {
         assert_eq!(manifest.runtime.runtime_type, RuntimeType::Process);
 
         let cmd = loader.get_plugin_command("test_plugin")?.unwrap();
-        assert_eq!(cmd.get_program().to_str().unwrap().ends_with("test_executable"), true);
+        assert_eq!(cmd.as_std().get_program().to_str().unwrap().ends_with("test_executable"), true);
         Ok(())
     }
 }

@@ -1,6 +1,8 @@
 pub mod manager;
 mod loader;
-mod protocol_frame;
+mod protocol;
+pub mod plugin_host_config;
+mod plugin_connection;
 
 use prost_types::Timestamp;
 use uuid::Uuid;
