@@ -91,6 +91,7 @@ message InitializeResponse {
     repeated string capabilities = 2; // Capabilities provided by the plugin
     repeated Hook hooks = 3; // Registered hooks
     google.protobuf.Struct plugin_info = 4; // Plugin information
+    string auth_code = 5; // Authentication code for plugin registration
 }
 
 message BrokerInfo { 
