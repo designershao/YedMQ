@@ -1,5 +1,5 @@
 use std::{collections::HashMap, sync::Arc};
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use futures::{SinkExt, StreamExt};
 use interprocess::{local_socket::{tokio::prelude::*, GenericNamespaced, ListenerOptions, ToNsName, tokio::Stream}};
 use log::{info, warn};
 
@@ -7,7 +7,7 @@ use prost::Message as _;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::codec::Framed;
 
-use crate::{loader::PluginManifest, plugin_host_config::PluginHostConfig, ProtocolMessage};
+use crate::{loader::PluginManifest, plugin_host_config::PluginHostConfig, protocol::plugin_protocol::{BrokerInfo, InitializeRequest, InitializeResponse, MessageType, Method, ProtocolMessage}};
 
 use super::loader::PluginLoader;
 use anyhow::Result;
@@ -53,10 +53,11 @@ pub struct RunningPlugin {
 }
 
 pub struct PluginManager {
+    config: PluginHostConfig,
     plugin_loader: PluginLoader,
     running_plugins: Arc<RwLock<HashMap<String, RunningPlugin>>>,
-    shutdown_signal: tokio::sync::broadcast::Sender<()>,
     inflight: Arc<Mutex<HashMap<uuid::Uuid, RequestContext>>>,
+    hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
 }
 
 
@@ -82,55 +83,46 @@ impl PluginManager {
         let _ = loader.scan_plugins().await?;
         
         Ok(Self {
+            config,
             plugin_loader: loader,
             running_plugins: Arc::new(RwLock::new(HashMap::new())),
-            shutdown_signal: config.shutdown_signal,
             inflight: Arc::new(Mutex::new(HashMap::new())),
+            hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
         })
     }
 
     async fn handle_plugin_connection(&self, s: Stream, rx_cmd_sender: tokio::sync::mpsc::Sender<RxCmd>) -> Result<()> {
-        let plugins = self.running_plugins.clone();
-        let inflight = self.inflight.clone();
 
         let (tx_cmd_sender, mut tx_cmd_receiver) = tokio::sync::mpsc::channel::<TxCmd>(32);
 
         let mut framed = Framed::new(s, crate::protocol::protocol_frame::ProtocolFrameCodec::new());
 
-        let connection_join_handle =tokio::spawn(async move {
-            let initialize_param = crate::InitializeRequest {
-                plugin_config: None,
-                broker_info: Some(crate::BrokerInfo {
-                    version: "1.0".to_string(),
-                    node_id: 1.to_string(),
-                    cluster_name: "yedmq_cluster".to_string(),
-                    properties: None,
-                }),
-                required_capabilities: vec![],
-            };
+        let initialize_request_param = InitializeRequest::new_from_plugin_host_config(&self.config);
 
+        let connection_join_handle =tokio::spawn(async move {
+   
             let wrap_initialize_param_to_any = prost_types::Any {
                 type_url: super::protocol::INIT_REQUEST_TYPE_URL.to_owned(),
-                value: initialize_param.encode_to_vec(),
+                value: initialize_request_param.encode_to_vec(),
             };
 
             let init_plugin_request_message = ProtocolMessage {
                 id: crate::create_message_id(),
                 version: "1.0".to_string(),
-                r#type: crate::MessageType::Request.into(),
+                r#type: MessageType::Request.into(),
                 timestamp: Some(crate::create_timestamp()),
                 source: "plugin_host".to_string(),
                 target: "plugin".to_string(),
-                method: Some(crate::Method::Initialize.into()),
+                method: Some(Method::Initialize.into()),
                 params: Some(wrap_initialize_param_to_any),
                 result: None,
                 error: None,
                 metadata: HashMap::new(),
             };
 
-            framed.send(init_plugin_request_message).await.unwrap();
+            ProtocolMessage::default();
 
-            let mut initialized = false;
+            framed.send(init_plugin_request_message).await.unwrap();
 
             loop {
                 tokio::select! {
@@ -140,19 +132,14 @@ impl PluginManager {
                                 let protocol_message = ProtocolMessage::decode(msg.payload);
                                 if let Ok(protocol_message) = protocol_message {
                                     match protocol_message.method {
-                                        Some(m) if m == crate::Method::Initialize as i32 => {
-                                            initialized = true;
+                                        Some(m) if m == Method::Initialize as i32 => {
                                             let _ = rx_cmd_sender.send(RxCmd::InitMessage{
                                                 msg:protocol_message,
                                                 tx_cmd_sender: tx_cmd_sender.clone(),
                                             }).await;
                                         },
                                         _ => {
-                                            if initialized {
-                                                let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
-                                            } else {
-                                                warn!("Received message before initialization");
-                                            }
+                                            let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
                                         }
                                     }
                                 } else {
@@ -188,6 +175,7 @@ impl PluginManager {
 
         let plugins = self.running_plugins.clone();
         let inflight = self.inflight.clone();
+        let hook_manager = self.hook_manager.clone();
 
         let rx_cmd_join_handle = tokio::spawn(async move {
             loop {
@@ -197,16 +185,28 @@ impl PluginManager {
                             Some(RxCmd::InitMessage{msg, tx_cmd_sender}) => {
                                 // Handle initialization message
                                 info!("Received initialization message: {:?}", msg);
-                                let r = msg.result;
-                                if let Some(r) = r {
-                                    let init_response = crate::InitializeResponse::decode(r.value.as_slice()).unwrap();
+                                if let Some(r) = msg.result {
+                                    let init_response = InitializeResponse::decode(r.value.as_slice()).unwrap();
                                     let auth_code = init_response.auth_code;
-                                    plugins.write().await.iter_mut().for_each(|(_, plugin)| {
+                                    let register_hooks = init_response.hooks;
+
+                                    let mut plugins_guard = plugins.write().await;
+                                    for (_, plugin) in plugins_guard.iter_mut() {
                                         if plugin.auth_code == auth_code {
                                             plugin.ipc_sender = Some(tx_cmd_sender.clone());
                                             plugin.state = PluginState::Running;
+
+                                            for hook in &register_hooks {
+                                                let name = &hook.name;
+                                                let hook_type = crate::hook::get_hook_from_name(name);
+                                                if let Some(hook_type) = hook_type {
+                                                    hook_manager.write().await.register_hook(hook_type, plugin.name.clone(), hook.priority);
+                                                } else {
+                                                    warn!("Unknown hook name '{}' from plugin '{}'", name, plugin.name);
+                                                }
+                                            }
                                         }
-                                    });
+                                    }
                                 }
                             },
                             Some(RxCmd::NormalRecievedMessage(msg)) => {

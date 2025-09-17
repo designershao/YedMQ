@@ -1,13 +1,12 @@
-pub mod manager;
+pub mod plugin_manager;
 mod loader;
 mod protocol;
+pub mod hook;
 pub mod plugin_host_config;
 
 use prost_types::Timestamp;
 use uuid::Uuid;
 use chrono::Utc;
-
-include!(concat!(env!("OUT_DIR"), "/yedmq.plugin_protocol.rs"));
 
 pub fn create_timestamp() -> Timestamp {
     let now = Utc::now();

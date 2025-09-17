@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package yedmq.plugin_protocol;
+package plugin_protocol;
 
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
@@ -96,7 +96,7 @@ message InitializeResponse {
 
 message BrokerInfo { 
     string version = 1; 
-    string node_id = 2; 
+    int32 node_id = 2; 
     string cluster_name = 3; 
     google.protobuf.Struct properties = 4; 
 } 

@@ -9,11 +9,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protocol_crate_dir = format!("{}/../plugin_protocol", workspace_dir);
     let proto_root = format!("{}/../plugin_protocol/proto", workspace_dir);
     let proto_files = &[format!("{}/proto/yedmq_plugin_protocol.proto", protocol_crate_dir)];
+    let out_dir = format!("{}/src/protocol", workspace_dir);
+    println!("Output directory: {}", out_dir);
     
-    // 配置 prost 编译器
     let mut config = Config::new();
     config
-        .out_dir(PathBuf::from(env::var("OUT_DIR").unwrap()))
+        .out_dir(PathBuf::from(&out_dir))
         .compile_protos(proto_files, &[proto_root])?;
 
     for proto_file in proto_files {

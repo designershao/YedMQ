@@ -1,4 +1,7 @@
 pub struct PluginHostConfig {
+    pub broker_version: String,
+    pub broker_node_id: u32,
+    pub cluster_name: String,
     pub plugin_directory: String,
     pub max_restart_attempts: u32,
     pub health_check_interval_secs: u64,

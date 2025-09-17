@@ -3,8 +3,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
+use super::plugin_protocol::ProtocolMessage;
 
-use crate::ProtocolMessage;
 
 // Magic number for protocol frame
 const MAGIC_NUMBER: u32 = 0x5514;
@@ -259,7 +259,7 @@ impl Encoder<ProtocolMessage> for ProtocolMessageCodec {
 
 #[cfg(test)]
 mod tests {
-    use crate::{create_message_id, create_timestamp, MessageType, Method};
+    use crate::{create_message_id, create_timestamp, protocol::plugin_protocol::{MessageType, Method}};
 
     use super::*;
     use prost_types::Any;
