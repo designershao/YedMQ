@@ -1,4 +1,6 @@
-use crate::protocol::plugin_protocol::InitializeRequest;
+use std::collections::HashMap;
+
+use crate::{create_message_id, protocol::plugin_protocol::{InitializeRequest, ProtocolMessage}};
 
 pub mod protocol_frame;
 pub mod plugin_protocol;
@@ -49,6 +51,55 @@ impl InitializeRequest {
             plugin_config: None,
             required_capabilities: vec![],
         }
+    }
+
+}
+
+pub struct ProtocolMessageBuilder {
+    message: crate::protocol::plugin_protocol::ProtocolMessage,
+}
+
+impl ProtocolMessageBuilder {
+    pub fn new() -> Self {
+        ProtocolMessageBuilder {
+            message: crate::protocol::plugin_protocol::ProtocolMessage {
+                id: create_message_id(),
+                version: "1.0.0".to_string(),
+                r#type: crate::protocol::plugin_protocol::MessageType::Request.into(),
+                timestamp: Some(crate::create_timestamp()),
+                source: "plugin_host".to_string(),
+                target: "plugin".to_string(),
+                method: None,
+                params: None,
+                result: None,
+                error: None,
+                metadata: HashMap::new(),
+            },
+        }
+    }
+
+    pub fn with_type(mut self, msg_type: crate::protocol::plugin_protocol::MessageType) -> Self {
+        self.message.r#type = msg_type.into();
+        self
+    }
+
+    pub fn with_method(mut self, method: crate::protocol::plugin_protocol::Method) -> Self {
+        self.message.method = Some(method.into());
+        self
+    }
+
+    pub fn with_params(mut self, params: prost_types::Any) -> Self {
+        self.message.params = Some(params);
+        self
+    }
+
+    pub fn with_result(mut self, result: prost_types::Any) -> Self {
+        self.message.result = Some(result);
+        self
+    }
+
+    pub fn build(self) -> crate::protocol::plugin_protocol::ProtocolMessage {
+        self.message
     }
 
 }
