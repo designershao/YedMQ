@@ -3,7 +3,7 @@ use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
     tokio::prelude::*, tokio::Stream, GenericNamespaced, ListenerOptions, ToNsName,
 };
-use log::{info, warn};
+use log::{error, info, warn};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use prost::Message as _;
@@ -29,6 +29,12 @@ use anyhow::{anyhow, Ok, Result};
 use rand::Rng;
 
 type RequestContext = oneshot::Sender<Result<ProtocolMessage>>;
+
+pub struct AuthenticateResult {
+    pub authenticated: bool,
+    pub error_reason: Option<String>,
+    pub tenant_id: Option<String>,
+}
 
 // Generate a random authentication code
 fn generate_auth_code(length: usize) -> String {
@@ -108,6 +114,9 @@ pub enum PluginManagerError {
 
     #[error("No plugin registered hook: {0}")]
     NoPluginRegistered(String),
+
+    #[error("Plugin authenticate error: {0}")]
+    PluginAuthenticateTenantIdConflict(String),
 
 }
 
@@ -312,53 +321,100 @@ impl PluginManager {
     pub async fn call_authenticate_hook(
         &self,
         authenticate_request: AuthenticateRequest,
-    ) -> std::result::Result<AuthenticateResponse, PluginManagerError> {
+    ) -> std::result::Result<AuthenticateResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnAuthenticate);
         let running_plugins = self.running_plugins.read().await;
         if let Some(plugins) = plugins {
-            let highest_priority_plugin = &plugins[0];
-            let running_plugin = running_plugins.get(&highest_priority_plugin.plugin_name);
-            if let Some(running_plugin) = running_plugin {
-                if matches!(running_plugin.state, PluginState::Running) {
-                    let authenticate_request_any_wrapper = prost_types::Any {
-                        type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
-                        value: authenticate_request.encode_to_vec(),
-                    };
-                    let protocol_message = ProtocolMessageBuilder::new()
-                        .with_method(Method::Authenticate)
-                        .with_params(authenticate_request_any_wrapper)
-                        .build();
-                    let (request_context_sender, request_context_receiver) = oneshot::channel();
-                    self.inflight
-                        .lock()
-                        .await
-                        .insert(protocol_message.id.clone(), request_context_sender);
-                    running_plugin
-                        .ipc_sender
-                        .as_ref()
-                        .unwrap()
-                        .send(TxCmd::SendMessage(protocol_message))
-                        .await
-                        .unwrap();
-                    let timeout_duration = Duration::from_secs(5);
-                    let result = timeout(timeout_duration, request_context_receiver).await???;
-                    if let Some(result) = result.result {
-                        if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
-                            let authenticate_response =
-                                AuthenticateResponse::decode(result.value.as_slice()).unwrap();
-                            return std::result::Result::Ok(authenticate_response);
-                        } else {
-                            return std::result::Result::Err(PluginManagerError::InvalidResponse);
+            let mut final_tenant_id:Option<String> = None;
+            let mut has_success = false;
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let authenticate_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
+                            value: authenticate_request.encode_to_vec(),
+                        };
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::Authenticate)
+                            .with_params(authenticate_request_any_wrapper)
+                            .build();
+                        let (request_context_sender, request_context_receiver) = oneshot::channel();
+                        self.inflight
+                            .lock()
+                            .await
+                            .insert(protocol_message.id.clone(), request_context_sender);
+                        if let Err(e) = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await {
+                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
+                                continue;
                         }
-                    } else {
-                        return std::result::Result::Err(PluginManagerError::InvalidResponse);
+                        let timeout_duration = Duration::from_secs(5);
+                        let result = timeout(timeout_duration, request_context_receiver).await;
+                        match result {
+                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                                if let Some(result) = response.result {
+                                    if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
+                                        let authenticate_response =
+                                            AuthenticateResponse::decode(result.value.as_slice()).unwrap();
+                                        if authenticate_response.authenticated {
+                                            if let Some(tenant_id) = authenticate_response.tenant_id {
+                                                match &final_tenant_id {
+                                                    None => {
+                                                        final_tenant_id = Some(tenant_id);
+                                                    }
+                                                    Some(existing_tenant_id) => {
+                                                        if existing_tenant_id != &tenant_id {
+                                                            let err_msg = format!("Authenticate tenant id conflict, previes is {} now is {}", existing_tenant_id, tenant_id);
+                                                            return std::result::Result::Err(PluginManagerError::PluginAuthenticateTenantIdConflict(err_msg));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            has_success = true;
+                                        } else {
+                                            return std::result::Result::Ok(AuthenticateResult {
+                                                authenticated: false,
+                                                error_reason: authenticate_response.error_reason,
+                                                tenant_id: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                warn!("Plugin {} response timeout", running_plugin.name);
+                                continue;
+                            }
+                            std::result::Result::Ok(Err(_))  => {
+                                warn!("Plugin {} receiver droped", running_plugin.name);
+                                continue;
+                            }
+                            std::result::Result::Ok(std::result::Result::Ok(Err(e))) => {
+                                warn!("Plugin {} invalid response: {}", running_plugin.name, e);
+                                continue;
+                            }
+                        }
                     }
-                } else {
-                    return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));
                 }
+            }
+            if has_success {
+                return std::result::Result::Ok(AuthenticateResult {
+                    authenticated: true,
+                    error_reason: None,
+                    tenant_id: final_tenant_id,
+                });
             } else {
-                return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));
+                return std::result::Result::Ok(AuthenticateResult {
+                    authenticated: false,
+                    error_reason: Some("No plugin authenticated successfully".to_string()),
+                    tenant_id: None,
+                })
             }
         } else {
             info!("No plugins registered for OnAuthenticate hook");
