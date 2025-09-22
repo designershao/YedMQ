@@ -18,7 +18,7 @@ use crate::{
     plugin_host_config::PluginHostConfig,
     protocol::{
         plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessageType, Method, ProtocolMessage
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessagePublishRequest, MessageType, Method, ProtocolMessage, SubscribeRequest
         },
         ProtocolMessageBuilder,
     },
@@ -323,12 +323,106 @@ impl PluginManager {
         }
     }
 
+    pub async fn call_subscribe_removed_hook(
+        &self,
+        subscribe_request: SubscribeRequest
+    ) {
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeRemoved);
+        let running_plugins = self.running_plugins.read().await;
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let subscribe_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
+                            value: subscribe_request.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::SubscriptionAdded)
+                            .with_type(MessageType::Event)
+                            .with_params(subscribe_request_any_wrapper)
+                            .build();
+
+                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn call_subscribe_added_hook(
+        &self,
+        subscribe_request: SubscribeRequest
+    ) {
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
+        let running_plugins = self.running_plugins.read().await;
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let subscribe_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
+                            value: subscribe_request.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::SubscriptionAdded)
+                            .with_type(MessageType::Event)
+                            .with_params(subscribe_request_any_wrapper)
+                            .build();
+
+                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn call_message_published_hook(
+        &self,
+        message_publish_request: MessagePublishRequest
+    ) {
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::MessagePublished);
+        let running_plugins = self.running_plugins.read().await;
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let message_publish_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL.to_string(),
+                            value: message_publish_request.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::OnMessagePublish)
+                            .with_type(MessageType::Event)
+                            .with_params(message_publish_request_any_wrapper)
+                            .build();
+
+                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                    }
+                }
+            }
+        }
+    }
+
+
     pub async fn call_authorize_hook(
         &self,
         authorize_request: AuthorizeRequest
     ) -> std::result::Result<AuthorizeResult, PluginManagerError>{
         let hook_manager = self.hook_manager.read().await;
-        let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnAuthorize);
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authorize);
         let running_plugins = self.running_plugins.read().await;
 
         let mut final_result = AuthorizeResult {
@@ -412,7 +506,7 @@ impl PluginManager {
         authenticate_request: AuthenticateRequest,
     ) -> std::result::Result<AuthenticateResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
-        let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnAuthenticate);
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authenticate);
         let running_plugins = self.running_plugins.read().await;
         if let Some(plugins) = plugins {
             let mut final_tenant_id:Option<String> = None;
