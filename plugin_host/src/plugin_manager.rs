@@ -18,7 +18,7 @@ use crate::{
     plugin_host_config::PluginHostConfig,
     protocol::{
         plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessageType, Method, ProtocolMessage
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessageType, Method, ProtocolMessage
         },
         ProtocolMessageBuilder,
     },
@@ -29,6 +29,12 @@ use anyhow::{anyhow, Ok, Result};
 use rand::Rng;
 
 type RequestContext = oneshot::Sender<Result<ProtocolMessage>>;
+
+pub struct AuthorizeResult {
+    pub authorized: bool,
+    pub reason: Option<String>,
+    pub modified_context: HashMap<String, String>,
+}
 
 pub struct AuthenticateResult {
     pub authenticated: bool,
@@ -314,6 +320,89 @@ impl PluginManager {
                 }
                 Err(_) => continue,
             };
+        }
+    }
+
+    pub async fn call_authorize_hook(
+        &self,
+        authorize_request: AuthorizeRequest
+    ) -> std::result::Result<AuthorizeResult, PluginManagerError>{
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnAuthorize);
+        let running_plugins = self.running_plugins.read().await;
+
+        let mut final_result = AuthorizeResult {
+            authorized: true,
+            reason: None,
+            modified_context: HashMap::new(),
+        };
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let authorize_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::AUTHORIZE_REQUEST_TYPE_URL.to_string(),
+                            value: authorize_request.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::Authorize)
+                            .with_params(authorize_request_any_wrapper)
+                            .build();
+
+                        let (request_context_sender, request_context_receiver) = oneshot::channel();
+                        self.inflight
+                            .lock()
+                            .await
+                            .insert(protocol_message.id.clone(), request_context_sender);
+                        if let Err(e) = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await {
+                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
+                                continue;
+                        }
+                        let timeout_duration = Duration::from_secs(5);
+                        let result = timeout(timeout_duration, request_context_receiver).await;
+
+                        match result {
+                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                                if let Some(result) = response.result {
+                                    if result.type_url == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL.to_string() {
+                                        let authorize_response = AuthorizeResponse::decode(result.value.as_slice()).unwrap();
+
+                                        if !authorize_response.authorized {
+                                            final_result.authorized = false;
+                                            return std::result::Result::Ok(final_result);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                warn!("Plugin {} response timeout", running_plugin.name);
+                                continue;
+                            }
+                            std::result::Result::Ok(Err(_))  => {
+                                warn!("Plugin {} receiver droped", running_plugin.name);
+                                continue;
+                            }
+                            std::result::Result::Ok(std::result::Result::Ok(Err(e))) => {
+                                warn!("Plugin {} invalid response: {}", running_plugin.name, e);
+                                continue;
+                            }
+
+                        }
+                    }
+                }
+            }
+            return std::result::Result::Ok(final_result);
+        } else {
+            info!("No plugins registered for OnAuthenticate hook");
+            return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));
         }
     }
 
