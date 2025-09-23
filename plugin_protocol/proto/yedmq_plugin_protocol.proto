@@ -124,6 +124,7 @@ message AuthenticateResponse {
     google.protobuf.Struct session_data = 3; // Session data
     optional string error_reason = 4; // Failure reason
     optional string tenant_id = 5; // Tenant ID
+    bool continue_chain = 6;
 }
 
 message AuthorizeRequest { 
@@ -140,6 +141,7 @@ message AuthorizeResponse {
     bool authorized = 1; 
     optional string reason = 2; // Denial reason
     google.protobuf.Struct modified_context = 3; // Modified context
+    bool continue_chain = 4;
 }
 
 enum AuthAction { 
@@ -173,6 +175,7 @@ message MessagePublishResponse {
     bool allow = 1; // Whether publishing is allowed
     optional MqttMessage modified_message = 2; // Modified message
     optional string error_reason = 3; // Denial reason
+    optional bool continue_chain = 4;
 }
 
 // Subscription handling 
@@ -184,6 +187,7 @@ message SubscribeRequest {
 
 message SubscribeResponse { 
     repeated SubscribeResult results = 1; 
+    optional bool continue_chain = 2;
 } 
 
 message TopicFilter { 

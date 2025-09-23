@@ -147,6 +147,8 @@ pub struct AuthenticateResponse {
     /// Tenant ID
     #[prost(string, optional, tag = "5")]
     pub tenant_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, tag = "6")]
+    pub continue_chain: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AuthorizeRequest {
@@ -179,6 +181,8 @@ pub struct AuthorizeResponse {
     /// Modified context
     #[prost(message, optional, tag = "3")]
     pub modified_context: ::core::option::Option<::prost_types::Struct>,
+    #[prost(bool, tag = "4")]
+    pub continue_chain: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MqttMessage {
@@ -232,6 +236,8 @@ pub struct MessagePublishResponse {
     /// Denial reason
     #[prost(string, optional, tag = "3")]
     pub error_reason: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag = "4")]
+    pub continue_chain: ::core::option::Option<bool>,
 }
 /// Subscription handling
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -247,6 +253,8 @@ pub struct SubscribeRequest {
 pub struct SubscribeResponse {
     #[prost(message, repeated, tag = "1")]
     pub results: ::prost::alloc::vec::Vec<SubscribeResult>,
+    #[prost(bool, optional, tag = "2")]
+    pub continue_chain: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TopicFilter {
