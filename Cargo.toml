@@ -8,8 +8,8 @@ members = [
     "plugins/acl_mysql",
     "plugins/acl_postgresql",
     "plugins/acl_redis",
-    "plugin_host"
-]
+    "plugin_host", 
+    "mock_plugin_harness"]
 
 [workspace.dependencies]
 thiserror = "1.0"

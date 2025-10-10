@@ -1,6 +1,6 @@
 pub mod plugin_manager;
-mod loader;
-mod protocol;
+pub mod loader;
+pub mod protocol;
 pub mod hook;
 pub mod plugin_host_config;
 

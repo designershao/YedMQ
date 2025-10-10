@@ -16,7 +16,7 @@ use tokio_util::codec::Framed;
 use crate::{
     hook, loader::PluginManifest, plugin_host_config::PluginHostConfig, protocol::{
         plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BatchResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
         },
         ProtocolMessageBuilder,
     }
@@ -273,8 +273,12 @@ impl PluginManager {
                                 // Handle normal received message
                                 info!("Received normal message: {:?}", msg);
                                 match msg.r#type() {
-                                    MessageType::Unspecified => todo!(),
-                                    MessageType::Request => todo!(),
+                                    MessageType::Unspecified => {
+                                        warn!("Received message with unspecified type");
+                                    },
+                                    MessageType::Request => {
+                                        warn!("Received message with request type, not supported yet.");
+                                    },
                                     MessageType::Response => {
                                         let msg_id = &msg.id;
                                         {
@@ -286,11 +290,28 @@ impl PluginManager {
                                             }
                                         }
                                     },
-                                    MessageType::Notification => todo!(),
-                                    MessageType::Event => todo!(),
-                                    MessageType::Error => todo!(),
-                                    MessageType::BatchRequest => todo!(),
-                                    MessageType::BatchResponse => todo!(),
+                                    MessageType::Notification => {
+                                        warn!("Received message with notification type, not supported yet.");
+                                    },
+                                    MessageType::Event =>  {
+                                        warn!("Received message with event type, not supported yet.");
+                                    },
+                                    MessageType::Error => {
+                                        warn!("Received message with error type, not supported yet.");
+                                    },
+                                    MessageType::BatchRequest => {
+                                        warn!("Received message with batch request type, not supported yet.");
+                                    },
+                                    MessageType::BatchResponse => {
+                                        warn!("Received message with batch response type, not supported yet.");
+                                        if let Some(result) = msg.result {
+                                            if result.type_url == crate::protocol::BATCH_RESPONSE_TYPE_URL {
+                                                let batch_response = BatchResponse::decode(result.value.as_slice()).unwrap();
+                                                for response in batch_response.responses {
+                                                }
+                                            }
+                                        }
+                                    },
                                 }
                             },
                             Some(RxCmd::Shutdown) | None => {
@@ -808,4 +829,9 @@ impl PluginManager {
 
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+
 }
