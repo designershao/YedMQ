@@ -156,6 +156,10 @@ impl PluginManager {
         })
     }
 
+    pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {
+        self.plugin_loader.get_plugin_manifest(plugin_name)
+    }
+
     async fn handle_plugin_connection(
         &self,
         s: Stream,
