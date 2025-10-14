@@ -1,3 +1,4 @@
+#[derive(Clone, Debug)]
 pub struct PluginHostConfig {
     pub broker_version: String,
     pub broker_node_id: u32,

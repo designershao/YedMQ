@@ -151,6 +151,7 @@ struct HookConfig {
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// The auth code from the host
+    #[arg(long)]
     auth_code: String,
 
     /// The configuration for the mock plugin in JSON format
@@ -167,6 +168,7 @@ fn handle_initialize_request(
     config: &MockConfig,
     real_auth_code: &str,
 ) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling initialize request");
     let hooks: Vec<Hook> = config
         .initialize
         .hooks
@@ -382,6 +384,8 @@ async fn handle_request(
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
+    info!("Sending response: {:?}", response_msg);
+
     framed.send(response_msg?).await?;
 
     Ok(())
@@ -419,12 +423,16 @@ async fn main() {
         yedmq_plugin_host::protocol::protocol_frame::ProtocolFrameCodec::new(),
     );
 
-    loop {
-        let msg = framed.next().await.unwrap().unwrap();
-        let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
+    info!("Frame codec init success, start handling messages");
 
-        if let Err(e) = handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await {
-            error!("Error handling request: {}", e);
+    loop {
+        while let Some(Ok(msg)) = framed.next().await {
+            info!("Received a frame: {:?}", msg);
+            let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
+
+            if let Err(e) = handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await {
+                error!("Error handling request: {}", e);
+            }
         }
 
     }

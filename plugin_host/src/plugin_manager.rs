@@ -99,7 +99,7 @@ pub struct PluginManager {
     config: PluginHostConfig,
     plugin_loader: PluginLoader,
     running_plugins: Arc<RwLock<HashMap<String, RunningPlugin>>>,
-    inflight: Arc<Mutex<HashMap<String, RequestContext>>>,
+    inflight: Arc<RwLock<HashMap<String, RequestContext>>>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
 }
 
@@ -151,7 +151,7 @@ impl PluginManager {
             config,
             plugin_loader: loader,
             running_plugins: Arc::new(RwLock::new(HashMap::new())),
-            inflight: Arc::new(Mutex::new(HashMap::new())),
+            inflight: Arc::new(RwLock::new(HashMap::new())),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
         })
     }
@@ -161,7 +161,7 @@ impl PluginManager {
     }
 
     async fn handle_plugin_connection(
-        &self,
+        config: &PluginHostConfig,
         s: Stream,
         rx_cmd_sender: tokio::sync::mpsc::Sender<RxCmd>,
     ) -> Result<()> {
@@ -172,7 +172,7 @@ impl PluginManager {
             crate::protocol::protocol_frame::ProtocolFrameCodec::new(),
         );
 
-        let initialize_request_param = InitializeRequest::new_from_plugin_host_config(&self.config);
+        let initialize_request_param = InitializeRequest::new_from_plugin_host_config(config);
 
         let connection_join_handle = tokio::spawn(async move {
             let wrap_initialize_param_to_any = prost_types::Any {
@@ -185,34 +185,40 @@ impl PluginManager {
                 .with_params(wrap_initialize_param_to_any)
                 .build();
 
+
             framed.send(init_plugin_request_message).await.unwrap();
+            println!("Send init message success");
 
             loop {
                 tokio::select! {
                     msg = framed.next() => {
-                        if let Some(msg) = msg {
-                            if let std::result::Result::Ok(msg) = msg {
-                                let protocol_message = ProtocolMessage::decode(msg.payload);
-                                if let std::result::Result::Ok(protocol_message) = protocol_message {
-                                    match protocol_message.method {
-                                        Some(m) if m == Method::Initialize as i32 => {
-                                            let _ = rx_cmd_sender.send(RxCmd::InitMessage{
-                                                msg:protocol_message,
-                                                tx_cmd_sender: tx_cmd_sender.clone(),
-                                            }).await;
-                                        },
-                                        _ => {
-                                            let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
-                                        }
+                        if let Some(std::result::Result::Ok(msg)) = msg {
+                            let protocol_message = ProtocolMessage::decode(msg.payload);
+                            if let std::result::Result::Ok(protocol_message) = protocol_message {
+                                println!("Received a protocol message: {:?}", protocol_message);
+
+                                if !protocol_message.result.is_none() {
+                                    let result = protocol_message.result.as_ref().unwrap();
+                                    if result.type_url == super::protocol::INIT_RESPONSE_TYPE_URL {
+                                        let _ = rx_cmd_sender.send(RxCmd::InitMessage{
+                                            msg:protocol_message,
+                                            tx_cmd_sender: tx_cmd_sender.clone(),
+                                        }).await;
+                                    } else {
+                                        let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
                                     }
                                 } else {
-                                    warn!("Failed to decode protocol message from plugin");
-                                    break;
+                                    let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
                                 }
+                            } else {
+                                warn!("Failed to decode protocol message from plugin");
+                                break;
                             }
-                        } else {
+                        } else if let Some(std::result::Result::Err(e)) = msg {
                             warn!("Plugin connection closed");
                             break;
+                        } else {
+                            info!("continuing to wait for plugin message");
                         }
                     },
                     tx_cmd = tx_cmd_receiver.recv() => {
@@ -286,7 +292,7 @@ impl PluginManager {
                                     MessageType::Response => {
                                         let msg_id = &msg.id;
                                         {
-                                            let mut inflight_guard = inflight.blocking_lock();
+                                            let mut inflight_guard = inflight.write().await;
                                             if let Some(resp_sender) = inflight_guard.remove(msg_id) {
                                                 if let Err(_) = resp_sender.send(Ok(msg)) {
                                                     warn!("Failed to send response : receiver has droped");
@@ -351,16 +357,26 @@ impl PluginManager {
             listener => listener?,
         };
 
-        loop {
-            match listener.accept().await {
-                std::result::Result::Ok(c) => {
-                    let _ = self
-                        .handle_plugin_connection(c, rx_cmd_sender.clone())
-                        .await;
-                }
-                Err(_) => continue,
-            };
-        }
+        let config = self.config.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    std::result::Result::Ok(c) => {
+                        println!("Plugin connected, start handling connection");
+                        let _ = Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone())
+                            .await;
+                    }
+                    Err(_) => continue,
+                };
+            }
+        });
+
+        Ok(())
+    }
+
+    pub fn get_running_plugins(&self) -> Arc<RwLock<HashMap<String, RunningPlugin>>> {
+        self.running_plugins.clone()
     }
 
     pub async fn call_subscribe_removed_hook(
@@ -483,7 +499,7 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .lock()
+                            .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
                         if let Err(e) = running_plugin
@@ -577,7 +593,7 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .lock()
+                            .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
                         if let Err(e) = running_plugin
@@ -661,7 +677,7 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .lock()
+                            .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
                         if let Err(e) = running_plugin
@@ -739,7 +755,7 @@ impl PluginManager {
                             .build();
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .lock()
+                            .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
                         if let Err(e) = running_plugin

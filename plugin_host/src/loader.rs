@@ -141,11 +141,13 @@ impl PluginLoader {
                         cmd.current_dir(&plugin_dir);
                     }
 
+                    cmd.env("RUST_LOG", "info");
+
                     if let Some(args) = &manifest.runtime.args {
                         cmd.args(args);
                     }
 
-                    cmd.args(&["--auth_code", auth_code]);
+                    cmd.args(&["--auth-code", auth_code]);
 
                     if let Some(env) = &manifest.runtime.env {
                         cmd.envs(env);
