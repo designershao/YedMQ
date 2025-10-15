@@ -4,7 +4,7 @@ use interprocess::local_socket::{
     tokio::prelude::*, tokio::Stream, GenericNamespaced, ListenerOptions, ToNsName,
 };
 use log::{error, info, warn};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
@@ -187,7 +187,47 @@ impl PluginManager {
 
 
             framed.send(init_plugin_request_message).await.unwrap();
+
             println!("Send init message success");
+
+            // ensure the plugin response init response message in 5 seconds
+            match tokio::time::timeout(Duration::from_secs(5),  framed.next()).await {
+                std::result::Result::Ok(Some(std::result::Result::Ok(msg))) => {
+                    let protocol_message = ProtocolMessage::decode(msg.payload);
+                    println!("Received init response protocol message: {:?}", protocol_message);
+                    if let std::result::Result::Ok(protocol_message) = protocol_message {
+                        if protocol_message.result.is_none() {
+                            warn!("Plugin init response has no result, closing connection");
+                            return;
+                        }
+                        let result = protocol_message.result.as_ref().unwrap();
+                        if result.type_url != super::protocol::INIT_RESPONSE_TYPE_URL {
+                            warn!("Plugin init response has invalid result type, closing connection");
+                            return;
+                        }
+                        let _ = rx_cmd_sender.send(RxCmd::InitMessage{
+                            msg:protocol_message,
+                            tx_cmd_sender: tx_cmd_sender.clone(),
+                        }).await;
+                    } else {
+                        warn!("Failed to decode protocol message from plugin");
+                        return;
+                    }
+                },
+
+                std::result::Result::Ok(None) => {
+                    println!("Plugin connection closed");
+                    return;
+                }
+                std::result::Result::Ok(_) => {
+                    println!("Plugin init response timeout, closing connection");
+                    return;
+                }
+                std::result::Result::Err(_) => {
+                    println!("Plugin init response timeout, closing connection");
+                    return;
+                },
+            }
 
             loop {
                 tokio::select! {
@@ -196,29 +236,17 @@ impl PluginManager {
                             let protocol_message = ProtocolMessage::decode(msg.payload);
                             if let std::result::Result::Ok(protocol_message) = protocol_message {
                                 println!("Received a protocol message: {:?}", protocol_message);
-
-                                if !protocol_message.result.is_none() {
-                                    let result = protocol_message.result.as_ref().unwrap();
-                                    if result.type_url == super::protocol::INIT_RESPONSE_TYPE_URL {
-                                        let _ = rx_cmd_sender.send(RxCmd::InitMessage{
-                                            msg:protocol_message,
-                                            tx_cmd_sender: tx_cmd_sender.clone(),
-                                        }).await;
-                                    } else {
-                                        let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
-                                    }
-                                } else {
-                                    let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
-                                }
+                                let _ = rx_cmd_sender.send(RxCmd::NormalRecievedMessage(protocol_message)).await;
                             } else {
                                 warn!("Failed to decode protocol message from plugin");
                                 break;
                             }
                         } else if let Some(std::result::Result::Err(e)) = msg {
-                            warn!("Plugin connection closed");
+                            warn!("Failed to read message from plugin: {}", e);
                             break;
                         } else {
-                            info!("continuing to wait for plugin message");
+                            warn!("Plugin connection closed");
+                            break;
                         }
                     },
                     tx_cmd = tx_cmd_receiver.recv() => {
@@ -828,7 +856,10 @@ impl PluginManager {
             .get_plugin_command(name, &auth_code)?
             .unwrap();
 
-        let process = command.spawn()?;
+        let process = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
 
         let running_plugin = RunningPlugin {
             name: name.to_string(),

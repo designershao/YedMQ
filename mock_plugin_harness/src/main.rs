@@ -53,6 +53,7 @@ fn default_on_message_publish_config() -> OnMessagePublishConfig {
 
 fn default_init_config() -> InitializeConfig {
     InitializeConfig {
+        initialization_fail_mode: InitFailMode::None,
         status: "ready".to_string(),
         hooks: vec![],
         initialization_auth_code_mode: AuthCodeMode::Correct,
@@ -108,10 +109,19 @@ struct AuthenticateConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct InitializeConfig {
+pub struct InitializeConfig {
+    pub initialization_fail_mode: InitFailMode,
     pub status: String, // error or ready
     pub hooks: Vec<HookConfig>,
     pub initialization_auth_code_mode: AuthCodeMode,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitFailMode {
+    None,
+    Delay(u64),
+    Crash,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -163,12 +173,24 @@ struct Args {
     socket_name: String,
 }
 
-fn handle_initialize_request(
+async fn handle_initialize_request(
     request: &ProtocolMessage,
     config: &MockConfig,
     real_auth_code: &str,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling initialize request");
+    info!("Initialization fail mode: {:?}", config.initialize.initialization_fail_mode);
+    match config.initialize.initialization_fail_mode {
+        InitFailMode::None => {}
+        InitFailMode::Delay(ms) => {
+            info!("Delaying initialization response by {} ms", ms);
+            tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+        }
+        InitFailMode::Crash => {
+            error!("Crashing as per configuration");
+            std::process::exit(1);
+        }
+    }
     let hooks: Vec<Hook> = config
         .initialize
         .hooks
@@ -212,7 +234,7 @@ fn handle_initialize_request(
     })
 }
 
-fn handle_authenticate_request(
+async fn handle_authenticate_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
@@ -244,7 +266,7 @@ fn handle_authenticate_request(
     })
 }
 
-fn handle_authorize_request(
+async fn handle_authorize_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
@@ -274,7 +296,7 @@ fn handle_authorize_request(
     })
 }
 
-fn handle_on_message_subscribe_request(
+async fn handle_on_message_subscribe_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
@@ -310,7 +332,7 @@ fn handle_on_message_subscribe_request(
     })
 }
 
-fn handle_on_message_publish_request(
+async fn handle_on_message_publish_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
@@ -376,11 +398,11 @@ async fn handle_request(
     let method = request.method();
 
     let response_msg = match method {
-        Method::Initialize => handle_initialize_request(request, config, auth_code),
-        Method::Authenticate => handle_authenticate_request(request, config),
-        Method::Authorize => handle_authorize_request(request, config),
-        Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config),
-        Method::OnMessagePublish => handle_on_message_publish_request(request, config),
+        Method::Initialize => handle_initialize_request(request, config, auth_code).await,
+        Method::Authenticate => handle_authenticate_request(request, config).await,
+        Method::Authorize => handle_authorize_request(request, config).await,
+        Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config).await,
+        Method::OnMessagePublish => handle_on_message_publish_request(request, config).await,
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
@@ -434,7 +456,8 @@ async fn main() {
                 error!("Error handling request: {}", e);
             }
         }
-
+        info!("Connection closed, exiting");
+        break;
     }
 
 }
