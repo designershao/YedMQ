@@ -417,6 +417,8 @@ async fn handle_request(
 async fn main() {
     env_logger::init();
 
+    println!("Mock Plugin starting...");
+
     let args = Args::parse();
 
     let config: MockConfig = serde_json::from_str(&args.config).expect("Invalid config JSON");

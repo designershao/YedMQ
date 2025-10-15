@@ -189,7 +189,6 @@ env = {{}}
 working_dir = "."
 timeout_secs = 12
     "###, mock_config_json.unwrap());
-    println!("Mock plugin manifest:\n{}", mock_plugin_manifest);
 
     std::fs::write(mock_plugin_dir.join("plugin.toml"), mock_plugin_manifest)
         .expect("Failed to write mock plugin manifest");

@@ -104,16 +104,11 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
 
     let plugin_process = running_plugins.get_mut("mock_plugin_harness").unwrap();
 
-    if let Some(child) = &mut plugin_process.process {
-        if let Some(stdout) = &mut child.stdout {
-            let mut buffer = Vec::new();
-            stdout.read_to_end(&mut buffer).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await; // wait for plugin init
 
-            let output = String::from_utf8_lossy(&buffer);
-            println!("Plugin stdout: {}", output);
-            // Use a shared reference to stdout
-        }
-    }
+    plugin_process.logs.read().await.iter().for_each(|log| {
+        println!("Plugin Log: {}", log);
+    });
 
     // TODO read from plugin_process.stdout to check for disconnect message
 

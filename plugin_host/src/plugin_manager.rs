@@ -1,4 +1,4 @@
-use core::time;
+use core::{borrow, time};
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
     tokio::prelude::*, tokio::Stream, GenericNamespaced, ListenerOptions, ToNsName,
@@ -8,8 +8,7 @@ use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
-    sync::{oneshot, Mutex, RwLock},
-    time::timeout,
+    io::{AsyncBufReadExt, BufReader}, sync::{oneshot, Mutex, RwLock}, time::timeout
 };
 use tokio_util::codec::Framed;
 
@@ -87,12 +86,13 @@ pub struct RunningPlugin {
     pub name: String,
     pub manifest: PluginManifest,
     pub state: PluginState,
-    pub process: Option<tokio::process::Child>,
+    pub process: Option<Arc<Mutex<tokio::process::Child>>>,
     pub start_time: Option<std::time::Instant>,
     pub restart_count: u32,
     pub last_health_check: Option<std::time::Instant>,
     pub ipc_sender: Option<tokio::sync::mpsc::Sender<TxCmd>>,
     pub auth_code: String,
+    pub logs: Arc<RwLock<Vec<String>>>,
 }
 
 pub struct PluginManager {
@@ -856,21 +856,70 @@ impl PluginManager {
             .get_plugin_command(name, &auth_code)?
             .unwrap();
 
-        let process = command
+        let mut process = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+
+
+        let stdout = process.stdout.take().expect("plugin did not have a handle to stdout");
+
+        let mut stdout_reader = BufReader::new(stdout).lines();
+
+        let borrowed_name = name.to_string();
+
+        let process_arc = Arc::new(Mutex::new(process));
+
+        let process_wait_clone = process_arc.clone();
+
+        tokio::spawn(async move {
+            let mut process_guard = process_wait_clone.lock().await;
+            let status = process_guard.wait().await.expect("child process encountered an error");
+            println!("Plugin '{}' exited with status: {}", borrowed_name, status);
+        });
+
+        
+        let logs = Arc::new(RwLock::new(Vec::new()));
+
+        let logs_clone = logs.clone();
+
+        let borrowed_name = name.to_string();
+
+        let process_log_clone = process_arc.clone();
+
+        tokio::spawn(async move {
+            // Capture plugin stdout into logs
+            if let Err(e) = async move {
+                println!("Starting to read stdout of plugin");
+                while let Some(line) = stdout_reader.next_line().await? {
+                    println!("log from plugin : {}", line);
+                    let mut logs_guard = logs_clone.write().await;
+                    logs_guard.push(line);
+                    if logs_guard.len() > 1000 {
+                        logs_guard.remove(0); // keep only the last 1000 lines
+                    }
+                }
+                println!("Finished reading stdout of plugin");
+                Ok(())
+            }.await {
+                println!("Error reading stdout of plugin '{}': {}", borrowed_name, e);
+                let mut process_to_kill = process_log_clone.lock().await;
+                let _ = process_to_kill.kill().await;
+            }
+            //
+        });
 
         let running_plugin = RunningPlugin {
             name: name.to_string(),
             manifest,
             state: PluginState::Starting,
-            process: Some(process),
+            process: Some(process_arc),
             start_time: Some(std::time::Instant::now()),
             restart_count: 0,
             last_health_check: None,
             ipc_sender: None,
             auth_code,
+            logs,
         };
 
         {
