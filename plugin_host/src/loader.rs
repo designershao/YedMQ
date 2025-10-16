@@ -125,7 +125,7 @@ impl PluginLoader {
         self.loaded_plugins.keys().map(|k| k.as_str()).collect()
     }
 
-    pub fn get_plugin_command(&self, plugin_name: &str, auth_code: &str) -> Result<Option<Command>> {
+    pub fn get_plugin_command(&self, plugin_name: &str, auth_code: &str, socket_path: &str) -> Result<Option<Command>> {
         let manifest = self.get_plugin_manifest(plugin_name)
             .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found", plugin_name))?;
         match manifest.runtime.runtime_type {
@@ -148,6 +148,8 @@ impl PluginLoader {
                     }
 
                     cmd.args(&["--auth-code", auth_code]);
+
+                    cmd.args(&["--socket-path", socket_path]);
 
                     if let Some(env) = &manifest.runtime.env {
                         cmd.envs(env);
@@ -199,7 +201,7 @@ mod tests {
         assert_eq!(manifest.plugin.name, "test_plugin");
         assert_eq!(manifest.runtime.runtime_type, RuntimeType::Process);
 
-        let cmd = loader.get_plugin_command("test_plugin", "test_auth_code")?.unwrap();
+        let cmd = loader.get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?.unwrap();
         assert_eq!(cmd.as_std().get_program().to_str().unwrap().ends_with("test_executable"), true);
         Ok(())
     }

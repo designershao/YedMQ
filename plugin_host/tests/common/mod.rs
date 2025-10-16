@@ -76,14 +76,14 @@ fn default_subscribe_config() -> SubscribeConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct SubscribeConfig {
+pub struct SubscribeConfig {
     pub default_allow: bool,
     pub results: Vec<(String, bool, u32)>, // (Topic, Allowed,  QOS)
     pub continue_chain: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct AuthorizeConfig {
+pub struct AuthorizeConfig {
 
     /// whether to authorize successfully or not
     pub authorized: bool,
@@ -96,7 +96,7 @@ struct AuthorizeConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct AuthenticateConfig {
+pub struct AuthenticateConfig {
     /// whether to authenticate successfully or not
     pub authenticated: bool,
 
@@ -126,7 +126,7 @@ pub enum InitFailMode {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
-enum AuthCodeMode {
+pub enum AuthCodeMode {
     /// return the host correct auth_code
     Correct,
 
@@ -139,7 +139,7 @@ enum AuthCodeMode {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct OnMessagePublishConfig {
+pub struct OnMessagePublishConfig {
     pub allow: bool,
     pub modified_message: Option<MqttMessage>,
     pub error_reason: Option<String>,
@@ -147,12 +147,12 @@ struct OnMessagePublishConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct MqttMessage {
+pub struct MqttMessage {
     pub modified_message: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct HookConfig {
+pub struct HookConfig {
     pub name: String,
     pub priority: i32,
 }

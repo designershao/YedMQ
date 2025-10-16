@@ -1,28 +1,27 @@
-use core::{borrow, time};
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
     tokio::prelude::*, tokio::Stream, GenericNamespaced, ListenerOptions, ToNsName,
 };
 use log::{error, info, warn};
-use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
+use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader}, select, sync::{oneshot, Mutex, RwLock}, time::timeout
+    io::{AsyncBufReadExt, BufReader}, select, sync::{oneshot, RwLock}, time::timeout
 };
 use tokio_util::codec::Framed;
 
 use crate::{
-    hook, loader::PluginManifest, plugin_host_config::PluginHostConfig, protocol::{
+    loader::PluginManifest, plugin_host_config::PluginHostConfig, protocol::{
         plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BatchResponse, BrokerInfo, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BatchResponse, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
         },
         ProtocolMessageBuilder,
     }
 };
 
 use super::loader::PluginLoader;
-use anyhow::{anyhow, Ok, Result};
+use anyhow::{Ok, Result};
 use rand::Rng;
 
 type RequestContext = oneshot::Sender<Result<ProtocolMessage>>;
@@ -367,9 +366,16 @@ impl PluginManager {
     }
 
     pub async fn start_listener(&mut self) -> Result<()> {
-        let printname = "yedmq_plugin.sock";
 
-        let name = printname.to_ns_name::<GenericNamespaced>().unwrap();
+        let socket_path = self.config.local_socket_path.clone();
+
+        let path = Path::new(&socket_path);
+
+        if path.exists() {
+            std::fs::remove_file(path)?; // remove the existing socket file
+        }
+
+        let name = socket_path.to_fs_name::<interprocess::local_socket::GenericFilePath>().unwrap();
 
         let (rx_cmd_sender, mut rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
 
@@ -381,7 +387,7 @@ impl PluginManager {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 return Err(anyhow::anyhow!(
                     "Socket address already in use: {}",
-                    printname
+                    self.config.local_socket_path
                 ));
             }
             listener => listener?,
@@ -855,7 +861,7 @@ impl PluginManager {
 
         let mut command = self
             .plugin_loader
-            .get_plugin_command(name, &auth_code)?
+            .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
             .unwrap();
 
         let mut process = command

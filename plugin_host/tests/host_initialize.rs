@@ -1,5 +1,3 @@
-use bytes::Buf;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use yedmq_plugin_host::plugin_host_config;
 
 use crate::common::{InitFailMode, MockConfig};
@@ -21,6 +19,7 @@ pub async fn test_plugin_host_init_scan() {
         max_restart_attempts: 1,
         health_check_interval_secs: 5,
         shutdown_signal: tx,
+        local_socket_path:  temp_dir.path().join("yedmq_plugin.sock").to_string_lossy().to_string(),
     };
 
     let plugin_manager = yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config).await.unwrap();
@@ -45,6 +44,7 @@ pub async fn test_plugin_host_start_plugin() {
         max_restart_attempts: 1,
         health_check_interval_secs: 5,
         shutdown_signal: tx,
+        local_socket_path:  temp_dir.path().join("yedmq_plugin.sock").to_string_lossy().to_string(),
     };
 
     let mut plugin_manager = yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config).await.unwrap();
@@ -84,6 +84,7 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
         max_restart_attempts: 1,
         health_check_interval_secs: 5,
         shutdown_signal: tx,
+        local_socket_path:  temp_dir.path().join("yedmq_plugin.sock").to_string_lossy().to_string(),
     };
 
     let mut plugin_manager = yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config).await.unwrap();
@@ -107,6 +108,7 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let logs = plugin_process.logs.read().await;
     let full_logs = logs.join("\n");
 
+    println!("Plugin Logs:\n{}", full_logs);
     assert!(full_logs.contains("Connection closed by host"));
 
 }

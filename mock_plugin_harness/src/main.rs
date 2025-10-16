@@ -1,6 +1,6 @@
 use clap::Parser;
 use interprocess::local_socket::{
-    GenericNamespaced, ToNsName, tokio::Stream, tokio::prelude::*,
+    tokio::{prelude::*, Stream}, GenericFilePath, GenericNamespaced, ToNsName
 };
 use log::{error, info};
 use prost::Message as _;
@@ -164,6 +164,9 @@ struct Args {
     /// The auth code from the host
     #[arg(long)]
     auth_code: String,
+
+    #[arg(long)]
+    socket_path: String,
 
     /// The configuration for the mock plugin in JSON format
     #[arg(long, default_value = "{}")]
@@ -431,9 +434,10 @@ async fn main() {
     let config: MockConfig = serde_json::from_str(&args.config).expect("Invalid config JSON");
 
     info!("Mock Plugin started with auth_code: {}", args.auth_code);
+    info!("Socket path: {}", args.socket_path);
     info!("Using config: {:?}", config);
     
-    let socket_name = args.socket_name.to_ns_name::<GenericNamespaced>().unwrap();
+    let socket_name = args.socket_path.to_fs_name::<GenericFilePath>().unwrap();
 
     let stream =  match timeout(Duration::from_secs(5), Stream::connect(socket_name)).await {
         Ok(Ok(s)) => s,
