@@ -102,6 +102,7 @@ pub struct PluginManager {
     running_plugins: Arc<RwLock<HashMap<String, RunningPlugin>>>,
     inflight: Arc<RwLock<HashMap<String, RequestContext>>>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
+    rx_cmd_sender: Option<tokio::sync::mpsc::Sender<RxCmd>>,
 }
 
 pub enum TxCmd {
@@ -115,6 +116,7 @@ pub enum RxCmd {
         tx_cmd_sender: tokio::sync::mpsc::Sender<TxCmd>,
     },
     NormalRecievedMessage(ProtocolMessage),
+    PluginStatusChanged(String, PluginState),
     Shutdown,
 }
 
@@ -154,6 +156,7 @@ impl PluginManager {
             running_plugins: Arc::new(RwLock::new(HashMap::new())),
             inflight: Arc::new(RwLock::new(HashMap::new())),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
+            rx_cmd_sender: None,
         })
     }
 
@@ -282,6 +285,13 @@ impl PluginManager {
                 tokio::select! {
                     msg = rx_cmd_receiver.recv() => {
                         match msg {
+                            Some(RxCmd::PluginStatusChanged(name, state)) => {
+                                let mut plugins_guard = plugins.write().await;
+                                if let Some(plugin) = plugins_guard.get_mut(&name) {
+                                    println!("Plugin {} status changed to {:?}", name, state);
+                                    plugin.state = state;
+                                }
+                            },
                             Some(RxCmd::InitMessage{msg, tx_cmd_sender}) => {
                                 // Handle initialization message
                                 info!("Received initialization message: {:?}", msg);
@@ -377,7 +387,9 @@ impl PluginManager {
 
         let name = socket_path.to_fs_name::<interprocess::local_socket::GenericFilePath>().unwrap();
 
-        let (rx_cmd_sender, mut rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
+        let (rx_cmd_sender, rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
+
+        self.rx_cmd_sender = Some(rx_cmd_sender.clone());
 
         let _ = self.start_handle_plugin_rx_cmd(rx_cmd_receiver).await;
 
@@ -878,6 +890,8 @@ impl PluginManager {
 
         let (plugin_abort_tx,mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
 
+        let rx_cmd_sender = self.rx_cmd_sender.as_ref().unwrap().clone();
+
         let process_wait_handle = tokio::spawn(async move {
             select! {
                 status_result = process.wait() => {
@@ -889,6 +903,8 @@ impl PluginManager {
                             println!("Plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
                         }
                     }
+                    let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged(borrowed_name, PluginState::Stopped)).await;
+
                 },
                 _ = plugin_abort_rx.recv() => {
                     println!("Plugin '{}' aborted", borrowed_name);

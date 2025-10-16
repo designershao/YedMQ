@@ -97,18 +97,28 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
-    let running_plugins = plugin_manager.get_running_plugins();
-    let mut running_plugins = running_plugins.write().await;
-    assert!(running_plugins.contains_key("mock_plugin_harness"));
+
+    {
+        let running_plugins = plugin_manager.get_running_plugins();
+        let running_plugins = running_plugins.read().await;
+
+        assert!(running_plugins.contains_key("mock_plugin_harness"));
+    }
 
     tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin init
 
-    let plugin_process = running_plugins.get_mut("mock_plugin_harness").unwrap();
+    let running_plugins = plugin_manager.get_running_plugins();
+
+    let running_plugins = running_plugins.read().await;
+
+    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
     let logs = plugin_process.logs.read().await;
     let full_logs = logs.join("\n");
 
-    println!("Plugin Logs:\n{}", full_logs);
+    println!("state: {:?}", plugin_process.state);
+
     assert!(full_logs.contains("Connection closed by host"));
+    assert!(matches!(plugin_process.state, yedmq_plugin_host::plugin_manager::PluginState::Stopped));
 
 }
