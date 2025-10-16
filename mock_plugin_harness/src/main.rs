@@ -1,13 +1,13 @@
 use clap::Parser;
 use interprocess::local_socket::{
-    GenericNamespaced, ListenerOptions, ToNsName, tokio::Stream, tokio::prelude::*,
+    GenericNamespaced, ToNsName, tokio::Stream, tokio::prelude::*,
 };
 use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
-use std::{collections::HashMap, fmt::format, os::linux::raw, time::Duration};
-use tokio::{io::{split, AsyncWriteExt}, time::timeout};
+use std::{collections::HashMap, time::Duration};
+use tokio::time::timeout;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
         AuthenticateResponse, Hook, InitializeResponse, MessageType, Method, ProtocolMessage,
@@ -121,6 +121,7 @@ pub struct InitializeConfig {
 pub enum InitFailMode {
     None,
     Delay(u64),
+    SkipResponse,
     Crash,
 }
 
@@ -189,6 +190,10 @@ async fn handle_initialize_request(
         InitFailMode::Crash => {
             error!("Crashing as per configuration");
             std::process::exit(1);
+        }
+        InitFailMode::SkipResponse => {
+            info!("Skipping initialization response as per configuration");
+            return Err(anyhow::anyhow!("Skipping initialization response as per configuration")); 
         }
     }
     let hooks: Vec<Hook> = config
@@ -406,9 +411,11 @@ async fn handle_request(
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
-    info!("Sending response: {:?}", response_msg);
 
-    framed.send(response_msg?).await?;
+    if response_msg.is_ok() {
+        info!("Sending response: {:?}", response_msg);
+        framed.send(response_msg?).await?;
+    }
 
     Ok(())
 }
@@ -450,16 +457,24 @@ async fn main() {
     info!("Frame codec init success, start handling messages");
 
     loop {
-        while let Some(Ok(msg)) = framed.next().await {
-            info!("Received a frame: {:?}", msg);
-            let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
+        match framed.next().await {
+            Some(Ok(msg)) => {
+                info!("Received a frame: {:?}", msg);
+                let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
 
-            if let Err(e) = handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await {
-                error!("Error handling request: {}", e);
+                if let Err(e) = handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await {
+                    error!("Error handling request: {}", e);
+                }
+            }
+            None => {
+                info!("Connection closed by host, exiting");
+                break;
+            }
+            Some(Err(e)) => {
+                error!("Error reading from socket: {}", e);
+                break;
             }
         }
-        info!("Connection closed, exiting");
-        break;
     }
 
 }

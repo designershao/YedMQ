@@ -71,7 +71,7 @@ pub async fn test_plugin_host_start_plugin() {
 async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
-    mock_config.initialize.initialization_fail_mode = InitFailMode::Delay(20 * 1000); // delay longer than plugin host timeout (20s)
+    mock_config.initialize.initialization_fail_mode = InitFailMode::SkipResponse; // delay longer than plugin host timeout (20s)
     common::setup_test_plugins(&temp_dir, mock_config);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -100,18 +100,13 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let mut running_plugins = running_plugins.write().await;
     assert!(running_plugins.contains_key("mock_plugin_harness"));
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin init
+    tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin init
 
     let plugin_process = running_plugins.get_mut("mock_plugin_harness").unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await; // wait for plugin init
+    let logs = plugin_process.logs.read().await;
+    let full_logs = logs.join("\n");
 
-    plugin_process.logs.read().await.iter().for_each(|log| {
-        println!("Plugin Log: {}", log);
-    });
-
-    // TODO read from plugin_process.stdout to check for disconnect message
-
-    assert!(matches!(running_plugins.get("mock_plugin_harness").unwrap().state, yedmq_plugin_host::plugin_manager::PluginState::Starting));
+    assert!(full_logs.contains("Connection closed by host"));
 
 }

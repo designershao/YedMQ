@@ -8,7 +8,7 @@ use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader}, sync::{oneshot, Mutex, RwLock}, time::timeout
+    io::{AsyncBufReadExt, BufReader}, select, sync::{oneshot, Mutex, RwLock}, time::timeout
 };
 use tokio_util::codec::Framed;
 
@@ -86,7 +86,9 @@ pub struct RunningPlugin {
     pub name: String,
     pub manifest: PluginManifest,
     pub state: PluginState,
-    pub process: Option<Arc<Mutex<tokio::process::Child>>>,
+    pub plugin_abort_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    pub process_wait_handle: Option<tokio::task::JoinHandle<()>>,
+    pub process_log_handle: Option<tokio::task::JoinHandle<()>>,
     pub start_time: Option<std::time::Instant>,
     pub restart_count: u32,
     pub last_health_check: Option<std::time::Instant>,
@@ -210,7 +212,7 @@ impl PluginManager {
                             tx_cmd_sender: tx_cmd_sender.clone(),
                         }).await;
                     } else {
-                        warn!("Failed to decode protocol message from plugin");
+                        println!("Failed to decode protocol message from plugin");
                         return;
                     }
                 },
@@ -862,20 +864,35 @@ impl PluginManager {
             .spawn()?;
 
 
-        let stdout = process.stdout.take().expect("plugin did not have a handle to stdout");
+        let stdout = process.stderr.take().expect("plugin did not have a handle to stdout");
 
         let mut stdout_reader = BufReader::new(stdout).lines();
 
         let borrowed_name = name.to_string();
 
-        let process_arc = Arc::new(Mutex::new(process));
+        let (plugin_abort_tx,mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        let process_wait_clone = process_arc.clone();
-
-        tokio::spawn(async move {
-            let mut process_guard = process_wait_clone.lock().await;
-            let status = process_guard.wait().await.expect("child process encountered an error");
-            println!("Plugin '{}' exited with status: {}", borrowed_name, status);
+        let process_wait_handle = tokio::spawn(async move {
+            select! {
+                status_result = process.wait() => {
+                    match status_result {
+                        std::result::Result::Ok(s) => {
+                            println!("Plugin '{}' exited with status: {}", borrowed_name, s);
+                        }
+                        Err(e) => {
+                            println!("Plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
+                        }
+                    }
+                },
+                _ = plugin_abort_rx.recv() => {
+                    println!("Plugin '{}' aborted", borrowed_name);
+                    if let Err(e) = process.kill().await {
+                        println!("Failed to kill plugin '{}': {}", borrowed_name, e);
+                    } else {
+                        println!("Plugin '{}' killed successfully", borrowed_name);
+                    }
+                }
+            }
         });
 
         
@@ -885,26 +902,22 @@ impl PluginManager {
 
         let borrowed_name = name.to_string();
 
-        let process_log_clone = process_arc.clone();
+        let plugin_abort_tx_clone = plugin_abort_tx.clone();
 
-        tokio::spawn(async move {
+        let process_log_handle =tokio::spawn(async move {
             // Capture plugin stdout into logs
             if let Err(e) = async move {
-                println!("Starting to read stdout of plugin");
                 while let Some(line) = stdout_reader.next_line().await? {
-                    println!("log from plugin : {}", line);
                     let mut logs_guard = logs_clone.write().await;
                     logs_guard.push(line);
                     if logs_guard.len() > 1000 {
                         logs_guard.remove(0); // keep only the last 1000 lines
                     }
                 }
-                println!("Finished reading stdout of plugin");
                 Ok(())
             }.await {
                 println!("Error reading stdout of plugin '{}': {}", borrowed_name, e);
-                let mut process_to_kill = process_log_clone.lock().await;
-                let _ = process_to_kill.kill().await;
+                let _ = plugin_abort_tx_clone.send(()).await;
             }
             //
         });
@@ -913,8 +926,10 @@ impl PluginManager {
             name: name.to_string(),
             manifest,
             state: PluginState::Starting,
-            process: Some(process_arc),
+            plugin_abort_tx: Some(plugin_abort_tx),
             start_time: Some(std::time::Instant::now()),
+            process_log_handle: Some(process_log_handle),
+            process_wait_handle: Some(process_wait_handle),
             restart_count: 0,
             last_health_check: None,
             ipc_sender: None,

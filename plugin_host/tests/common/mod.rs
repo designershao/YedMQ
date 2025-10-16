@@ -120,6 +120,7 @@ pub struct InitializeConfig {
 pub enum InitFailMode {
     None,
     Delay(u64),
+    SkipResponse,
     Crash,
 }
 
