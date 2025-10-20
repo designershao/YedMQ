@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{create_message_id, protocol::plugin_protocol::{InitializeRequest, ProtocolMessage}};
+use crate::{create_message_id, protocol::plugin_protocol::InitializeRequest};
 
 pub mod protocol_frame;
 pub mod plugin_protocol;

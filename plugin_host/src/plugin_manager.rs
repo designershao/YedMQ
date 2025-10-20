@@ -1,6 +1,6 @@
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
-    tokio::prelude::*, tokio::Stream, GenericNamespaced, ListenerOptions, ToNsName,
+    tokio::prelude::*, tokio::Stream, ListenerOptions,
 };
 use log::{error, info, warn};
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
@@ -288,7 +288,6 @@ impl PluginManager {
                             Some(RxCmd::PluginStatusChanged(name, state)) => {
                                 let mut plugins_guard = plugins.write().await;
                                 if let Some(plugin) = plugins_guard.get_mut(&name) {
-                                    println!("Plugin {} status changed to {:?}", name, state);
                                     plugin.state = state;
                                 }
                             },
@@ -862,6 +861,20 @@ impl PluginManager {
         }
     }
 
+    pub async  fn stop_plugin(&self, name: &str) -> Result<()> {
+        let running_plugins = self.running_plugins.read().await;
+        let running_plugin = running_plugins.get(name);
+        if let Some(running_plugin) = running_plugin {
+            match running_plugin.state {
+                PluginState::Running => {
+                    let _ = running_plugin.plugin_abort_tx.as_ref().unwrap().send(()).await.unwrap();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub async fn start_plugin(&self, name: &str) -> Result<()> {
         let manifest = self
             .plugin_loader
@@ -893,28 +906,31 @@ impl PluginManager {
         let rx_cmd_sender = self.rx_cmd_sender.as_ref().unwrap().clone();
 
         let process_wait_handle = tokio::spawn(async move {
-            select! {
-                status_result = process.wait() => {
-                    match status_result {
-                        std::result::Result::Ok(s) => {
-                            println!("Plugin '{}' exited with status: {}", borrowed_name, s);
+            loop {
+                select! {
+                    status_result = process.wait() => {
+                        match status_result {
+                            std::result::Result::Ok(s) => {
+                                println!("Plugin '{}' exited with status: {}", borrowed_name, s);
+                            }
+                            Err(e) => {
+                                println!("Plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
+                            }
                         }
-                        Err(e) => {
-                            println!("Plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
+                        let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged(borrowed_name, PluginState::Stopped)).await;
+                        break;
+                    },
+                    _ = plugin_abort_rx.recv() => {
+                        println!("Plugin '{}' aborted", borrowed_name);
+                        if let Err(e) = process.kill().await {
+                            println!("Failed to kill plugin '{}': {}", borrowed_name, e);
+                        } else {
+                            println!("Plugin '{}' killed successfully", borrowed_name);
                         }
-                    }
-                    let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged(borrowed_name, PluginState::Stopped)).await;
-
-                },
-                _ = plugin_abort_rx.recv() => {
-                    println!("Plugin '{}' aborted", borrowed_name);
-                    if let Err(e) = process.kill().await {
-                        println!("Failed to kill plugin '{}': {}", borrowed_name, e);
-                    } else {
-                        println!("Plugin '{}' killed successfully", borrowed_name);
                     }
                 }
             }
+            println!("process_wait_handle exit");
         });
 
         
