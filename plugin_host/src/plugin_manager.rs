@@ -71,7 +71,7 @@ fn generate_auth_code(length: usize) -> String {
     auth_code
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum PluginState {
     Discovered, // Plugin has been discovered but not yet loaded
     Starting,   // Plugin is in the process of starting
@@ -288,6 +288,12 @@ impl PluginManager {
                             Some(RxCmd::PluginStatusChanged(name, state)) => {
                                 let mut plugins_guard = plugins.write().await;
                                 if let Some(plugin) = plugins_guard.get_mut(&name) {
+                                    info!("Plugin {} status changed to {:?}", name, state.clone(),);
+                                    if state == PluginState::Stopped {
+                                        plugin.process_log_handle.as_ref().unwrap().abort(); // ensure log handle is aborted
+                                        plugin.process_log_handle = None;
+                                        plugin.process_wait_handle = None;
+                                    }
                                     plugin.state = state;
                                 }
                             },
@@ -875,6 +881,21 @@ impl PluginManager {
         Ok(())
     }
 
+    pub async fn restart_plugin(&self, name: &str) -> Result<()> {
+        {
+            let running_plugins = self.running_plugins.read().await;
+            let running_plugin = running_plugins.get(name);
+            if running_plugin.is_none() {
+                return Err(anyhow::anyhow!("Plugin '{}' not found", name));
+            }
+        }
+
+        self.stop_plugin(name).await.unwrap();
+        self.start_plugin(name).await.unwrap();
+
+        Ok(())
+    }
+
     pub async fn start_plugin(&self, name: &str) -> Result<()> {
         let manifest = self
             .plugin_loader
@@ -958,6 +979,7 @@ impl PluginManager {
                 let _ = plugin_abort_tx_clone.send(()).await;
             }
             //
+            println!("process_log_handle exit");
         });
 
         let running_plugin = RunningPlugin {
