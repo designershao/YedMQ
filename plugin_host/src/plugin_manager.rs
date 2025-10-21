@@ -86,6 +86,7 @@ pub struct RunningPlugin {
     pub manifest: PluginManifest,
     pub state: PluginState,
     pub plugin_abort_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    pub plugin_log_collector_quit_tx: Option<tokio::sync::mpsc::Sender<()>>,
     pub process_wait_handle: Option<tokio::task::JoinHandle<()>>,
     pub process_log_handle: Option<tokio::task::JoinHandle<()>>,
     pub start_time: Option<std::time::Instant>,
@@ -290,7 +291,7 @@ impl PluginManager {
                                 if let Some(plugin) = plugins_guard.get_mut(&name) {
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
-                                        plugin.process_log_handle.as_ref().unwrap().abort(); // ensure log handle is aborted
+                                        plugin.plugin_log_collector_quit_tx.as_ref().unwrap().send(()).await.unwrap();
                                         plugin.process_log_handle = None;
                                         plugin.process_wait_handle = None;
                                     }
@@ -963,22 +964,25 @@ impl PluginManager {
 
         let plugin_abort_tx_clone = plugin_abort_tx.clone();
 
+        let (plugin_log_collector_quit_tx, mut plugin_log_collector_quit_rx) = tokio::sync::mpsc::channel::<()>(1);
+
         let process_log_handle =tokio::spawn(async move {
             // Capture plugin stdout into logs
-            if let Err(e) = async move {
-                while let Some(line) = stdout_reader.next_line().await? {
-                    let mut logs_guard = logs_clone.write().await;
-                    logs_guard.push(line);
-                    if logs_guard.len() > 1000 {
-                        logs_guard.remove(0); // keep only the last 1000 lines
+            loop {
+                select! {
+                    _ = plugin_log_collector_quit_rx.recv() => {
+                        println!("Plugin '{}' log collector quit", borrowed_name);
+                        break;
+                    },
+                    std::result::Result::Ok(Some(line)) = stdout_reader.next_line() => {
+                        let mut logs_guard = logs_clone.write().await;
+                        logs_guard.push(line);
+                        if logs_guard.len() > 1000 {
+                            logs_guard.remove(0); // keep only the last 1000 lines
+                        }
                     }
                 }
-                Ok(())
-            }.await {
-                println!("Error reading stdout of plugin '{}': {}", borrowed_name, e);
-                let _ = plugin_abort_tx_clone.send(()).await;
             }
-            //
             println!("process_log_handle exit");
         });
 
@@ -987,6 +991,7 @@ impl PluginManager {
             manifest,
             state: PluginState::Starting,
             plugin_abort_tx: Some(plugin_abort_tx),
+            plugin_log_collector_quit_tx: Some(plugin_log_collector_quit_tx),
             start_time: Some(std::time::Instant::now()),
             process_log_handle: Some(process_log_handle),
             process_wait_handle: Some(process_wait_handle),

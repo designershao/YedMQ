@@ -118,8 +118,6 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let logs = plugin_process.logs.read().await;
     let full_logs = logs.join("\n");
 
-    println!("state: {:?}", plugin_process.state);
-
     assert!(full_logs.contains("Connection closed by host"));
     assert!(matches!(plugin_process.state, yedmq_plugin_host::plugin_manager::PluginState::Stopped));
 
