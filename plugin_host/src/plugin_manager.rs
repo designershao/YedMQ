@@ -193,8 +193,6 @@ impl PluginManager {
 
             framed.send(init_plugin_request_message).await.unwrap();
 
-            println!("Send init message success");
-
             // ensure the plugin response init response message in 5 seconds
             match tokio::time::timeout(Duration::from_secs(5),  framed.next()).await {
                 std::result::Result::Ok(Some(std::result::Result::Ok(msg))) => {
@@ -257,6 +255,7 @@ impl PluginManager {
                     tx_cmd = tx_cmd_receiver.recv() => {
                         match tx_cmd {
                             Some(TxCmd::SendMessage(msg)) => {
+                                println!("Send message to plugin");
                                 if let Err(e) = framed.send(msg).await {
                                     warn!("Failed to send message to plugin: {}", e);
                                     break;
@@ -514,7 +513,7 @@ impl PluginManager {
                         };
 
                         let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::OnMessagePublish)
+                            .with_method(Method::MessagePublished)
                             .with_type(MessageType::Event)
                             .with_params(message_publish_request_any_wrapper)
                             .build();
@@ -961,8 +960,6 @@ impl PluginManager {
         let logs_clone = logs.clone();
 
         let borrowed_name = name.to_string();
-
-        let plugin_abort_tx_clone = plugin_abort_tx.clone();
 
         let (plugin_log_collector_quit_tx, mut plugin_log_collector_quit_rx) = tokio::sync::mpsc::channel::<()>(1);
 

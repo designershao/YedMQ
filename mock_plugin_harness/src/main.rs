@@ -6,7 +6,7 @@ use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
-use std::{collections::HashMap, time::Duration};
+use std::{any, collections::HashMap, time::Duration};
 use tokio::time::timeout;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
@@ -246,6 +246,7 @@ async fn handle_authenticate_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling authenticate request");
     let response = AuthenticateResponse {
         authenticated: config.authenticate.authenticated,
         error_reason: config.authenticate.error_reason.clone(),
@@ -397,6 +398,14 @@ async fn handle_on_message_publish_request(
     })
 }
 
+async fn handle_message_published_request(
+    request: &ProtocolMessage,
+    config: &MockConfig,
+) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling message published request");
+    return Err(anyhow::anyhow!("Not response"));
+}
+
 async fn handle_request(
     request: &ProtocolMessage,
     config: &MockConfig,
@@ -411,6 +420,7 @@ async fn handle_request(
         Method::Authorize => handle_authorize_request(request, config).await,
         Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config).await,
         Method::OnMessagePublish => handle_on_message_publish_request(request, config).await,
+        Method::MessagePublished => handle_message_published_request(request, config).await,
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
@@ -475,7 +485,7 @@ async fn main() {
                 break;
             }
             Some(Err(e)) => {
-                error!("Error reading from socket: {}", e);
+                println!("Error reading from socket: {}", e);
                 break;
             }
         }
