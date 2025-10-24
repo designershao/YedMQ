@@ -432,3 +432,87 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 
     assert!(full_logs.contains("Handling message published request"));
 }
+
+#[tokio::test]
+pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_message_publish_method() {
+
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    mock_config.on_message_publish.allow = true;
+    mock_config.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    },HookConfig {
+        name: "OnMessagePublish".to_string(),
+        priority: 1,
+    }];
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    let message_publish_request = MessagePublishRequest {
+        message: Some(MqttMessage {
+            tenant_id: "test_tenant".to_string(),
+            client_id: "test_client_id".to_string(),
+            topic: "test_topic".to_string(),
+            payload: Vec::new(),
+            qos: 0,
+            retain: false,
+            dup: false,
+            publish_time: None,
+            properties: None,
+            message_id: Some("test_message_id".to_string()),
+        }),
+        context: None,
+    };
+
+    let res = plugin_manager.call_on_message_publish(message_publish_request).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let running_plugins = plugin_manager.get_running_plugins();
+
+    let running_plugins = running_plugins.read().await;
+
+    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
+
+    let logs = plugin_process.logs.read().await;
+
+    let full_logs = logs.join("\n");
+
+    assert!(res.unwrap().allow);
+
+    assert!(full_logs.contains("Handling on_message_publish request"));
+
+}

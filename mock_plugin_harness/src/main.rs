@@ -345,6 +345,7 @@ async fn handle_on_message_publish_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling on_message_publish request");
     let incoming_mqtt_message = if let Some(params) = &request.params {
         let any_msg = params;
         if any_msg.type_url != yedmq_plugin_host::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL {
