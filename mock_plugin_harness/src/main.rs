@@ -309,6 +309,7 @@ async fn handle_on_message_subscribe_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling on_message_subscribe request");
     let mut results = vec![];
     for (topic, allowed, qos) in &config.subscribe.results {
         results.push(yedmq_plugin_host::protocol::plugin_protocol::SubscribeResult {
