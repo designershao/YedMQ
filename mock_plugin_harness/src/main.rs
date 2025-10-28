@@ -333,7 +333,7 @@ async fn handle_on_message_subscribe_request(
             type_url: yedmq_plugin_host::protocol::SUBSCRIBE_RESPONSE_TYPE_URL.to_string(),
             value: yedmq_plugin_host::protocol::plugin_protocol::SubscribeResponse {
                 results,
-                continue_chain: Some(false),
+                continue_chain: Some(config.subscribe.continue_chain),
             }
             .encode_to_vec(),
         }),
