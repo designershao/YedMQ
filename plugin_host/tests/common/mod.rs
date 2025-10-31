@@ -64,7 +64,8 @@ fn default_auth_config() -> AuthenticateConfig {
         authenticated: true,
         error_reason: None,
         tenant_id: Some("default_tenant".to_string()),
-        continue_chain: true
+        continue_chain: true,
+        delay_secs: None,
     }
 }
 
@@ -109,6 +110,9 @@ pub struct AuthenticateConfig {
 
     /// whether to continue the chain
     pub continue_chain: bool,
+
+    /// optional delay in seconds before responding
+    pub delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

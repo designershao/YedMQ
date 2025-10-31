@@ -864,7 +864,9 @@ impl PluginManager {
                             }
                             Err(_) => {
                                 warn!("Plugin {} response timeout", running_plugin.name);
-                                continue;
+                                return std::result::Result::Ok(
+                                    AuthenticateResult { authenticated: false, error_reason: Some(format!("Plugin {} response timeout", running_plugin.name)), tenant_id: None } 
+                                );
                             }
                             std::result::Result::Ok(Err(_))  => {
                                 warn!("Plugin {} receiver droped", running_plugin.name);

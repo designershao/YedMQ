@@ -66,6 +66,7 @@ fn default_auth_config() -> AuthenticateConfig {
         error_reason: None,
         tenant_id: Some("default_tenant".to_string()),
         continue_chain: false,
+        delay_secs: None,
     }
 }
 
@@ -110,6 +111,9 @@ struct AuthenticateConfig {
 
     /// whether to continue the chain
     pub continue_chain: bool,
+
+    /// delay in seconds before responding
+    pub delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -251,6 +255,11 @@ async fn handle_authenticate_request(
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling authenticate request");
+    if config.authenticate.delay_secs.is_some() {
+        let delay = config.authenticate.delay_secs.unwrap();
+        info!("Delaying authenticate response by {} seconds", delay);
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+    }
     let response = AuthenticateResponse {
         authenticated: config.authenticate.authenticated,
         error_reason: config.authenticate.error_reason.clone(),
