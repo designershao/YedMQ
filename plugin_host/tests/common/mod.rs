@@ -64,6 +64,7 @@ fn default_auth_config() -> AuthenticateConfig {
         authenticated: true,
         error_reason: None,
         tenant_id: Some("default_tenant".to_string()),
+        continue_chain: true
     }
 }
 
@@ -105,6 +106,9 @@ pub struct AuthenticateConfig {
 
     /// the tenant id
     pub tenant_id: Option<String>,
+
+    /// whether to continue the chain
+    pub continue_chain: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

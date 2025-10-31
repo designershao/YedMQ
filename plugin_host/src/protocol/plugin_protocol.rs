@@ -147,8 +147,6 @@ pub struct AuthenticateResponse {
     /// Tenant ID
     #[prost(string, optional, tag = "5")]
     pub tenant_id: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(bool, tag = "6")]
-    pub continue_chain: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AuthorizeRequest {

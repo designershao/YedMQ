@@ -740,7 +740,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 }
 
 #[tokio::test]
-pub async fn when_plugin_returns_chain_break_host_should_immediately_stop_calling_lower_priority_plugins() {
+pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_immediately_stop_calling_lower_priority_plugins() {
 
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -879,5 +879,275 @@ pub async fn when_plugin_returns_chain_break_host_should_immediately_stop_callin
     assert!(res.as_ref().unwrap().result[0].allowed);
     assert!(res.as_ref().unwrap().result[0].granted_qos == 0);
     assert!(res.as_ref().unwrap().result[0].topic == "test_topic");
+
+}
+
+#[tokio::test]
+pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let mut mock_plugin_config_1 = MockConfig::default();
+    mock_plugin_config_1.authenticate.authenticated = true;
+    mock_plugin_config_1.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    }];
+
+    let mut mock_plugin_config_2 = MockConfig::default();
+    mock_plugin_config_2.authenticate.authenticated = false;
+    mock_plugin_config_2.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 2,
+    }];
+
+    let mut mock_plugin_config_3 = MockConfig::default();
+    mock_plugin_config_3.authenticate.authenticated = true;
+    mock_plugin_config_3.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 3,
+    }];
+
+    let config_hashmap = HashMap::from([
+        ("mock_plugin_harness_1".to_string(), mock_plugin_config_1),
+        ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
+        ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
+    ]);
+    
+    common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness_1")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_2")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_3")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    let authenticate_request = AuthenticateRequest {
+         client_id: "test_client_id".to_string(), 
+         username: "test_username".to_string(), 
+         password: "test_password".to_string(), 
+         client_ip: "127.0.0.1".to_string(), 
+         client_cert: Vec::new(), 
+         protocol_version: "3.1.1".to_string(), 
+         properties: None, 
+    };
+
+    let res = plugin_manager.call_authenticate_hook(authenticate_request).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // enuse all plugin are called
+
+    let plugin_1_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_1")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_1_log.contains("Handling authenticate request"));
+
+    let plugin_2_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_2")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_2_log.contains("Handling authenticate request"));
+
+    let plugin_3_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_3")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(!plugin_3_log.contains("Handling authenticate request"));
+    //
+
+    assert!(!res.as_ref().unwrap().authenticated);
+
+}
+
+#[tokio::test]
+pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_host_should_stop_chain_and_deny_access() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let mut mock_plugin_config_1 = MockConfig::default();
+    mock_plugin_config_1.authenticate.authenticated = true;
+    mock_plugin_config_1.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    }];
+
+    let mut mock_plugin_config_2 = MockConfig::default();
+    mock_plugin_config_2.authenticate.authenticated = true;
+    mock_plugin_config_2.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 2,
+    }];
+
+    let mut mock_plugin_config_3 = MockConfig::default();
+    mock_plugin_config_3.authenticate.authenticated = true;
+    mock_plugin_config_3.authenticate.tenant_id = Some("test_tenant_id".to_string());
+    mock_plugin_config_3.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 3,
+    }];
+
+    let config_hashmap = HashMap::from([
+        ("mock_plugin_harness_1".to_string(), mock_plugin_config_1),
+        ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
+        ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
+    ]);
+    
+    common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness_1")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_2")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_3")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    let authenticate_request = AuthenticateRequest {
+         client_id: "test_client_id".to_string(), 
+         username: "test_username".to_string(), 
+         password: "test_password".to_string(), 
+         client_ip: "127.0.0.1".to_string(), 
+         client_cert: Vec::new(), 
+         protocol_version: "3.1.1".to_string(), 
+         properties: None, 
+    };
+
+    let res = plugin_manager.call_authenticate_hook(authenticate_request).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // enuse all plugin are called
+
+    let plugin_1_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_1")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_1_log.contains("Handling authenticate request"));
+
+    let plugin_2_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_2")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_2_log.contains("Handling authenticate request"));
+
+    let plugin_3_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_3")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_3_log.contains("Handling authenticate request"));
+    //
+
+    assert_eq!(res.as_ref().unwrap().authenticated, false);
+    assert_eq!(res.as_ref().unwrap().error_reason, Some("Tenant ID mismatch".to_string()));
 
 }

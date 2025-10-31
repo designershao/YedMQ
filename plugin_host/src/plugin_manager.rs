@@ -793,11 +793,19 @@ impl PluginManager {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authenticate);
         let running_plugins = self.running_plugins.read().await;
+        let mut final_result = AuthenticateResult {
+            authenticated: true,
+            error_reason: None,
+            tenant_id: None,
+        };
+        let mut is_first_called = true;
+
         if let Some(plugins) = plugins {
             for plugin in plugins {
                 let running_plugin = running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
+                        println!("Authenticate plugin: {}", running_plugin.name);
                         let authenticate_request_any_wrapper = prost_types::Any {
                             type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
                             value: authenticate_request.encode_to_vec(),
@@ -828,7 +836,21 @@ impl PluginManager {
                                     if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
                                         let authenticate_response =
                                             AuthenticateResponse::decode(result.value.as_slice()).unwrap();
-                                        if authenticate_response.continue_chain {
+                                        if authenticate_response.authenticated {
+                                            if !is_first_called {
+                                                if authenticate_response.tenant_id != final_result.tenant_id {
+                                                    return std::result::Result::Ok(AuthenticateResult{
+                                                        authenticated: false,
+                                                        error_reason: Some("Tenant ID mismatch".to_string()),
+                                                        tenant_id: None
+                                                    });
+                                                }
+                                            } else {
+                                                is_first_called = false;
+                                            }
+                                            final_result.authenticated = true;
+                                            final_result.error_reason = None;
+                                            final_result.tenant_id = authenticate_response.tenant_id.clone();
                                             continue;
                                         } else {
                                             return std::result::Result::Ok(AuthenticateResult{
@@ -856,11 +878,7 @@ impl PluginManager {
                     }
                 }
             }
-            return std::result::Result::Ok(AuthenticateResult {
-                authenticated: false,
-                error_reason: Some("No plugin authenticated successfully, reuten default value.".to_string()),
-                tenant_id: None,
-            })
+            return std::result::Result::Ok(final_result);
         } else {
             info!("No plugins registered for OnAuthenticate hook");
             return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));

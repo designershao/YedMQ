@@ -65,6 +65,7 @@ fn default_auth_config() -> AuthenticateConfig {
         authenticated: true,
         error_reason: None,
         tenant_id: Some("default_tenant".to_string()),
+        continue_chain: false,
     }
 }
 
@@ -106,6 +107,9 @@ struct AuthenticateConfig {
 
     /// the tenant id
     pub tenant_id: Option<String>,
+
+    /// whether to continue the chain
+    pub continue_chain: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -251,7 +255,6 @@ async fn handle_authenticate_request(
         authenticated: config.authenticate.authenticated,
         error_reason: config.authenticate.error_reason.clone(),
         tenant_id: config.authenticate.tenant_id.clone(),
-        continue_chain: false,
         permissions: vec![],
         session_data: Default::default(),
     };

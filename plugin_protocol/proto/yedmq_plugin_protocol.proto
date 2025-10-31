@@ -124,7 +124,6 @@ message AuthenticateResponse {
     google.protobuf.Struct session_data = 3; // Session data
     optional string error_reason = 4; // Failure reason
     optional string tenant_id = 5; // Tenant ID
-    bool continue_chain = 6;
 }
 
 message AuthorizeRequest { 
