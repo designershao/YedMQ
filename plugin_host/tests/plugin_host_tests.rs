@@ -1,8 +1,14 @@
-use std::{collections::HashMap, ops::Sub, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    ops::Sub,
+    time::{Duration, Instant},
+};
 
 use yedmq_plugin_host::{
     plugin_host_config,
-    protocol::plugin_protocol::{AuthenticateRequest, MessagePublishRequest, MqttMessage, SubscribeRequest, TopicFilter},
+    protocol::plugin_protocol::{
+        AuthAction, AuthenticateRequest, AuthorizeRequest, MessagePublishRequest, MqttMessage, SubscribeRequest, TopicFilter
+    },
 };
 
 use crate::common::{HookConfig, InitFailMode, MockConfig};
@@ -359,13 +365,16 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
-    mock_config.initialize.hooks = vec![HookConfig {
-        name: "Authenticate".to_string(),
-        priority: 1,
-    },HookConfig {
-        name: "MessagePublished".to_string(),
-        priority: 1,
-    }];
+    mock_config.initialize.hooks = vec![
+        HookConfig {
+            name: "Authenticate".to_string(),
+            priority: 1,
+        },
+        HookConfig {
+            name: "MessagePublished".to_string(),
+            priority: 1,
+        },
+    ];
     common::setup_test_plugins(&temp_dir, mock_config);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -416,7 +425,9 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
         }),
         context: None,
     };
-    plugin_manager.call_message_published_hook(message_publish_request).await;
+    plugin_manager
+        .call_message_published_hook(message_publish_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -434,18 +445,21 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 }
 
 #[tokio::test]
-pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_message_publish_method() {
-
+pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_message_publish_method()
+{
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
     mock_config.on_message_publish.allow = true;
-    mock_config.initialize.hooks = vec![HookConfig {
-        name: "Authenticate".to_string(),
-        priority: 1,
-    },HookConfig {
-        name: "OnMessagePublish".to_string(),
-        priority: 1,
-    }];
+    mock_config.initialize.hooks = vec![
+        HookConfig {
+            name: "Authenticate".to_string(),
+            priority: 1,
+        },
+        HookConfig {
+            name: "OnMessagePublish".to_string(),
+            priority: 1,
+        },
+    ];
     common::setup_test_plugins(&temp_dir, mock_config);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -497,7 +511,9 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
         context: None,
     };
 
-    let res = plugin_manager.call_on_message_publish(message_publish_request).await;
+    let res = plugin_manager
+        .call_on_message_publish(message_publish_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -514,22 +530,24 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
     assert!(res.unwrap().allow);
 
     assert!(full_logs.contains("Handling on_message_publish request"));
-
 }
 
 #[tokio::test]
-pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_message_subscribe_method() {
-
+pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_message_subscribe_method(
+) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
     mock_config.subscribe.default_allow = true;
-    mock_config.initialize.hooks = vec![HookConfig {
-        name: "Authenticate".to_string(),
-        priority: 1,
-    },HookConfig {
-        name: "OnMessageSubscribe".to_string(),
-        priority: 1,
-    }];
+    mock_config.initialize.hooks = vec![
+        HookConfig {
+            name: "Authenticate".to_string(),
+            priority: 1,
+        },
+        HookConfig {
+            name: "OnMessageSubscribe".to_string(),
+            priority: 1,
+        },
+    ];
     common::setup_test_plugins(&temp_dir, mock_config);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -575,7 +593,9 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
         context: None,
     };
 
-    let res = plugin_manager.call_on_message_subscribe(subscribe_request).await;
+    let res = plugin_manager
+        .call_on_message_subscribe(subscribe_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -594,11 +614,11 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
     assert!(res.as_ref().unwrap().result[0].topic == "test_topic");
 
     assert!(full_logs.contains("Handling on_message_subscribe request"));
-
 }
 
 #[tokio::test]
-pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_strictly_by_priority_in_full_chain() {
+pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_strictly_by_priority_in_full_chain(
+) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
     let mut mock_plugin_config_1 = MockConfig::default();
@@ -633,7 +653,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
         ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
         ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
     ]);
-    
+
     common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -687,7 +707,9 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
         context: None,
     };
 
-    let res = plugin_manager.call_on_message_subscribe(subscribe_request).await;
+    let res = plugin_manager
+        .call_on_message_subscribe(subscribe_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -736,12 +758,11 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
     assert!(!res.as_ref().unwrap().result[0].allowed);
     assert!(res.as_ref().unwrap().result[0].granted_qos == 0);
     assert!(res.as_ref().unwrap().result[0].topic == "test_topic");
-
 }
 
 #[tokio::test]
-pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_immediately_stop_calling_lower_priority_plugins() {
-
+pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_immediately_stop_calling_lower_priority_plugins(
+) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
     let mut mock_plugin_config_1 = MockConfig::default();
@@ -776,7 +797,7 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
         ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
         ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
     ]);
-    
+
     common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -830,7 +851,9 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
         context: None,
     };
 
-    let res = plugin_manager.call_on_message_subscribe(subscribe_request).await;
+    let res = plugin_manager
+        .call_on_message_subscribe(subscribe_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -879,11 +902,11 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
     assert!(res.as_ref().unwrap().result[0].allowed);
     assert!(res.as_ref().unwrap().result[0].granted_qos == 0);
     assert!(res.as_ref().unwrap().result[0].topic == "test_topic");
-
 }
 
 #[tokio::test]
-pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access() {
+pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access()
+{
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
     let mut mock_plugin_config_1 = MockConfig::default();
@@ -912,7 +935,7 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
         ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
         ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
     ]);
-    
+
     common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -957,16 +980,18 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
     let authenticate_request = AuthenticateRequest {
-         client_id: "test_client_id".to_string(), 
-         username: "test_username".to_string(), 
-         password: "test_password".to_string(), 
-         client_ip: "127.0.0.1".to_string(), 
-         client_cert: Vec::new(), 
-         protocol_version: "3.1.1".to_string(), 
-         properties: None, 
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        password: "test_password".to_string(),
+        client_ip: "127.0.0.1".to_string(),
+        client_cert: Vec::new(),
+        protocol_version: "3.1.1".to_string(),
+        properties: None,
     };
 
-    let res = plugin_manager.call_authenticate_hook(authenticate_request).await;
+    let res = plugin_manager
+        .call_authenticate_hook(authenticate_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -1013,11 +1038,11 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
     //
 
     assert!(!res.as_ref().unwrap().authenticated);
-
 }
 
 #[tokio::test]
-pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_host_should_stop_chain_and_deny_access() {
+pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_host_should_stop_chain_and_deny_access(
+) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
     let mut mock_plugin_config_1 = MockConfig::default();
@@ -1047,7 +1072,7 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
         ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
         ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
     ]);
-    
+
     common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -1092,16 +1117,18 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
     let authenticate_request = AuthenticateRequest {
-         client_id: "test_client_id".to_string(), 
-         username: "test_username".to_string(), 
-         password: "test_password".to_string(), 
-         client_ip: "127.0.0.1".to_string(), 
-         client_cert: Vec::new(), 
-         protocol_version: "3.1.1".to_string(), 
-         properties: None, 
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        password: "test_password".to_string(),
+        client_ip: "127.0.0.1".to_string(),
+        client_cert: Vec::new(),
+        protocol_version: "3.1.1".to_string(),
+        properties: None,
     };
 
-    let res = plugin_manager.call_authenticate_hook(authenticate_request).await;
+    let res = plugin_manager
+        .call_authenticate_hook(authenticate_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -1148,8 +1175,10 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
     //
 
     assert_eq!(res.as_ref().unwrap().authenticated, false);
-    assert_eq!(res.as_ref().unwrap().error_reason, Some("Tenant ID mismatch".to_string()));
-
+    assert_eq!(
+        res.as_ref().unwrap().error_reason,
+        Some("Tenant ID mismatch".to_string())
+    );
 }
 
 #[tokio::test]
@@ -1185,7 +1214,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
         ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
         ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
     ]);
-    
+
     common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
 
     let (tx, _) = tokio::sync::broadcast::channel(1);
@@ -1230,16 +1259,18 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
     let authenticate_request = AuthenticateRequest {
-         client_id: "test_client_id".to_string(), 
-         username: "test_username".to_string(), 
-         password: "test_password".to_string(), 
-         client_ip: "127.0.0.1".to_string(), 
-         client_cert: Vec::new(), 
-         protocol_version: "3.1.1".to_string(), 
-         properties: None, 
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        password: "test_password".to_string(),
+        client_ip: "127.0.0.1".to_string(),
+        client_cert: Vec::new(),
+        protocol_version: "3.1.1".to_string(),
+        properties: None,
     };
 
-    let res = plugin_manager.call_authenticate_hook(authenticate_request).await;
+    let res = plugin_manager
+        .call_authenticate_hook(authenticate_request)
+        .await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -1286,5 +1317,281 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
     //
 
     assert_eq!(res.as_ref().unwrap().authenticated, false);
-    assert_eq!(res.as_ref().unwrap().error_reason, Some(format!("Plugin {} response timeout", "mock_plugin_harness_1")));
+    assert_eq!(
+        res.as_ref().unwrap().error_reason,
+        Some(format!(
+            "Plugin {} response timeout",
+            "mock_plugin_harness_1"
+        ))
+    );
+}
+
+#[tokio::test]
+pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_and_deny_access() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let mut mock_plugin_config_1 = MockConfig::default();
+    mock_plugin_config_1.authorize.authorized = false;
+    mock_plugin_config_1.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 1,
+    }];
+
+    let mut mock_plugin_config_2 = MockConfig::default();
+    mock_plugin_config_2.authorize.authorized = true;
+    mock_plugin_config_2.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 2,
+    }];
+
+    let mut mock_plugin_config_3 = MockConfig::default();
+    mock_plugin_config_3.authorize.authorized = true;
+    mock_plugin_config_3.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 3,
+    }];
+
+    let config_hashmap = HashMap::from([
+        ("mock_plugin_harness_1".to_string(), mock_plugin_config_1),
+        ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
+        ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
+    ]);
+
+    common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness_1")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_2")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_3")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    let authorize_request = AuthorizeRequest {
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        topic: "test/topic".to_string(),
+        context: None,
+        tenant_id: "test_tenant".to_string(),
+        action: AuthAction::Subscribe.into(),
+        qos: 0,
+    };
+
+    let res = plugin_manager.call_authorize_hook(authorize_request).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // enuse all plugin are called
+
+    let plugin_1_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_1")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_1_log.contains("Handling authorize request"));
+
+    let plugin_2_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_2")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(!plugin_2_log.contains("Handling authorize request"));
+
+    let plugin_3_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_3")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(!plugin_3_log.contains("Handling authorize request"));
+    //
+
+    assert!(!res.as_ref().unwrap().authorized);
+}
+
+#[tokio::test]
+pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should_deny_access() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    let mut mock_plugin_config_1 = MockConfig::default();
+    mock_plugin_config_1.authorize.authorized = false;
+    mock_plugin_config_1.authorize.delay_secs = Some(6);
+    mock_plugin_config_1.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 1,
+    }];
+
+    let mut mock_plugin_config_2 = MockConfig::default();
+    mock_plugin_config_2.authorize.authorized = true;
+    mock_plugin_config_2.authorize.delay_secs = Some(6);
+    mock_plugin_config_2.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 2,
+    }];
+
+    let mut mock_plugin_config_3 = MockConfig::default();
+    mock_plugin_config_3.authorize.authorized = true;
+    mock_plugin_config_3.authorize.delay_secs = Some(6);
+    mock_plugin_config_3.initialize.hooks = vec![HookConfig {
+        name: "Authorize".to_string(),
+        priority: 3,
+    }];
+
+    let config_hashmap = HashMap::from([
+        ("mock_plugin_harness_1".to_string(), mock_plugin_config_1),
+        ("mock_plugin_harness_2".to_string(), mock_plugin_config_2),
+        ("mock_plugin_harness_3".to_string(), mock_plugin_config_3),
+    ]);
+
+    common::setup_mutiple_test_plugins(&temp_dir, config_hashmap);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness_1")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_2")
+        .await
+        .unwrap();
+    plugin_manager
+        .start_plugin("mock_plugin_harness_3")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    let authorize_request = AuthorizeRequest {
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        topic: "test/topic".to_string(),
+        context: None,
+        tenant_id: "test_tenant".to_string(),
+        action: AuthAction::Subscribe.into(),
+        qos: 0,
+    };
+
+    let res = plugin_manager.call_authorize_hook(authorize_request).await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // enuse all plugin are called
+
+    let plugin_1_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_1")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(plugin_1_log.contains("Handling authorize request"));
+
+    let plugin_2_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_2")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(!plugin_2_log.contains("Handling authorize request"));
+
+    let plugin_3_log = plugin_manager
+        .get_running_plugins()
+        .read()
+        .await
+        .get("mock_plugin_harness_3")
+        .unwrap()
+        .logs
+        .read()
+        .await
+        .join("\n");
+
+    assert!(!plugin_3_log.contains("Handling authorize request"));
+    //
+
+    assert!(!res.as_ref().unwrap().authorized);
+    assert_eq!(res.as_ref().unwrap().reason.as_ref().unwrap(), "Plugin mock_plugin_harness_1 response timeout");
 }

@@ -39,6 +39,7 @@ fn default_authorize_config() -> AuthorizeConfig {
         authorized: true,
         reason: None,
         modified_context: None,
+        delay_secs: None,
     }
 }
 
@@ -96,6 +97,9 @@ struct AuthorizeConfig {
 
     /// the modified context
     pub modified_context: Option<String>,
+
+    /// optional delay in seconds before responding
+    pub delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -291,12 +295,18 @@ async fn handle_authorize_request(
     request: &ProtocolMessage,
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling authorize request");
+
+    if config.authorize.delay_secs.is_some() {
+        let delay = config.authorize.delay_secs.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+    }
+
     // For simplicity, we just allow all authorization requests in this mock
     let response = yedmq_plugin_host::protocol::plugin_protocol::AuthorizeResponse {
         authorized: config.authorize.authorized,
         reason: config.authorize.reason.clone(),
         modified_context: None,
-        continue_chain: false,
     };
 
     Ok(ProtocolMessage {

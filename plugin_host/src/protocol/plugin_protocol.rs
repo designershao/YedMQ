@@ -179,8 +179,6 @@ pub struct AuthorizeResponse {
     /// Modified context
     #[prost(message, optional, tag = "3")]
     pub modified_context: ::core::option::Option<::prost_types::Struct>,
-    #[prost(bool, tag = "4")]
-    pub continue_chain: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MqttMessage {

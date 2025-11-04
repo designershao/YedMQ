@@ -38,6 +38,7 @@ fn default_authorize_config() -> AuthorizeConfig {
         authorized: true,
         reason: None,
         modified_context: None,
+        delay_secs: None,
     }
 }
 
@@ -95,6 +96,9 @@ pub struct AuthorizeConfig {
 
     /// the modified context
     pub modified_context: Option<String>,
+
+    /// optional delay in seconds before responding
+    pub delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

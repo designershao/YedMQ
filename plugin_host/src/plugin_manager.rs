@@ -1,23 +1,29 @@
 use futures::{SinkExt, StreamExt};
-use interprocess::local_socket::{
-    tokio::prelude::*, tokio::Stream, ListenerOptions,
-};
+use interprocess::local_socket::{tokio::prelude::*, tokio::Stream, ListenerOptions};
 use log::{error, info, warn};
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader}, select, sync::{oneshot, RwLock}, time::timeout
+    io::{AsyncBufReadExt, BufReader},
+    select,
+    sync::{oneshot, RwLock},
+    time::timeout,
 };
 use tokio_util::codec::Framed;
 
 use crate::{
-    loader::PluginManifest, plugin_host_config::PluginHostConfig, protocol::{
+    loader::PluginManifest,
+    plugin_host_config::PluginHostConfig,
+    protocol::{
         plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, BatchResponse, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse,
+            BatchResponse, InitializeRequest, InitializeResponse, MessagePublishRequest,
+            MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest,
+            SubscribeResponse,
         },
         ProtocolMessageBuilder,
-    }
+    },
 };
 
 use super::loader::PluginLoader;
@@ -121,10 +127,8 @@ pub enum RxCmd {
     Shutdown,
 }
 
-
 #[derive(Debug, thiserror::Error)]
 pub enum PluginManagerError {
-
     #[error("Call hook timeout")]
     CallHookTimeout(#[from] tokio::time::error::Elapsed),
 
@@ -142,7 +146,6 @@ pub enum PluginManagerError {
 
     #[error("Plugin authenticate error: {0}")]
     PluginAuthenticateTenantIdConflict(String),
-
 }
 
 impl PluginManager {
@@ -190,14 +193,16 @@ impl PluginManager {
                 .with_params(wrap_initialize_param_to_any)
                 .build();
 
-
             framed.send(init_plugin_request_message).await.unwrap();
 
             // ensure the plugin response init response message in 5 seconds
-            match tokio::time::timeout(Duration::from_secs(5),  framed.next()).await {
+            match tokio::time::timeout(Duration::from_secs(5), framed.next()).await {
                 std::result::Result::Ok(Some(std::result::Result::Ok(msg))) => {
                     let protocol_message = ProtocolMessage::decode(msg.payload);
-                    println!("Received init response protocol message: {:?}", protocol_message);
+                    println!(
+                        "Received init response protocol message: {:?}",
+                        protocol_message
+                    );
                     if let std::result::Result::Ok(protocol_message) = protocol_message {
                         if protocol_message.result.is_none() {
                             warn!("Plugin init response has no result, closing connection");
@@ -205,18 +210,22 @@ impl PluginManager {
                         }
                         let result = protocol_message.result.as_ref().unwrap();
                         if result.type_url != super::protocol::INIT_RESPONSE_TYPE_URL {
-                            warn!("Plugin init response has invalid result type, closing connection");
+                            warn!(
+                                "Plugin init response has invalid result type, closing connection"
+                            );
                             return;
                         }
-                        let _ = rx_cmd_sender.send(RxCmd::InitMessage{
-                            msg:protocol_message,
-                            tx_cmd_sender: tx_cmd_sender.clone(),
-                        }).await;
+                        let _ = rx_cmd_sender
+                            .send(RxCmd::InitMessage {
+                                msg: protocol_message,
+                                tx_cmd_sender: tx_cmd_sender.clone(),
+                            })
+                            .await;
                     } else {
                         println!("Failed to decode protocol message from plugin");
                         return;
                     }
-                },
+                }
 
                 std::result::Result::Ok(None) => {
                     println!("Plugin connection closed");
@@ -229,7 +238,7 @@ impl PluginManager {
                 std::result::Result::Err(_) => {
                     println!("Plugin init response timeout, closing connection");
                     return;
-                },
+                }
             }
 
             loop {
@@ -358,13 +367,6 @@ impl PluginManager {
                                     },
                                     MessageType::BatchResponse => {
                                         warn!("Received message with batch response type, not supported yet.");
-                                        if let Some(result) = msg.result {
-                                            if result.type_url == crate::protocol::BATCH_RESPONSE_TYPE_URL {
-                                                let batch_response = BatchResponse::decode(result.value.as_slice()).unwrap();
-                                                for response in batch_response.responses {
-                                                }
-                                            }
-                                        }
                                     },
                                 }
                             },
@@ -381,7 +383,6 @@ impl PluginManager {
     }
 
     pub async fn start_listener(&mut self) -> Result<()> {
-
         let socket_path = self.config.local_socket_path.clone();
 
         let path = Path::new(&socket_path);
@@ -390,7 +391,9 @@ impl PluginManager {
             std::fs::remove_file(path)?; // remove the existing socket file
         }
 
-        let name = socket_path.to_fs_name::<interprocess::local_socket::GenericFilePath>().unwrap();
+        let name = socket_path
+            .to_fs_name::<interprocess::local_socket::GenericFilePath>()
+            .unwrap();
 
         let (rx_cmd_sender, rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
 
@@ -417,8 +420,8 @@ impl PluginManager {
                 match listener.accept().await {
                     std::result::Result::Ok(c) => {
                         println!("Plugin connected, start handling connection");
-                        let _ = Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone())
-                            .await;
+                        let _ =
+                            Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone()).await;
                     }
                     Err(_) => continue,
                 };
@@ -432,10 +435,7 @@ impl PluginManager {
         self.running_plugins.clone()
     }
 
-    pub async fn call_subscribe_removed_hook(
-        &self,
-        subscribe_request: SubscribeRequest
-    ) {
+    pub async fn call_subscribe_removed_hook(&self, subscribe_request: SubscribeRequest) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeRemoved);
         let running_plugins = self.running_plugins.read().await;
@@ -456,17 +456,19 @@ impl PluginManager {
                             .with_params(subscribe_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                        let _ = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await;
                     }
                 }
             }
         }
     }
 
-    pub async fn call_subscribe_added_hook(
-        &self,
-        subscribe_request: SubscribeRequest
-    ) {
+    pub async fn call_subscribe_added_hook(&self, subscribe_request: SubscribeRequest) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
         let running_plugins = self.running_plugins.read().await;
@@ -487,7 +489,12 @@ impl PluginManager {
                             .with_params(subscribe_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                        let _ = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await;
                     }
                 }
             }
@@ -496,7 +503,7 @@ impl PluginManager {
 
     pub async fn call_message_published_hook(
         &self,
-        message_publish_request: MessagePublishRequest
+        message_publish_request: MessagePublishRequest,
     ) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::MessagePublished);
@@ -508,7 +515,8 @@ impl PluginManager {
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let message_publish_request_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL.to_string(),
+                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL
+                                .to_string(),
                             value: message_publish_request.encode_to_vec(),
                         };
 
@@ -518,7 +526,12 @@ impl PluginManager {
                             .with_params(message_publish_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin.ipc_sender.as_ref().unwrap().send(TxCmd::SendMessage(protocol_message)).await;
+                        let _ = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await;
                     }
                 }
             }
@@ -528,7 +541,7 @@ impl PluginManager {
     // Called when message publish before, it can be used to modify the message.
     pub async fn call_on_message_publish(
         &self,
-        message_publish_request: MessagePublishRequest
+        message_publish_request: MessagePublishRequest,
     ) -> Result<MessagePublishResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnMessagePublish);
@@ -540,7 +553,8 @@ impl PluginManager {
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let message_publish_request_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL.to_string(),
+                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL
+                                .to_string(),
                             value: message_publish_request.encode_to_vec(),
                         };
 
@@ -560,22 +574,33 @@ impl PluginManager {
                             .as_ref()
                             .unwrap()
                             .send(TxCmd::SendMessage(protocol_message))
-                            .await {
-                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
-                                continue;
+                            .await
+                        {
+                            error!(
+                                "Plugin {} message receiver droped: {}",
+                                running_plugin.name, e
+                            );
+                            continue;
                         }
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
                         match result {
-                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                            std::result::Result::Ok(std::result::Result::Ok(
+                                std::result::Result::Ok(response),
+                            )) => {
                                 if let Some(result) = response.result {
-                                    if result.type_url == crate::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL {
-                                        let message_publish_response = MessagePublishResponse::decode(result.value.as_slice()).unwrap();
+                                    if result.type_url
+                                        == crate::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL
+                                    {
+                                        let message_publish_response =
+                                            MessagePublishResponse::decode(result.value.as_slice())
+                                                .unwrap();
                                         if !message_publish_response.continue_chain() {
                                             let message_publish_result = MessagePublishResult {
                                                 allow: message_publish_response.allow,
-                                                modified_message: message_publish_response.modified_message,
+                                                modified_message: message_publish_response
+                                                    .modified_message,
                                                 error_reason: message_publish_response.error_reason,
                                             };
                                             return std::result::Result::Ok(message_publish_result);
@@ -587,7 +612,7 @@ impl PluginManager {
                                 warn!("Plugin {} response timeout", running_plugin.name);
                                 continue;
                             }
-                            std::result::Result::Ok(Err(_))  => {
+                            std::result::Result::Ok(Err(_)) => {
                                 warn!("Plugin {} receiver droped", running_plugin.name);
                                 continue;
                             }
@@ -603,7 +628,7 @@ impl PluginManager {
         let default_result = MessagePublishResult {
             allow: true,
             modified_message: message_publish_request.message,
-            error_reason: None
+            error_reason: None,
         };
         std::result::Result::Ok(default_result)
     }
@@ -611,21 +636,23 @@ impl PluginManager {
     // Called when a client subscribe to a topic, if no plugin return the default result that all topics are allowed.
     pub async fn call_on_message_subscribe(
         &self,
-        subscribe_request: SubscribeRequest
+        subscribe_request: SubscribeRequest,
     ) -> Result<SubscribeResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnMessageSubscribe);
         let running_plugins = self.running_plugins.read().await;
 
         let mut final_result = SubscribeResult {
-            result: subscribe_request.subscriptions.iter().map(|topic_filter| {
-                SubscribeResultItem {
+            result: subscribe_request
+                .subscriptions
+                .iter()
+                .map(|topic_filter| SubscribeResultItem {
                     topic: topic_filter.topic.clone(),
                     allowed: true,
                     granted_qos: topic_filter.qos as u8,
                     reason: None,
-                }
-            }).collect(),
+                })
+                .collect(),
         };
 
         if let Some(plugins) = plugins {
@@ -654,22 +681,56 @@ impl PluginManager {
                             .as_ref()
                             .unwrap()
                             .send(TxCmd::SendMessage(protocol_message))
-                            .await {
-                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
-                                continue;
+                            .await
+                        {
+                            error!(
+                                "Plugin {} message receiver droped: {}",
+                                running_plugin.name, e
+                            );
+                            continue;
                         }
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
                         match result {
-                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                            std::result::Result::Ok(std::result::Result::Ok(
+                                std::result::Result::Ok(response),
+                            )) => {
                                 if let Some(result) = response.result {
-                                    if result.type_url == crate::protocol::SUBSCRIBE_RESPONSE_TYPE_URL.to_string() {
-                                        let subscribe_response: SubscribeResponse = SubscribeResponse::decode(result.value.as_slice()).unwrap();
-                                        for subscribe_result_item in subscribe_response.results.iter() {
-                                            final_result.result.iter_mut().find(|item| item.topic == subscribe_result_item.topic).unwrap().allowed = subscribe_result_item.allowed;
-                                            final_result.result.iter_mut().find(|item| item.topic == subscribe_result_item.topic).unwrap().granted_qos = subscribe_result_item.granted_qos as u8;
-                                            final_result.result.iter_mut().find(|item| item.topic == subscribe_result_item.topic).unwrap().reason = subscribe_result_item.reason.clone();
+                                    if result.type_url
+                                        == crate::protocol::SUBSCRIBE_RESPONSE_TYPE_URL.to_string()
+                                    {
+                                        let subscribe_response: SubscribeResponse =
+                                            SubscribeResponse::decode(result.value.as_slice())
+                                                .unwrap();
+                                        for subscribe_result_item in
+                                            subscribe_response.results.iter()
+                                        {
+                                            final_result
+                                                .result
+                                                .iter_mut()
+                                                .find(|item| {
+                                                    item.topic == subscribe_result_item.topic
+                                                })
+                                                .unwrap()
+                                                .allowed = subscribe_result_item.allowed;
+                                            final_result
+                                                .result
+                                                .iter_mut()
+                                                .find(|item| {
+                                                    item.topic == subscribe_result_item.topic
+                                                })
+                                                .unwrap()
+                                                .granted_qos =
+                                                subscribe_result_item.granted_qos as u8;
+                                            final_result
+                                                .result
+                                                .iter_mut()
+                                                .find(|item| {
+                                                    item.topic == subscribe_result_item.topic
+                                                })
+                                                .unwrap()
+                                                .reason = subscribe_result_item.reason.clone();
                                         }
                                         if !subscribe_response.continue_chain() {
                                             return std::result::Result::Ok(final_result);
@@ -681,7 +742,7 @@ impl PluginManager {
                                 warn!("Plugin {} response timeout", running_plugin.name);
                                 continue;
                             }
-                            std::result::Result::Ok(Err(_))  => {
+                            std::result::Result::Ok(Err(_)) => {
                                 warn!("Plugin {} receiver droped", running_plugin.name);
                                 continue;
                             }
@@ -701,8 +762,8 @@ impl PluginManager {
     // Authorize connect, subscribe, publish
     pub async fn call_authorize_hook(
         &self,
-        authorize_request: AuthorizeRequest
-    ) -> std::result::Result<AuthorizeResult, PluginManagerError>{
+        authorize_request: AuthorizeRequest,
+    ) -> std::result::Result<AuthorizeResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authorize);
         let running_plugins = self.running_plugins.read().await;
@@ -738,34 +799,51 @@ impl PluginManager {
                             .as_ref()
                             .unwrap()
                             .send(TxCmd::SendMessage(protocol_message))
-                            .await {
-                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
-                                continue;
+                            .await
+                        {
+                            error!(
+                                "Plugin {} message receiver droped: {}",
+                                running_plugin.name, e
+                            );
+                            continue;
                         }
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
                         match result {
-                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                            std::result::Result::Ok(std::result::Result::Ok(
+                                std::result::Result::Ok(response),
+                            )) => {
                                 if let Some(result) = response.result {
-                                    if result.type_url == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL.to_string() {
-                                        let authorize_response = AuthorizeResponse::decode(result.value.as_slice()).unwrap();
-                                        if authorize_response.continue_chain {
-                                            continue;
-                                        } else {
+                                    if result.type_url
+                                        == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL.to_string()
+                                    {
+                                        let authorize_response =
+                                            AuthorizeResponse::decode(result.value.as_slice())
+                                                .unwrap();
+                                        if !authorize_response.authorized {
                                             final_result.authorized = authorize_response.authorized;
                                             final_result.reason = authorize_response.reason.clone();
                                             final_result.modified_context = HashMap::new();
                                             return std::result::Result::Ok(final_result);
+                                        } else {
+                                            continue;
                                         }
                                     }
                                 }
                             }
                             Err(_) => {
                                 warn!("Plugin {} response timeout", running_plugin.name);
-                                continue;
+                                return std::result::Result::Ok(AuthorizeResult {
+                                    authorized: false,
+                                    reason: Some(format!(
+                                        "Plugin {} response timeout",
+                                        running_plugin.name
+                                    )),
+                                    modified_context: HashMap::new(),
+                                });
                             }
-                            std::result::Result::Ok(Err(_))  => {
+                            std::result::Result::Ok(Err(_)) => {
                                 warn!("Plugin {} receiver droped", running_plugin.name);
                                 continue;
                             }
@@ -773,7 +851,6 @@ impl PluginManager {
                                 warn!("Plugin {} invalid response: {}", running_plugin.name, e);
                                 continue;
                             }
-
                         }
                     }
                 }
@@ -781,7 +858,9 @@ impl PluginManager {
             return std::result::Result::Ok(final_result);
         } else {
             info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));
+            return std::result::Result::Err(PluginManagerError::NoPluginRegistered(
+                "Authenticate".to_string(),
+            ));
         }
     }
 
@@ -824,39 +903,55 @@ impl PluginManager {
                             .as_ref()
                             .unwrap()
                             .send(TxCmd::SendMessage(protocol_message))
-                            .await {
-                                error!("Plugin {} message receiver droped: {}", running_plugin.name, e);
-                                continue;
+                            .await
+                        {
+                            error!(
+                                "Plugin {} message receiver droped: {}",
+                                running_plugin.name, e
+                            );
+                            continue;
                         }
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
                         match result {
-                            std::result::Result::Ok(std::result::Result::Ok(std::result::Result::Ok(response))) => {
+                            std::result::Result::Ok(std::result::Result::Ok(
+                                std::result::Result::Ok(response),
+                            )) => {
                                 if let Some(result) = response.result {
-                                    if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
+                                    if result.type_url
+                                        == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL
+                                    {
                                         let authenticate_response =
-                                            AuthenticateResponse::decode(result.value.as_slice()).unwrap();
+                                            AuthenticateResponse::decode(result.value.as_slice())
+                                                .unwrap();
                                         if authenticate_response.authenticated {
                                             if !is_first_called {
-                                                if authenticate_response.tenant_id != final_result.tenant_id {
-                                                    return std::result::Result::Ok(AuthenticateResult{
-                                                        authenticated: false,
-                                                        error_reason: Some("Tenant ID mismatch".to_string()),
-                                                        tenant_id: None
-                                                    });
+                                                if authenticate_response.tenant_id
+                                                    != final_result.tenant_id
+                                                {
+                                                    return std::result::Result::Ok(
+                                                        AuthenticateResult {
+                                                            authenticated: false,
+                                                            error_reason: Some(
+                                                                "Tenant ID mismatch".to_string(),
+                                                            ),
+                                                            tenant_id: None,
+                                                        },
+                                                    );
                                                 }
                                             } else {
                                                 is_first_called = false;
                                             }
                                             final_result.authenticated = true;
                                             final_result.error_reason = None;
-                                            final_result.tenant_id = authenticate_response.tenant_id.clone();
+                                            final_result.tenant_id =
+                                                authenticate_response.tenant_id.clone();
                                             continue;
                                         } else {
-                                            return std::result::Result::Ok(AuthenticateResult{
+                                            return std::result::Result::Ok(AuthenticateResult {
                                                 authenticated: authenticate_response.authenticated,
                                                 error_reason: authenticate_response.error_reason,
-                                                tenant_id: authenticate_response.tenant_id
+                                                tenant_id: authenticate_response.tenant_id,
                                             });
                                         }
                                     }
@@ -864,11 +959,16 @@ impl PluginManager {
                             }
                             Err(_) => {
                                 warn!("Plugin {} response timeout", running_plugin.name);
-                                return std::result::Result::Ok(
-                                    AuthenticateResult { authenticated: false, error_reason: Some(format!("Plugin {} response timeout", running_plugin.name)), tenant_id: None } 
-                                );
+                                return std::result::Result::Ok(AuthenticateResult {
+                                    authenticated: false,
+                                    error_reason: Some(format!(
+                                        "Plugin {} response timeout",
+                                        running_plugin.name
+                                    )),
+                                    tenant_id: None,
+                                });
                             }
-                            std::result::Result::Ok(Err(_))  => {
+                            std::result::Result::Ok(Err(_)) => {
                                 warn!("Plugin {} receiver droped", running_plugin.name);
                                 continue;
                             }
@@ -883,17 +983,25 @@ impl PluginManager {
             return std::result::Result::Ok(final_result);
         } else {
             info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Err(PluginManagerError::NoPluginRegistered("Authenticate".to_string()));
+            return std::result::Result::Err(PluginManagerError::NoPluginRegistered(
+                "Authenticate".to_string(),
+            ));
         }
     }
 
-    pub async  fn stop_plugin(&self, name: &str) -> Result<()> {
+    pub async fn stop_plugin(&self, name: &str) -> Result<()> {
         let running_plugins = self.running_plugins.read().await;
         let running_plugin = running_plugins.get(name);
         if let Some(running_plugin) = running_plugin {
             match running_plugin.state {
                 PluginState::Running => {
-                    let _ = running_plugin.plugin_abort_tx.as_ref().unwrap().send(()).await.unwrap();
+                    let _ = running_plugin
+                        .plugin_abort_tx
+                        .as_ref()
+                        .unwrap()
+                        .send(())
+                        .await
+                        .unwrap();
                 }
                 _ => {}
             }
@@ -935,14 +1043,16 @@ impl PluginManager {
             .stderr(Stdio::piped())
             .spawn()?;
 
-
-        let stdout = process.stderr.take().expect("plugin did not have a handle to stdout");
+        let stdout = process
+            .stderr
+            .take()
+            .expect("plugin did not have a handle to stdout");
 
         let mut stdout_reader = BufReader::new(stdout).lines();
 
         let borrowed_name = name.to_string();
 
-        let (plugin_abort_tx,mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (plugin_abort_tx, mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         let rx_cmd_sender = self.rx_cmd_sender.as_ref().unwrap().clone();
 
@@ -974,16 +1084,16 @@ impl PluginManager {
             println!("process_wait_handle exit");
         });
 
-        
         let logs = Arc::new(RwLock::new(Vec::new()));
 
         let logs_clone = logs.clone();
 
         let borrowed_name = name.to_string();
 
-        let (plugin_log_collector_quit_tx, mut plugin_log_collector_quit_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (plugin_log_collector_quit_tx, mut plugin_log_collector_quit_rx) =
+            tokio::sync::mpsc::channel::<()>(1);
 
-        let process_log_handle =tokio::spawn(async move {
+        let process_log_handle = tokio::spawn(async move {
             // Capture plugin stdout into logs
             loop {
                 select! {
@@ -1029,6 +1139,4 @@ impl PluginManager {
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}
