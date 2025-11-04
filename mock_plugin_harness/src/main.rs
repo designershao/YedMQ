@@ -1,12 +1,12 @@
 use clap::Parser;
 use interprocess::local_socket::{
-    tokio::{prelude::*, Stream}, GenericFilePath, GenericNamespaced, ToNsName
+    tokio::{prelude::*, Stream}, GenericFilePath
 };
 use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use tokio_util::codec::Framed;
-use std::{any, collections::HashMap, time::Duration};
+use std::{collections::HashMap, time::Duration};
 use tokio::time::timeout;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
@@ -58,6 +58,7 @@ fn default_init_config() -> InitializeConfig {
         status: "ready".to_string(),
         hooks: vec![],
         initialization_auth_code_mode: AuthCodeMode::Correct,
+        exit_after_init_delay_secs: None,
     }
 }
 
@@ -126,6 +127,7 @@ pub struct InitializeConfig {
     pub status: String, // error or ready
     pub hooks: Vec<HookConfig>,
     pub initialization_auth_code_mode: AuthCodeMode,
+    pub exit_after_init_delay_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -139,7 +141,7 @@ pub enum InitFailMode {
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "snake_case")]
-enum AuthCodeMode {
+pub enum AuthCodeMode {
     /// return the host correct auth_code
     Correct,
 
@@ -165,7 +167,7 @@ struct MqttMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct HookConfig {
+pub struct HookConfig {
     pub name: String,
     pub priority: i32,
 }
@@ -423,8 +425,8 @@ async fn handle_on_message_publish_request(
 }
 
 async fn handle_message_published_request(
-    request: &ProtocolMessage,
-    config: &MockConfig,
+    _: &ProtocolMessage,
+    _: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling message published request");
     return Err(anyhow::anyhow!("Not response"));
@@ -448,10 +450,18 @@ async fn handle_request(
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
-
     if response_msg.is_ok() {
         info!("Sending response: {:?}", response_msg);
         framed.send(response_msg?).await?;
+    }
+
+    if method == Method::Initialize {
+        if let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
+            info!("Exiting after {} seconds as per configuration", delay_secs);
+            tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+            info!("Exiting now");
+            std::process::exit(0);
+        }
     }
 
     Ok(())
@@ -493,7 +503,6 @@ async fn main() {
     );
 
     info!("Frame codec init success, start handling messages");
-
     loop {
         match framed.next().await {
             Some(Ok(msg)) => {

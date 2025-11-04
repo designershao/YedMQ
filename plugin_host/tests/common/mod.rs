@@ -57,6 +57,7 @@ fn default_init_config() -> InitializeConfig {
         status: "ready".to_string(),
         hooks: vec![],
         initialization_auth_code_mode: AuthCodeMode::Correct,
+        exit_after_init_delay_secs: None,
     }
 }
 
@@ -125,6 +126,7 @@ pub struct InitializeConfig {
     pub status: String, // error or ready
     pub hooks: Vec<HookConfig>,
     pub initialization_auth_code_mode: AuthCodeMode,
+    pub exit_after_init_delay_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

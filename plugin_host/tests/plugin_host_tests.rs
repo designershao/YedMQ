@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
-    ops::Sub,
-    time::{Duration, Instant},
+    time::Duration
 };
 
 use yedmq_plugin_host::{
@@ -94,6 +93,83 @@ pub async fn test_plugin_host_start_plugin() {
     assert!(matches!(
         running_plugins.get("mock_plugin_harness").unwrap().state,
         yedmq_plugin_host::plugin_manager::PluginState::Running
+    ));
+}
+
+#[tokio::test]
+async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    mock_config.initialize.exit_after_init_delay_secs = Some(5);
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = plugin_host_config::PluginHostConfig {
+        plugin_directory: temp_dir.path().to_string_lossy().to_string(),
+        broker_version: "0.1.0".to_string(),
+        broker_node_id: 1,
+        cluster_name: "test_cluster".to_string(),
+        max_restart_attempts: 1,
+        health_check_interval_secs: 5,
+        shutdown_signal: tx,
+        local_socket_path: temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    };
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    {
+        let running_plugins = plugin_manager.get_running_plugins();
+        let running_plugins = running_plugins.read().await;
+
+        assert!(running_plugins.contains_key("mock_plugin_harness"));
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await; // wait for plugin init
+
+    {
+        let running_plugins = plugin_manager.get_running_plugins();
+
+        let running_plugins = running_plugins.read().await;
+
+        println!("Plugin States: {:?}", running_plugins.get("mock_plugin_harness").unwrap().state);
+
+        assert!(running_plugins
+            .get("mock_plugin_harness")
+            .unwrap()
+            .state
+            == yedmq_plugin_host::plugin_manager::PluginState::Running);
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin exit
+
+    let running_plugins = plugin_manager.get_running_plugins();
+
+    let running_plugins = running_plugins.read().await;
+
+    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
+
+    assert!(matches!(
+        plugin_process.state,
+        yedmq_plugin_host::plugin_manager::PluginState::Stopped
     ));
 }
 
@@ -256,8 +332,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
-    let mut pre_plugin_start_time = Instant::now();
-
+    let pre_plugin_start_time = 
     {
         let running_plugins = plugin_manager.get_running_plugins();
 
@@ -265,8 +340,8 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
         let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
-        pre_plugin_start_time = plugin_process.start_time.unwrap().clone();
-    }
+        plugin_process.start_time.unwrap().clone()
+    };
 
     plugin_manager
         .restart_plugin("mock_plugin_harness")

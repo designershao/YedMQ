@@ -18,7 +18,7 @@ use crate::{
     protocol::{
         plugin_protocol::{
             AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse,
-            BatchResponse, InitializeRequest, InitializeResponse, MessagePublishRequest,
+            InitializeRequest, InitializeResponse, MessagePublishRequest,
             MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest,
             SubscribeResponse,
         },
@@ -182,7 +182,7 @@ impl PluginManager {
 
         let initialize_request_param = InitializeRequest::new_from_plugin_host_config(config);
 
-        let connection_join_handle = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             let wrap_initialize_param_to_any = prost_types::Any {
                 type_url: super::protocol::INIT_REQUEST_TYPE_URL.to_owned(),
                 value: initialize_request_param.encode_to_vec(),
@@ -289,7 +289,7 @@ impl PluginManager {
         let inflight = self.inflight.clone();
         let hook_manager = self.hook_manager.clone();
 
-        let rx_cmd_join_handle = tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     msg = rx_cmd_receiver.recv() => {

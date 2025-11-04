@@ -157,7 +157,6 @@ impl PluginLoader {
                     return Ok(Some(cmd));
                 }
             }
-            _ => return Ok(None),
         }
         Ok(None)
     }
