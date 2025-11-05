@@ -18,9 +18,8 @@ use crate::{
     protocol::{
         plugin_protocol::{
             AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse,
-            InitializeRequest, InitializeResponse, MessagePublishRequest,
-            MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest,
-            SubscribeResponse,
+            InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse,
+            MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse,
         },
         ProtocolMessageBuilder,
     },
@@ -857,10 +856,13 @@ impl PluginManager {
             }
             return std::result::Result::Ok(final_result);
         } else {
-            info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Err(PluginManagerError::NoPluginRegistered(
-                "Authenticate".to_string(),
-            ));
+            // return default authorize result
+            info!("No plugins registered for OnAuthorize hook");
+            return std::result::Result::Ok(AuthorizeResult {
+                authorized: self.config.default_authorize_result,
+                reason: None,
+                modified_context: HashMap::new(),
+            });
         }
     }
 
@@ -983,9 +985,13 @@ impl PluginManager {
             return std::result::Result::Ok(final_result);
         } else {
             info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Err(PluginManagerError::NoPluginRegistered(
-                "Authenticate".to_string(),
-            ));
+            return std::result::Result::Ok(
+                AuthenticateResult {
+                    authenticated: self.config.default_authenticate_result,
+                    error_reason: None,
+                    tenant_id: None,
+                }
+            );
         }
     }
 
