@@ -19,7 +19,7 @@ pub struct Topic {
 }
 
 pub async fn topic_list(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
 ) -> impl IntoResponse {

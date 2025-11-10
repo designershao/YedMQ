@@ -30,7 +30,7 @@ pub struct Client {
 }
 
 pub async fn kickoff_client(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Path((tenant_id, client_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
@@ -73,7 +73,7 @@ pub async fn kickoff_client(
 }
 
 pub async fn client_list(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
 ) -> impl IntoResponse {

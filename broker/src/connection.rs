@@ -11,7 +11,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
-use crate::plugin_manager;
+use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
+use yedmq_plugin_host::protocol::plugin_protocol::AuthenticateRequest;
 
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
@@ -56,7 +57,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     peer_addr: SocketAddr,
     pub reader: Rc<RefCell<tokio::io::ReadHalf<T>>>,
     pub writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
-    pub plugin_service: Arc<dyn plugin_manager::PluginService + 'static>,
+    pub plugin_service: Arc<PluginManager>,
     pub max_message_size: u32,
     pub disconnected_normally: bool,
     pub buffer_size: usize,
@@ -73,7 +74,7 @@ where
         max_message_size: u32,
         default_buffer_size: usize,
         peer_addr: SocketAddr,
-        plugin_service: Arc<dyn plugin_manager::PluginService + 'static>,
+        plugin_service: Arc<PluginManager>,
     ) -> ConnectionActor<T> {
         let (reader, writer) = tokio::io::split(stream);
         ConnectionActor {
@@ -153,7 +154,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
 
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     packet: ConnectPacket,
-    plugin_service: Arc<dyn plugin_manager::PluginService + 'static>,
+    plugin_service: Arc<PluginManager>,
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
 ) -> anyhow::Result<Recipient<SessionActorMessage>> {
@@ -179,11 +180,25 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     }
     //
 
-    let plugin_authentication_result = plugin_service.do_connect_authenticate(&packet);
+    let authenticate_request = AuthenticateRequest {
+        client_id: packet.payload.client_identifier.clone(),
+        username: packet.payload.username.as_ref().unwrap_or(&"".to_string()).clone(),
+        password: packet.payload.password.as_ref().unwrap_or(&"".to_string()).clone(),
+        client_ip: peer_addr.ip().to_string(),
+        client_cert: Vec::new(),
+        protocol_version: "3.1.1".to_string(),
+        properties: None,
+    };
 
-    match plugin_authentication_result {
+    let plugin_authenticate_result = plugin_service.call_authenticate_hook(authenticate_request).await;
+
+    match plugin_authenticate_result {
         Ok(result) => match result {
-            yedmq_plugin::plugin::AuthenticationResultValue::Success(tenant_id) => {
+            AuthenticateResult{
+                authenticated: true,
+                tenant_id,
+                ..
+            } => {
                 let will_message = match packet.variable_header.will_flag {
                     true => Some(WillMessage {
                         will_topic: packet.payload.will_topic.unwrap_or("".to_string()),
@@ -197,6 +212,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     }),
                     false => None,
                 };
+                let tenant_id = tenant_id.unwrap_or("public".to_string());
                 let recipient = self_addr.clone().recipient();
                 let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
                 let result = session_manager_actor_addr
@@ -235,15 +251,11 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     Err(anyhow::anyhow!("create session error, {}", result.err().unwrap()))
                 }
             }
-            yedmq_plugin::plugin::AuthenticationResultValue::Fail(reason) => {
-                let connack_reason = match reason {
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectAccepted => yedmq_mqtt::v3::connack::ConnackReturnCode::Accpet,
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnSupportMqttVersion => yedmq_mqtt::v3::connack::ConnackReturnCode::UnsupportedProtocolVersion,
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenInvalidClientIdentifier => yedmq_mqtt::v3::connack::ConnackReturnCode::InvalidClientIdentifier,
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenServerUnavailable => yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable,
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnsupportUsernameOrPasswordFormat => yedmq_mqtt::v3::connack::ConnackReturnCode::InvalidUsernameOrPassword,
-                        yedmq_plugin::plugin::ConnectReturnCode::ConnectionForbidenUnauth => yedmq_mqtt::v3::connack::ConnackReturnCode::UnAuthorized,
-                    };
+            AuthenticateResult {
+                authenticated: false,
+                ..
+            } => {
+                let connack_reason =  yedmq_mqtt::v3::connack::ConnackReturnCode::UnAuthorized;
                 let connack_packet = ConnAckPacketBuilder::new()
                     .set_return_code(connack_reason)
                     .build();

@@ -3,6 +3,7 @@ use actix::{
 };
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
+use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, MessagePublishRequest, MqttMessage}};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{
@@ -29,7 +30,6 @@ use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
     inflight::{InflightError, InflightState},
-    plugin_manager::{PluginService, SubscribeReturnCode},
     raft::{
         session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor
     }, router_actor::RouterActor,
@@ -161,7 +161,7 @@ pub struct SessionActor {
 
     activity_state: ActivityState,
 
-    plugin_manager: Arc<dyn PluginService + 'static>,
+    plugin_manager: Arc<PluginManager>,
 
     conn_recipient: Option<Recipient<ConnectionActorMessage>>,
 
@@ -284,11 +284,6 @@ impl Actor for SessionActor {
     }
 }
 
-fn is_allowd_subscribe(subscribe_return_code: &SubscribeReturnCode) -> bool {
-    !(matches!(subscribe_return_code, SubscribeReturnCode::Invalid)
-        || matches!(subscribe_return_code, SubscribeReturnCode::Failure))
-}
-
 struct HandleSubscribeResult {
     retain_messages: Vec<Arc<MqttPacketV3>>,
 
@@ -305,18 +300,6 @@ struct HandleUnSubscribeResult {
 
 struct HandlePublishResult {
     inflight_packet: Option<MqttPacketV3>,
-}
-
-impl From<SubscribeReturnCode> for yedmq_mqtt::v3::suback::ReturnCode {
-    fn from(subscribe_return_code: SubscribeReturnCode) -> yedmq_mqtt::v3::suback::ReturnCode {
-        match subscribe_return_code {
-            SubscribeReturnCode::MaxQosLeastOnce => yedmq_mqtt::v3::suback::ReturnCode::MaxQos0,
-            SubscribeReturnCode::MaxQosMostOnce => yedmq_mqtt::v3::suback::ReturnCode::MaxQos1,
-            SubscribeReturnCode::MaxQosExactlyOnce => yedmq_mqtt::v3::suback::ReturnCode::MaxQos2,
-            SubscribeReturnCode::Failure => yedmq_mqtt::v3::suback::ReturnCode::Failure,
-            SubscribeReturnCode::Invalid => yedmq_mqtt::v3::suback::ReturnCode::Invalid,
-        }
-    }
 }
 
 async fn do_handle_unsubscribe(
@@ -358,20 +341,54 @@ async fn do_handle_unsubscribe(
 async fn do_handle_publish(
     publish_packet: PublishPacket,
     client_info: Client,
-    plugin_manager: Arc<dyn PluginService>,
+    plugin_manager: Arc<PluginManager>,
     session_state: Arc<RwLock<SessionState>>,
     clean_session: bool,
 ) -> HandlePublishResult {
-    let publish_authorization = plugin_manager
-        .do_publish_authorizate(&client_info, &publish_packet)
-        .unwrap();
+
+    let authorize_request =AuthorizeRequest {
+        tenant_id: client_info.tenant_id.clone(),
+        client_id: client_info.client_identifier.clone(),
+        username: client_info.properties.username.clone().unwrap_or("".to_string()),
+        action: AuthAction::Publish.into(),
+        topic: publish_packet.variable_header.topic_name.clone(),
+        qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
+        context: None,
+    };
+
+    let publish_authorize_result = plugin_manager.call_authorize_hook(authorize_request).await;
+
+    if publish_authorize_result.is_err() {
+        return HandlePublishResult {
+            inflight_packet: None,
+        };
+    }
+
+    let publish_authorization = publish_authorize_result.unwrap().authorized;
 
     let mut result = HandlePublishResult {
         inflight_packet: None,
     };
 
     if publish_authorization {
-        plugin_manager.do_on_publish(&client_info, &publish_packet);
+
+        let message_publish_request = MessagePublishRequest {
+            message: Some(MqttMessage{
+                tenant_id: client_info.tenant_id.clone(),
+                client_id: client_info.client_identifier.clone(),
+                topic: publish_packet.variable_header.topic_name.clone(),
+                payload: publish_packet.payload.payload.clone(),
+                qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
+                retain: publish_packet.fix_header.retain.unwrap_or(false),
+                dup: publish_packet.fix_header.dup.unwrap_or(0) == 1,
+                publish_time:None,
+                properties: None,
+                message_id: None,
+            }),
+            context: None,
+        };
+
+        plugin_manager.call_message_published_hook(message_publish_request).await;
 
         let mut session_state_guard = session_state.write().await;
 
@@ -446,7 +463,7 @@ async fn do_handle_publish(
 async fn do_handle_subscribe(
     subscribe_packet: SubscribePacket,
     client_info: &Client,
-    plugin_manager: Arc<dyn PluginService>,
+    plugin_manager: Arc<PluginManager>,
 ) -> HandleSubscribeResult {
     let tenant_id = client_info.tenant_id.clone();
 
@@ -460,15 +477,24 @@ async fn do_handle_subscribe(
 
     let mut succeed_subscriptions: Vec<(String, QoS)> = vec![];
 
-    let topic_authorizate_result = plugin_manager
-        .do_subscribe_authorizate(&client_info, &subscribe_packet)
-        .unwrap();
-
-    let plugin_return_code = topic_authorizate_result.return_code;
     for i in 0..subscriptions.len() {
         let topic = subscribe_packet.payload.topic_filters[i].clone();
+        let authorize_request = AuthorizeRequest {
+            tenant_id: tenant_id.clone(),
+            client_id: client_id.clone(),
+            username: client_info.properties.username.clone().unwrap_or("".to_string()),
+            action: AuthAction::Subscribe.into(),
+            topic: topic.topic_name.clone(),
+            qos: topic.qos.into(),
+            context: None,
+        };
 
-        if is_allowd_subscribe(&plugin_return_code[i]) {
+        let topic_authorizate_result = plugin_manager
+            .call_authorize_hook(authorize_request)
+            .await
+            .unwrap();
+
+        if topic_authorizate_result.authorized {
             let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
             let sub_result = topic_raft_actor_addr.send(
                 topic_raft_actor::Subscribe {
@@ -480,7 +506,20 @@ async fn do_handle_subscribe(
             ).await.unwrap();
             if let Ok(_) = sub_result {
                 succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
-                return_code.push(plugin_return_code[i].clone().into());
+                match topic.qos {
+                    0 => {
+                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos0);
+                    }
+                    1 => {
+                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos1);
+                    }
+                    2 => {
+                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos2);
+                    }
+                    _ => {
+                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+                    }
+                }
 
                 let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
 
@@ -521,7 +560,7 @@ impl SessionActor {
         tenant_id: String,
         client_id: String,
         clean_session: bool,
-        plugin_manager: Arc<dyn PluginService>,
+        plugin_manager: Arc<PluginManager>,
         inflight_retry_duration_secs: u64,
         will_message: Option<WillMessage>,
         keep_alive: u64,
@@ -1211,9 +1250,6 @@ impl SessionActor {
             .clone()
             .unwrap()
             .do_send(ConnectionActorMessage::Disconnect);
-
-        self.plugin_manager
-            .do_on_disconnect(&self.get_plugin_client_info());
 
         if !self.clean_session {
             self.set_state(ctx, ActivityState::Inactive);

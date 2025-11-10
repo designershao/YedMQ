@@ -3,13 +3,13 @@ use std::{collections::BTreeMap, sync::Arc};
 use actix::SystemService;
 use log::{info, warn};
 use tokio::sync::{ Mutex, RwLock};
-use tonic::transport::Server;
+use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::{
-    listener::{
+    globals, listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, plugin_manager::PluginManager, protobuf::{cluster_service_server::ClusterServiceServer, raft_service_server::RaftServiceServer}, raft::{session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor, Node}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::session_manager_actor::SessionManagerActor, settings::Settings
+    }, metric, raft::{Node, session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::session_manager_actor::SessionManagerActor, settings::Settings
 };
 
 // Representation of the application state.This struct can be shared around to share.
@@ -139,10 +139,38 @@ impl YedMQApp {
     pub async fn new(settings: Arc<Settings>) -> Self {
         // init plugin manager
         info!("start load plugin manager");
-        let plugin_manager =
-            PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
-        let plugin_manager = Arc::new(plugin_manager);
+
+        let plugin_host_config = yedmq_plugin_host::plugin_host_config::PluginHostConfig {
+            broker_version: "0.1.0".to_string(),
+            broker_node_id: settings.cluster.node_id as u32,
+            cluster_name: "yedmq_cluster".to_string(),
+            plugin_directory: settings.plugin.dir.clone(),
+            local_socket_path: settings.plugin.local_socket_path.clone(),
+            max_restart_attempts: 5,
+            health_check_interval_secs: 10,
+            shutdown_signal: tokio::sync::broadcast::channel(1).0,
+            default_authorize_result: settings.plugin.default_authorize_result,
+            default_authenticate_result: settings.plugin.default_authenticate_result,
+        };
+
+        let mut plugin_manager =
+            PluginManager::new(plugin_host_config).await.unwrap();
         info!("plugin manager load succeed");
+
+        match plugin_manager.start_listener().await {
+            Ok(_) => info!("plugin manager listener start succeed"),
+            Err(e) => panic!("plugin manager listener start failed: {}", e),
+        }
+
+        let plugin_manager = Arc::new(plugin_manager);
+
+        match plugin_manager.start_all_plugins().await {
+            Ok(_) => info!("all plugins started succeed"),
+            Err(e) => panic!("start all plugins failed: {}", e),
+        }
+
+        globals::init_plugin_manager(plugin_manager.clone());
+        globals::init_session_clock(&settings).await;
         //
 
         let metric = Arc::new(metric::Metric::new());

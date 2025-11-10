@@ -29,7 +29,7 @@ pub struct ChangeMembersRequest {
     members: Vec<u64>,
 }
 
-pub async fn init_cluster(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode, String) {
+pub async fn init_cluster(State(_): State<Arc<YedMQApp>>) -> (StatusCode, String) {
     let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
     let session_actor_map_raft_actor_addr =
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
@@ -53,7 +53,7 @@ pub async fn init_cluster(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode
 }
 
 pub async fn add_learner(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Json(payload): Json<AddNodeRequest>,
 ) -> (StatusCode, String) {
     let node_id = payload.node_id;
@@ -89,7 +89,7 @@ pub async fn add_learner(
 }
 
 pub async fn topic_raft_change_membership(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
 
@@ -110,7 +110,7 @@ pub async fn topic_raft_change_membership(
 }
 
 pub async fn session_actor_map_raft_change_membership(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
     let session_actor_map_raft_actor_addr = session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
@@ -129,7 +129,7 @@ pub async fn session_actor_map_raft_change_membership(
 }
 
 pub async fn session_state_raft_change_membership(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Json(payload): Json<ChangeMembersRequest>,
 ) -> (StatusCode, String) {
     let session_state_raft_actor_addr = session_state_raft_actor::SessionStateRaftActor::from_registry();
@@ -230,7 +230,7 @@ pub async fn change_membership(
 }
 
 pub async fn metrics(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
 ) -> (StatusCode, Json<RaftMetricsResponse>) {
     let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
     let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();

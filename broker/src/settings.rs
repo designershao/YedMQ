@@ -92,13 +92,22 @@ impl Default for Session {
 
 #[derive(Debug, Deserialize)]
 pub struct Plugin {
-    pub dir: String // plugin dir path
+    pub dir: String, // plugin dir path
+
+    pub local_socket_path: String, // local socket path to communicate with plugin host
+
+    pub default_authorize_result: bool, // Default result for authorize calls when no plugin is loaded
+
+    pub default_authenticate_result: bool, // Default result for authenticate calls when no plugin is loaded
 }
 
 impl Default for Plugin {
     fn default() -> Self {
         Self {
-            dir: "./plugins".to_string()
+            dir: "./plugins".to_string(),
+            default_authenticate_result: true,
+            default_authorize_result: true,
+            local_socket_path: "/tmp/yedmq_plugin_host.sock".to_string()
         }
     }
 }

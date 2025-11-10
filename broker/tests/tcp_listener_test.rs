@@ -59,6 +59,9 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
         },
         plugin: yedmq::settings::Plugin {
             dir: plugin_path.to_str().unwrap().to_string(),
+            local_socket_path: format!("{}/yedmq_plugin_host.sock", random_dir.to_str().unwrap()),
+            default_authorize_result: true,
+            default_authenticate_result: true,
         },
         mqtt: yedmq::settings::Mqtt {
             sys_topic_interval_secs: 10,

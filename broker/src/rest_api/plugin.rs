@@ -18,10 +18,6 @@ pub struct Plugin {
 
     description: String,
 
-    entry: String,
-
-    priority: i64,
-
     author: String,
 }
 
@@ -33,17 +29,15 @@ pub async fn plugin_list(
     let limit_param = pagination.limit.unwrap_or(10);
     let plugin_metadata_list = app_state
         .plugin_manager
-        .get_plugin_metadata_list_with_pagination(offset_param, limit_param);
+        .get_plugin_metadata_list_with_pagination(offset_param, limit_param).await;
     let mut result = Vec::<Plugin>::new();
 
     for plugin_metadata in plugin_metadata_list.1 {
         let plugin = Plugin {
-            name: plugin_metadata.name.clone(),
-            version: plugin_metadata.version.clone(),
-            description: plugin_metadata.description.clone(),
-            entry: plugin_metadata.entry.clone(),
-            priority: plugin_metadata.priority,
-            author: plugin_metadata.author.clone(),
+            name: plugin_metadata.plugin.name.clone(),
+            version: plugin_metadata.plugin.version.clone(),
+            description: plugin_metadata.plugin.description.clone(),
+            author: plugin_metadata.plugin.author.clone(),
         };
         result.push(plugin);
     }

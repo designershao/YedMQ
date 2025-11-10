@@ -148,6 +148,11 @@ pub enum PluginManagerError {
 }
 
 impl PluginManager {
+
+    pub async fn get_plugin_metadata_list_with_pagination(&self, offset: u64, limit: u64) -> (u64, Vec<PluginManifest>) {
+        return (0, vec![]);
+    }
+
     pub async fn new(config: PluginHostConfig) -> Result<Self> {
         let mut loader = PluginLoader::new(&config.plugin_directory);
 
@@ -161,6 +166,16 @@ impl PluginManager {
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
             rx_cmd_sender: None,
         })
+    }
+
+    pub async fn start_all_plugins(&self) -> Result<()> {
+        let plugin_names = self.plugin_loader.list_plugins();
+
+        for name in plugin_names {
+            self.start_plugin(&name).await?;
+        }
+
+        Ok(())
     }
 
     pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {

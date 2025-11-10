@@ -1,28 +1,24 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    plugin_manager::{PluginManager, PluginService},
-    protobuf::ForceStopSessionActorRequest,
-    raft::{
-        session_actor_map::{
+    globals, protobuf::ForceStopSessionActorRequest, raft::{
+        NodeId, session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
-        },
-        NodeId,
-    },
-    session::session_actor::SessionActor,
-    settings::Settings,
+        }
+    }, session::session_actor::SessionActor, settings::Settings
 };
 use actix::{
     dev::{ContextFutureSpawner, MessageResponse}, Actor, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture
 };
 use log::{error, info, warn};
 use thiserror::Error;
-use tokio::sync::{mpsc::Sender, OnceCell, RwLock};
+use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::{
     v3::connack::{ConnAckPacketBuilder, ConnackReturnCode},
     MqttPacketV3,
 };
+use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
     session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
@@ -80,10 +76,10 @@ impl Default for SessionManagerActor {
         let current_node_id = settings.cluster.node_id;
         SessionManagerActor {
             sessions: HashMap::new(),
-            plugin_manager: OnceCell::new(),
+            plugin_manager: globals::get_plugin_manager(),
             session_lifecycle_tx: None,
             settings,
-            session_clock: OnceCell::new(),
+            session_clock: globals::get_session_clock(),
             current_node_id,
         }
     }
@@ -92,16 +88,7 @@ impl Default for SessionManagerActor {
 
 impl SystemService for SessionManagerActor {
     fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = self.settings.clone();
-        let addr = ctx.address();
-
-        ctx.spawn(
-            async move {
-                let res =
-                    SessionManagerActor::initialize(settings).await;
-                addr.do_send(InitializationComplete(res));
-            }.into_actor(self)
-        );
+        info!("SessionManagerActor started");
     }
 }
 
@@ -110,34 +97,15 @@ impl Supervised for SessionManagerActor {}
 pub struct SessionManagerActor {
     sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
-    plugin_manager: OnceCell<Arc<dyn PluginService + 'static>>,
+    plugin_manager: Arc<PluginManager>,
 
     session_lifecycle_tx: Option<Sender<SessionLifecycleMessage>>,
 
     settings: Arc<Settings>,
 
-    session_clock: OnceCell<Arc<SessionClock>>,
+    session_clock: Arc<SessionClock>,
 
     current_node_id: NodeId,
-}
-
-impl SessionManagerActor {
-    async fn initialize(
-        settings: Arc<crate::settings::Settings>,
-    ) -> Result<(PluginManager, SessionClock), SessionManagerError> {
-        // init plugin manager
-        let _ = env_logger::try_init();
-        info!("start load plugin manager");
-        let plugin_manager =
-            PluginManager::new(settings.plugin.dir.clone(), settings.clone()).unwrap();
-        let session_clock = SessionClock::new(
-            settings.cluster.node_id,
-            settings.session.session_clock_path.clone(),
-        );
-        session_clock.restore().await.unwrap();
-        //
-        Ok((plugin_manager, session_clock))
-    }
 }
 
 impl Actor for SessionManagerActor {
@@ -203,31 +171,6 @@ impl Actor for SessionManagerActor {
         info!("session manager stopped");
     }
 }
-
-#[derive(Message)]
-#[rtype(result = "()")]
-struct InitializationComplete(Result<(PluginManager, SessionClock), SessionManagerError>);
-
-impl Handler<InitializationComplete> for SessionManagerActor {
-    type Result = ();
-
-    fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
-        match msg.0 {
-            Ok((plugin_manager, session_clock)) => {
-                let r = self.plugin_manager.set(Arc::new(plugin_manager));
-                assert!(r.is_ok());
-                let r = self.session_clock.set(Arc::new(session_clock));
-                assert!(r.is_ok());
-                info!("session manager initialized successfully");
-            }
-            Err(e) => {
-                error!("failed to initialize session manager: {}", e);
-            }
-        }
-    }
-}
-
-
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -627,7 +570,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let settings = self.settings.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone().unwrap().clone();
 
-        let session_clock = self.session_clock.get().unwrap().clone();
+        let session_clock = self.session_clock.clone();
         let current_node_id = self.current_node_id;
 
 
@@ -849,7 +792,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.tenant_id.clone(),
                 msg.client_id.clone(),
                 msg.clean_session,
-                plugin_manager.get().unwrap().clone(),
+                plugin_manager.clone(),
                 50,
                 msg.will_message,
                 msg.keep_alive,
@@ -977,10 +920,6 @@ impl Handler<GetLatestSessionClock> for SessionManagerActor {
     type Result = Option<Arc<SessionClock>>;
 
     fn handle(&mut self, _msg: GetLatestSessionClock, _ctx: &mut Self::Context) -> Self::Result {
-        if let Some(session_clock) = self.session_clock.get() {
-            Some(session_clock.clone())
-        } else {
-            None
-        }
+        Some(self.session_clock.clone())
     }
 }

@@ -22,7 +22,7 @@ pub struct RetainMessage {
 }
 
 pub async fn clean_retain_message(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Path((tenant_id, topic_filter)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
@@ -44,7 +44,7 @@ pub async fn clean_retain_message(
 }
 
 pub async fn retain_message_list(
-    State(app_state): State<Arc<YedMQApp>>,
+    State(_): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,
     pagination: Query<Pagination>,
 ) -> impl IntoResponse {
