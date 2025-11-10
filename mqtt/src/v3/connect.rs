@@ -511,7 +511,7 @@ impl MqttPacket for ConnectPacket {
 mod tests {
     use nom::AsBytes;
 
-    use crate::{v3::{connect::{protocol_level, ConnectPacketBuilder}, fixed_header::{FixHeader, self}, connack::ConnAckPacketBuilder}, PacketType, MqttPacket};
+    use crate::{v3::{connect::{protocol_level, ConnectPacketBuilder}, fixed_header::FixHeader}, PacketType, MqttPacket};
 
     use super::{connect_flags, protocol_name, payload, parse, ConnectPacket};
 

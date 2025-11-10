@@ -828,7 +828,7 @@ mod tests {
             "a/b/c".to_string(),
             0,
         );
-        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        let _ = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
 
         let _ = topic_storage.subscribe(
             tenant_name.clone(),
@@ -836,7 +836,7 @@ mod tests {
             "a/b/c".to_string(),
             0,
         );
-        let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
+        let _ = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
     }
 
     #[test]

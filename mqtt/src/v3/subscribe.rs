@@ -229,7 +229,7 @@ mod tests{
 
     #[test]
     fn test_subscribe_pakcet_builder() {
-        let mut builder = SubscribePacketBuilder::new(0x10);
+        let builder = SubscribePacketBuilder::new(0x10);
         let packet = builder.add_topic_filter(TopicFilter {
             topic_name: "a/b".to_string(),
             qos: 2

@@ -87,7 +87,7 @@ impl Default for SessionManagerActor {
 
 
 impl SystemService for SessionManagerActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
+    fn service_started(&mut self, _: &mut Context<Self>) {
         info!("SessionManagerActor started");
     }
 }
@@ -115,7 +115,6 @@ impl Actor for SessionManagerActor {
         let (session_lifecycle_tx, mut session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
         self.session_lifecycle_tx = Some(session_lifecycle_tx);
         let self_addr = ctx.address();
-        let session_clock_once_cell = self.session_clock.clone();
         let session_actor_map_actor_addr = SessionActorMapRaftActor::from_registry();
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
@@ -162,7 +161,7 @@ impl Actor for SessionManagerActor {
         ctx.spawn(future.into_actor(self));
 
         // Renew session lease every 10 seconds
-        ctx.run_interval(Duration::from_secs(10), |act, ctx| {
+        ctx.run_interval(Duration::from_secs(10), |_, ctx| {
             ctx.address().do_send(RenewSessionLease {});
         });
     }
@@ -644,7 +643,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             ).await.unwrap();
 
             match res {
-                Ok(response) => {}
+                Ok(_) => {}
                 Err(e) => {
                     match e {
                         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected { 

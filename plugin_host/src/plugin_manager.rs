@@ -148,9 +148,22 @@ pub enum PluginManagerError {
 }
 
 impl PluginManager {
-
-    pub async fn get_plugin_metadata_list_with_pagination(&self, offset: u64, limit: u64) -> (u64, Vec<PluginManifest>) {
-        return (0, vec![]);
+    pub async fn get_plugin_metadata_list_with_pagination(
+        &self,
+        offset: u64,
+        limit: u64,
+    ) -> (u64, Vec<PluginManifest>) {
+        let res = self
+            .get_running_plugins()
+            .read()
+            .await
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .map(|(_, v)| v.manifest.clone())
+            .collect::<Vec<PluginManifest>>();
+        let total_count = self.get_running_plugins().read().await.len() as u64;
+        (total_count, res)
     }
 
     pub async fn new(config: PluginHostConfig) -> Result<Self> {
@@ -1000,13 +1013,11 @@ impl PluginManager {
             return std::result::Result::Ok(final_result);
         } else {
             info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Ok(
-                AuthenticateResult {
-                    authenticated: self.config.default_authenticate_result,
-                    error_reason: None,
-                    tenant_id: None,
-                }
-            );
+            return std::result::Result::Ok(AuthenticateResult {
+                authenticated: self.config.default_authenticate_result,
+                error_reason: None,
+                tenant_id: None,
+            });
         }
     }
 
