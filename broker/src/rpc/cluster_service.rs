@@ -29,10 +29,13 @@ impl ClusterService for ClusterServiceImpl {
                 client_id: inner.client_id.clone(),
                 packets: packet,
             };
+
         session_state_raft_actor_addr
             .send(store_offline_message_actor)
             .await
-            .map_err(|e| Status::internal(format!("Failed to store offline message: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to store offline message: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in storing offline message: {}", e)))?;
+
         Ok(Response::new(StoreOfflineMessageResponse {
             success: true,
             error: None,
@@ -99,10 +102,13 @@ impl ClusterService for ClusterServiceImpl {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
         };
-        session_state_raft_actor_addr
+
+        let r  = session_state_raft_actor_addr
             .send(create_session_state_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to create session state: {}", e)))?;
+        r.map_err(|e| Status::internal(format!("Error in creating session state: {}", e)))?;
+
         Ok(Response::new(CreateSessionStateResponse {
             success: true,
             error: None,
@@ -122,7 +128,8 @@ impl ClusterService for ClusterServiceImpl {
         session_state_raft_actor_addr
             .send(delete_session_state_actor)
             .await
-            .map_err(|e| Status::internal(format!("Failed to delete session state: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to delete session state: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in deleting session state: {}", e)))?;
         Ok(Response::new(DeleteSessionStateResponse {
             success: true,
             error: None,
@@ -144,12 +151,13 @@ impl ClusterService for ClusterServiceImpl {
                 client_id: inner.client_id.clone(),
                 inflight_rx_packet,
             };
-        session_state_raft_actor_addr
+        let r= session_state_raft_actor_addr
             .send(register_inflight_rx_packet_actor)
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to register inflight RX packet: {}", e))
             })?;
+        r.map_err(|e| Status::internal(format!("Error in registering inflight RX packet: {}", e)))?;
         Ok(Response::new(RegisterInflightRxPacketResponse {
             success: true,
             error: None,
@@ -176,7 +184,8 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to register inflight TX packet: {}", e))
-            })?;
+            })?
+            .map_err(|e| Status::internal(format!("Error in registering inflight TX packet: {}", e)))?;
         Ok(Response::new(RegisterInflightTxPacketResponse {
             success: true,
             error: None,
@@ -197,7 +206,8 @@ impl ClusterService for ClusterServiceImpl {
         session_state_raft_actor_addr
             .send(advance_inflight_state_actor)
             .await
-            .map_err(|e| Status::internal(format!("Failed to advance inflight state: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to advance inflight state: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in advancing inflight state: {}", e)))?;
         Ok(Response::new(AdvanceInflightStateResponse {
             success: true,
             error: None,
@@ -270,7 +280,7 @@ impl ClusterService for ClusterServiceImpl {
             topic: inner.topic.clone(),
             qos: inner.qos as u8,
         };
-        let res = topic_raft_actor_addr
+        let _ = topic_raft_actor_addr
             .send(subscribe_topic_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to subscribe topic: {}", e)))?
@@ -296,7 +306,8 @@ impl ClusterService for ClusterServiceImpl {
         topic_raft_actor_addr
             .send(unsubscribe_topic_actor)
             .await
-            .map_err(|e| Status::internal(format!("Failed to unsubscribe topic: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to unsubscribe topic: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in unsubscribing topic: {}", e)))?;
         Ok(Response::new(UnsubscribeTopicResponse {
             success: true,
             error: None,
@@ -360,7 +371,8 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to register retain publish message: {}", e))
-            })?;
+            })?
+            .map_err(|e| Status::internal(format!("Error in registering retain publish message: {}", e)))?;
         Ok(Response::new(RegisterRetainPublishMessageResponse {
             success: true,
             error: None,
@@ -411,7 +423,8 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to clean retain publish message: {}", e))
-            })?;
+            })?
+        .map_err(|e| Status::internal(format!("Error in cleaning retain publish message: {}", e)))?;
         Ok(Response::new(CleanRetainPublishMessageResponse {
             success: true,
             error: None,
@@ -441,7 +454,10 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to register session actor map: {}", e))
-            })?;
+            })?
+            .map_err(|e| {
+            Status::internal(format!("Error in registering session actor map: {}", e))
+        })?;
         Ok(Response::new(RegisterSessionActorMapResponse {
             success: true,
             error: None,
@@ -470,7 +486,10 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| {
                 Status::internal(format!("Failed to unregister session actor map: {}", e))
-            })?;
+            })?
+            .map_err(|e| {
+            Status::internal(format!("Error in unregistering session actor map: {}", e))
+        })?;
         Ok(Response::new(UnregisterSessionActorMapResponse {
             success: true,
             error: None,
@@ -491,7 +510,8 @@ impl ClusterService for ClusterServiceImpl {
         session_actor_map_raft_actor_addr
             .send(renew_session_lease_actor)
             .await
-            .map_err(|e| Status::internal(format!("Failed to renew session lease: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to renew session lease: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in renewing session lease: {}", e)))?;
         Ok(Response::new(RenewSessionLeaseResponse {
             success: true,
             error: None,
@@ -538,7 +558,8 @@ impl ClusterService for ClusterServiceImpl {
                 packet
             })
             .await
-            .map_err(|e| Status::internal(format!("Failed to route packet: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Failed to route packet: {}", e)))?
+            .map_err(|e| Status::internal(format!("Error in routing packet: {}", e)))?;
         
         Ok(Response::new(crate::protobuf::RoutePacketResponse {
             success: true,
@@ -558,7 +579,8 @@ impl ClusterService for ClusterServiceImpl {
                 client_id: inner.client_id.clone(),
             }
         ).await
-        .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?;
+        .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?
+        .map_err(|e| Status::internal(format!("Error in force stopping session actor: {}", e)))?;
         Ok(Response::new(ForceStopSessionActorResponse {
             success: true,
             error: None,
