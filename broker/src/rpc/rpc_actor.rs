@@ -25,7 +25,7 @@ impl SystemService for RpcActor {
                     .add_service(ClusterServiceServer::new(cluster_service))
                     .add_service(RaftServiceServer::new(rpc_service))
                     .serve(settings.cluster.rpc.external.parse().unwrap())
-                    .await;
+                    .await.unwrap();
             }.into_actor(self)
         );
     }

@@ -239,14 +239,30 @@ impl Actor for SessionActor {
                     QoS::AtLeastOnce => 1,
                     QoS::ExactlyOnce => 2,
                 };
-                topic_raft_actor_addr.send(
+                match topic_raft_actor_addr.send(
                     crate::raft::topic::topic_raft_actor::Subscribe {
                         tenant_id: tenant_id.clone(),
                         client_identifier: client_id.clone(),
                         topic: topic.clone(),
                         qos: qos_v,
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!(
+                            "persistent session recover subscribe topic {} error, {}",
+                            topic.clone(),
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "persistent session recover subscribe topic {} send message to topic raft actor error, {}",
+                            topic.clone(),
+                            e
+                        );
+                    }
+                }
             }
 
             //
@@ -432,20 +448,36 @@ async fn do_handle_publish(
 
             // if publish packet paloyd is empty , clean retained publish packet
             if publish_packet.payload.payload.is_empty() {
-                topic_raft_actor_addr.send(
+                match topic_raft_actor_addr.send(
                     topic_raft_actor::CleanRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         topic_filter: publish_packet.variable_header.topic_name.clone(),
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        error!("clean retain publish packet error: {}", e);
+                    }
+                    Err(e) => {
+                        error!("Failed to send clean retain publish packet to topic raft actor: {}", e);
+                    }
+                }
             } else {
-                topic_raft_actor_addr.send(
+                match topic_raft_actor_addr.send(
                     topic_raft_actor::RegisterRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
                         publish_packet: MqttPacketV3::Publish(publish_packet.clone()),
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        error!("register retain publish packet error: {}", e);
+                    }
+                    Err(e) => {
+                        error!("Failed to send register retain publish packet to topic raft actor: {}", e);
+                    }
+                }
             }
             //
         }
@@ -876,29 +908,42 @@ impl SessionActor {
                 } else {
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     if !matches!(inflight_state, InflightState::Finish) {
-                        let res = session_state_raft_actor_addr.send(
+                        match session_state_raft_actor_addr.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
                                 packet_id: pubrel_packet.variable_header.packet_identifier.into(),
                             },
-                        ).await.unwrap();
-                        if res.is_err() {
-                            warn!("handle pubrel inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(pubrel_packet.variable_header.packet_identifier);
+                        ).await {
+                            Ok(Ok(_)) => {
+                                session_state_guard
+                                    .inflight
+                                    .next_state(pubrel_packet.variable_header.packet_identifier);
+                            },
+                            Ok(Err(e)) => {
+                                warn!("handle pubrel inflight next state error {}", e)
+                            }
+                            Err(e) => {
+                                error!("Failed to send advance inflight state message to session state raft actor: {}", e);
+                            }
                         }
                     }
-                    session_state_raft_actor_addr.send(
+                    match session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
                         },
-                    ).await.unwrap();
-
-                    session_state_guard.inflight.clean_finished_items().await;
+                    ).await {
+                        Ok(Ok(_)) => {
+                            session_state_guard.inflight.clean_finished_items().await;
+                        }
+                        Ok(Err(e)) => {
+                            error!("Raft clean inflight finished items error: {}", e);
+                        }
+                        Err(e) => {
+                            error!("Failed to send clean finished items message to session state raft actor: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -990,29 +1035,42 @@ impl SessionActor {
                 } else {
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     if !matches!(inflight_state, InflightState::Finish) {
-                        let res = session_state_raft_actor_addr.send(
+                        match session_state_raft_actor_addr.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
                                 packet_id: pubrec_packet.variable_header.packet_identifier.into(),
                             },
-                        ).await.unwrap();
-
-                        if res.is_err() {
-                            warn!("handle puback inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(pubrec_packet.variable_header.packet_identifier);
+                        ).await {
+                            Ok(Ok(_)) => {
+                                session_state_guard
+                                    .inflight
+                                    .next_state(pubrec_packet.variable_header.packet_identifier);
+                            },
+                            Ok(Err(e)) => {
+                                warn!("handle puback inflight next state error {}", e)
+                            }
+                            Err(e) => {
+                                error!("Failed to send advance inflight state message to session state raft actor: {}", e);
+                            }
                         }
                     }
-                    session_state_raft_actor_addr.send(
+                    match session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
                         },
-                    ).await.unwrap();
-                    session_state_guard.inflight.clean_finished_items().await;
+                    ).await {
+                        Ok(Ok(_)) => {
+                            session_state_guard.inflight.clean_finished_items().await;
+                        }
+                        Ok(Err(e)) => {
+                            error!("Raft clean inflight finished items error: {}", e);
+                        }
+                        Err(e) => {
+                            error!("Failed to send clean finished items message to session state raft actor: {}", e);
+                        }
+                    }
                 }                
             }
         }
@@ -1127,13 +1185,22 @@ impl SessionActor {
                         }
                     }
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    session_state_raft_actor_addr.send(
+                    match session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
                         },
-                    ).await.unwrap();
-                    session_state_guard.inflight.clean_finished_items().await;
+                    ).await {
+                        Ok(Ok(_)) => {
+                            session_state_guard.inflight.clean_finished_items().await;
+                        }
+                        Ok(Err(e)) => {
+                            error!("Raft clean inflight finished items error: {}", e);
+                        }
+                        Err(e) => {
+                            error!("Failed to send clean finished items message to session state raft actor: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -1224,15 +1291,24 @@ impl SessionActor {
                         }
                     }
 
-                    session_state_raft_actor_addr
+                    match session_state_raft_actor_addr
                         .send(
                             crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
                             },
                         )
-                        .await.unwrap();
-                    session_state_guard.inflight.clean_finished_items().await;
+                        .await {
+                        Ok(Ok(_)) => {
+                            session_state_guard.inflight.clean_finished_items().await;
+                        }
+                        Ok(Err(e)) => {
+                            error!("Raft clean inflight finished items error: {}", e);
+                        }
+                        Err(e) => {
+                            error!("Failed to send clean finished items message to session state raft actor: {}", e);
+                        }
+                    }
                 }
             }
         }
