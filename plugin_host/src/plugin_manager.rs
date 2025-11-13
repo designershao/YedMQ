@@ -16,12 +16,9 @@ use crate::{
     loader::PluginManifest,
     plugin_host_config::PluginHostConfig,
     protocol::{
-        plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse,
-            InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse,
-            MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse,
-        },
-        ProtocolMessageBuilder,
+        ProtocolMessageBuilder, plugin_protocol::{
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, ClientDisconnectedEvent, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
+        }
     },
 };
 
@@ -475,6 +472,39 @@ impl PluginManager {
                         let subscribe_request_any_wrapper = prost_types::Any {
                             type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
                             value: subscribe_request.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::SubscriptionAdded)
+                            .with_type(MessageType::Event)
+                            .with_params(subscribe_request_any_wrapper)
+                            .build();
+
+                        let _ = running_plugin
+                            .ipc_sender
+                            .as_ref()
+                            .unwrap()
+                            .send(TxCmd::SendMessage(protocol_message))
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn call_client_disconnected_hook(&self, client_disconnected_event: ClientDisconnectedEvent) {
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
+        let running_plugins = self.running_plugins.read().await;
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let subscribe_request_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::CLIENT_DISCONNECTED_EVENT_TYPE_URL.to_string(),
+                            value: client_disconnected_event.encode_to_vec(),
                         };
 
                         let protocol_message = ProtocolMessageBuilder::new()

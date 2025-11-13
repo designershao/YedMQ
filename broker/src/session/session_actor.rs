@@ -2,8 +2,9 @@ use actix::{
     dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture
 };
 use log::{error, info, warn};
+use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, MessagePublishRequest, MqttMessage}};
+use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage}};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{
@@ -41,6 +42,16 @@ use super::{
     WillMessage,
 };
 use crate::connection::ConnectionActorMessage;
+
+fn get_protobuf_now_timestamp() -> Timestamp {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    Timestamp {
+        seconds: now.as_secs() as i64,
+        nanos: now.subsec_nanos() as i32,
+    }
+}
 
 pub struct SessionInfo {
     pub tenant_identifier: String,
@@ -1327,6 +1338,21 @@ impl SessionActor {
             .unwrap()
             .do_send(ConnectionActorMessage::Disconnect);
 
+        let plugin_manager = self.plugin_manager.clone();
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+        async move {
+            let client_disconnected_event = ClientDisconnectedEvent {
+                tenant_id,
+                client_id,
+                reason: "Normal Disconnect".to_string(),
+                disconnect_time: Some(get_protobuf_now_timestamp()),
+                session_info: None,
+            };
+            plugin_manager.call_client_disconnected_hook(client_disconnected_event).await;
+        }.into_actor(self)
+        .wait(ctx);
+
         if !self.clean_session {
             self.set_state(ctx, ActivityState::Inactive);
         } else {
@@ -1635,7 +1661,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 clean_session,
                 username,
                 will_message,
-                socket_addr,
+                ..
             } => {
                 self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);

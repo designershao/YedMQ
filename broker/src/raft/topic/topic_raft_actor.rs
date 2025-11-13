@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::{
-    protobuf::{raft_service_client::RaftServiceClient, AppendEntriesRequest, RaftType, WriteRequest},
+    protobuf::{raft_service_client::RaftServiceClient, RaftType, WriteRequest},
     raft::{
         topic::{raft_network_impl::Network, store::new_storage, types::TopicRaft},
         Node, NodeId,
@@ -875,7 +875,7 @@ pub struct AppendEntriesRequestMessage {
 impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: AppendEntriesRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: AppendEntriesRequestMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -916,7 +916,7 @@ pub struct InstallSnapshotRequestMessage {
 impl Handler<InstallSnapshotRequestMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<openraft::raft::InstallSnapshotResponse<NodeId>, TopicRaftError>>; 
 
-    fn handle(&mut self, msg: InstallSnapshotRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: InstallSnapshotRequestMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -958,7 +958,7 @@ pub struct VoteRequestMessage {
 impl Handler<VoteRequestMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<openraft::raft::VoteResponse<NodeId>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: VoteRequestMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: VoteRequestMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -1012,7 +1012,7 @@ pub struct GetRetainMessageListWithPagination {
 impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<GetRetainMessageListWithPaginationResponse, TopicRaftError>>;
 
-    fn handle(&mut self, msg: GetRetainMessageListWithPagination, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: GetRetainMessageListWithPagination, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -1024,7 +1024,7 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                 let topic_storage = self.topic_storage.clone();
                 return Box::pin(
                     async move {
-                        if let Some(raft_instance) = raft.get() {
+                        if let Some(_) = raft.get() {
                             if let Some(topic_storage) = topic_storage.get() {
                                 let storage = topic_storage.read().await;
                                 let res = storage.get_retain_message_list_with_pagination(
@@ -1085,7 +1085,7 @@ pub struct GetTopicListWithPagination {
 impl Handler<GetTopicListWithPagination> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<GetTopicListWithPaginationResponse, TopicRaftError>>;
 
-    fn handle(&mut self, msg: GetTopicListWithPagination, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: GetTopicListWithPagination, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -1144,7 +1144,7 @@ pub struct InitRaftClusterMessage {}
 impl Handler<InitRaftClusterMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
 
-    fn handle(&mut self, _msg: InitRaftClusterMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: InitRaftClusterMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -1193,7 +1193,7 @@ pub struct AddLearnerMessage {
 impl Handler<AddLearnerMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: AddLearnerMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: AddLearnerMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -1234,7 +1234,7 @@ pub struct ChangeMembershipMessage {
 impl Handler<ChangeMembershipMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: ChangeMembershipMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: ChangeMembershipMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -1275,7 +1275,7 @@ pub struct GetLeader{}
 impl Handler<GetLeader> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<Option<Node>, TopicRaftError>>;
 
-    fn handle(&mut self, _msg: GetLeader, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: GetLeader, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -1327,7 +1327,7 @@ pub struct DirectWriteToRaft {
 impl Handler<DirectWriteToRaft> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: DirectWriteToRaft, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: DirectWriteToRaft, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -1367,7 +1367,7 @@ pub struct GetRaftMetrics {}
 impl Handler<GetRaftMetrics> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId,Node>, TopicRaftError>>;
 
-    fn handle(&mut self, _msg: GetRaftMetrics, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: GetRaftMetrics, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
