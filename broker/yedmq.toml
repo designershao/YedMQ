@@ -12,6 +12,10 @@ session_clock_path = "./clock"
 
 [plugin]
 dir = "./plugins"
+local_socket_path = "/tmp/yedmq_plugin.sock"
+default_authorize_result = true
+default_authenticate_result = true
+
 
 [log]
 level = "warning"

@@ -29,6 +29,9 @@ pub async fn init_session_clock(settings: &crate::settings::Settings) {
         settings.session.session_clock_path.clone(),
     );
     session_clock.restore().await.unwrap();
+    SESSION_CLOCK
+        .set(Arc::new(session_clock))
+        .expect("SessionClock already initialized");
 }
 
 pub fn get_session_clock() -> Arc<SessionClock> {

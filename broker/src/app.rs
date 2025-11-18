@@ -48,6 +48,8 @@ impl YedMQApp {
         */
         //
 
+        globals::init_session_clock(&settings).await;
+
         // start system service
         info!("start system service");
         RpcActor::from_registry();
@@ -170,7 +172,6 @@ impl YedMQApp {
         }
 
         globals::init_plugin_manager(plugin_manager.clone());
-        globals::init_session_clock(&settings).await;
         //
 
         let metric = Arc::new(metric::Metric::new());
