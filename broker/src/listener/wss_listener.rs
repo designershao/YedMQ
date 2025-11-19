@@ -1,10 +1,10 @@
-use std::{fs::File, io::Read, sync::Arc};
+use std::sync::Arc;
 
 use actix::Actor;
 use anyhow::Result;
 use log::warn;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use tokio::net::TcpListener;
-use tokio_native_tls::native_tls::{self, Identity};
 use tokio_util::io::StreamReader;
 
 
@@ -21,19 +21,16 @@ pub struct MqttWssListener {
 
 impl MqttWssListener {
     pub async fn run(self) -> Result<()> {
-        let mut cert_file = File::open(&self.app.settings.listener.wss.cert_file)?;
-        let mut key_file = File::open(&self.app.settings.listener.wss.key_file)?;
+        let certs = CertificateDer::pem_file_iter(&self.app.settings.listener.wss.cert_file)?.collect::<Result<Vec<_>,_>>()?;
+        let key = PrivateKeyDer::from_pem_file(&self.app.settings.listener.wss.key_file)?;
 
-        let mut cert = vec![];
-        cert_file.read_to_end(&mut cert).unwrap();
-
-        let mut key = vec![];
-        key_file.read_to_end(&mut key).unwrap();
-
-        let cert = Identity::from_pkcs8(&cert, &key)?;
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?;
 
         let tls_acceptor =
-            tokio_native_tls::TlsAcceptor::from(native_tls::TlsAcceptor::builder(cert).build()?);
+            tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
 
         let listener = TcpListener::bind(self.app.settings.listener.wss.external.clone()).await?;
         loop {
@@ -42,6 +39,20 @@ impl MqttWssListener {
             let remote_addr = stream.peer_addr().unwrap();
 
             let tls_stream = tls_acceptor.accept(stream).await.unwrap();
+
+            let client_certs = tls_stream.get_ref().1.peer_certificates();
+            let client_certificate_vec = {
+                if let Some(certs) = client_certs {
+                    if let Some(client_cert_der) = certs.first() {
+                        let certificate_vec =  client_cert_der.as_ref().to_vec();
+                        Some(certificate_vec   )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
 
             let ws_stream = tokio_tungstenite::accept_hdr_async(tls_stream, WsCallBack {}).await;
 
@@ -56,6 +67,7 @@ impl MqttWssListener {
                     4096,
                     remote_addr,
                     self.app.plugin_manager.clone(),
+                    client_certificate_vec
                 )
                 .start();
             } else {

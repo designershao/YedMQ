@@ -39,6 +39,7 @@ impl MqttWsListener {
                     4096,
                     remote_addr,
                     self.app.plugin_manager.clone(),
+                    None
                 )
                 .start();
             } else {

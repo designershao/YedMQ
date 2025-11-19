@@ -63,6 +63,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     pub buffer_size: usize,
     session: Option<Recipient<SessionActorMessage>>,
     read_packet_handle: Option<SpawnHandle>,
+    pub client_certificate: Option<Vec<u8>>,
 }
 
 impl<T> ConnectionActor<T>
@@ -75,11 +76,13 @@ where
         default_buffer_size: usize,
         peer_addr: SocketAddr,
         plugin_service: Arc<PluginManager>,
+        client_certificate: Option<Vec<u8>>,
     ) -> ConnectionActor<T> {
         let (reader, writer) = tokio::io::split(stream);
         ConnectionActor {
             reader: Rc::new(RefCell::new(reader)),
             writer: Rc::new(RefCell::new(writer)),
+            client_certificate,
             max_message_size,
             disconnected_normally: false,
             buffer_size: default_buffer_size,
@@ -157,6 +160,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     plugin_service: Arc<PluginManager>,
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
+    client_certificate: Option<Vec<u8>>,
 ) -> anyhow::Result<Recipient<SessionActorMessage>> {
     // invalid mqtt protocol name
     if packet.variable_header.protocol_name != "MQTT" {
@@ -185,7 +189,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         username: packet.payload.username.as_ref().unwrap_or(&"".to_string()).clone(),
         password: packet.payload.password.as_ref().unwrap_or(&"".to_string()).clone(),
         client_ip: peer_addr.ip().to_string(),
-        client_cert: Vec::new(),
+        client_cert: client_certificate.unwrap_or(vec![]),
         protocol_version: "3.1.1".to_string(),
         properties: None,
     };
@@ -296,6 +300,7 @@ where
         let mut buffer = BytesMut::with_capacity(self.buffer_size);
         let plugin_service = self.plugin_service.clone();
         let peer_addr = self.peer_addr.clone();
+        let client_cert = self.client_certificate.clone();
         let handle = ctx.spawn(
             async move {
                 let first_packet = read_packet(&reader, &mut buffer, max_message_size).await;
@@ -307,6 +312,7 @@ where
                                 plugin_service,
                                 &self_addr,
                                 peer_addr,
+                                client_cert
                             )
                             .await;
                             if let Ok(session) = session_res {
