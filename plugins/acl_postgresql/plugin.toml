@@ -1,7 +1,0 @@
-[plugin]
-name = "YedMQ_Acl_PostgreSQL_Plugin"
-author = "yedmq"
-description = "This plugin provides PostgreSQL database-based ACL (Access Control List) management."
-version = "0.0.1"
-entry = "./libyedmq_plugins_acl_postgresql.so"
-priority = 1000

@@ -1,13 +1,7 @@
 [workspace]
 members = [
     "broker", 
-    "example_plugin", 
     "mqtt",
-    "plugin",
-    "plugins/acl_file",
-    "plugins/acl_mysql",
-    "plugins/acl_postgresql",
-    "plugins/acl_redis",
     "plugin_host", 
     "mock_plugin_harness"]
 

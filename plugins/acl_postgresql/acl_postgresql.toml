@@ -1,3 +1,0 @@
-[postgresql]
-db_url="postgresql://user@localhost"
-tls_mode=false

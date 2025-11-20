@@ -1,2 +1,0 @@
-[mysql]
-db_url="mysql://root:password@localhost:3306/db_name"

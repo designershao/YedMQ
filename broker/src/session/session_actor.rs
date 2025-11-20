@@ -27,7 +27,6 @@ use yedmq_mqtt::{
     },
     MqttPacketV3,
 };
-use yedmq_plugin::plugin::{Client, ClientProperties};
 
 use crate::{
     inflight::{InflightError, InflightState},
@@ -41,7 +40,33 @@ use super::{
     session_state_storage::SessionState,
     WillMessage,
 };
+
 use crate::connection::ConnectionActorMessage;
+
+pub struct Client {
+
+    pub tenant_id: String,
+
+    pub client_identifier: String,
+
+    pub properties: ClientProperties,
+
+    pub socket_addr: std::net::SocketAddr
+}
+
+pub struct ClientProperties {
+
+    pub username: Option<String>,
+
+    pub clean_session: bool,
+
+    pub will_retain: bool,
+
+    pub will_topic: Option<String>,
+
+    pub will_message: Option<Vec<u8>>,
+
+}
 
 fn get_protobuf_now_timestamp() -> Timestamp {
     let now = std::time::SystemTime::now()
