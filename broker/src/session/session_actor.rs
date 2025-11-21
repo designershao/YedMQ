@@ -5,7 +5,7 @@ use log::{error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage}};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{cmp, net::SocketAddr, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -529,7 +529,7 @@ async fn do_handle_publish(
 }
 
 async fn do_handle_subscribe(
-    subscribe_packet: SubscribePacket,
+    subscribe_packet: &SubscribePacket,
     client_info: &Client,
     plugin_manager: Arc<PluginManager>,
 ) -> HandleSubscribeResult {
@@ -776,14 +776,18 @@ impl SessionActor {
 
         async move {
             let res = do_handle_subscribe(
-                subscribe_packet,
+                &subscribe_packet,
                 &client_info,
                 plugin_manager,
             )
             .await;
-            for packet in res.retain_messages {
+            for (i, packet) in res.retain_messages.into_iter().enumerate() {
                 let packet = (*packet).clone();
-                conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
+                if let MqttPacketV3::Publish(mut p) = packet {
+                    let min_qos = cmp::min(p.fix_header.qos.unwrap_or(0), subscribe_packet.payload.topic_filters[i].qos as i32);
+                    p.fix_header.qos = Some(min_qos);
+                    conn.do_send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(p)));
+                }
             }
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
                 yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
