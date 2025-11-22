@@ -222,7 +222,6 @@ impl RouterActor {
     }
 
     async fn route_in_local_node(tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
-        // Implement the logic to route the packet within the local node
         log::info!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
@@ -231,47 +230,43 @@ impl RouterActor {
             let res = topic_raft_actor_addr.send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
                 tenant_id: tenant_id.clone(),
                 topic: topic.clone(),
-            }).await.unwrap();
+            }).await?;
 
             match res {
                 Ok(subscriptions) => {
                     let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
                     for item in subscriptions.subscriptions {
                         let mut publish_packet = publish_packet.clone();
-                        if publish_packet.fix_header.qos.unwrap() >= item.qos.into() {
-                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap() > 0 {
+                        if publish_packet.fix_header.qos.unwrap_or_default() >= item.qos.into() {
+                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
                                 publish_packet.fix_header.qos = Some(0);
                                 publish_packet.variable_header.packet_identifier = None;
                                 publish_packet.fix_header.remaining_length =
-                                    publish_packet.fix_header.remaining_length - 2;
+                                    publish_packet.fix_header.remaining_length - 2; // Remove 2 bytes for packet identifier
                             } else {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
                         }
 
-                        if let Err(err) = session_manager_actor_addr
+                        session_manager_actor_addr
                             .send(SendMessageToSession {
                                 tenant_id: tenant_id.clone(),
                                 client_id: item.client_identifier.clone(),
                                 packet: MqttPacketV3::Publish(publish_packet),
                             })
-                            .await
-                        {
-                            warn!(
-                                "tenant {} session {} send packet error, details: {}",
-                                tenant_id,
-                                item.client_identifier.clone(),
-                                err
-                            );
-                        }
+                            .await?;
                     }
+                    Ok(())
                 },
                 Err(e) => {
                     log::error!("Failed to get subscriptions for topic {}: {}", topic, e);
+                    Err(RouterActorError::TopicRaftError(e))
                 }
             }
+        } else {
+            warn!("Only Publish packets are supported for routing in local node, got: {:?}, drop it.", packet);
+            Ok(())
         }
-        Ok(())
     }
 
     // Check if the packet should be added to the dead letter queue
