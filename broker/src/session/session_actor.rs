@@ -784,7 +784,12 @@ impl SessionActor {
             for (i, packet) in res.retain_messages.into_iter().enumerate() {
                 let packet = (*packet).clone();
                 if let MqttPacketV3::Publish(mut p) = packet {
-                    let min_qos = cmp::min(p.fix_header.qos.unwrap_or(0), subscribe_packet.payload.topic_filters[i].qos as i32);
+                    let retained_msg_qos = p.fix_header.qos.unwrap_or(0);
+                    let min_qos = cmp::min(retained_msg_qos, subscribe_packet.payload.topic_filters[i].qos as i32);
+                    if min_qos == 0 && retained_msg_qos > 0 {
+                        p.variable_header.packet_identifier = None;
+                        p.fix_header.remaining_length = p.fix_header.remaining_length - 2;
+                    }
                     p.fix_header.qos = Some(min_qos);
                     conn.do_send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(p)));
                 }
