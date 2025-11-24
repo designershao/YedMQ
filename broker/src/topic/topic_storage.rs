@@ -358,11 +358,13 @@ impl TopicStorage {
     }
 
     pub fn new() -> Self {
-        Self {
+        let mut instance = Self {
             retain_message_recorder: RwLock::new(HashMap::new()),
             topic_info_recorder: RwLock::new(HashMap::new()),
             topic_tree: Arc::new(RwLock::new(HashMap::new())),
-        }
+        };
+        instance.create_tenant(&"public".to_string()); //create default tenant
+        instance
     }
 
     pub fn create_tenant(&mut self, tenant: &String) {
