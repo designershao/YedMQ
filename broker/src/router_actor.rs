@@ -144,7 +144,7 @@ impl RouterActor {
                                     if let Err(e) = Self::route_to_other_nodes(&dest_addr, tenant_id, packet).await {
                                         warn!("Failed to route packet to {}: {}", dest_addr, e);
                                         
-                                        // 检查是否为QoS 1或QoS 2消息，如果是则添加到死信队列
+                                        // Check if the packet should be added to the dead letter queue
                                         if Self::should_add_to_dead_letter_queue(packet) {
                                             let router_addr = RouterActor::from_registry();
                                             if let Err(dlq_err) = router_addr.send(AddToDeadLetterQueue {
@@ -158,7 +158,22 @@ impl RouterActor {
                                     }
                                     continue;
                                 } else {
-                                    if let Err(e) = Self::route_to_local_node_session(tenant_id,&item.client_identifier, packet).await {
+                                    let mut publish_packet = publish_packet.clone();
+                                    if publish_packet.fix_header.qos.unwrap_or_default() >= item.qos.into() {
+                                        if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
+                                            publish_packet.fix_header.qos = Some(0);
+                                            publish_packet.variable_header.packet_identifier = None;
+                                            publish_packet.fix_header.remaining_length =
+                                                publish_packet.fix_header.remaining_length - 2; // Remove 2 bytes for packet identifier
+                                        } else {
+                                            publish_packet.fix_header.qos = Some(item.qos.into());
+                                        }
+                                    }
+                                    if let Err(e) = Self::route_to_local_session(
+                                        tenant_id,
+                                        &item.client_identifier,
+                                        MqttPacketV3::Publish(publish_packet)).await 
+                                    {
                                         warn!("Failed to route packet in local node for tenant {}: {}", tenant_id, e);
                                     }
                                 }
@@ -198,7 +213,7 @@ impl RouterActor {
         Ok(())
     }
 
-    async fn route_to_local_node_session(tenant_id: &String, client_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
+    async fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3) -> Result<(), RouterActorError> {
         log::info!("Route to  local node session {} {} : {:?}",tenant_id, client_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
@@ -206,7 +221,7 @@ impl RouterActor {
                 .send(SendMessageToSession {
                     tenant_id: tenant_id.clone(),
                     client_id: client_id.clone(),
-                    packet: MqttPacketV3::Publish(publish_packet.clone()),
+                    packet: MqttPacketV3::Publish(publish_packet),
                 })
                 .await
             {
@@ -221,7 +236,8 @@ impl RouterActor {
         Ok(())
     }
 
-    async fn route_in_local_node(tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
+    // Called by rpc service when receiving packet from other nodes
+    async fn publish_to_local_subscribers(tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
         log::info!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
@@ -427,7 +443,7 @@ impl Handler<RouteFromOtherNode> for RouterActor {
     fn handle(&mut self, msg: RouteFromOtherNode, _ctx: &mut Self::Context) -> Self::Result {
         log::info!("In handler from other nodeRouting packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
         Box::pin(async move {
-            Self::route_in_local_node(&msg.tenant_id, &msg.packet).await?;
+            Self::publish_to_local_subscribers(&msg.tenant_id, &msg.packet).await?;
             Ok(())
         }.into_actor(self))
     }
@@ -447,7 +463,7 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
             let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
             let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
             for tenant_id in tenant_ids {
-                Self::route_in_local_node(&tenant_id, &msg.packet).await?;
+                Self::publish_to_local_subscribers(&tenant_id, &msg.packet).await?;
             }
             Ok(())
         }.into_actor(self));
