@@ -4,7 +4,7 @@ use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, S
 use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
-use crate::{protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest}, session::session_actor_map_storage::{SessionActorMapEntry, SessionClock}};
+use crate::{globals, protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient}, session::session_actor_map_storage::{SessionActorMapEntry, SessionClock}};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
 
@@ -90,8 +90,7 @@ impl SessionActorMapRaftActor {
 
         let config = Arc::new(raft_config.validate().unwrap());
 
-        let session_clock = Arc::new(SessionClock::new(settings.cluster.node_id, settings.session.session_clock_path.clone()));
-        session_clock.restore().await.unwrap();
+        let session_clock = globals::get_session_clock();
 
         let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
         let (log_store, state_machine_store) = new_storage(

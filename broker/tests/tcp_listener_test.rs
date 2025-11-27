@@ -3,31 +3,45 @@ use yedmq::app::YedMQApp;
 use yedmq::settings::Settings;
 use tokio::sync::OnceCell;
 use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS, LastWill };
+use tempfile::TempDir;
 
 
 static ASYNC_SETUP: OnceCell<TestContext> = OnceCell::const_new();
 
 struct TestContext {
+    test_dir: TempDir,
+
+    original_dir: PathBuf,
 
     settings: Arc<Settings>
 }
 
 impl Drop for TestContext {
     fn drop(&mut self) {
-
+        env::set_current_dir(self.original_dir.clone()).unwrap();
     }
 }
 
 async fn setup_instance() -> &'static TestContext {
     ASYNC_SETUP.get_or_init(|| async {
-        let test_settings = Arc::new(get_test_settings(2, 10));
+        let original_dir = env::current_dir().unwrap();
+
+        let temp_dir = TempDir::new().unwrap();
+
+        fs::copy("./yedmq.toml", &temp_dir.path().join("yedmq.toml")).unwrap();
+
+        env::set_current_dir(temp_dir.path()).unwrap();
+
+
+        let test_settings = Arc::new(get_test_settings(2, 10, temp_dir.path()));
+
         let app = Arc::new(YedMQApp::new(test_settings.clone()).await);
 
         YedMQApp::start(app.clone()).await;
 
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        TestContext { settings: test_settings }
+        TestContext { settings: test_settings, original_dir, test_dir: temp_dir }
     }).await
 }
 
@@ -37,12 +51,10 @@ fn random_tcp_port() -> u16 {
     rand::thread_rng().gen_range(1024..=65535)
 }
 
-fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Settings {
+fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: &Path) -> Settings {
     // Generate a random temporary directory
-    let tmp_dir = env::temp_dir();
-    let random_dir = Path::new(&tmp_dir).join(uuid::Uuid::new_v4().to_string());
-    fs::create_dir_all(&random_dir).unwrap();
-    let test_temp_store_dir = random_dir.to_str().unwrap().to_string();
+    fs::create_dir_all(temp_dir).unwrap();
+    let test_temp_store_dir = temp_dir.to_str().unwrap().to_string();
 
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
@@ -57,7 +69,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
         session: yedmq::settings::Session {
             qos_expired_secs: qos_expired_secs,
             packet_resend_interval_secs: resend_duration_sec,
-            session_clock_path: format!("{}/clock", random_dir.to_str().unwrap()),
+            session_clock_path: temp_dir.join("clock").to_str().unwrap().to_string(),
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
@@ -83,7 +95,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
         },
         plugin: yedmq::settings::Plugin {
             dir: plugin_path.to_str().unwrap().to_string(),
-            local_socket_path: format!("{}/yedmq_plugin_host.sock", random_dir.to_str().unwrap()),
+            local_socket_path: format!("{}/yedmq_plugin_host.sock", temp_dir.to_str().unwrap()),
             default_authorize_result: true,
             default_authenticate_result: true,
         },
@@ -119,7 +131,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64) -> Setting
 pub async fn test_tcp_listener_connect() {
     let context = setup_instance().await;
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     let keep_live_duration_secs = 5;
 
