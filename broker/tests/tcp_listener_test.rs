@@ -4,12 +4,13 @@ use yedmq::settings::Settings;
 use tokio::sync::OnceCell;
 use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS, LastWill };
 use tempfile::TempDir;
+use env_logger;
 
 
 static ASYNC_SETUP: OnceCell<TestContext> = OnceCell::const_new();
 
 struct TestContext {
-    test_dir: TempDir,
+    _test_dir: TempDir,
 
     original_dir: PathBuf,
 
@@ -35,13 +36,22 @@ async fn setup_instance() -> &'static TestContext {
 
         let test_settings = Arc::new(get_test_settings(2, 10, temp_dir.path()));
 
-        let app = Arc::new(YedMQApp::new(test_settings.clone()).await);
+        let settings_clone = test_settings.clone();
 
-        YedMQApp::start(app.clone()).await;
+        std::thread::spawn(move || {
+            let rt = actix::System::new();
+            rt.block_on(async {
+                let app = Arc::new(YedMQApp::new(settings_clone).await);
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+                YedMQApp::start(app.clone()).await;
 
-        TestContext { settings: test_settings, original_dir, test_dir: temp_dir }
+            });
+            rt.run().unwrap();
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        TestContext { settings: test_settings, original_dir, _test_dir: temp_dir }
     }).await
 }
 
@@ -131,11 +141,14 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
 pub async fn test_tcp_listener_connect() {
     let context = setup_instance().await;
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let keep_live_duration_secs = 5;
 
     let broker_addr: SocketAddr = context.settings.listener.tcp.external.as_str().parse().unwrap();
+
+    println!("borker tcp addr {:?}", broker_addr.to_string());
+
 
     let mut options = MqttOptions::new(
         "test_client_for_connect",
@@ -188,13 +201,14 @@ async fn test_publish_subscribe(qos: QoS) {
     tokio::time::sleep(Duration::from_secs(1)).await;
     let broker_addr: SocketAddr = context.settings.listener.tcp.external.as_str().parse().unwrap();
 
+    println!("borker tcp addr {:?}", broker_addr.to_string());
+
     let mut mqtt_options = MqttOptions::new(format!("test-pubsub-{:?}", qos), broker_addr.ip().to_string(), broker_addr.port());
     mqtt_options.set_keep_alive(Duration::from_secs(5));
 
     let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
 
     let topic = format!("test/{:?}", qos);
-    client.subscribe(topic.clone(), qos).await.unwrap();
 
     let payload = format!("hello {:?}", qos).into_bytes();
 
@@ -204,6 +218,7 @@ async fn test_publish_subscribe(qos: QoS) {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
+                    client.subscribe(topic.clone(), qos).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     client.publish(topic.clone(), qos, false, payload.clone()).await.unwrap();
@@ -268,6 +283,7 @@ async fn test_retained_message() {
                     client1.publish(topic, QoS::AtLeastOnce, true, payload.to_vec()).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                     client1.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
@@ -283,11 +299,13 @@ async fn test_retained_message() {
     });
     tokio::time::timeout(Duration::from_secs(5), task1).await.expect("Task 1 timed out").unwrap();
 
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+
     // Client 2 connects and subscribes, should receive the retained message
     let mut mqtt_options2 = MqttOptions::new("retained-subscriber", broker_addr.ip().to_string(), broker_addr.port());
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
-    client2.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
 
     let task2 = tokio::spawn(async move {
         let mut connected = false;
@@ -295,6 +313,7 @@ async fn test_retained_message() {
             match eventloop2.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
+                    client2.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     assert_eq!(publish.topic, topic);
@@ -329,7 +348,6 @@ async fn test_last_will_message() {
     let mut sub_options = MqttOptions::new("will-subscriber", broker_addr.ip().to_string(), broker_addr.port());
     sub_options.set_keep_alive(Duration::from_secs(5));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
-    sub_client.subscribe(will_topic, QoS::AtLeastOnce).await.unwrap();
 
     let sub_task = tokio::spawn(async move {
         let mut connected = false;
@@ -337,6 +355,7 @@ async fn test_last_will_message() {
             match sub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
+                    sub_client.subscribe(will_topic, QoS::AtLeastOnce).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     // Ready to receive will
@@ -381,13 +400,13 @@ async fn test_max_qos_subscription() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let broker_addr: SocketAddr = context.settings.listener.tcp.external.as_str().parse().unwrap();
+    println!("broker tcp addr {:?}", broker_addr.to_string());
     let topic = "test/max_qos";
 
     // Subscriber with QoS 1
     let mut sub_options = MqttOptions::new("max-qos-subscriber", broker_addr.ip().to_string(), broker_addr.port());
     sub_options.set_keep_alive(Duration::from_secs(5));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
-    sub_client.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
 
     // Publisher
     let mut pub_options = MqttOptions::new("max-qos-publisher", broker_addr.ip().to_string(), broker_addr.port());
@@ -402,6 +421,7 @@ async fn test_max_qos_subscription() {
             match sub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
+                    sub_client.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     // Ready
