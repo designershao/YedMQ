@@ -349,6 +349,8 @@ async fn test_last_will_message() {
     sub_options.set_keep_alive(Duration::from_secs(5));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
+    let (notify_sub_succeed_sender,mut notify_sub_succeed_receiver) = tokio::sync::broadcast::channel(1);
+
     let sub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
@@ -358,7 +360,7 @@ async fn test_last_will_message() {
                     sub_client.subscribe(will_topic, QoS::AtLeastOnce).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
-                    // Ready to receive will
+                    notify_sub_succeed_sender.send(()).unwrap();
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     assert_eq!(publish.topic, will_topic);
@@ -376,6 +378,8 @@ async fn test_last_will_message() {
             }
         }
     });
+
+    notify_sub_succeed_receiver.recv().await.unwrap();
 
     // Client with Last Will, will simulate an unclean disconnect
     let mut will_client_options = MqttOptions::new("will-client", broker_addr.ip().to_string(), broker_addr.port());
@@ -415,6 +419,8 @@ async fn test_max_qos_subscription() {
 
     let payload = b"message for qos downgrade";
 
+    let (notify_sub_succeed_sender,mut notify_sub_succeed_receiver) = tokio::sync::broadcast::channel(1);
+
     let sub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
@@ -424,6 +430,7 @@ async fn test_max_qos_subscription() {
                     sub_client.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
+                    notify_sub_succeed_sender.send(()).unwrap();
                     // Ready
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -445,6 +452,8 @@ async fn test_max_qos_subscription() {
         }
     });
 
+    notify_sub_succeed_receiver.recv().await.unwrap();
+
     let pub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
@@ -453,6 +462,7 @@ async fn test_max_qos_subscription() {
                     connected = true;
                     // Publish with QoS 2
                     pub_client.publish(topic, QoS::ExactlyOnce, false, payload.to_vec()).await.unwrap();
+                    println!("pub succeed")
                 }
                 Ok(Event::Incoming(Packet::PubComp(_))) => {
                     pub_client.disconnect().await.unwrap();
