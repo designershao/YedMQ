@@ -4,7 +4,6 @@ use yedmq::settings::Settings;
 use tokio::sync::OnceCell;
 use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS, LastWill };
 use tempfile::TempDir;
-use env_logger;
 
 
 static ASYNC_SETUP: OnceCell<TestContext> = OnceCell::const_new();
@@ -160,11 +159,11 @@ pub async fn test_tcp_listener_connect() {
     let (client, mut eventloop) = AsyncClient::new(options, 10);
 
     let connection_handle = tokio::spawn(async move {
-        let mut connected = false;
+        let mut _connected = false;
         loop {
             match eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(ack))) => {
-                    connected = true;
+                    _connected = true;
                     client.disconnect().await.unwrap();
                     return Ok(ack.code);
                 }
@@ -173,7 +172,7 @@ pub async fn test_tcp_listener_connect() {
                 }
                 Ok(_) => continue,
                 Err(e) => {
-                    if connected {
+                    if _connected {
                         break;
                     }
                     return Err(e);

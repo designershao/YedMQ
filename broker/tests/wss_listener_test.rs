@@ -1,3 +1,4 @@
+
 use std::{env, fs, net::SocketAddr, path::{Path, PathBuf}, sync::Arc, time::Duration};
 use yedmq::app::YedMQApp;
 use yedmq::settings::Settings;
@@ -79,7 +80,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
 
     let tcp_port = random_tcp_port();
-    let tcp_tls_port = random_tcp_port();
+    let wss_port = random_tcp_port();
 
     let rpc_port = random_tcp_port();
 
@@ -100,7 +101,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                 external: format!("0.0.0.0:{}", tcp_port).to_string(),
             },
             tcp_tls: yedmq::settings::TcpTls {
-                external: format!("0.0.0.0:{}", tcp_tls_port).to_string(),
+                external: format!("0.0.0.0:{}", tcp_port+1).to_string(),
                 cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
                 key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
             },
@@ -108,9 +109,9 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                 external: format!("0.0.0.0:{}", tcp_port + 2).to_string(),
             },
             wss: yedmq::settings::Wss {
-                external: format!("0.0.0.0:{}", tcp_port + 3).to_string(),
-                cert_file: "".to_string(),
-                key_file: "".to_string(),
+                external: format!("0.0.0.0:{}", wss_port).to_string(),
+                cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
+                key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
             },
             api: yedmq::settings::Api {
                 external: format!("0.0.0.0:{}", api_port).to_string(),
@@ -151,7 +152,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
     settings
 }
 
-fn configure_tls() -> Transport {
+fn configure_wss() -> Transport {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let certs_path = PathBuf::from(crate_root_path).join("tests").join("certs");
     let ca_file_path = certs_path.join("ca.crt");
@@ -167,29 +168,29 @@ fn configure_tls() -> Transport {
         .with_root_certificates(root_cert_store)
         .with_no_client_auth();
     
-    Transport::tls_with_config(client_config.into())
+    Transport::wss_with_config(client_config.into())
 }
 
 #[actix::test]
-pub async fn test_tls_listener_connect() {
+pub async fn test_wss_listener_connect() {
     let context = setup_instance().await;
 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     let keep_live_duration_secs = 5;
 
-    let broker_addr: SocketAddr = context.settings.listener.tcp_tls.external.as_str().parse().unwrap();
+    let broker_addr: SocketAddr = context.settings.listener.wss.external.as_str().parse().unwrap();
 
-    println!("borker tls addr {:?}", broker_addr.to_string());
+    println!("borker wss addr {:?}", broker_addr.to_string());
 
 
     let mut options = MqttOptions::new(
-        "test_client_for_tls_connect",
-        "localhost",
-        broker_addr.port()
+        "test_client_for_wss_connect",
+        format!("wss://localhost:{}/mqtt", broker_addr.port()),
+        broker_addr.port(),
     );
     options.set_keep_alive(std::time::Duration::from_secs(keep_live_duration_secs));
-    options.set_transport(configure_tls());
+    options.set_transport(configure_wss());
 
     let (client, mut eventloop) = AsyncClient::new(options, 10);
 
@@ -229,24 +230,24 @@ pub async fn test_tls_listener_connect() {
 
 }
 
-async fn test_tls_publish_subscribe(qos: QoS) {
+async fn test_wss_publish_subscribe(qos: QoS) {
     let context = setup_instance().await;
 
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let broker_addr: SocketAddr = context.settings.listener.tcp_tls.external.as_str().parse().unwrap();
+    let broker_addr: SocketAddr = context.settings.listener.wss.external.as_str().parse().unwrap();
 
-    println!("borker tls addr {:?}", broker_addr.to_string());
+    println!("borker wss addr {:?}", broker_addr.to_string());
 
-    let mut mqtt_options = MqttOptions::new(format!("test-tls-pubsub-{:?}", qos), "localhost", broker_addr.port());
+    let mut mqtt_options = MqttOptions::new(format!("test-wss-pubsub-{:?}", qos), format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     mqtt_options.set_keep_alive(Duration::from_secs(5));
-    mqtt_options.set_transport(configure_tls());
+    mqtt_options.set_transport(configure_wss());
 
 
     let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
 
-    let topic = format!("test-tls/{:?}", qos);
+    let topic = format!("test-wss/{:?}", qos);
 
-    let payload = format!("hello tls {:?}", qos).into_bytes();
+    let payload = format!("hello wss {:?}", qos).into_bytes();
 
     let task = tokio::spawn(async move {
         let mut connected = false;
@@ -283,32 +284,32 @@ async fn test_tls_publish_subscribe(qos: QoS) {
 }
 
 #[actix::test]
-async fn test_tls_publish_subscribe_qos0() {
-    test_tls_publish_subscribe(QoS::AtMostOnce).await;
+async fn test_wss_publish_subscribe_qos0() {
+    test_wss_publish_subscribe(QoS::AtMostOnce).await;
 }
 
 #[actix::test]
-async fn test_tls_publish_subscribe_qos1() {
-    test_tls_publish_subscribe(QoS::AtLeastOnce).await;
+async fn test_wss_publish_subscribe_qos1() {
+    test_wss_publish_subscribe(QoS::AtLeastOnce).await;
 }
 
 #[actix::test]
-async fn test_tls_publish_subscribe_qos2() {
-    test_tls_publish_subscribe(QoS::ExactlyOnce).await;
+async fn test_wss_publish_subscribe_qos2() {
+    test_wss_publish_subscribe(QoS::ExactlyOnce).await;
 }
 
 #[actix::test]
-async fn test_tls_retained_message() {
+async fn test_wss_retained_message() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let broker_addr: SocketAddr = context.settings.listener.tcp_tls.external.as_str().parse().unwrap();
-    let topic = "test-tls/retained";
-    let payload = b"retained message tls";
+    let broker_addr: SocketAddr = context.settings.listener.wss.external.as_str().parse().unwrap();
+    let topic = "test-wss/retained";
+    let payload = b"retained message wss";
 
     // Client 1 publishes a retained message and disconnects
-    let mut mqtt_options1 = MqttOptions::new("tls-retained-publisher", "localhost", broker_addr.port());
+    let mut mqtt_options1 = MqttOptions::new("wss-retained-publisher", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
-    mqtt_options1.set_transport(configure_tls());
+    mqtt_options1.set_transport(configure_wss());
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
 
     let task1 = tokio::spawn(async move {
@@ -340,9 +341,9 @@ async fn test_tls_retained_message() {
 
 
     // Client 2 connects and subscribes, should receive the retained message
-    let mut mqtt_options2 = MqttOptions::new("tls-retained-subscriber", "localhost", broker_addr.port());
+    let mut mqtt_options2 = MqttOptions::new("wss-retained-subscriber", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
-    mqtt_options2.set_transport(configure_tls());
+    mqtt_options2.set_transport(configure_wss());
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
 
     let task2 = tokio::spawn(async move {
@@ -374,18 +375,18 @@ async fn test_tls_retained_message() {
 }
 
 #[actix::test]
-async fn test_tls_last_will_message() {
+async fn test_wss_last_will_message() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let broker_addr: SocketAddr = context.settings.listener.tcp_tls.external.as_str().parse().unwrap();
-    let will_topic = "test-tls/will";
+    let broker_addr: SocketAddr = context.settings.listener.wss.external.as_str().parse().unwrap();
+    let will_topic = "test-wss/will";
     let will_message = b"client disconnected uncleanly";
     let last_will = LastWill::new(will_topic, will_message, QoS::AtLeastOnce, false);
 
     // Subscriber client
-    let mut sub_options = MqttOptions::new("tls-will-subscriber", "localhost", broker_addr.port());
+    let mut sub_options = MqttOptions::new("wss-will-subscriber", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     sub_options.set_keep_alive(Duration::from_secs(5));
-    sub_options.set_transport(configure_tls());
+    sub_options.set_transport(configure_wss());
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
     let (notify_sub_succeed_sender,mut notify_sub_succeed_receiver) = tokio::sync::broadcast::channel(1);
@@ -421,9 +422,9 @@ async fn test_tls_last_will_message() {
     notify_sub_succeed_receiver.recv().await.unwrap();
 
     // Client with Last Will, will simulate an unclean disconnect
-    let mut will_client_options = MqttOptions::new("tls-will-client", "localhost", broker_addr.port());
+    let mut will_client_options = MqttOptions::new("wss-will-client", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     will_client_options.set_keep_alive(Duration::from_secs(2)).set_last_will(last_will);
-    will_client_options.set_transport(configure_tls());
+    will_client_options.set_transport(configure_wss());
     let (_will_client, mut will_eventloop) = AsyncClient::new(will_client_options, 10);
 
     let will_task = tokio::spawn(async move {
@@ -439,27 +440,27 @@ async fn test_tls_last_will_message() {
 }
 
 #[actix::test]
-async fn test_tls_max_qos_subscription() {
+async fn test_wss_max_qos_subscription() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let broker_addr: SocketAddr = context.settings.listener.tcp_tls.external.as_str().parse().unwrap();
-    println!("broker tls addr {:?}", broker_addr.to_string());
-    let topic = "test-tls/max_qos";
+    let broker_addr: SocketAddr = context.settings.listener.wss.external.as_str().parse().unwrap();
+    println!("broker wss addr {:?}", broker_addr.to_string());
+    let topic = "test-wss/max_qos";
 
     // Subscriber with QoS 1
-    let mut sub_options = MqttOptions::new("tls-max-qos-subscriber", "localhost", broker_addr.port());
+    let mut sub_options = MqttOptions::new("wss-max-qos-subscriber", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     sub_options.set_keep_alive(Duration::from_secs(5));
-    sub_options.set_transport(configure_tls());
+    sub_options.set_transport(configure_wss());
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
     // Publisher
-    let mut pub_options = MqttOptions::new("tls-max-qos-publisher", "localhost", broker_addr.port());
+    let mut pub_options = MqttOptions::new("wss-max-qos-publisher", format!("wss://localhost:{}/mqtt", broker_addr.port()), broker_addr.port());
     pub_options.set_keep_alive(Duration::from_secs(5));
-    pub_options.set_transport(configure_tls());
+    pub_options.set_transport(configure_wss());
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_options, 10);
 
-    let payload = b"message for qos downgrade tls";
+    let payload = b"message for qos downgrade wss";
 
     let (notify_sub_succeed_sender,mut notify_sub_succeed_receiver) = tokio::sync::broadcast::channel(1);
 

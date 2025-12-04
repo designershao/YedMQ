@@ -35,33 +35,42 @@ impl MqttTcpTlsListener {
 
             let remote_addr = stream.peer_addr().unwrap();
 
-            let tls_stream = tls_acceptor.accept(stream).await.unwrap();
-
-            let settings = self.app.settings.clone();
-
-            let client_certs = tls_stream.get_ref().1.peer_certificates();
-            let client_certificate_vec = {
-                if let Some(certs) = client_certs {
-                    if let Some(client_cert_der) = certs.first() {
-                        let certificate_vec =  client_cert_der.as_ref().to_vec();
-                        Some(certificate_vec   )
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+            match tls_acceptor.accept(stream).await {
+                Err(e) => {
+                    log::error!("TLS accept error from {}: {}", remote_addr, e);
+                    continue;
                 }
-            };
+                Ok(tls_stream) => {
+                    let settings = self.app.settings.clone();
 
-            ConnectionActor::new(
-                tls_stream,
-                settings.mqtt.max_message_size,
-                4096,
-                remote_addr,
-                self.app.plugin_manager.clone(),
-                client_certificate_vec
-            )
-            .start();
+                    let client_certs = tls_stream.get_ref().1.peer_certificates();
+                    let client_certificate_vec = {
+                        if let Some(certs) = client_certs {
+                            if let Some(client_cert_der) = certs.first() {
+                                let certificate_vec =  client_cert_der.as_ref().to_vec();
+                                Some(certificate_vec   )
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+
+                    ConnectionActor::new(
+                        tls_stream,
+                        settings.mqtt.max_message_size,
+                        4096,
+                        remote_addr,
+                        self.app.plugin_manager.clone(),
+                        client_certificate_vec
+                    )
+                    .start();
+                }
+            }
+
+
+
         }
     }
 }
