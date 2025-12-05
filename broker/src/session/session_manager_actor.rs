@@ -189,9 +189,7 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
                 info!("renew session lease for tenant {}", tenant_id);
                 let sessions = tenant_sessions
                     .read()
-                    .await
-                    .iter()
-                    .map(|(client_id, _)| RenewSession {
+                    .await.keys().map(|client_id| RenewSession {
                         tenant_id: tenant_id.clone(),
                         session_id: client_id.clone(),
                     })
@@ -254,7 +252,6 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
                 info!("remove expired session {} succeed", msg.client_id);
             } else {
                 warn!("session {} not found in tenant {}, maybe this node has rebooted or the session has been removed", msg.client_id, msg.tenant_id);
-                return;
             }
         }
         .into_actor(self)
@@ -403,7 +400,7 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
         msg: ForceStopWithSessionService,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        if self.sessions.contains_key(&msg.tenant_id) == false {
+        if !self.sessions.contains_key(&msg.tenant_id) {
             return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }
         let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
@@ -444,7 +441,7 @@ impl Handler<ForceStop> for SessionManagerActor {
 
     fn handle(&mut self, msg: ForceStop, _ctx: &mut Self::Context) -> Self::Result {
         info!("force stop session {}", msg.client_id);
-        if self.sessions.contains_key(&msg.tenant_id) == false {
+        if !self.sessions.contains_key(&msg.tenant_id) {
             return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }
         let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
@@ -482,7 +479,7 @@ impl Handler<ForceDisconnect> for SessionManagerActor {
     type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
     fn handle(&mut self, msg: ForceDisconnect, _ctx: &mut Self::Context) -> Self::Result {
-        if self.sessions.contains_key(&msg.tenant_id) == false {
+        if !self.sessions.contains_key(&msg.tenant_id) {
             return Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) });
         }
         let tenant_sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
@@ -815,7 +812,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     session_version,
                 },
             );
-            return Ok(session_actor_message_recipient);
+            Ok(session_actor_message_recipient)
         };
         Box::pin(future)
     }
@@ -835,14 +832,14 @@ impl Handler<CreateTenantMessage> for SessionManagerActor {
             return Err(SessionManagerError::TenantHasExisted(msg.tenant_id));
         }
         self.sessions
-            .insert(msg.tenant_id.into(), Arc::new(RwLock::new(HashMap::new())));
+            .insert(msg.tenant_id, Arc::new(RwLock::new(HashMap::new())));
         Ok(())
     }
 }
 
 impl SessionManagerActor {
     fn tenant_existed(&self, tenant_identifier: &str) -> bool {
-        return self.sessions.contains_key(tenant_identifier);
+        self.sessions.contains_key(tenant_identifier)
     }
 
     fn create_tenant(&mut self, tenant_identifier: &str) {

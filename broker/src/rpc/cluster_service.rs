@@ -440,13 +440,13 @@ impl ClusterService for ClusterServiceImpl {
         let inner = request.into_inner();
         let version = SessionVersion {
             counter: inner.session_version.unwrap().counter,
-            node_id: inner.node_id.clone(),
+            node_id: inner.node_id,
         };
         let register_session_actor_map_actor =
             session_actor_map_raft_actor::RegisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                node_id: inner.node_id.clone(),
+                node_id: inner.node_id,
                 version,
             };
         session_actor_map_raft_actor_addr

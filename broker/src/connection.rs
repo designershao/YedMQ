@@ -189,7 +189,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
         username: packet.payload.username.as_ref().unwrap_or(&"".to_string()).clone(),
         password: packet.payload.password.as_ref().unwrap_or(&"".to_string()).clone(),
         client_ip: peer_addr.ip().to_string(),
-        client_cert: client_certificate.unwrap_or(vec![]),
+        client_cert: client_certificate.unwrap_or_default(),
         protocol_version: "3.1.1".to_string(),
         properties: None,
     };
@@ -299,7 +299,7 @@ where
         let reader = self.reader.clone();
         let mut buffer = BytesMut::with_capacity(self.buffer_size);
         let plugin_service = self.plugin_service.clone();
-        let peer_addr = self.peer_addr.clone();
+        let peer_addr = self.peer_addr;
         let client_cert = self.client_certificate.clone();
         let handle = ctx.spawn(
             async move {

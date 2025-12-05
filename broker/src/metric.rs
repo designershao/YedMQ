@@ -17,6 +17,12 @@ pub struct Metric {
     pub start_time: Instant,
 }
 
+impl Default for Metric {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Metric {
 
     pub fn new() -> Metric {

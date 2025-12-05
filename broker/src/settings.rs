@@ -250,17 +250,11 @@ pub struct Api {
 
 
 #[derive(Debug, Deserialize)]
+#[derive(Default)]
 pub struct AuthConfig {
     pub users: Vec<User>
 }
 
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            users: vec![]
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub struct User {

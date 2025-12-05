@@ -6,13 +6,9 @@ use crate::protobuf::cluster_service_server::ClusterServiceServer;
 use crate::protobuf::raft_service_server::RaftServiceServer;
 use crate::settings::Settings;
 
+#[derive(Default)]
 pub struct RpcActor {}
 
-impl Default for RpcActor {
-    fn default() -> Self {
-        RpcActor {}
-    }
-}
 
 impl SystemService for RpcActor {
     fn service_started(&mut self, ctx: &mut Context<Self>) {

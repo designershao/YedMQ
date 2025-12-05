@@ -69,7 +69,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnSubackPacket> {
                 UnSubackPacket {
                     fix_header: cloned_fixed_header,
                     variable_header: VariableHeader {
-                        packet_identifier: packet_identifier
+                        packet_identifier
                     },
                 }
             })

@@ -37,7 +37,7 @@ pub fn remaining_length(input: &[u8]) -> IResult<&[u8], usize> {
                     for u in vv.iter() {
                         v += ((*u & 127) as i32) * multiplier;
                     }
-                    return Ok((ii, v as usize));
+                    Ok((ii, v as usize))
                 }
             }
         }
@@ -88,7 +88,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
             };
             match remaining_length(i) {
                 Err(e) => Err(e),
-                Ok((i, remaining_length)) => return Ok((i, FixHeader {
+                Ok((i, remaining_length)) => Ok((i, FixHeader {
                 packet_type,
                 qos,
                 retain,
@@ -134,11 +134,10 @@ impl FixHeader {
                 r += (self.qos.unwrap() as u8) << 1
             }
 
-            if self.retain.is_some() {
-                if self.retain.unwrap() {
+            if self.retain.is_some()
+                && self.retain.unwrap() {
                     r += 1;
                 }
-            }
             buf.put_u8(r);
         } else {
             buf.put_u8(packet_type_u8 << 4);
@@ -154,7 +153,7 @@ impl FixHeader {
         let mut size = size;
         let mut length = 0;
         loop {
-            size = size / 128;
+            size /= 128;
             length += 1;
             if size <= 0 {
                 return length;
@@ -167,7 +166,7 @@ impl FixHeader {
         let mut buf = BytesMut::with_capacity(FixHeader::get_variable_length_encoding_bytes_size(size)); // variable length encoding scheme max size is 4 bytes 
         loop {
             let byte = size % 128;
-            size = size / 128;
+            size /= 128;
             if size > 0 {
                 buf.put_u8((byte | 128).try_into().unwrap());
             } else {

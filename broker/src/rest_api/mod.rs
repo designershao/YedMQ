@@ -56,7 +56,7 @@ async fn basic_auth_middleware(
     match auth_header {
         Some(value) => {
             // Extract basic auth value from the header
-            if let Some(auth_value) = value.to_str().ok() {
+            if let Ok(auth_value) = value.to_str() {
                 if let Some(credentials) = auth_value.strip_prefix("Basic ") {
                     let decoded = general_purpose::STANDARD.decode(credentials).map_err(|_| {
                         (

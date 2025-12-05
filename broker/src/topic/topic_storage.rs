@@ -243,15 +243,18 @@ fn test_topic(topic: &String) -> bool {
             if s.contains('#') || s.contains('+') {
                 return false;
             }
-        } else {
-            if s.contains('#') {
-                if index != length {
-                    return false;
-                }
-            }
+        } else if s.contains('#')
+        && index != length {
+            return false;
         }
     }
     true
+}
+
+impl Default for TopicStorage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TopicStorage {
@@ -301,11 +304,11 @@ impl TopicStorage {
                 result_items.push((client_id, topic, *qos));
             }
             let total = items.len();
-            return Ok((total as u64, result_items));
+            Ok((total as u64, result_items))
         } else {
-            return Err(anyhow::anyhow!(TopicError::TenantNotFound(
+            Err(anyhow::anyhow!(TopicError::TenantNotFound(
                 tenant_id.to_string()
-            )));
+            )))
         }
     }
 
@@ -414,7 +417,7 @@ impl TopicStorage {
                 qos,
             );
             if result.is_err() {
-                return Err(result.err().unwrap());
+                Err(result.err().unwrap())
             } else {
                 // Update the topic_info_recorder
                 let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
@@ -423,9 +426,7 @@ impl TopicStorage {
                 let key = generate_key(&client_identifier, &topic_filter);
 
                 let topic_info_state_item = topic_info_recorder_optional.unwrap();
-                if !topic_info_state_item.contains_key(&key) {
-                    topic_info_state_item.insert(key, qos);
-                }
+                topic_info_state_item.entry(key).or_insert(qos);
                 //
 
                 Ok(())
@@ -439,7 +440,7 @@ impl TopicStorage {
         client_identifier: String,
         qos: u8,
     ) -> Result<(), TopicError> {
-        if topic_partterns.len() > 0 {
+        if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
@@ -473,15 +474,15 @@ impl TopicStorage {
             let result = Self::recursion_unsubscription(
                 tenant_topic_root,
                 topic_patterns,
-                &client_identifier,
+                client_identifier,
             );
             if result.is_err() {
-                return Err(result.err().unwrap());
+                Err(result.err().unwrap())
             } else {
                 // Update the topic_info_recorder
                 let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
                 let topic_info_state_optional = topic_info_recorder.get_mut(tenant_id);
-                let key = generate_key(&client_identifier, &topic_filter);
+                let key = generate_key(client_identifier, topic_filter);
                 let topic_info_state_item = topic_info_state_optional.unwrap();
                 if topic_info_state_item.contains_key(&key) {
                     topic_info_state_item.remove(&key);
@@ -498,7 +499,7 @@ impl TopicStorage {
         mut topic_partterns: Vec<String>,
         client_identifier: &String,
     ) -> Result<(), TopicError> {
-        if topic_partterns.len() > 0 {
+        if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
@@ -547,7 +548,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
     ) -> Vec<Arc<Subscription>> {
-        if topic_partterns.len() > 0 {
+        if !topic_partterns.is_empty() {
             let mut result = vec![];
             // Get # wildcard subscriptions
             let topic_sharp_wildcard_option = topic_node.write().unwrap().get_leaf("#".to_string());
@@ -594,7 +595,7 @@ impl TopicStorage {
         mut topic_partterns: Vec<String>,
         publish_packet: MqttPacketV3,
     ) -> Result<(), TopicError> {
-        if topic_partterns.len() > 0 {
+        if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
@@ -619,7 +620,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
     ) -> Result<(), TopicError> {
-        if topic_partterns.len() > 0 {
+        if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
@@ -678,7 +679,7 @@ impl TopicStorage {
         mut topic_patterns: Vec<String>,
     ) -> Vec<Arc<MqttPacketV3>> {
         let mut result: Vec<Arc<MqttPacketV3>> = vec![];
-        if topic_patterns.len() > 0 {
+        if !topic_patterns.is_empty() {
             let topic_pattern = &topic_patterns[0];
             if topic_pattern == &"+".to_string() || topic_pattern == &"#".to_string() {
                 for sub in topic_node.write().unwrap().leaves.read().unwrap().iter() {
@@ -693,7 +694,7 @@ impl TopicStorage {
                     .write()
                     .unwrap()
                     .get_leaf(topic_pattern.to_string());
-                if !topic_node_next.is_none() {
+                if topic_node_next.is_some() {
                     let topic_patterns_rest = topic_patterns.drain(1..).collect();
                     result.append(&mut Self::recursion_get_retain_packet(
                         topic_node_next.unwrap(),

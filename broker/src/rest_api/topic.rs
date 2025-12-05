@@ -54,14 +54,14 @@ pub async fn topic_list(
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
                 }
             };
-            return error_response;
+            error_response
         } else {
             error!("get topic list error: {}", err);
             let error_response = super::ErrorResponse {
                 code: 101,
                 message: "Internal Server Error".to_string(),
             };
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
     } else {
         let topic_list = topic_list_result.unwrap();

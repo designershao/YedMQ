@@ -144,7 +144,7 @@ pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8],MqttP
                 PacketType::PUBLISH => {
                     let dest_parse = |input| {
                         let max_message_size = max_message_size as usize;
-                        return v3::publish::parse_with_max_message_size_limit(input, max_message_size)
+                        v3::publish::parse_with_max_message_size_limit(input, max_message_size)
                     };
                     consumed(map(dest_parse, |p|{
                         MqttPacketV3::Publish(p)
@@ -208,7 +208,7 @@ pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8],MqttP
             }
         },
         Err(e) => {
-            return Err(e); 
+            Err(e)
         }
     }
 }

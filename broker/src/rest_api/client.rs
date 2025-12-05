@@ -66,7 +66,7 @@ pub async fn kickoff_client(
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
             }
         };
-        return response;
+        response
     } else {
         axum::http::StatusCode::OK.into_response()
     }
@@ -129,7 +129,7 @@ pub async fn client_list(
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
                 }
             };
-            return response;
+            response
         } else {
             let error_response = super::ErrorResponse {
                 code: 101,

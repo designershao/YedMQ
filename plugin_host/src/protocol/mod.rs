@@ -59,6 +59,12 @@ pub struct ProtocolMessageBuilder {
     message: crate::protocol::plugin_protocol::ProtocolMessage,
 }
 
+impl Default for ProtocolMessageBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProtocolMessageBuilder {
     pub fn new() -> Self {
         ProtocolMessageBuilder {

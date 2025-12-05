@@ -38,15 +38,15 @@ pub async fn init_topic_raft(State(_): State<Arc<YedMQApp>>) -> (StatusCode, Str
     ).await {
         Ok(Ok(())) => {
             info!("init topic raft cluster success");
-            return (StatusCode::OK, format!(""));
+            (StatusCode::OK, String::new())
         },
         Ok(Err(err)) => {
             warn!("init topic raft cluster failed: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("init topic raft cluster failed: {}", err));
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("init topic raft cluster failed: {}", err))
         },
         Err(_) => {
             warn!("init topic raft cluster failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("send init topic raft cluster message failed to the topic raft actor"));
+            (StatusCode::INTERNAL_SERVER_ERROR, "send init topic raft cluster message failed to the topic raft actor".to_string())
         }
     }
 }
@@ -60,15 +60,15 @@ pub async fn init_session_actor_map_raft(State(_): State<Arc<YedMQApp>>) -> (Sta
     ).await {
         Ok(Ok(())) => {
             info!("init session actor map raft cluster success");
-            return (StatusCode::OK, format!(""));
+            (StatusCode::OK, String::new())
         },
         Ok(Err(err)) => {
             warn!("init session actor map raft cluster failed: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("init session actor map raft cluster failed: {}", err));
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("init session actor map raft cluster failed: {}", err))
         },
         Err(_) => {
             warn!("init session actor map raft cluster failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("send init session actor map raft cluster message failed to the session actor map raft actor"));
+            (StatusCode::INTERNAL_SERVER_ERROR, "send init session actor map raft cluster message failed to the session actor map raft actor".to_string())
         }
     }
 }
@@ -82,15 +82,15 @@ pub async fn init_session_state_raft(State(_): State<Arc<YedMQApp>>) -> (StatusC
     ).await {
         Ok(Ok(())) => {
             info!("init session state raft cluster success");
-            return (StatusCode::OK, format!(""));
+            (StatusCode::OK, String::new())
         },
         Ok(Err(err)) => {
             warn!("init session state raft cluster failed: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("init session state raft cluster failed: {}", err));
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("init session state raft cluster failed: {}", err))
         },
         Err(_) => {
             warn!("init session state raft cluster failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("send init session state raft cluster message failed to the session state raft actor"));
+            (StatusCode::INTERNAL_SERVER_ERROR, "send init session state raft cluster message failed to the session state raft actor".to_string())
         }
     }
 }
@@ -122,7 +122,7 @@ pub async fn init_cluster(State(_): State<Arc<YedMQApp>>) -> (StatusCode, String
         Ok((topic_result, map_result, state_result)) => {
             let all_success = topic_result.is_ok() && map_result.is_ok() && state_result.is_ok();
             if all_success {
-                return (StatusCode::OK, format!(""));
+                (StatusCode::OK, String::new())
             } else {
                 let mut error_messages = Vec::new();
                 if let Err(err) = topic_result {
@@ -134,12 +134,12 @@ pub async fn init_cluster(State(_): State<Arc<YedMQApp>>) -> (StatusCode, String
                 if let Err(err) = state_result {
                     error_messages.push(format!("Session state raft init error: {}", err));
                 }
-                return (StatusCode::INTERNAL_SERVER_ERROR, error_messages.join(","));
+                (StatusCode::INTERNAL_SERVER_ERROR, error_messages.join(","))
             }
         }
         Err(_) => {
             warn!("init cluster failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("send init cluster message failed to raft actors"));
+            (StatusCode::INTERNAL_SERVER_ERROR, "send init cluster message failed to raft actors".to_string())
         },
     }
 
@@ -182,7 +182,7 @@ pub async fn add_learner(
         Ok((topic_result, map_result, state_result)) => {
             let all_success = topic_result.is_ok() && map_result.is_ok() && state_result.is_ok();
             if all_success {
-                return (StatusCode::OK, format!(""));
+                (StatusCode::OK, String::new())
             } else {
                 let mut error_messages = Vec::new();
                 if let Err(err) = topic_result {
@@ -194,12 +194,12 @@ pub async fn add_learner(
                 if let Err(err) = state_result {
                     error_messages.push(format!("Session state raft add learner error: {}", err));
                 }
-                return (StatusCode::INTERNAL_SERVER_ERROR, error_messages.join(","));
+                (StatusCode::INTERNAL_SERVER_ERROR, error_messages.join(","))
             }
         }
         Err(_) => {
             warn!("add learner to cluster failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, format!("send add learner message failed to raft actors"));
+            (StatusCode::INTERNAL_SERVER_ERROR, "send add learner message failed to raft actors".to_string())
         }
     }
 }
@@ -219,9 +219,9 @@ pub async fn topic_raft_change_membership(
 
     if let Err(e) = res {
         warn!("topic raft change membership error: {}", e);
-        return (StatusCode::BAD_REQUEST, format!("{}", e));
+        (StatusCode::BAD_REQUEST, format!("{}", e))
     } else {
-        return (StatusCode::OK, format!(""));
+        (StatusCode::OK, String::new())
     }
 }
 
@@ -238,9 +238,9 @@ pub async fn session_actor_map_raft_change_membership(
     ).await.unwrap();
 
     if let Err(e) = res {
-        return (StatusCode::BAD_REQUEST, format!("{}", e));
+        (StatusCode::BAD_REQUEST, format!("{}", e))
     } else {
-        return (StatusCode::OK, format!(""));
+        (StatusCode::OK, String::new())
     }
 }
 
@@ -255,9 +255,9 @@ pub async fn session_state_raft_change_membership(
         }
     ).await.unwrap();
     if let Err(e) = res {
-        return (StatusCode::BAD_REQUEST, format!("{}", e));
+        (StatusCode::BAD_REQUEST, format!("{}", e))
     } else {
-        return (StatusCode::OK, format!(""));
+        (StatusCode::OK, String::new())
     }
 }
 
@@ -342,7 +342,7 @@ pub async fn change_membership(
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("update session state raft cluster membership error: {}", e));
     }
 
-    (StatusCode::OK, format!(""))
+    (StatusCode::OK, String::new())
 }
 
 pub async fn metrics(

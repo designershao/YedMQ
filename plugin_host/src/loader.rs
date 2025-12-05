@@ -147,9 +147,9 @@ impl PluginLoader {
                         cmd.args(args);
                     }
 
-                    cmd.args(&["--auth-code", auth_code]);
+                    cmd.args(["--auth-code", auth_code]);
 
-                    cmd.args(&["--socket-path", socket_path]);
+                    cmd.args(["--socket-path", socket_path]);
 
                     if let Some(env) = &manifest.runtime.env {
                         cmd.envs(env);

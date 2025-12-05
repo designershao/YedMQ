@@ -11,6 +11,12 @@ pub struct PingrespPacket {
     pub fix_header: FixHeader,
 }
 
+impl Default for PingrespPacket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PingrespPacket {
 
     pub fn new() -> PingrespPacket {

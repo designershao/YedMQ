@@ -79,14 +79,14 @@ pub async fn retain_message_list(
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
                 }
             };
-            return error_response;
+            error_response
         } else {
             error!("get retain message list error: {}", err);
             let error_response = super::ErrorResponse {
                 code: 101,
                 message: "Internal Server Error".to_string(),
             };
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
     } else {
         let retain_message_list = r.unwrap();

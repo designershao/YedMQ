@@ -429,7 +429,7 @@ async fn handle_message_published_request(
     _: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling message published request");
-    return Err(anyhow::anyhow!("Not response"));
+    Err(anyhow::anyhow!("Not response"))
 }
 
 async fn handle_request(
@@ -455,14 +455,13 @@ async fn handle_request(
         framed.send(response_msg?).await?;
     }
 
-    if method == Method::Initialize {
-        if let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
+    if method == Method::Initialize
+        && let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
             info!("Exiting after {} seconds as per configuration", delay_secs);
             tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
             info!("Exiting now");
             std::process::exit(0);
         }
-    }
 
     Ok(())
 }

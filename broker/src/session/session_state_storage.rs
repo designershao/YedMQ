@@ -49,6 +49,12 @@ pub struct SessionStateStorage {
     inner: HashMap<String, HashMap<String, Arc<RwLock<SessionState>>>>,
 }
 
+impl Default for SessionStateStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionStateStorage {
     pub fn new() -> Self {
         SessionStateStorage {
@@ -59,7 +65,7 @@ impl SessionStateStorage {
     pub async fn create_session_state(&mut self, tenant_id: &str, session_id: &str, inflight_duration: Duration) {
         self.inner
             .entry(tenant_id.to_owned())
-            .or_insert(HashMap::new())
+            .or_default()
             .insert(session_id.to_owned(), Arc::new(RwLock::new(SessionState::new(inflight_duration))));
     }
 
@@ -86,12 +92,11 @@ impl SessionStateStorage {
             self.inner.insert(tenant_id.clone(), HashMap::new());
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -102,9 +107,9 @@ impl SessionStateStorage {
                 .write()
                 .await;
             state.inflight.register_with_tx_packet(&packet).await?;
-            return Ok(())
+            Ok(())
         } else {
-            return Err(SessionStateStorageError::SessionStateNotExisted{client_id: client_id})
+            Err(SessionStateStorageError::SessionStateNotExisted{client_id})
         }
     }
 
@@ -113,12 +118,11 @@ impl SessionStateStorage {
             self.inner.insert(tenant_id.clone(), HashMap::new());
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -133,16 +137,13 @@ impl SessionStateStorage {
     }
 
     pub async fn inflight_get_next_state_packet(&self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
-        if self.inner.get(&tenant_id).is_none() {
-            return None;
-        }
+        self.inner.get(&tenant_id)?;
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let state = self
                 .inner
@@ -159,16 +160,13 @@ impl SessionStateStorage {
     }
 
     pub async fn inflight_get_current_packet(&self, tenant_id: String, client_id: String, packet_identifier: u16) -> Option<MqttPacketV3> {
-        if self.inner.get(&tenant_id).is_none() {
-            return None;
-        }
+        self.inner.get(&tenant_id)?;
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let state = self
                 .inner
@@ -189,12 +187,11 @@ impl SessionStateStorage {
             return;
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -213,12 +210,11 @@ impl SessionStateStorage {
             return;
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -237,12 +233,11 @@ impl SessionStateStorage {
             self.inner.insert(tenant_id.clone(), HashMap::new());
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -257,16 +252,13 @@ impl SessionStateStorage {
     }
 
     pub async fn pop_from_pending_queue(&mut self, tenant_id: String, client_id: String) -> Option<MqttPacketV3> {
-        if self.inner.get(&tenant_id).is_none() {
-            return None;
-        }
+        self.inner.get(&tenant_id)?;
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             let mut state = self
                 .inner
@@ -276,8 +268,8 @@ impl SessionStateStorage {
                 .unwrap()
                 .write()
                 .await;
-            let packet = state.pending_messages.pop();
-            packet
+            
+            state.pending_messages.pop()
         } else {
             None
         }   
@@ -294,12 +286,11 @@ impl SessionStateStorage {
             self.inner.insert(tenant_id.clone(), HashMap::new());
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             self.inner
                 .get_mut(&tenant_id)
@@ -323,12 +314,11 @@ impl SessionStateStorage {
             return;
         }
 
-        if !self
+        if self
             .inner
             .get(&tenant_id)
             .unwrap()
-            .get(&client_id)
-            .is_none()
+            .get(&client_id).is_some()
         {
             self.inner
                 .get_mut(&tenant_id)

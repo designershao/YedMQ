@@ -129,6 +129,12 @@ pub struct SessionActorMapStorage {
     inner: HashMap<String,HashMap<String, SessionActorMapEntry>>
 }
 
+impl Default for SessionActorMapStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionActorMapStorage {
     pub fn new() -> Self {
         SessionActorMapStorage {
@@ -154,7 +160,7 @@ impl SessionActorMapStorage {
                     result.push(ExpiredSession {
                         tenant_id: tenant_id.clone(),
                         session_id: session_id.clone(),
-                        node_id: session.node_id.clone(),
+                        node_id: session.node_id,
                     });
                 }
             }
@@ -170,10 +176,10 @@ impl SessionActorMapStorage {
     }
 
     pub fn register_session_actor(&mut self, tenant_id: String, session_id: String, node_id: NodeId, version: &SessionVersion, session_ttl: u64) -> Result<(), SessionActorMapError> {
-        let session_tenant = self.inner.entry(tenant_id.clone()).or_insert(HashMap::new());
+        let session_tenant = self.inner.entry(tenant_id.clone()).or_default();
         if session_tenant.contains_key(&session_id) {
             let existing_entry = session_tenant.get(&session_id).unwrap();
-            if existing_entry.version.is_newer_than(&version) {
+            if existing_entry.version.is_newer_than(version) {
                 return Err(SessionActorMapError::SessionVersionRejected { current_version: version.clone(), existing_version: existing_entry.version.clone() });
             }
         }             

@@ -49,13 +49,13 @@ impl SubscribePacketBuilder {
             remaining_length: 2 + payload.get_length(),
         };
 
-        let subscribe_packet = SubscribePacket {
+        
+
+        SubscribePacket {
             fix_header,
             variable_header,
             payload,
-        };
-
-        subscribe_packet
+        }
 
     }
 }
@@ -135,13 +135,13 @@ impl Payload {
 // +---------------+--------------+---+---+---+---+---+---+---+
 
 fn topic_filter(input: &[u8]) -> IResult<&[u8], TopicFilter> {
-    let i = map(tuple((parse_utf8_complete, nom::number::complete::be_u8)), |(topic_name, qos)| {
+    
+    map(tuple((parse_utf8_complete, nom::number::complete::be_u8)), |(topic_name, qos)| {
         TopicFilter{
             topic_name,
             qos
         }
-    })(input);
-    return i;
+    })(input)
 }
 
 fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {

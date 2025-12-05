@@ -48,13 +48,13 @@ impl UnsubscribePacketBuilder {
             remaining_length: 2 + payload.get_length(),
         };
 
-        let unsubscribe_packet = UnsubscribePacket {
+        
+
+        UnsubscribePacket {
             fix_header: fixed_header,
             variable_header,
             payload,
-        };
-
-        unsubscribe_packet
+        }
     }
 }
 
@@ -129,12 +129,12 @@ impl Payload {
 // +---------------+--------------+---+---+---+---+---+---+---+
 
 fn topic_filter(input: &[u8]) -> IResult<&[u8], TopicFilter> {
-    let i = map(parse_utf8_complete, |topic_name| {
+    
+    map(parse_utf8_complete, |topic_name| {
         TopicFilter{
             topic_name,
         }
-    })(input);
-    return i;
+    })(input)
 }
 
 fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {

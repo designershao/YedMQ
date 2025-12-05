@@ -22,7 +22,7 @@ impl PubAckPacket {
         };
 
         let variable_header = VariableHeader{
-            packet_identifier: packet_identifier
+            packet_identifier
         };
 
         PubAckPacket {

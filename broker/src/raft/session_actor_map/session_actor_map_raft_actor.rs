@@ -96,7 +96,7 @@ impl SessionActorMapRaftActor {
         let (log_store, state_machine_store) = new_storage(
             &dir, 
             session_actor_map_storage.clone(),
-            settings.cluster.node_id.clone(),
+            settings.cluster.node_id,
             session_clock.clone(),
             settings.cluster.session_ttl,
         ).await;
@@ -323,11 +323,11 @@ impl Handler<AppendEntriesRequestMessage> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.append_entries(msg.payload).await?;
@@ -337,14 +337,14 @@ impl Handler<AppendEntriesRequestMessage> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -365,11 +365,11 @@ impl Handler<RenewSession> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = super::types::SessionActorMapRequest::SessionLeaseRenewRequest {
@@ -386,20 +386,20 @@ impl Handler<RenewSession> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -422,11 +422,11 @@ impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = super::types::SessionActorMapRequest::RegisterSession { 
@@ -441,20 +441,20 @@ impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -477,11 +477,11 @@ impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = super::types::SessionActorMapRequest::UnregisterSession { 
@@ -495,20 +495,20 @@ impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -529,14 +529,14 @@ impl Handler<GetSessionActorMap> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_actor_map_storage = self.session_actor_map_storage.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
-                    if let Some(_) = raft.get() {
+                    if raft.get().is_some() {
                         if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
                             let storage = session_actor_map_storage.read().await;
                             let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
@@ -548,20 +548,20 @@ impl Handler<GetSessionActorMap> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -582,12 +582,12 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_actor_map_storage = self.session_actor_map_storage.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         match Self::try_local_linearizable_read(raft_instance).await {
@@ -638,20 +638,20 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();                
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -671,11 +671,11 @@ impl Handler<InstallSnapshotRequestMessage> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.install_snapshot(msg.payload).await?;
@@ -685,14 +685,14 @@ impl Handler<InstallSnapshotRequestMessage> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -713,11 +713,11 @@ impl Handler<VoteRequestMessage> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.vote(msg.payload).await?;
@@ -727,14 +727,14 @@ impl Handler<VoteRequestMessage> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -753,7 +753,7 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get(){
@@ -768,20 +768,20 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
                         );
                     }
                     let raft = raft_instance.clone();
-                    return Box::pin(async move {
+                    Box::pin(async move {
                         raft.initialize(cluster_nodes).await?;
                         Ok(())
-                    }.into_actor(self));
+                    }.into_actor(self))
                 } else {
-                    return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                    Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
                 }
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -802,11 +802,11 @@ impl Handler<AddLearnerMessage> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.add_learner(msg.node_id, msg.node, true).await?;
@@ -816,14 +816,14 @@ impl Handler<AddLearnerMessage> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -842,11 +842,11 @@ impl Handler<ChangeMembershipMessage> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.change_membership(msg.members, true).await?;
@@ -856,14 +856,14 @@ impl Handler<ChangeMembershipMessage> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -881,11 +881,11 @@ impl Handler<GetLeader> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let current_leader_node_id = raft_instance.current_leader().await;
@@ -907,14 +907,14 @@ impl Handler<GetLeader> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
     }
@@ -934,11 +934,11 @@ impl Handler<DirectWriteToRaft> for SessionActorMapRaftActor {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let res = Self::handle_raft_write(raft_instance, msg.command).await?;
@@ -947,20 +947,20 @@ impl Handler<DirectWriteToRaft> for SessionActorMapRaftActor {
                         Err(SessionActorMapRaftError::NotInitialized)
                     }
                 }.into_actor(self)
-                );
+                )
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(
+                Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(
+                Box::pin(
                     async { Err(SessionActorMapRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
-                );
+                )
             }            
         }
     }
@@ -980,11 +980,11 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionActorMapRaftActor is initializing, message will be queued.");
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                return Box::pin(
+                Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             Ok(raft_instance.metrics().borrow().clone())
@@ -993,14 +993,14 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
                         }
                     }
                     .into_actor(self),
-                );
+                )
             }
             ActorState::Stopped => {
-                return Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self));
+                Box::pin(async move { Err(SessionActorMapRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
             }
             ActorState::Failed(e) => {
                 let e = e.clone();
-                return Box::pin(async move { Err(e) }.into_actor(self));
+                Box::pin(async move { Err(e) }.into_actor(self))
             }
         }       
     }

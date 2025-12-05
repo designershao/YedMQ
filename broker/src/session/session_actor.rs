@@ -229,11 +229,10 @@ impl Actor for SessionActor {
                     "in keep alive current actor state {:?} ",
                     act.activity_state
                 );
-                if matches!(act.activity_state, ActivityState::Active) {
-                    if act.keep_alive_expired {
+                if matches!(act.activity_state, ActivityState::Active)
+                    && act.keep_alive_expired {
                         ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
                     }
-                }
             });
         self.keep_alive_task_handle = Some(keep_alive_task_handle);
 
@@ -525,7 +524,7 @@ async fn do_handle_publish(
         });
     }
 
-    return result;
+    result
 }
 
 async fn do_handle_subscribe(
@@ -569,10 +568,10 @@ async fn do_handle_subscribe(
                     tenant_id: tenant_id.clone(),
                     client_identifier: client_id.clone(),
                     topic: topic.topic_name.clone(),
-                    qos: topic.qos.into(),
+                    qos: topic.qos,
                 },
             ).await.unwrap();
-            if let Ok(_) = sub_result {
+            if sub_result.is_ok() {
                 succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
                 match topic.qos {
                     0 => {
@@ -788,7 +787,7 @@ impl SessionActor {
                     let min_qos = cmp::min(retained_msg_qos, subscribe_packet.payload.topic_filters[i].qos as i32);
                     if min_qos == 0 && retained_msg_qos > 0 {
                         p.variable_header.packet_identifier = None;
-                        p.fix_header.remaining_length = p.fix_header.remaining_length - 2;
+                        p.fix_header.remaining_length -= 2;
                     }
                     p.fix_header.qos = Some(min_qos);
                     conn.do_send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(p)));
@@ -916,28 +915,26 @@ impl SessionActor {
                     .await
                 {
                     warn!("handle pubrel write packet to client error: {}", e);
+                } else if clean_session {
+                    session_state_guard
+                        .inflight
+                        .next_state(pubrel_packet.variable_header.packet_identifier);
+
                 } else {
-                    if clean_session {
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
+                            tenant_id: client_info.tenant_id.clone(),
+                            client_id: client_info.client_identifier.clone(),
+                            packet_id: pubrel_packet.variable_header.packet_identifier.into(),
+                        },
+                    ).await.unwrap();
+                    if res.is_err() {
+                        warn!("handle pubrel inflight next state error {}", res.unwrap_err())
+                    } else {
                         session_state_guard
                             .inflight
                             .next_state(pubrel_packet.variable_header.packet_identifier);
-
-                    } else {
-                        let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                        let res = session_state_raft_actor_addr.send(
-                            crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
-                                tenant_id: client_info.tenant_id.clone(),
-                                client_id: client_info.client_identifier.clone(),
-                                packet_id: pubrel_packet.variable_header.packet_identifier.into(),
-                            },
-                        ).await.unwrap();
-                        if res.is_err() {
-                            warn!("handle pubrel inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(pubrel_packet.variable_header.packet_identifier);
-                        }
                     }
                 }
             } else {
@@ -1043,28 +1040,26 @@ impl SessionActor {
                     .await
                 {
                     warn!("handle pubrec write packet to client error: {}", e);
+                } else if clean_session {
+                    session_state_guard
+                        .inflight
+                        .next_state(pubrec_packet.variable_header.packet_identifier);
                 } else {
-                    if clean_session {
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
+                            tenant_id: client_info.tenant_id.clone(),
+                            client_id: client_info.client_identifier.clone(),
+                            packet_id: pubrec_packet.variable_header.packet_identifier.into(),
+                        },
+                    ).await.unwrap();
+
+                    if res.is_err() {
+                        warn!("handle pubrec inflight next state error {}", res.unwrap_err())
+                    } else {
                         session_state_guard
                             .inflight
                             .next_state(pubrec_packet.variable_header.packet_identifier);
-                    } else {
-                        let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                        let res = session_state_raft_actor_addr.send(
-                            crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
-                                tenant_id: client_info.tenant_id.clone(),
-                                client_id: client_info.client_identifier.clone(),
-                                packet_id: pubrec_packet.variable_header.packet_identifier.into(),
-                            },
-                        ).await.unwrap();
-
-                        if res.is_err() {
-                            warn!("handle pubrec inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(pubrec_packet.variable_header.packet_identifier);
-                        }
                     }
                 }
             } else {
@@ -1169,28 +1164,26 @@ impl SessionActor {
                     .await
                 {
                     warn!("handle puback write packet to client error: {}", e);
+                } else if clean_session {
+                    session_state_guard
+                        .inflight
+                        .next_state(puback_packet.variable_header.packet_identifier);
                 } else {
-                    if clean_session {
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
+                            tenant_id: client_info.tenant_id.clone(),
+                            client_id: client_info.client_identifier.clone(),
+                            packet_id: puback_packet.variable_header.packet_identifier.into(),
+                        },
+                    ).await.unwrap();
+
+                    if res.is_err() {
+                        warn!("handle puback inflight next state error {}", res.unwrap_err())
+                    } else {
                         session_state_guard
                             .inflight
                             .next_state(puback_packet.variable_header.packet_identifier);
-                    } else {
-                        let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                        let res = session_state_raft_actor_addr.send(
-                            crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
-                                tenant_id: client_info.tenant_id.clone(),
-                                client_id: client_info.client_identifier.clone(),
-                                packet_id: puback_packet.variable_header.packet_identifier.into(),
-                            },
-                        ).await.unwrap();
-
-                        if res.is_err() {
-                            warn!("handle puback inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(puback_packet.variable_header.packet_identifier);
-                        }
                     }
                 }
             } else {
@@ -1283,28 +1276,26 @@ impl SessionActor {
                     .await
                 {
                     warn!("handle pubcomp write packet to client error: {}", e);
+                } else if clean_session {
+                    session_state_guard
+                        .inflight
+                        .next_state(pubcomp_packet.variable_header.packet_identifier);
                 } else {
-                    if clean_session {
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
+                            tenant_id: client_info.tenant_id.clone(),
+                            client_id: client_info.client_identifier.clone(),
+                            packet_id: pubcomp_packet.variable_header.packet_identifier.into(),
+                        },
+                    ).await.unwrap();
+
+                    if res.is_err() {
+                        warn!("handle pubcomp inflight next state error {}", res.unwrap_err())
+                    } else {
                         session_state_guard
                             .inflight
                             .next_state(pubcomp_packet.variable_header.packet_identifier);
-                    } else {
-                        let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                        let res = session_state_raft_actor_addr.send(
-                            crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
-                                tenant_id: client_info.tenant_id.clone(),
-                                client_id: client_info.client_identifier.clone(),
-                                packet_id: pubcomp_packet.variable_header.packet_identifier.into(),
-                            },
-                        ).await.unwrap();
-
-                        if res.is_err() {
-                            warn!("handle pubcomp inflight next state error {}", res.unwrap_err())
-                        } else {
-                            session_state_guard
-                                .inflight
-                                .next_state(pubcomp_packet.variable_header.packet_identifier);
-                        }
                     }
                 }
             } else {
@@ -1418,7 +1409,7 @@ impl SessionActor {
                 let router_actor = RouterActor::from_registry();
                 router_actor
                     .do_send(crate::router_actor::RoutePacket {
-                        tenant_id: tenant_id,
+                        tenant_id,
                         packet: MqttPacketV3::Publish(publish_packet),
                     });
             }
@@ -1475,7 +1466,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         let client_id = self.client_id.clone();
                         let clean_session = self.clean_session;
                         async move {
-                            if packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
+                            if packet.fix_header.qos.unwrap_or(0) > 0 {
                                 let mut session_state_guard = session_state.write().await;
 
                                 let mut packet_identifier =
@@ -1531,8 +1522,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                                                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                                                     let _ = session_state_raft_actor_addr
                                                         .send(RegisterInflightTxPacket {
-                                                            tenant_id: tenant_id,
-                                                            client_id: client_id,
+                                                            tenant_id,
+                                                            client_id,
                                                             inflight_tx_packet: MqttPacketV3::Publish(packet.clone()),
                                                         })
                                                         .await;
@@ -1586,38 +1577,36 @@ impl Handler<SessionActorMessage> for SessionActor {
                         .into_actor(self)
                         .wait(ctx);
                     }
-                } else {
-                    if matches!(packet, MqttPacketV3::Publish(_)) {
-                        if let MqttPacketV3::Publish(publish_packet) = packet {
-                            if publish_packet.fix_header.qos.or(Some(0)).unwrap() > 0 {
-                                let session_state = self.state.clone();
-                                let client_info = self.get_plugin_client_info();
-                                let clean_session = self.clean_session;
+                } else if matches!(packet, MqttPacketV3::Publish(_)) {
+                    if let MqttPacketV3::Publish(publish_packet) = packet {
+                        if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
+                            let session_state = self.state.clone();
+                            let client_info = self.get_plugin_client_info();
+                            let clean_session = self.clean_session;
 
-                                async move {
-                                    let mut session_state_guard = session_state.write().await;
-                                    session_state_guard
-                                        .pending_messages
-                                        .push(MqttPacketV3::Publish(publish_packet.clone()));
-                                    if !clean_session {
-                                        let session_state_raft_actor_addr =
-                                            crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                                        let res = session_state_raft_actor_addr
-                                            .send(
-                                                crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage{
-                                                    tenant_id: client_info.tenant_id.clone(),
-                                                    client_id: client_info.client_identifier.clone(),
-                                                    packets: MqttPacketV3::Publish(publish_packet.clone()),
-                                                }
-                                            ).await.unwrap();
-                                        if res.is_err() {
-                                            warn!("append to pending queue error, {}", res.unwrap_err())
-                                        }
+                            async move {
+                                let mut session_state_guard = session_state.write().await;
+                                session_state_guard
+                                    .pending_messages
+                                    .push(MqttPacketV3::Publish(publish_packet.clone()));
+                                if !clean_session {
+                                    let session_state_raft_actor_addr =
+                                        crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                                    let res = session_state_raft_actor_addr
+                                        .send(
+                                            crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage{
+                                                tenant_id: client_info.tenant_id.clone(),
+                                                client_id: client_info.client_identifier.clone(),
+                                                packets: MqttPacketV3::Publish(publish_packet.clone()),
+                                            }
+                                        ).await.unwrap();
+                                    if res.is_err() {
+                                        warn!("append to pending queue error, {}", res.unwrap_err())
                                     }
                                 }
-                                .into_actor(self)
-                                .wait(ctx);
                             }
+                            .into_actor(self)
+                            .wait(ctx);
                         }
                     }
                 }
@@ -1769,7 +1758,7 @@ impl Handler<GetSessionInfo> for SessionActor {
 
     fn handle(&mut self, _msg: GetSessionInfo, _ctx: &mut Self::Context) -> Self::Result {
         let session_state = self.state.clone();
-        let activity_state = self.activity_state.clone();
+        let activity_state = self.activity_state;
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
 
@@ -1780,9 +1769,7 @@ impl Handler<GetSessionInfo> for SessionActor {
                 subscription_topics: session_state
                     .read()
                     .await
-                    .subscriptions
-                    .iter()
-                    .map(|(k, _)| k.clone())
+                    .subscriptions.keys().cloned()
                     .collect(),
                 session_state: activity_state,
             }

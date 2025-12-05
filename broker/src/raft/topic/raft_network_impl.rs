@@ -45,7 +45,7 @@ impl NetworkConnection {
         match Channel::builder(addr.parse().unwrap()).connect().await {
             Ok(channel) => Ok(RaftServiceClient::new(channel)), 
             Err(e) => {
-                return Err(RPCError::Unreachable(Unreachable::new(&e)))
+                Err(RPCError::Unreachable(Unreachable::new(&e)))
             }
         }
     }

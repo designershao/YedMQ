@@ -69,7 +69,7 @@ impl Default for RouterActor {
         let settings = crate::settings::Settings::new().unwrap();
         RouterActor {
             current_node_id: settings.cluster.node_id,
-            settings: settings,
+            settings,
             dead_letter_queue: VecDeque::new(),
             dead_letter_config: DeadLetterConfig::default(),
         }
@@ -150,7 +150,7 @@ impl RouterActor {
                                             if let Err(dlq_err) = router_addr.send(AddToDeadLetterQueue {
                                                 tenant_id: tenant_id.clone(),
                                                 packet: packet.clone(),
-                                                dest_addr: dest_addr,
+                                                dest_addr,
                                             }).await {
                                                 warn!("Failed to add message to dead letter queue: {}", dlq_err);
                                             }
@@ -163,8 +163,7 @@ impl RouterActor {
                                         if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
                                             publish_packet.fix_header.qos = Some(0);
                                             publish_packet.variable_header.packet_identifier = None;
-                                            publish_packet.fix_header.remaining_length =
-                                                publish_packet.fix_header.remaining_length - 2; // Remove 2 bytes for packet identifier
+                                            publish_packet.fix_header.remaining_length -= 2; // Remove 2 bytes for packet identifier
                                         } else {
                                             publish_packet.fix_header.qos = Some(item.qos.into());
                                         }
@@ -257,8 +256,7 @@ impl RouterActor {
                             if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
                                 publish_packet.fix_header.qos = Some(0);
                                 publish_packet.variable_header.packet_identifier = None;
-                                publish_packet.fix_header.remaining_length =
-                                    publish_packet.fix_header.remaining_length - 2; // Remove 2 bytes for packet identifier
+                                publish_packet.fix_header.remaining_length -= 2; // Remove 2 bytes for packet identifier
                             } else {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
@@ -459,14 +457,14 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
 
     fn handle(&mut self, msg: RoutePacketToAllTenants, _ctx: &mut Self::Context) -> Self::Result {
-        return Box::pin(async move {
+        Box::pin(async move {
             let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
             let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
             for tenant_id in tenant_ids {
                 Self::publish_to_local_subscribers(&tenant_id, &msg.packet).await?;
             }
             Ok(())
-        }.into_actor(self));
+        }.into_actor(self))
     }
 }
 

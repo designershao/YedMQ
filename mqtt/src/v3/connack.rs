@@ -28,6 +28,12 @@ pub struct ConnAckPacketBuilder {
     session_present: bool
 }
 
+impl Default for ConnAckPacketBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnAckPacketBuilder {
     pub fn new() -> ConnAckPacketBuilder {
         ConnAckPacketBuilder { return_code: ConnackReturnCode::Accpet, session_present: false }
@@ -63,11 +69,11 @@ impl ConnAckPacketBuilder {
             session_present: self.session_present,
             connect_return_code: return_code,
         };
-        let connack_packet = ConnAckPacket{
+        
+        ConnAckPacket{
             fix_header,
             variable_header,
-        };
-        connack_packet
+        }
     }
 }
 

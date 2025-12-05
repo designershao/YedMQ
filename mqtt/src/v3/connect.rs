@@ -99,13 +99,13 @@ impl ConnectPacketBuilder {
                 remaining_length: variable_header.get_length() + payload.get_length(),
             };
 
-        let connect_packet = ConnectPacket {
+        
+
+        ConnectPacket {
             fix_header,
             variable_header,
             payload
-        };
-
-        connect_packet
+        }
     }
 }
 
@@ -266,81 +266,75 @@ fn payload(username_flag: bool, password_flag: bool, will_flag: bool) -> impl Fn
                         }
                     })(v)
                 }
+            } else if password_flag {
+                map(tuple((client_identifier, will_topic, will_message,password)),|r|{
+                    Payload{
+                        client_identifier: r.0,
+                        will_topic: Some(r.1),
+                        will_message: Some(r.2),
+                        username: None,
+                        password: Some(r.3),
+                    }
+                })(v)
+
             } else {
-                if password_flag {
-                    map(tuple((client_identifier, will_topic, will_message,password)),|r|{
-                        Payload{
-                            client_identifier: r.0,
-                            will_topic: Some(r.1),
-                            will_message: Some(r.2),
-                            username: None,
-                            password: Some(r.3),
-                        }
-                    })(v)
+                map(tuple((client_identifier, will_topic, will_message)),|r|{
+                    Payload{
+                        client_identifier: r.0,
+                        will_topic: Some(r.1),
+                        will_message: Some(r.2),
+                        username: None,
+                        password: None,
+                    }
+                })(v)
 
-                } else {
-                    map(tuple((client_identifier, will_topic, will_message)),|r|{
-                        Payload{
-                            client_identifier: r.0,
-                            will_topic: Some(r.1),
-                            will_message: Some(r.2),
-                            username: None,
-                            password: None,
-                        }
-                    })(v)
-
-                }
             }
+        } else if username_flag {
+            if password_flag {
+                map(tuple((client_identifier, username, password)), |r|{
+                    Payload{
+                        client_identifier: r.0,
+                        will_topic: None,
+                        will_message: None,
+                        username: Some(r.1),
+                        password: Some(r.2),
+                    }
+                })(v)
+
+            } else {
+                map(tuple((client_identifier, username)), |r|{
+                    Payload{
+                        client_identifier: r.0,
+                        will_topic: None,
+                        will_message: None,
+                        username: Some(r.1),
+                        password: None,
+                    }
+                })(v)
+
+            }
+        } else if password_flag {
+            map(tuple((client_identifier, password)), |r|{
+                Payload{
+                    client_identifier: r.0,
+                    will_topic: None,
+                    will_message: None,
+                    username: None,
+                    password: Some(r.1),
+                }
+            })(v)
+
         } else {
-            if username_flag {
-                if password_flag {
-                    map(tuple((client_identifier, username, password)), |r|{
-                        Payload{
-                            client_identifier: r.0,
-                            will_topic: None,
-                            will_message: None,
-                            username: Some(r.1),
-                            password: Some(r.2),
-                        }
-                    })(v)
-
-                } else {
-                    map(tuple((client_identifier, username)), |r|{
-                        Payload{
-                            client_identifier: r.0,
-                            will_topic: None,
-                            will_message: None,
-                            username: Some(r.1),
-                            password: None,
-                        }
-                    })(v)
-
+            map(client_identifier, |r|{
+                Payload{
+                    client_identifier: r,
+                    will_topic: None,
+                    will_message: None,
+                    username: None,
+                    password: None,
                 }
-            } else {
-                if password_flag {
-                    map(tuple((client_identifier, password)), |r|{
-                        Payload{
-                            client_identifier: r.0,
-                            will_topic: None,
-                            will_message: None,
-                            username: None,
-                            password: Some(r.1),
-                        }
-                    })(v)
+            })(v)
 
-                } else {
-                    map(client_identifier, |r|{
-                        Payload{
-                            client_identifier: r,
-                            will_topic: None,
-                            will_message: None,
-                            username: None,
-                            password: None,
-                        }
-                    })(v)
-
-                }
-            }
         }
     }
 }
@@ -483,7 +477,7 @@ impl Payload {
         len = len + self.password.as_ref().unwrap().len() + 2;
        }
 
-       return len;
+       len
 
     }
 }

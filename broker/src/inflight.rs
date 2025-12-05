@@ -123,11 +123,7 @@ impl Inflight {
     pub async fn get_current_packet(&self, packet_identifier: u16) -> Option<MqttPacketV3> {
         let ctx = self.inner.get(&packet_identifier);
         if let Some(ctx_item) = ctx {
-            if let Some(packet) = ctx_item.current_packet() {
-                Some(packet.clone())
-            } else{
-                None
-            }
+            ctx_item.current_packet().cloned()
         } else {
             None
         }
@@ -135,11 +131,7 @@ impl Inflight {
 
     pub fn get_inflight_current_state(&self, packet_identifier: u16) -> Option<InflightState> {
         let ctx = self.inner.get(&packet_identifier);
-        if let Some(ctx_item) = ctx {
-            Some(ctx_item.state.clone())
-        } else {
-            None
-        }
+        ctx.map(|ctx_item| ctx_item.state)
     }
 
     pub fn next_state(&mut self, packet_identifier: u16) {
@@ -213,7 +205,7 @@ impl InflightItemBuilder {
     fn build(&self) -> InflightItem {
         InflightItem {
             packet_identifier: self.packet_identifier,
-            state: self.state.clone(),
+            state: self.state,
             packet: self.packet.clone(),
             last_modified: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
         }
@@ -258,7 +250,7 @@ impl InflightItem {
     // According current state , get the should send packet at current state
     pub fn current_packet(&self) -> Option<&MqttPacketV3> {
         match &self.packet {
-            Some(packet) => Some(&packet),
+            Some(packet) => Some(packet),
             None => None
         }
     }

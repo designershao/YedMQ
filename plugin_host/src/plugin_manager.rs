@@ -182,7 +182,7 @@ impl PluginManager {
         let plugin_names = self.plugin_loader.list_plugins();
 
         for name in plugin_names {
-            self.start_plugin(&name).await?;
+            self.start_plugin(name).await?;
         }
 
         Ok(())
@@ -755,7 +755,7 @@ impl PluginManager {
                             )) => {
                                 if let Some(result) = response.result {
                                     if result.type_url
-                                        == crate::protocol::SUBSCRIBE_RESPONSE_TYPE_URL.to_string()
+                                        == crate::protocol::SUBSCRIBE_RESPONSE_TYPE_URL
                                     {
                                         let subscribe_response: SubscribeResponse =
                                             SubscribeResponse::decode(result.value.as_slice())
@@ -873,7 +873,7 @@ impl PluginManager {
                             )) => {
                                 if let Some(result) = response.result {
                                     if result.type_url
-                                        == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL.to_string()
+                                        == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL
                                     {
                                         let authorize_response =
                                             AuthorizeResponse::decode(result.value.as_slice())
@@ -912,15 +912,15 @@ impl PluginManager {
                     }
                 }
             }
-            return std::result::Result::Ok(final_result);
+            std::result::Result::Ok(final_result)
         } else {
             // return default authorize result
             info!("No plugins registered for OnAuthorize hook");
-            return std::result::Result::Ok(AuthorizeResult {
+            std::result::Result::Ok(AuthorizeResult {
                 authorized: self.config.default_authorize_result,
                 reason: None,
                 modified_context: HashMap::new(),
-            });
+            })
         }
     }
 
@@ -1040,14 +1040,14 @@ impl PluginManager {
                     }
                 }
             }
-            return std::result::Result::Ok(final_result);
+            std::result::Result::Ok(final_result)
         } else {
             info!("No plugins registered for OnAuthenticate hook");
-            return std::result::Result::Ok(AuthenticateResult {
+            std::result::Result::Ok(AuthenticateResult {
                 authenticated: self.config.default_authenticate_result,
                 error_reason: None,
                 tenant_id: None,
-            });
+            })
         }
     }
 
@@ -1055,17 +1055,14 @@ impl PluginManager {
         let running_plugins = self.running_plugins.read().await;
         let running_plugin = running_plugins.get(name);
         if let Some(running_plugin) = running_plugin {
-            match running_plugin.state {
-                PluginState::Running => {
-                    let _ = running_plugin
-                        .plugin_abort_tx
-                        .as_ref()
-                        .unwrap()
-                        .send(())
-                        .await
-                        .unwrap();
-                }
-                _ => {}
+            if running_plugin.state == PluginState::Running {
+                running_plugin
+                    .plugin_abort_tx
+                    .as_ref()
+                    .unwrap()
+                    .send(())
+                    .await
+                    .unwrap();
             }
         }
         Ok(())
