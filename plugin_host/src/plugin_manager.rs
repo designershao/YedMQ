@@ -87,7 +87,7 @@ pub struct RunningPlugin {
     pub name: String,
     pub manifest: PluginManifest,
     pub state: PluginState,
-    pub plugin_abort_tx: Option<tokio::sync::mpsc::Sender<()>>,
+    pub plugin_abort_tx: Option<tokio::sync::mpsc::Sender<tokio::sync::mpsc::Sender<()>>>,
     pub plugin_log_collector_quit_tx: Option<tokio::sync::mpsc::Sender<()>>,
     pub process_wait_handle: Option<tokio::task::JoinHandle<()>>,
     pub process_log_handle: Option<tokio::task::JoinHandle<()>>,
@@ -332,7 +332,9 @@ impl PluginManager {
                                     if state == PluginState::Stopped {
                                         match &plugin.plugin_abort_tx {
                                             Some(tx) => {
-                                                let _ = tx.send(()).await;
+                                                let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
+                                                let _ = tx.send(notify_sender).await;
+                                                let _ = notify_receiver.recv().await;
                                                 plugin.process_log_handle = None;
                                                 plugin.process_wait_handle = None;
                                             },
@@ -1158,13 +1160,16 @@ impl PluginManager {
                     }
                     Some(abort_tx) => {
                         info!("Stopping plugin '{}'...", name);
-                        if let Err(e) = abort_tx.send(()).await {
+                        let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
+                        if let Err(e) = abort_tx.send(notify_sender).await {
                             return Err(anyhow::anyhow!(
                                 "Failed to send abort signal to plugin '{}': {}",
                                 name,
                                 e
                             ));
                         }
+                        let _ = notify_receiver.recv().await;
+                        info!("Plugin '{}' stopped successfully", name);
                     }
                 }
             }
@@ -1188,7 +1193,6 @@ impl PluginManager {
                 e
             ));
         } else {
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             info!("Plugin '{}' stopped successfully, starting...", name);
             if let Err(e) = self.start_plugin(name).await {
                 return Err(anyhow::anyhow!(
@@ -1231,7 +1235,7 @@ impl PluginManager {
 
         let borrowed_name = name.to_string();
 
-        let (plugin_abort_tx, mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let (plugin_abort_tx, mut plugin_abort_rx) = tokio::sync::mpsc::channel::<tokio::sync::mpsc::Sender<()>>(1);
 
         let rx_cmd_sender = self.rx_cmd_sender.as_ref().ok_or_else(|| anyhow::anyhow!("rx_cmd_sender not found"))?.clone();
 
@@ -1250,12 +1254,15 @@ impl PluginManager {
                         let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged(borrowed_name, PluginState::Stopped)).await;
                         break;
                     },
-                    _ = plugin_abort_rx.recv() => {
+                    notify_sender = plugin_abort_rx.recv() => {
                         println!("Plugin '{}' aborted", borrowed_name);
                         if let Err(e) = process.kill().await {
                             println!("Failed to kill plugin '{}': {}", borrowed_name, e);
                         } else {
                             println!("Plugin '{}' killed successfully", borrowed_name);
+                        }
+                        if let Some(notify_sender) = notify_sender {
+                            notify_sender.send(());
                         }
                     }
                 }
