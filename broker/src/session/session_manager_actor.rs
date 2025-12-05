@@ -47,6 +47,9 @@ pub enum SessionManagerError {
 
     #[error("session actor map error {0}")]
     SessionActorMapError(#[from] crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError),
+
+    #[error("send message error {0}")]
+    SendMessageError(#[from] actix::MailboxError),
 }
 
 pub enum SessionLifecycleMessage {
@@ -581,7 +584,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     tenant_id: msg.tenant_id.clone(),
                     client_id: msg.client_id.clone(),
                 }
-            ).await.unwrap().unwrap();
+            ).await??;
 
             if let Some(entry) = &session_actor_map_entry {
                 info!("previous session actor map node id: {}", entry.node_id);
