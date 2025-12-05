@@ -217,7 +217,10 @@ impl PluginManager {
                 .with_params(wrap_initialize_param_to_any)
                 .build();
 
-            framed.send(init_plugin_request_message).await.unwrap();
+            if let Err(e) = framed.send(init_plugin_request_message).await {
+                warn!("Failed to send init message to plugin: {}, terminating connection", e);
+                return;
+            }
 
             // ensure the plugin response init response message in 5 seconds
             match tokio::time::timeout(Duration::from_secs(5), framed.next()).await {
@@ -228,25 +231,29 @@ impl PluginManager {
                         protocol_message
                     );
                     if let std::result::Result::Ok(protocol_message) = protocol_message {
-                        if protocol_message.result.is_none() {
-                            warn!("Plugin init response has no result, closing connection");
-                            return;
+                        match &protocol_message.result {
+                            Some(r) if r.type_url == super::protocol::INIT_RESPONSE_TYPE_URL => {
+                                let _ = rx_cmd_sender
+                                    .send(RxCmd::InitMessage {
+                                        msg: protocol_message,
+                                        tx_cmd_sender: tx_cmd_sender.clone(),
+                                    })
+                                    .await;
+
+                            }
+                            Some(_) => {
+                                warn!(
+                                    "Plugin init response has invalid result type, closing connection"
+                                );
+                                return;
+                            }
+                            None => {
+                                warn!("Plugin init response has no result, closing connection");
+                                return;
+                            }
                         }
-                        let result = protocol_message.result.as_ref().unwrap();
-                        if result.type_url != super::protocol::INIT_RESPONSE_TYPE_URL {
-                            warn!(
-                                "Plugin init response has invalid result type, closing connection"
-                            );
-                            return;
-                        }
-                        let _ = rx_cmd_sender
-                            .send(RxCmd::InitMessage {
-                                msg: protocol_message,
-                                tx_cmd_sender: tx_cmd_sender.clone(),
-                            })
-                            .await;
                     } else {
-                        println!("Failed to decode protocol message from plugin");
+                        warn!("Failed to decode protocol message from plugin");
                         return;
                     }
                 }
@@ -323,9 +330,16 @@ impl PluginManager {
                                 if let Some(plugin) = plugins_guard.get_mut(&name) {
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
-                                        plugin.plugin_log_collector_quit_tx.as_ref().unwrap().send(()).await.unwrap();
-                                        plugin.process_log_handle = None;
-                                        plugin.process_wait_handle = None;
+                                        match &plugin.plugin_abort_tx {
+                                            Some(tx) => {
+                                                let _ = tx.send(()).await;
+                                                plugin.process_log_handle = None;
+                                                plugin.process_wait_handle = None;
+                                            },
+                                            None => {
+                                                warn!("Plugin {} abort tx not found when stopping", name);
+                                            }
+                                        }
                                     }
                                     plugin.state = state;
                                 }
@@ -334,22 +348,31 @@ impl PluginManager {
                                 // Handle initialization message
                                 info!("Received initialization message: {:?}", msg);
                                 if let Some(r) = msg.result {
-                                    let init_response = InitializeResponse::decode(r.value.as_slice()).unwrap();
-                                    let auth_code = init_response.auth_code;
-                                    let register_hooks = init_response.hooks;
-                                    let mut plugins_guard = plugins.write().await;
-                                    for (_, plugin) in plugins_guard.iter_mut() {
-                                        // find the plugin with matching auth_code
-                                        if plugin.auth_code == auth_code {
-                                            plugin.ipc_sender = Some(tx_cmd_sender.clone());
-                                            plugin.state = PluginState::Running;
-                                            for hook in &register_hooks {
-                                                let name = &hook.name;
-                                                let hook_type = crate::hook::get_hook_from_name(name);
-                                                if let Some(hook_type) = hook_type {
-                                                    hook_manager.write().await.register_hook(hook_type, plugin.name.clone(), hook.priority);
-                                                } else {
-                                                    warn!("Unknown hook name '{}' from plugin '{}'", name, plugin.name);
+                                    match InitializeResponse::decode(r.value.as_slice()) {
+                                        Err(e) => {
+                                            warn!("Failed to decode initialize response: {} drop it", e);
+                                            return;
+                                        },
+                                        std::result::Result::Ok(init_response) => {
+                                            info!("Plugin initialized with response: {:?}", init_response);
+                                            // Process the initialization response
+                                            let auth_code = init_response.auth_code;
+                                            let register_hooks = init_response.hooks;
+                                            let mut plugins_guard = plugins.write().await;
+                                            for (_, plugin) in plugins_guard.iter_mut() {
+                                                // find the plugin with matching auth_code
+                                                if plugin.auth_code == auth_code {
+                                                    plugin.ipc_sender = Some(tx_cmd_sender.clone());
+                                                    plugin.state = PluginState::Running;
+                                                    for hook in &register_hooks {
+                                                        let name = &hook.name;
+                                                        let hook_type = crate::hook::get_hook_from_name(name);
+                                                        if let Some(hook_type) = hook_type {
+                                                            hook_manager.write().await.register_hook(hook_type, plugin.name.clone(), hook.priority);
+                                                        } else {
+                                                            warn!("Unknown hook name '{}' from plugin '{}'", name, plugin.name);
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -371,8 +394,8 @@ impl PluginManager {
                                         {
                                             let mut inflight_guard = inflight.write().await;
                                             if let Some(resp_sender) = inflight_guard.remove(msg_id) {
-                                                if let Err(_) = resp_sender.send(Ok(msg)) {
-                                                    warn!("Failed to send response : receiver has droped");
+                                                if resp_sender.send(Ok(msg)).is_err() {
+                                                    warn!("Failed to send response : receiver has dropped");
                                                 }
                                             }
                                         }
@@ -416,8 +439,7 @@ impl PluginManager {
         }
 
         let name = socket_path
-            .to_fs_name::<interprocess::local_socket::GenericFilePath>()
-            .unwrap();
+            .to_fs_name::<interprocess::local_socket::GenericFilePath>()?;
 
         let (rx_cmd_sender, rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
 
@@ -480,12 +502,19 @@ impl PluginManager {
                             .with_params(subscribe_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await;
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                let _ = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await;
+                            }
+                            None => {
+                                warn!(
+                                    "Plugin {} ipc sender not found when calling subscribe removed hook",
+                                    running_plugin.name
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -513,12 +542,19 @@ impl PluginManager {
                             .with_params(subscribe_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await;
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                let _ = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await;
+                            }
+                            None => {
+                                warn!(
+                                    "Plugin {} ipc sender not found when calling client disconnected hook",
+                                    running_plugin.name
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -546,12 +582,19 @@ impl PluginManager {
                             .with_params(subscribe_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await;
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                let _ = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await;
+                            }
+                            None => {
+                                warn!(
+                                    "Plugin {} ipc sender not found when calling subscribe added hook",
+                                    running_plugin.name
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -583,12 +626,19 @@ impl PluginManager {
                             .with_params(message_publish_request_any_wrapper)
                             .build();
 
-                        let _ = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await;
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                let _ = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await;
+                            }
+                            None => {
+                                warn!(
+                                    "Plugin {} ipc sender not found when calling message published hook",
+                                    running_plugin.name
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -626,19 +676,29 @@ impl PluginManager {
                             .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
-                        if let Err(e) = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await
-                        {
-                            error!(
-                                "Plugin {} message receiver droped: {}",
-                                running_plugin.name, e
-                            );
-                            continue;
+
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                if let Err(e) = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await
+                                {
+                                    error!(
+                                        "Plugin {} message receiver droped: {}",
+                                        running_plugin.name, e
+                                    );
+                                    continue;
+                                }
+                            }
+                            None => {
+                                error!(
+                                    "Plugin {} ipc sender not found when calling on message publish hook",
+                                    running_plugin.name
+                                );
+                                continue;
+                            }
                         }
+
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
@@ -650,17 +710,22 @@ impl PluginManager {
                                     if result.type_url
                                         == crate::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL
                                     {
-                                        let message_publish_response =
-                                            MessagePublishResponse::decode(result.value.as_slice())
-                                                .unwrap();
-                                        if !message_publish_response.continue_chain() {
-                                            let message_publish_result = MessagePublishResult {
-                                                allow: message_publish_response.allow,
-                                                modified_message: message_publish_response
-                                                    .modified_message,
-                                                error_reason: message_publish_response.error_reason,
-                                            };
-                                            return std::result::Result::Ok(message_publish_result);
+                                        match MessagePublishResponse::decode(result.value.as_slice()) {
+                                            Err(e) => {
+                                                warn!("Failed to decode message publish response: {} drop it", e);
+                                                continue;
+                                            },
+                                            std::result::Result::Ok(message_publish_response) => {
+                                                if !message_publish_response.continue_chain() {
+                                                    let message_publish_result = MessagePublishResult {
+                                                        allow: message_publish_response.allow,
+                                                        modified_message: message_publish_response
+                                                            .modified_message,
+                                                        error_reason: message_publish_response.error_reason,
+                                                    };
+                                                    return std::result::Result::Ok(message_publish_result);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -733,19 +798,29 @@ impl PluginManager {
                             .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
-                        if let Err(e) = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await
-                        {
-                            error!(
-                                "Plugin {} message receiver droped: {}",
-                                running_plugin.name, e
-                            );
-                            continue;
+
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                if let Err(e) = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await
+                                {
+                                    error!(
+                                        "Plugin {} message receiver droped: {}",
+                                        running_plugin.name, e
+                                    );
+                                    continue;
+                                }
+                            }
+                            None => {
+                                error!(
+                                    "Plugin {} ipc sender not found when calling on message subscribe hook",
+                                    running_plugin.name
+                                );
+                                continue;
+                            }
                         }
+
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
@@ -757,40 +832,25 @@ impl PluginManager {
                                     if result.type_url
                                         == crate::protocol::SUBSCRIBE_RESPONSE_TYPE_URL
                                     {
-                                        let subscribe_response: SubscribeResponse =
-                                            SubscribeResponse::decode(result.value.as_slice())
-                                                .unwrap();
-                                        for subscribe_result_item in
-                                            subscribe_response.results.iter()
-                                        {
-                                            final_result
-                                                .result
-                                                .iter_mut()
-                                                .find(|item| {
-                                                    item.topic == subscribe_result_item.topic
-                                                })
-                                                .unwrap()
-                                                .allowed = subscribe_result_item.allowed;
-                                            final_result
-                                                .result
-                                                .iter_mut()
-                                                .find(|item| {
-                                                    item.topic == subscribe_result_item.topic
-                                                })
-                                                .unwrap()
-                                                .granted_qos =
-                                                subscribe_result_item.granted_qos as u8;
-                                            final_result
-                                                .result
-                                                .iter_mut()
-                                                .find(|item| {
-                                                    item.topic == subscribe_result_item.topic
-                                                })
-                                                .unwrap()
-                                                .reason = subscribe_result_item.reason.clone();
-                                        }
-                                        if !subscribe_response.continue_chain() {
-                                            return std::result::Result::Ok(final_result);
+                                        match SubscribeResponse::decode(result.value.as_slice()) {
+                                            Err(e) => {
+                                                warn!("Failed to decode subscribe response: {} drop it", e);
+                                                continue;
+                                            },
+                                            std::result::Result::Ok(subscribe_response) => {
+                                                for subscribe_result_item in subscribe_response.results.iter() {
+                                                    if let Some(item) = final_result.result.iter_mut().find(|item| item.topic == subscribe_result_item.topic) {
+                                                        item.allowed = subscribe_result_item.allowed;
+                                                        item.granted_qos = subscribe_result_item.granted_qos as u8;
+                                                        item.reason = subscribe_result_item.reason.clone();
+                                                    } else {
+                                                        warn!("Topic '{}' not found in final_result", subscribe_result_item.topic);
+                                                    }
+                                                }
+                                                if !subscribe_response.continue_chain() {
+                                                    return std::result::Result::Ok(final_result);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -851,19 +911,29 @@ impl PluginManager {
                             .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
-                        if let Err(e) = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await
-                        {
-                            error!(
-                                "Plugin {} message receiver droped: {}",
-                                running_plugin.name, e
-                            );
-                            continue;
+
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                if let Err(e) = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await
+                                {
+                                    error!(
+                                        "Plugin {} message receiver droped: {}",
+                                        running_plugin.name, e
+                                    );
+                                    continue;
+                                }
+                            }
+                            None => {
+                                error!(
+                                    "Plugin {} ipc sender not found when calling authorize hook",
+                                    running_plugin.name
+                                );
+                                continue;
+                            }
                         }
+
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
 
@@ -875,16 +945,22 @@ impl PluginManager {
                                     if result.type_url
                                         == crate::protocol::AUTHORIZE_RESPONSE_TYPE_URL
                                     {
-                                        let authorize_response =
-                                            AuthorizeResponse::decode(result.value.as_slice())
-                                                .unwrap();
-                                        if !authorize_response.authorized {
-                                            final_result.authorized = authorize_response.authorized;
-                                            final_result.reason = authorize_response.reason.clone();
-                                            final_result.modified_context = HashMap::new();
-                                            return std::result::Result::Ok(final_result);
-                                        } else {
-                                            continue;
+
+                                        match AuthorizeResponse::decode(result.value.as_slice()) {
+                                            Err(e) => {
+                                                warn!("Failed to decode authorize response: {} drop it", e);
+                                                continue;
+                                            },
+                                            std::result::Result::Ok(authorize_response) => {
+                                                if !authorize_response.authorized {
+                                                    final_result.authorized = authorize_response.authorized;
+                                                    final_result.reason = authorize_response.reason.clone();
+                                                    final_result.modified_context = HashMap::new();
+                                                    return std::result::Result::Ok(final_result);
+                                                } else {
+                                                    continue;
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -958,19 +1034,29 @@ impl PluginManager {
                             .write()
                             .await
                             .insert(protocol_message.id.clone(), request_context_sender);
-                        if let Err(e) = running_plugin
-                            .ipc_sender
-                            .as_ref()
-                            .unwrap()
-                            .send(TxCmd::SendMessage(protocol_message))
-                            .await
-                        {
-                            error!(
-                                "Plugin {} message receiver droped: {}",
-                                running_plugin.name, e
-                            );
-                            continue;
+
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                if let Err(e) = ipc_sender
+                                    .send(TxCmd::SendMessage(protocol_message))
+                                    .await
+                                {
+                                    error!(
+                                        "Plugin {} message receiver droped: {}",
+                                        running_plugin.name, e
+                                    );
+                                    continue;
+                                }
+                            }
+                            None => {
+                                error!(
+                                    "Plugin {} ipc sender not found when calling authenticate hook",
+                                    running_plugin.name
+                                );
+                                continue;
+                            }
                         }
+
                         let timeout_duration = Duration::from_secs(5);
                         let result = timeout(timeout_duration, request_context_receiver).await;
                         match result {
@@ -981,39 +1067,46 @@ impl PluginManager {
                                     if result.type_url
                                         == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL
                                     {
-                                        let authenticate_response =
-                                            AuthenticateResponse::decode(result.value.as_slice())
-                                                .unwrap();
-                                        if authenticate_response.authenticated {
-                                            if !is_first_called {
-                                                if authenticate_response.tenant_id
-                                                    != final_result.tenant_id
-                                                {
-                                                    return std::result::Result::Ok(
-                                                        AuthenticateResult {
-                                                            authenticated: false,
-                                                            error_reason: Some(
-                                                                "Tenant ID mismatch".to_string(),
-                                                            ),
-                                                            tenant_id: None,
-                                                        },
-                                                    );
+
+                                        match AuthenticateResponse::decode(result.value.as_slice()) {
+                                            Err(e) => {
+                                                warn!("Failed to decode authenticate response: {} drop it", e);
+                                                continue;
+                                            },
+                                            std::result::Result::Ok(authenticate_response) => {
+                                                if authenticate_response.authenticated {
+                                                    if !is_first_called {
+                                                        if authenticate_response.tenant_id
+                                                            != final_result.tenant_id
+                                                        {
+                                                            return std::result::Result::Ok(
+                                                                AuthenticateResult {
+                                                                    authenticated: false,
+                                                                    error_reason: Some(
+                                                                        "Tenant ID mismatch".to_string(),
+                                                                    ),
+                                                                    tenant_id: None,
+                                                                },
+                                                            );
+                                                        }
+                                                    } else {
+                                                        is_first_called = false;
+                                                    }
+                                                    final_result.authenticated = true;
+                                                    final_result.error_reason = None;
+                                                    final_result.tenant_id =
+                                                        authenticate_response.tenant_id.clone();
+                                                    continue;
+                                                } else {
+                                                    return std::result::Result::Ok(AuthenticateResult {
+                                                        authenticated: authenticate_response.authenticated,
+                                                        error_reason: authenticate_response.error_reason,
+                                                        tenant_id: authenticate_response.tenant_id,
+                                                    });
                                                 }
-                                            } else {
-                                                is_first_called = false;
                                             }
-                                            final_result.authenticated = true;
-                                            final_result.error_reason = None;
-                                            final_result.tenant_id =
-                                                authenticate_response.tenant_id.clone();
-                                            continue;
-                                        } else {
-                                            return std::result::Result::Ok(AuthenticateResult {
-                                                authenticated: authenticate_response.authenticated,
-                                                error_reason: authenticate_response.error_reason,
-                                                tenant_id: authenticate_response.tenant_id,
-                                            });
                                         }
+
                                     }
                                 }
                             }
@@ -1056,13 +1149,24 @@ impl PluginManager {
         let running_plugin = running_plugins.get(name);
         if let Some(running_plugin) = running_plugin {
             if running_plugin.state == PluginState::Running {
-                running_plugin
-                    .plugin_abort_tx
-                    .as_ref()
-                    .unwrap()
-                    .send(())
-                    .await
-                    .unwrap();
+                match &running_plugin.plugin_abort_tx {
+                    None => {
+                        return Err(anyhow::anyhow!(
+                            "Plugin '{}' abort channel not found",
+                            name
+                        ));
+                    }
+                    Some(abort_tx) => {
+                        info!("Stopping plugin '{}'...", name);
+                        if let Err(e) = abort_tx.send(()).await {
+                            return Err(anyhow::anyhow!(
+                                "Failed to send abort signal to plugin '{}': {}",
+                                name,
+                                e
+                            ));
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -1077,8 +1181,24 @@ impl PluginManager {
             }
         }
 
-        self.stop_plugin(name).await.unwrap();
-        self.start_plugin(name).await.unwrap();
+        if let Err(e) = self.stop_plugin(name).await {
+            return Err(anyhow::anyhow!(
+                "Failed to stop plugin '{}' before restart: {}",
+                name,
+                e
+            ));
+        } else {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            info!("Plugin '{}' stopped successfully, starting...", name);
+            if let Err(e) = self.start_plugin(name).await {
+                return Err(anyhow::anyhow!(
+                    "Failed to start plugin '{}' during restart: {}",
+                    name,
+                    e
+                ));
+            }
+            info!("Plugin '{}' restarted successfully", name);
+        }
 
         Ok(())
     }
@@ -1095,7 +1215,7 @@ impl PluginManager {
         let mut command = self
             .plugin_loader
             .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
-            .unwrap();
+            .ok_or_else(|| anyhow::anyhow!("Plugin {} start command not exsited", name))?;
 
         let mut process = command
             .stdout(Stdio::piped())
@@ -1113,7 +1233,7 @@ impl PluginManager {
 
         let (plugin_abort_tx, mut plugin_abort_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        let rx_cmd_sender = self.rx_cmd_sender.as_ref().unwrap().clone();
+        let rx_cmd_sender = self.rx_cmd_sender.as_ref().ok_or_else(|| anyhow::anyhow!("rx_cmd_sender not found"))?.clone();
 
         let process_wait_handle = tokio::spawn(async move {
             loop {

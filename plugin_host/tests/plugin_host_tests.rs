@@ -376,6 +376,10 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
 
 #[tokio::test]
 pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
+    env_logger::builder()
+        .is_test(true)
+        .filter_level(log::LevelFilter::Info)
+        .init();
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     common::setup_test_plugins(&temp_dir, MockConfig::default());
 
@@ -422,7 +426,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; // wait for listener to start
 
     let running_plugins = plugin_manager.get_running_plugins();
 
