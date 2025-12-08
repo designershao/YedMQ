@@ -2,7 +2,7 @@ use std::{collections::HashMap, fs, path::{Path, PathBuf}};
 use tokio::process::Command;
 
 use serde::{Serialize, Deserialize};
-use anyhow::{Result, Context};
+use anyhow::{Context, Result, anyhow};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
@@ -131,7 +131,7 @@ impl PluginLoader {
         match manifest.runtime.runtime_type {
             RuntimeType::Process => {
                 if let Some(executable) = &manifest.runtime.executable {
-                    let plugin_dir = self.get_plugin_path(plugin_name).unwrap();
+                    let plugin_dir = self.get_plugin_path(plugin_name).ok_or_else(|| anyhow!("Plugin '{}' path not existed", plugin_name))?;
                     let exe_path = plugin_dir.join(executable);
                     let mut cmd = Command::new(exe_path);
 

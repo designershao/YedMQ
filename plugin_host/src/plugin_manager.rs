@@ -1262,7 +1262,7 @@ impl PluginManager {
                             println!("Plugin '{}' killed successfully", borrowed_name);
                         }
                         if let Some(notify_sender) = notify_sender {
-                            notify_sender.send(());
+                            notify_sender.send(()).await.ok();
                         }
                     }
                 }

@@ -15,7 +15,8 @@ impl RaftService for RustServiceImpl {
         match inner.raft_type() {
             crate::protobuf::RaftType::Topic => {
                 let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-                let command: crate::raft::topic::types::Request = serde_json::from_str(&inner.data).unwrap();
+                let command: crate::raft::topic::types::Request = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let res = topic_raft_actor_addr
                     .send(crate::raft::topic::topic_raft_actor::DirectWriteToRaft {
                         command
@@ -24,13 +25,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::WriteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("WriteResponse serialization error: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -41,7 +42,8 @@ impl RaftService for RustServiceImpl {
             }
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
-                let command: crate::raft::session_actor_map::types::SessionActorMapRequest = serde_json::from_str(&inner.data).unwrap();
+                let command: crate::raft::session_actor_map::types::SessionActorMapRequest = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let res = session_actor_map_raft_actor_addr
                     .send(crate::raft::session_actor_map::session_actor_map_raft_actor::DirectWriteToRaft {
                         command
@@ -50,13 +52,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session actor map raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::WriteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("WriteResponse serialization error: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -67,7 +69,8 @@ impl RaftService for RustServiceImpl {
             },
             crate::protobuf::RaftType::SessionState => {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                let command: crate::raft::session_state::types::SessionStateRequest = serde_json::from_str(&inner.data).unwrap();
+                let command: crate::raft::session_state::types::SessionStateRequest = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let res = session_state_raft_actor_addr
                     .send(crate::raft::session_state::session_state_raft_actor::DirectWriteToRaft {
                         command
@@ -76,13 +79,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session state raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::WriteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("WriteResponse serialization error: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -99,7 +102,8 @@ impl RaftService for RustServiceImpl {
         match inner.raft_type() {
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let append_entries_message = crate::raft::session_actor_map::session_actor_map_raft_actor::AppendEntriesRequestMessage {
                     payload
                 };
@@ -110,13 +114,13 @@ impl RaftService for RustServiceImpl {
                     error!("append_entries SessionActorMap error: {}", e);
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session actor map raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::AppendEntriesResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -138,13 +142,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::AppendEntriesResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -166,13 +170,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session state raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::AppendEntriesResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -189,7 +193,8 @@ impl RaftService for RustServiceImpl {
         match inner.raft_type() {
             crate::protobuf::RaftType::Topic => {
                 let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let vote_message = crate::raft::topic::topic_raft_actor::VoteRequestMessage {
                     payload
                 };
@@ -199,13 +204,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::VoteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -216,7 +221,8 @@ impl RaftService for RustServiceImpl {
             },
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let vote_message = crate::raft::session_actor_map::session_actor_map_raft_actor::VoteRequestMessage {
                     payload
                 };
@@ -226,13 +232,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session actor map raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::VoteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -244,7 +250,8 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionState => {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let vote_message = crate::raft::session_state::session_state_raft_actor::VoteRequestMessage {
                     payload
                 };
@@ -254,13 +261,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session state raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::VoteResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -277,7 +284,8 @@ impl RaftService for RustServiceImpl {
         match inner.raft_type() {
             crate::protobuf::RaftType::Topic => {
                 let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let install_snapshot_message = crate::raft::topic::topic_raft_actor::InstallSnapshotRequestMessage {
                     payload
                 };
@@ -287,13 +295,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::InstallSnapshotResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -304,7 +312,8 @@ impl RaftService for RustServiceImpl {
             },
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let install_snapshot_message = crate::raft::session_actor_map::session_actor_map_raft_actor::InstallSnapshotRequestMessage {
                     payload
                 };
@@ -314,13 +323,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session actor map raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::InstallSnapshotResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }
@@ -332,7 +341,8 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionState => {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let install_snapshot_message = crate::raft::session_state::session_state_raft_actor::InstallSnapshotRequestMessage {
                     payload
                 };
@@ -342,13 +352,13 @@ impl RaftService for RustServiceImpl {
                 if let Err(e) = res {
                     return Err(Status::internal(e.to_string()));
                 }
-                let res = res.unwrap();
+                let res = res.map_err(|e| Status::internal(format!("Write to session state raft error {}", e)))?;
                 match res {
                     Ok(res) => {
                         let res = crate::protobuf::InstallSnapshotResponse {
                             success: true,
                             error: None,
-                            data: serde_json::to_string(&res).unwrap(),
+                            data: serde_json::to_string(&res).map_err(|e| Status::internal(format!("Failed to serialize response: {}", e)))?,
                         };
                         Ok(Response::new(res))
                     }

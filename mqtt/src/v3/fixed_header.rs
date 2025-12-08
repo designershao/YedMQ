@@ -93,7 +93,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
                 qos,
                 retain,
                 dup,
-                remaining_length: remaining_length.try_into().unwrap()
+                remaining_length
                 }))
             }
         }
@@ -127,11 +127,11 @@ impl FixHeader {
             self.packet_type == PacketType::PUBREC {
             let mut r:u8 = packet_type_u8 << 4;
             if self.dup.is_some() {
-                r += (self.dup.unwrap() as u8) << 3;
+                r += (self.dup.unwrap_or_default() as u8) << 3;
             }
 
             if self.qos.is_some() {
-                r += (self.qos.unwrap() as u8) << 1
+                r += (self.qos.unwrap_or_default() as u8) << 1
             }
 
             if self.retain.is_some()
@@ -155,7 +155,7 @@ impl FixHeader {
         loop {
             size /= 128;
             length += 1;
-            if size <= 0 {
+            if size == 0 {
                 return length;
             }        
         }
