@@ -132,7 +132,8 @@ impl RaftService for RustServiceImpl {
             }
             crate::protobuf::RaftType::Topic => {
                 let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let append_entries_message = crate::raft::topic::topic_raft_actor::AppendEntriesRequestMessage {
                     payload
                 };
@@ -160,7 +161,8 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionState => {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-                let payload = serde_json::from_str(&inner.data).unwrap();
+                let payload = serde_json::from_str(&inner.data)
+                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
                 let append_entries_message = crate::raft::session_state::session_state_raft_actor::AppendEntriesRequestMessage {
                     payload
                 };
