@@ -58,12 +58,15 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to pop offline message: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in popping offline message: {}", e)))?;
-        let payload = res.map(|p| serde_json::to_string(&p).unwrap());
+
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize offline messages response: {}", e))
+        })?;
 
         Ok(Response::new(PopOfflineMessageResponse {
             success: true,
             error: None,
-            payload,
+            payload: Some(res_payload),
         }))
     }
 
@@ -83,12 +86,14 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to get session state: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in getting session state: {}", e)))?;
 
-        let payload = res.map(|p| serde_json::to_string(&p).unwrap());
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize session state response: {}", e))
+        })?;
 
         Ok(Response::new(GetSessionStateResponse {
             success: true,
             error: None,
-            payload,
+            payload: Some(res_payload),
         }))
     }
 
@@ -233,11 +238,13 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting current inflight packet: {}", e))
             })?;
-        let payload = res.map(|p| serde_json::to_string(&p).unwrap());
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize current inflight packet response: {}", e))
+        })?;
         Ok(Response::new(GetCurrentInflightPacketResponse {
             success: true,
             error: None,
-            packet: payload,
+            packet: Some(res_payload),
         }))
     }
 
@@ -259,11 +266,13 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting next inflight packet: {}", e))
             })?;
-        let payload = res.map(|p| serde_json::to_string(&p).unwrap());
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize next inflight packet response: {}", e))
+        })?;
         Ok(Response::new(GetNextInflightPacketResponse {
             success: true,
             error: None,
-            packet: payload,
+            packet: Some(res_payload),
         }))
     }
 
@@ -398,11 +407,13 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting retain publish message: {}", e))
             })?;
-        let payload = serde_json::to_string(&res).unwrap_or_default();
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize retain publish message response: {}", e))
+        })?;
         Ok(Response::new(GetRetainPublishMessageResponse {
             success: true,
             error: None,
-            payload: Some(payload),
+            payload: Some(res_payload),
         }))
     }
 
@@ -438,10 +449,13 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
-        let version = SessionVersion {
-            counter: inner.session_version.unwrap().counter,
-            node_id: inner.node_id,
-        };
+        let version = inner.session_version
+            .map_or_else(|| Err(Status::invalid_argument("Session version is required for registering session actor map")), |s| {
+            Ok(SessionVersion {
+                counter: s.counter,
+                node_id: s.node_id,
+            })
+        })?;
         let register_session_actor_map_actor =
             session_actor_map_raft_actor::RegisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
@@ -471,10 +485,15 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
-        let version = SessionVersion {
-            counter: inner.session_version.unwrap().counter,
-            node_id: inner.session_version.unwrap().node_id,
-        };
+
+        let version = inner.session_version
+            .map_or_else(|| Err(Status::invalid_argument("Session version is required for unregistering session actor map")), |s| {
+            Ok(SessionVersion {
+                counter: s.counter,
+                node_id: s.node_id,
+            })
+        })?;
+
         let unregister_session_actor_map_actor =
             session_actor_map_raft_actor::UnregisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
@@ -535,11 +554,13 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to get session actor map: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in getting session actor map: {}", e)))?;
-        let payload = res.map(|m| serde_json::to_string(&m).unwrap_or_default());
+        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!("Failed to serialize session actor map response: {}", e))
+        })?;
         Ok(Response::new(GetSessionActorMapResponse {
             success: true,
             error: None,
-            payload,
+            payload: Some(res_payload),
         }))
     }
 
