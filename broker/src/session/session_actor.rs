@@ -1654,14 +1654,31 @@ impl Handler<SessionActorMessage> for SessionActor {
                 if matches!(self.activity_state, ActivityState::Active) {
                     let conn = self.conn_recipient.clone().unwrap();
                     async move {
-                        conn.send(ConnectionActorMessage::Disconnect).await.unwrap();
+                        conn.send(ConnectionActorMessage::Disconnect).await
                     }
                     .into_actor(self)
-                    .then(|_, act, ctx| {
-                        if !act.clean_session {
-                            act.set_state(ctx, ActivityState::Inactive);
-                        } else {
-                            act.force_stop(ctx);
+                    .then(|res, act, ctx| {
+                        let connection_already_stopped = match res {
+                            Err(e) => {
+                                match e {
+                                    MailboxError::Closed => {
+                                        // connection already closed
+                                        true
+                                    }
+                                    MailboxError::Timeout => {
+                                        warn!("force disconnect send disconnect to connection time out: {}", e);
+                                        false
+                                    }
+                                }
+                            }
+                            Ok(_) => true
+                        };
+                        if connection_already_stopped {
+                            if !act.clean_session {
+                                act.set_state(ctx, ActivityState::Inactive);
+                            } else {
+                                act.force_stop(ctx);
+                            }
                         }
                         actix::fut::ready(())
                     })
