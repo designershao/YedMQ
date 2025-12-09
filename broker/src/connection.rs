@@ -8,7 +8,7 @@ use actix::{Actor, Addr, Context};
 use bytes::{Buf, BytesMut};
 use log::{error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder};
+use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
@@ -21,6 +21,12 @@ use crate::session::{session_actor, WillMessage};
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
 
+    #[error("unsupported protocol version. Supported versions: {supported_versions:?}, current version: {current_version}")]
+    UnsupportedProtocolVersion {
+        supported_versions: Vec<String>,
+        current_version: String,
+    },
+
     #[error("connection closed")]
     ConnectionClosed,
 
@@ -30,12 +36,21 @@ pub enum ConnectionError {
     #[error("packet parse error {0}")]
     PacketParseError(String),
 
-    #[error("unknown io error {0}")]
-    UnknownIOError(#[from] std::io::Error),
+    #[error("io error {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("create session error {0}")]
+    SessionManagerServiceUnavailable(String),
+
+    #[error("connection unauthorized, reason {0}")]
+    Unauthenticate(String),
+
+    #[error("plugin error {0}")]
+    PluginError(#[from] yedmq_plugin_host::plugin_manager::PluginManagerError),
 }
 
 #[derive(Message, Debug)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), ConnectionError>")]
 pub enum ConnectionActorMessage {
     WritePacketToClient(MqttPacketV3),
     Disconnect,
@@ -97,7 +112,7 @@ where
 pub async fn write_packet<T: AsyncWrite>(
     writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
     packet: &MqttPacketV3,
-) -> anyhow::Result<()> {
+) -> tokio::io::Result<()> {
     writer.borrow_mut().write(&packet.to_bytes()).await?;
     writer.borrow_mut().flush().await?;
     Ok(())
@@ -161,26 +176,22 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
     client_certificate: Option<Vec<u8>>,
-) -> anyhow::Result<Recipient<SessionActorMessage>> {
+) -> Result<Recipient<SessionActorMessage>, ConnectionError> {
     // invalid mqtt protocol name
     if packet.variable_header.protocol_name != "MQTT" {
         warn!("invalid mqtt protocol name");
-        return Err(anyhow::anyhow!("invalid mqtt protocol name"));
+        return Err(ConnectionError::PacketParseError(
+            "invalid mqtt protocol name".to_string(),
+        ));
     }
     //
 
     // unsupport protocol version
     if packet.variable_header.protocol_level != 4 {
-        let connack_packet = ConnAckPacketBuilder::new()
-            .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::UnsupportedProtocolVersion)
-            .build();
-        self_addr
-            .send(ConnectionActorMessage::WritePacketToClient(
-                yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-            ))
-            .await
-            .unwrap();
-        return Err(anyhow::anyhow!("unsupport protocol version"));
+        return Err(ConnectionError::UnsupportedProtocolVersion {
+            supported_versions: vec!["3.1.1".to_string()],
+            current_version: packet.variable_header.protocol_level.to_string(),
+        });
     }
     //
 
@@ -219,7 +230,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 let tenant_id = tenant_id.unwrap_or("public".to_string());
                 let recipient = self_addr.clone().recipient();
                 let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
-                let result = session_manager_actor_addr
+                let recipient = session_manager_actor_addr
                     .send(CreateSessionMessage {
                         tenant_id,
                         client_id: packet.payload.client_identifier.clone(),
@@ -230,59 +241,29 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                         peer_addr,
                         username: packet.payload.username.clone(),
                     })
-                    .await;
-                if let Ok(result) = result {
-                    if let Ok(session) = result {
-                        info!("create session success, set session to connection");
-                        Ok(session)
-                    } else {
-                        let connack_packet = ConnAckPacketBuilder::new()
-                            .set_return_code(
-                                yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable,
-                            )
-                            .build();
-                        self_addr
-                            .send(ConnectionActorMessage::WritePacketToClient(
-                                yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                            ))
-                            .await
-                            .unwrap();
-                        Err(anyhow::anyhow!("create session error, {}", result.err().unwrap()))
-                    }
-
-                }
-                else {
-                    Err(anyhow::anyhow!("create session error, {}", result.err().unwrap()))
-                }
+                    .await
+                    .map_err(|e| match e {
+                        MailboxError::Closed => {
+                            error!("session manager actor mailbox closed");
+                            ConnectionError::SessionManagerServiceUnavailable("Session manager actor mailbox closed".to_string())
+                        }
+                        MailboxError::Timeout => {
+                            error!("session manager actor mailbox timeout");
+                            ConnectionError::SessionManagerServiceUnavailable("Session manager actor mailbox timeout".to_string())
+                        }
+                    })?
+                    .map_err(|e| ConnectionError::SessionManagerServiceUnavailable(e.to_string()));
+                recipient
             }
             AuthenticateResult {
                 authenticated: false,
                 ..
             } => {
-                let connack_reason =  yedmq_mqtt::v3::connack::ConnackReturnCode::UnAuthorized;
-                let connack_packet = ConnAckPacketBuilder::new()
-                    .set_return_code(connack_reason)
-                    .build();
-                self_addr
-                    .send(ConnectionActorMessage::WritePacketToClient(
-                        yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                    ))
-                    .await
-                    .unwrap();
-                Err(anyhow::anyhow!("connect error"))
+                Err(ConnectionError::Unauthenticate("authenticate plugin rejected".to_string()))
             }
         },
-        Err(_) => {
-            let connack_packet = ConnAckPacketBuilder::new()
-                .set_return_code(yedmq_mqtt::v3::connack::ConnackReturnCode::ServerUnavailable)
-                .build();
-            self_addr
-                .send(ConnectionActorMessage::WritePacketToClient(
-                    yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
-                ))
-                .await
-                .unwrap();
-            Err(anyhow::anyhow!("connect error"))
+        Err(e) => {
+            Err(ConnectionError::PluginError(e))
         }
     }
 }
@@ -307,40 +288,80 @@ where
                 if let Ok(packet) = first_packet {
                     match packet {
                         MqttPacketV3::Connect(packet) => {
-                            let session_res = handle_initial_connect(
+                            match handle_initial_connect(
                                 packet,
                                 plugin_service,
                                 &self_addr,
                                 peer_addr,
                                 client_cert
                             )
-                            .await;
-                            if let Ok(session) = session_res {
-                                self_addr.send(UpdateSession { session: session.clone() }).await.unwrap();
-                                loop {
-                                    let packet =
-                                        read_packet(&reader, &mut buffer, max_message_size).await;
-                                    if let Ok(packet) = packet {
-                                        if matches!(packet, MqttPacketV3::Disconnect(_)) {
-                                            self_addr
-                                                .send(NotifyUpdateDisconnectedNormally {
-                                                    disconnected_normally: true,
-                                                })
-                                                .await
-                                                .unwrap();
+                            .await {
+                                Ok(session) => {
+                                    self_addr.send(UpdateSession { session: session.clone() }).await.unwrap();
+                                    loop {
+                                        let packet =
+                                            read_packet(&reader, &mut buffer, max_message_size).await;
+                                        if let Ok(packet) = packet {
+                                            if matches!(packet, MqttPacketV3::Disconnect(_)) {
+                                                self_addr
+                                                    .send(NotifyUpdateDisconnectedNormally {
+                                                        disconnected_normally: true,
+                                                    })
+                                                    .await
+                                                    .unwrap();
+                                            }
+                                            session.do_send(
+                                                session_actor::SessionActorMessage::InboundPacket(
+                                                    packet,
+                                                ),
+                                            );
+                                        } else {
+                                            break;
                                         }
-                                        session.do_send(
-                                            session_actor::SessionActorMessage::InboundPacket(
-                                                packet,
-                                            ),
-                                        );
-                                    } else {
-                                        break;
                                     }
+                                },
+                                Err(e) => {
+                                    let connack_packet = match e {
+                                        ConnectionError::UnsupportedProtocolVersion { .. } => {
+                                            ConnAckPacketBuilder::new()
+                                                .set_return_code(ConnackReturnCode::UnsupportedProtocolVersion)
+                                                .build()
+                                        }
+                                        ConnectionError::Unauthenticate(reason) => {
+                                            error!("connection unauthenticated: {}", reason);
+                                            ConnAckPacketBuilder::new()
+                                                .set_return_code(ConnackReturnCode::UnAuthorized)
+                                                .build()
+                                        }
+                                        ConnectionError::PluginError(e) => {
+                                            error!("handle initial connect error: {}", e);
+                                            ConnAckPacketBuilder::new()
+                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
+                                                .build()
+                                        }
+                                        ConnectionError::SessionManagerServiceUnavailable(e) => {
+                                            error!("handle initial connect error: {}", e);
+                                            ConnAckPacketBuilder::new()
+                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
+                                                .build()
+                                        }
+                                        _ => {
+                                            error!("handle initial connect error: {}", e);
+                                            ConnAckPacketBuilder::new()
+                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
+                                                .build()
+                                        }
+                                    };
+                                    if let Err(e) = self_addr
+                                        .send(ConnectionActorMessage::WritePacketToClient(
+                                            yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
+                                        ))
+                                        .await {
+                                            error!("send connack packet error: {}", e);
+                                        }
+                                    self_addr.do_send(ConnectionActorMessage::Disconnect);
+                                    return;
                                 }
-                            } else {
-                                error!("handle initial connect error, {}", session_res.err().unwrap());
-                                return;
                             }
                         }
                         _ => {
@@ -349,7 +370,6 @@ where
                         }
                     }
                 } else {
-                    info!("client first packet is not connect packet");
                     error!("client first packet is not connect packet");
                     let connack_packet = ConnAckPacketBuilder::new()
                         .set_return_code(connack::ConnackReturnCode::UnsupportedProtocolVersion)
@@ -414,34 +434,26 @@ impl<T> Handler<ConnectionActorMessage> for ConnectionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    type Result = ();
+    type Result = ResponseFuture<Result<(), ConnectionError>>;
 
     fn handle(&mut self, msg: ConnectionActorMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
             ConnectionActorMessage::WritePacketToClient(packet) => {
                 let writer = self.writer.clone();
-                ctx.spawn(
-                    async move {
-                        write_packet(writer, &packet).await.unwrap();
-                    }
-                    .into_actor(self),
-                );
+                Box::pin(async move {
+                    write_packet(writer, &packet).await?;
+                    Ok(())
+                })
             }
             ConnectionActorMessage::Disconnect => {
                 info!("connection received disconnect message");
+                ctx.stop();
+
                 let writer = self.writer.clone();
-                async move {
-                    let res = writer.borrow_mut().shutdown().await;
-                    if let Err(e) = res {
-                        error!("shutdown writer error: {}", e);
-                    }
-                }
-                .into_actor(self)
-                .then(|_,_,ctx| { 
-                    ctx.stop();
-                    actix::fut::ready(())
+                Box::pin(async move {
+                    writer.borrow_mut().shutdown().await?;
+                    Ok(())
                 })
-                .wait(ctx);
             }
         }
     }
