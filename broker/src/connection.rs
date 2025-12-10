@@ -170,13 +170,18 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
     }
 }
 
+pub struct HandleInitialConnectResult {
+    pub session_recipient: Recipient<SessionActorMessage>,
+    pub session_present: bool,
+}
+
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     packet: ConnectPacket,
     plugin_service: Arc<PluginManager>,
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
     client_certificate: Option<Vec<u8>>,
-) -> Result<Recipient<SessionActorMessage>, ConnectionError> {
+) -> Result<HandleInitialConnectResult, ConnectionError> {
     // invalid mqtt protocol name
     if packet.variable_header.protocol_name != "MQTT" {
         warn!("invalid mqtt protocol name");
@@ -252,7 +257,11 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                             ConnectionError::SessionManagerServiceUnavailable("Session manager actor mailbox timeout".to_string())
                         }
                     })?
-                    .map_err(|e| ConnectionError::SessionManagerServiceUnavailable(e.to_string()));
+                    .map_err(|e| ConnectionError::SessionManagerServiceUnavailable(e.to_string()))
+                    .map(|r| HandleInitialConnectResult { 
+                        session_recipient: r.session_actor_recipient, 
+                        session_present: r.session_present }
+                    );
                 recipient
             }
             AuthenticateResult {
@@ -296,8 +305,24 @@ where
                                 client_cert
                             )
                             .await {
-                                Ok(session) => {
-                                    self_addr.send(UpdateSession { session: session.clone() }).await.unwrap();
+                                Ok(handle_initial_connect_result) => {
+                                    let connack = ConnAckPacketBuilder::new()
+                                        .set_return_code(ConnackReturnCode::Accpet)
+                                        .set_session_present(handle_initial_connect_result.session_present)
+                                        .build();
+
+                                    if let Err(e) = self_addr
+                                        .send(ConnectionActorMessage::WritePacketToClient(
+                                            yedmq_mqtt::MqttPacketV3::Connack(connack),
+                                        ))
+                                    .await {
+                                        error!("send connack packet error, connection may be closed: {}", e);
+                                        self_addr.do_send(ConnectionActorMessage::Disconnect);
+                                        return;
+                                    }
+
+                                    self_addr.send(UpdateSession { session: handle_initial_connect_result.session_recipient.clone() }).await.unwrap();
+
                                     loop {
                                         let packet =
                                             read_packet(&reader, &mut buffer, max_message_size).await;
@@ -310,7 +335,7 @@ where
                                                     .await
                                                     .unwrap();
                                             }
-                                            session.do_send(
+                                            handle_initial_connect_result.session_recipient.do_send(
                                                 session_actor::SessionActorMessage::InboundPacket(
                                                     packet,
                                                 ),
