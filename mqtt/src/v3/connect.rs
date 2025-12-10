@@ -523,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_protocl_name() {
+    fn test_protocol_name() {
         let input = &[0x00,0x04,0x4D,0x51,0x54, 0x54,0x4];
         let protocol_name = protocol_name(input).unwrap();
         assert_eq!(protocol_name.1, "MQTT".to_string());

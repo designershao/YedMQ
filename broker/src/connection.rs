@@ -191,7 +191,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     }
     //
 
-    // unsupport protocol version
+    // unsupported protocol version
     if packet.variable_header.protocol_level != 4 {
         return Err(ConnectionError::UnsupportedProtocolVersion {
             supported_versions: vec!["3.1.1".to_string()],
@@ -307,7 +307,7 @@ where
                             .await {
                                 Ok(handle_initial_connect_result) => {
                                     let connack = ConnAckPacketBuilder::new()
-                                        .set_return_code(ConnackReturnCode::Accpet)
+                                        .set_return_code(ConnackReturnCode::Accept)
                                         .set_session_present(handle_initial_connect_result.session_present)
                                         .build();
 

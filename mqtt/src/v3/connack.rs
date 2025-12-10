@@ -15,7 +15,7 @@ pub struct ConnAckPacket {
 }
 
 pub enum ConnackReturnCode {
-    Accpet = 0x00,
+    Accept = 0x00,
     UnsupportedProtocolVersion = 0x01,
     InvalidClientIdentifier = 0x02,
     ServerUnavailable = 0x03,
@@ -36,7 +36,7 @@ impl Default for ConnAckPacketBuilder {
 
 impl ConnAckPacketBuilder {
     pub fn new() -> ConnAckPacketBuilder {
-        ConnAckPacketBuilder { return_code: ConnackReturnCode::Accpet, session_present: false }
+        ConnAckPacketBuilder { return_code: ConnackReturnCode::Accept, session_present: false }
     }
 
     pub fn set_session_present(mut self, session_present: bool) -> Self {
@@ -58,7 +58,7 @@ impl ConnAckPacketBuilder {
             remaining_length: 2,
         };
         let return_code = match self.return_code {
-            ConnackReturnCode::Accpet => 0x00,
+            ConnackReturnCode::Accept => 0x00,
             ConnackReturnCode::UnsupportedProtocolVersion => 0x01,
             ConnackReturnCode::InvalidClientIdentifier => 0x02,
             ConnackReturnCode::ServerUnavailable => 0x03,
