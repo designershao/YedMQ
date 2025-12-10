@@ -293,12 +293,10 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             if session.node_id == self.node_id {
                                 let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
                                 session_manager_actor_addr
-                                    .send(crate::session::session_manager_actor::RemoveExpiredSession {
+                                    .do_send(crate::session::session_manager_actor::RemoveExpiredSession {
                                         tenant_id: session.tenant_id,
                                         client_id: session.session_id,
-                                    })
-                                    .await
-                                    .unwrap();
+                                    });
                             }
                         }
                         replies.push(SessionActorMapResponse::None);

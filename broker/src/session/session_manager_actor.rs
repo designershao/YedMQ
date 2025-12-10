@@ -228,42 +228,43 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), SessionManagerError>")]
 pub struct RemoveExpiredSession {
     pub tenant_id: String,
     pub client_id: String,
 }
 
 impl Handler<RemoveExpiredSession> for SessionManagerActor {
-    type Result = ();
+    type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
-    fn handle(&mut self, msg: RemoveExpiredSession, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: RemoveExpiredSession, _ctx: &mut Self::Context) -> Self::Result {
         info!("remove expired session {}", msg.client_id);
-        let tenant_sessions = self.sessions.get(&msg.tenant_id);
-        if tenant_sessions.is_none() {
-            warn!("tenant {} not found", msg.tenant_id);
-            return;
-        }
-        let tenant_sessions = tenant_sessions.unwrap().clone();
-        async move {
-            let mut tenant_sessions = tenant_sessions.write().await;
-            let session = tenant_sessions.get(&msg.client_id);
-            if let Some(session) = session {
-                session
-                    .session_actor_message_recipient
-                    .do_send(SessionActorMessage::ForceStop);
-                info!(
-                    "force stop session {} remove from local node session map",
-                    msg.client_id
-                );
-                tenant_sessions.remove(&msg.client_id);
-                info!("remove expired session {} succeed", msg.client_id);
-            } else {
-                warn!("session {} not found in tenant {}, maybe this node has rebooted or the session has been removed", msg.client_id, msg.tenant_id);
+        let tenant_sessions = self.sessions.get(msg.tenant_id.as_str());
+        match tenant_sessions {
+            None => Box::pin(async { Err(SessionManagerError::TenantNotExisted(msg.tenant_id)) }),
+            Some(tenant_sessions) => {
+                let tenant_sessions = tenant_sessions.clone();
+                Box::pin(
+                async move {
+                    let mut tenant_sessions = tenant_sessions.write().await;
+                    let session = tenant_sessions.get(&msg.client_id);
+                    if let Some(session) = session {
+                        session.session_actor_message_recipient
+                            .do_send(SessionActorMessage::ForceStop);
+                        info!(
+                            "force stop session {} remove from local node session map",
+                            msg.client_id
+                        );
+                        tenant_sessions.remove(&msg.client_id);
+                        info!("remove expired session {} succeed", msg.client_id);
+                        Ok(())
+                    } else {
+                        warn!("session {} not found in tenant {}, maybe this node has rebooted or the session has been removed", msg.client_id, msg.tenant_id);
+                        Err(SessionManagerError::SessionNotExisted(msg.client_id))
+                    }
+                })
             }
         }
-        .into_actor(self)
-        .wait(ctx);
     }
 }
 
