@@ -113,7 +113,7 @@ pub async fn write_packet<T: AsyncWrite>(
     writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
     packet: &MqttPacketV3,
 ) -> tokio::io::Result<()> {
-    writer.borrow_mut().write(&packet.to_bytes()).await?;
+    writer.borrow_mut().write_all(&packet.to_bytes()).await?;
     writer.borrow_mut().flush().await?;
     Ok(())
 }
