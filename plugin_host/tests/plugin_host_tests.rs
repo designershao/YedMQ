@@ -92,7 +92,6 @@ pub async fn test_plugin_host_start_plugin() {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
     let running_plugins = plugin_manager.get_running_plugins();
-    let running_plugins = running_plugins.read().await;
     assert!(running_plugins.contains_key("mock_plugin_harness"));
 
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin init
@@ -226,7 +225,6 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
 
     {
         let running_plugins = plugin_manager.get_running_plugins();
-        let running_plugins = running_plugins.read().await;
 
         assert!(running_plugins.contains_key("mock_plugin_harness"));
     }
@@ -236,7 +234,6 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
     {
         let running_plugins = plugin_manager.get_running_plugins();
 
-        let running_plugins = running_plugins.read().await;
 
         println!(
             "Plugin States: {:?}",
@@ -252,8 +249,6 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
     tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin exit
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -300,7 +295,6 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
 
     {
         let running_plugins = plugin_manager.get_running_plugins();
-        let running_plugins = running_plugins.read().await;
 
         assert!(running_plugins.contains_key("mock_plugin_harness"));
     }
@@ -308,8 +302,6 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin init
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -365,8 +357,6 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
 
     let running_plugins = plugin_manager.get_running_plugins();
 
-    let running_plugins = running_plugins.read().await;
-
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
     assert!(plugin_process.state == yedmq_plugin_host::plugin_manager::PluginState::Stopped);
@@ -414,8 +404,6 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
     let pre_plugin_start_time = {
         let running_plugins = plugin_manager.get_running_plugins();
 
-        let running_plugins = running_plugins.read().await;
-
         let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
         plugin_process.start_time.unwrap().clone()
@@ -429,8 +417,6 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; // wait for listener to start
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -496,8 +482,6 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
     assert!(result.authenticated == true);
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -575,8 +559,6 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -657,8 +639,6 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
 
     let running_plugins = plugin_manager.get_running_plugins();
 
-    let running_plugins = running_plugins.read().await;
-
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
     let logs = plugin_process.logs.read().await;
@@ -733,8 +713,6 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let running_plugins = plugin_manager.get_running_plugins();
-
-    let running_plugins = running_plugins.read().await;
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
@@ -845,8 +823,6 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -858,8 +834,6 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -871,8 +845,6 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -984,8 +956,6 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -997,8 +967,6 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1010,8 +978,6 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -1117,8 +1083,6 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -1130,8 +1094,6 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1143,8 +1105,6 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -1249,8 +1209,6 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -1262,8 +1220,6 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1275,8 +1231,6 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -1386,8 +1340,6 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -1399,8 +1351,6 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1412,8 +1362,6 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -1521,8 +1469,6 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -1534,8 +1480,6 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1547,8 +1491,6 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs
@@ -1652,8 +1594,6 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 
     let plugin_1_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_1")
         .unwrap()
         .logs
@@ -1665,8 +1605,6 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 
     let plugin_2_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_2")
         .unwrap()
         .logs
@@ -1678,8 +1616,6 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 
     let plugin_3_log = plugin_manager
         .get_running_plugins()
-        .read()
-        .await
         .get("mock_plugin_harness_3")
         .unwrap()
         .logs

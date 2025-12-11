@@ -148,30 +148,55 @@ impl Actor for SessionManagerActor {
                             "received session lifectcle message SessionStopped session {} stopped",
                             client_id
                         );
-                        let session_option = self_addr.send(GetLatestSessionClock{}).await.unwrap();
-                        if let Some(session_clock) = session_option {
-                            let session_version = session_clock.next();
-                            let res = session_actor_map_actor_addr.send(
-                                crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
-                                    tenant_id: tenant_id.clone(),
-                                    client_id: client_id.clone(),
-                                    version: session_version.clone(),
-                                }
-                            ).await;
-                            if let Err(err) = res {
-                                error!("failed to unregister session actor map: {}", err);
+                        let session_option = self_addr.send(GetLatestSessionClock{}).await;
+                        match session_option {
+                            Err(err) => {
+                                error!("get session clock for unregister session actor map error: {}", err);
+                                continue;
                             }
-                            self_addr
-                                .send(RemoveSessionMessage {
-                                    tenant_id,
-                                    client_id,
-                                })
-                                .await
-                                .unwrap()
-                                .unwrap();
-                        } else {
-                            error!("failed to get session clock, perhaps session manager is not initialized");
-                        }
+                            Ok(Some(session_clock)) => {
+                                let session_version = session_clock.next();
+                                let res = session_actor_map_actor_addr.send(
+                                    crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
+                                        tenant_id: tenant_id.clone(),
+                                        client_id: client_id.clone(),
+                                        version: session_version.clone(),
+                                    }
+                                ).await;
+                                if let Err(err) = res {
+                                    warn!("failed to unregister session actor map: {}", err);
+                                }
+                                // Because the session should renew the session lease before it stops,
+                                // so if we send unregister error, we just log it and continue to remove session from local map and 
+                                // let the raft state machine to clean up the session actor map later.
+                                match self_addr
+                                    .send(RemoveSessionMessage {
+                                        tenant_id,
+                                        client_id,
+                                    })
+                                    .await {
+                                    Ok(res) => {
+                                        match res {
+                                            Ok(_) => {}
+                                            Err(e) => {
+                                                if let SessionManagerError::TenantNotExisted(tenant_id) = e {
+                                                    warn!("tenant {} not existed when removing session from local map, maybe tenant has been removed", tenant_id);
+                                                } else {
+                                                    error!("failed to remove session from local map: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        error!("failed to send RemoveSessionMessage to self: {}", err);
+                                    }
+                                }
+                            }
+                            Ok(None) => {
+                                error!("session clock not found when unregister session actor map");
+                                continue;
+                            }
+                        };
                     }
                 }
             }
@@ -301,14 +326,29 @@ impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
                 let session = tenant_sessions.get(&msg.client_id);
                 if let Some(session) = session {
                     if msg.session_version.is_newer_than(&session.session_version) {
-                        let _ = self_addr
+                        match self_addr
                             .send(ForceStop {
                                 tenant_id: msg.tenant_id.clone(),
                                 client_id: msg.client_id.clone(),
                             })
-                            .await
-                            .unwrap();
-                        info!("remove duplicate session {} succeed", msg.client_id);
+                            .await {
+                            Ok(res) => {
+                                if let Err(e) = res {
+                                    error!(
+                                        "force stop duplicate session {} failed: {}",
+                                        msg.client_id, e
+                                    );
+                                } else {
+                                    info!("remove duplicate session {} succeed", msg.client_id);
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "send ForceStop message to self for duplicate session {} failed: {}",
+                                    msg.client_id, e
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -476,9 +516,16 @@ impl Handler<ForceStop> for SessionManagerActor {
             let mut tenant_sessions = tenant_sessions.write().await;
             let session = tenant_sessions.get(&msg.client_id);
             if let Some(session) = session {
-                session
+                if let Err(e) = session
                     .session_actor_message_recipient
-                    .do_send(SessionActorMessage::ForceStop);
+                    .send(SessionActorMessage::ForceStop)
+                    .await
+                {
+                    warn!(
+                        "failed to send ForceStop to session actor {}: {}. It might have already stopped.",
+                        msg.client_id, e
+                    );
+                }
                 info!(
                     "force stop session {} remove from local node session map",
                     msg.client_id
@@ -598,13 +645,15 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         if !self.tenant_existed(&msg.tenant_id) {
             info!("tenant not existed, create tenant {}", msg.tenant_id);
             self.create_tenant(&msg.tenant_id);
-            //return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
         }
 
-        let sessions = self.sessions.get(&msg.tenant_id).unwrap().clone();
+        let sessions = self.sessions.get(&msg.tenant_id)
+            .expect("tenant must exist after tenant_existed check and create_tenant call").clone();
+
         let plugin_manager = self.plugin_manager.clone();
         let settings = self.settings.clone();
-        let session_lifecycle_tx = self.session_lifecycle_tx.clone().unwrap().clone();
+        let session_lifecycle_tx = self.session_lifecycle_tx.as_ref()
+            .expect("session lifecycle tx must exist").clone();
 
         let session_clock = self.session_clock.clone();
         let current_node_id = self.current_node_id;

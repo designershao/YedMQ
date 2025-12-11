@@ -1,3 +1,4 @@
+use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{tokio::prelude::*, tokio::Stream, ListenerOptions};
 use log::{error, info, warn};
@@ -102,8 +103,8 @@ pub struct RunningPlugin {
 pub struct PluginManager {
     config: PluginHostConfig,
     plugin_loader: PluginLoader,
-    running_plugins: Arc<RwLock<HashMap<String, RunningPlugin>>>,
-    inflight: Arc<RwLock<HashMap<String, RequestContext>>>,
+    running_plugins: Arc<DashMap<String, RunningPlugin>>,
+    inflight: Arc<DashMap<String, RequestContext>>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
     rx_cmd_sender: Option<tokio::sync::mpsc::Sender<RxCmd>>,
 }
@@ -152,14 +153,12 @@ impl PluginManager {
     ) -> (u64, Vec<PluginManifest>) {
         let res = self
             .get_running_plugins()
-            .read()
-            .await
             .iter()
             .skip(offset as usize)
             .take(limit as usize)
-            .map(|(_, v)| v.manifest.clone())
+            .map(|v| v.manifest.clone())
             .collect::<Vec<PluginManifest>>();
-        let total_count = self.get_running_plugins().read().await.len() as u64;
+        let total_count = self.get_running_plugins().len() as u64;
         (total_count, res)
     }
 
@@ -171,8 +170,8 @@ impl PluginManager {
         Ok(Self {
             config,
             plugin_loader: loader,
-            running_plugins: Arc::new(RwLock::new(HashMap::new())),
-            inflight: Arc::new(RwLock::new(HashMap::new())),
+            running_plugins: Arc::new(DashMap::new()),
+            inflight: Arc::new(DashMap::new()),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
             rx_cmd_sender: None,
         })
@@ -326,8 +325,7 @@ impl PluginManager {
                     msg = rx_cmd_receiver.recv() => {
                         match msg {
                             Some(RxCmd::PluginStatusChanged(name, state)) => {
-                                let mut plugins_guard = plugins.write().await;
-                                if let Some(plugin) = plugins_guard.get_mut(&name) {
+                                if let Some(mut plugin) = plugins.get_mut(&name) {
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
                                         match &plugin.plugin_abort_tx {
@@ -360,8 +358,7 @@ impl PluginManager {
                                             // Process the initialization response
                                             let auth_code = init_response.auth_code;
                                             let register_hooks = init_response.hooks;
-                                            let mut plugins_guard = plugins.write().await;
-                                            for (_, plugin) in plugins_guard.iter_mut() {
+                                            for mut plugin in plugins.iter_mut() {
                                                 // find the plugin with matching auth_code
                                                 if plugin.auth_code == auth_code {
                                                     plugin.ipc_sender = Some(tx_cmd_sender.clone());
@@ -394,9 +391,8 @@ impl PluginManager {
                                     MessageType::Response => {
                                         let msg_id = &msg.id;
                                         {
-                                            let mut inflight_guard = inflight.write().await;
-                                            if let Some(resp_sender) = inflight_guard.remove(msg_id) {
-                                                if resp_sender.send(Ok(msg)).is_err() {
+                                            if let Some(resp_sender) = inflight.remove(msg_id) {
+                                                if resp_sender.1.send(Ok(msg)).is_err() {
                                                     warn!("Failed to send response : receiver has dropped");
                                                 }
                                             }
@@ -479,18 +475,17 @@ impl PluginManager {
         Ok(())
     }
 
-    pub fn get_running_plugins(&self) -> Arc<RwLock<HashMap<String, RunningPlugin>>> {
+    pub fn get_running_plugins(&self) -> Arc<DashMap<String, RunningPlugin>> {
         self.running_plugins.clone()
     }
 
     pub async fn call_subscribe_removed_hook(&self, subscribe_request: SubscribeRequest) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeRemoved);
-        let running_plugins = self.running_plugins.read().await;
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let subscribe_request_any_wrapper = prost_types::Any {
@@ -526,11 +521,10 @@ impl PluginManager {
     pub async fn call_client_disconnected_hook(&self, client_disconnected_event: ClientDisconnectedEvent) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
-        let running_plugins = self.running_plugins.read().await;
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let subscribe_request_any_wrapper = prost_types::Any {
@@ -566,11 +560,10 @@ impl PluginManager {
     pub async fn call_subscribe_added_hook(&self, subscribe_request: SubscribeRequest) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
-        let running_plugins = self.running_plugins.read().await;
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let subscribe_request_any_wrapper = prost_types::Any {
@@ -609,11 +602,10 @@ impl PluginManager {
     ) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::MessagePublished);
-        let running_plugins = self.running_plugins.read().await;
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let message_publish_request_any_wrapper = prost_types::Any {
@@ -654,11 +646,10 @@ impl PluginManager {
     ) -> Result<MessagePublishResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnMessagePublish);
-        let running_plugins = self.running_plugins.read().await;
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let message_publish_request_any_wrapper = prost_types::Any {
@@ -675,8 +666,6 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .write()
-                            .await
                             .insert(protocol_message.id.clone(), request_context_sender);
 
                         match running_plugin.ipc_sender.as_ref() {
@@ -764,7 +753,6 @@ impl PluginManager {
     ) -> Result<SubscribeResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnMessageSubscribe);
-        let running_plugins = self.running_plugins.read().await;
 
         let mut final_result = SubscribeResult {
             result: subscribe_request
@@ -781,7 +769,7 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let subscribe_request_any_wrapper = prost_types::Any {
@@ -797,8 +785,6 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .write()
-                            .await
                             .insert(protocol_message.id.clone(), request_context_sender);
 
                         match running_plugin.ipc_sender.as_ref() {
@@ -885,7 +871,6 @@ impl PluginManager {
     ) -> std::result::Result<AuthorizeResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authorize);
-        let running_plugins = self.running_plugins.read().await;
 
         let mut final_result = AuthorizeResult {
             authorized: true,
@@ -895,7 +880,7 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         let authorize_request_any_wrapper = prost_types::Any {
@@ -910,8 +895,6 @@ impl PluginManager {
 
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .write()
-                            .await
                             .insert(protocol_message.id.clone(), request_context_sender);
 
                         match running_plugin.ipc_sender.as_ref() {
@@ -1009,7 +992,6 @@ impl PluginManager {
     ) -> std::result::Result<AuthenticateResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authenticate);
-        let running_plugins = self.running_plugins.read().await;
         let mut final_result = AuthenticateResult {
             authenticated: true,
             error_reason: None,
@@ -1019,7 +1001,7 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = running_plugins.get(&plugin.plugin_name);
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
                         println!("Authenticate plugin: {}", running_plugin.name);
@@ -1033,8 +1015,6 @@ impl PluginManager {
                             .build();
                         let (request_context_sender, request_context_receiver) = oneshot::channel();
                         self.inflight
-                            .write()
-                            .await
                             .insert(protocol_message.id.clone(), request_context_sender);
 
                         match running_plugin.ipc_sender.as_ref() {
@@ -1147,8 +1127,7 @@ impl PluginManager {
     }
 
     pub async fn stop_plugin(&self, name: &str) -> Result<()> {
-        let running_plugins = self.running_plugins.read().await;
-        let running_plugin = running_plugins.get(name);
+        let running_plugin = self.running_plugins.get(name);
         if let Some(running_plugin) = running_plugin {
             if running_plugin.state == PluginState::Running {
                 match &running_plugin.plugin_abort_tx {
@@ -1179,8 +1158,7 @@ impl PluginManager {
 
     pub async fn restart_plugin(&self, name: &str) -> Result<()> {
         {
-            let running_plugins = self.running_plugins.read().await;
-            let running_plugin = running_plugins.get(name);
+            let running_plugin = self.running_plugins.get(name);
             if running_plugin.is_none() {
                 return Err(anyhow::anyhow!("Plugin '{}' not found", name));
             }
@@ -1316,8 +1294,7 @@ impl PluginManager {
         };
 
         {
-            let mut plugins = self.running_plugins.write().await;
-            plugins.insert(name.to_string(), running_plugin);
+            self.running_plugins.insert(name.to_string(), running_plugin);
         }
 
         Ok(())
