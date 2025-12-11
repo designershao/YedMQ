@@ -83,13 +83,20 @@ struct SessionActorRecipientWrapper {
 
 impl Default for SessionManagerActor {
     fn default() -> Self {
-        let settings: Arc<Settings> = Arc::new(Settings::new().unwrap());
+        let settings = match Settings::new() {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to load settings in RpcActor: {}", e);
+                error!("Session Manager Actor will not start due to settings load failure.");
+                std::process::exit(1);
+            }
+        };
         let current_node_id = settings.cluster.node_id;
         SessionManagerActor {
             sessions: HashMap::new(),
             plugin_manager: globals::get_plugin_manager(),
             session_lifecycle_tx: None,
-            settings,
+            settings: Arc::new(settings),
             session_clock: globals::get_session_clock(),
             current_node_id,
         }
