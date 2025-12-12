@@ -120,7 +120,11 @@ pub enum RxCmd {
         tx_cmd_sender: tokio::sync::mpsc::Sender<TxCmd>,
     },
     NormalRecievedMessage(ProtocolMessage),
-    PluginStatusChanged(String, PluginState),
+    PluginStatusChanged{
+        plugin_name: String, 
+        plugin_state: PluginState,
+        notify_sender: tokio::sync::oneshot::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -324,24 +328,21 @@ impl PluginManager {
                 tokio::select! {
                     msg = rx_cmd_receiver.recv() => {
                         match msg {
-                            Some(RxCmd::PluginStatusChanged(name, state)) => {
+                            Some(RxCmd::PluginStatusChanged{
+                                plugin_name: name,
+                                plugin_state: state,
+                                notify_sender,
+                            }) => {
                                 if let Some(mut plugin) = plugins.get_mut(&name) {
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
-                                        match &plugin.plugin_abort_tx {
-                                            Some(tx) => {
-                                                let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
-                                                let _ = tx.send(notify_sender).await;
-                                                let _ = notify_receiver.recv().await;
-                                                plugin.process_log_handle = None;
-                                                plugin.process_wait_handle = None;
-                                            },
-                                            None => {
-                                                warn!("Plugin {} abort tx not found when stopping", name);
-                                            }
-                                        }
+                                        plugin.process_log_handle = None;
+                                        plugin.process_wait_handle = None;
                                     }
+
                                     plugin.state = state;
+
+                                    let _ = notify_sender.send(());
                                 }
                             },
                             Some(RxCmd::InitMessage{msg, tx_cmd_sender}) => {
@@ -463,7 +464,7 @@ impl PluginManager {
             loop {
                 match listener.accept().await {
                     std::result::Result::Ok(c) => {
-                        println!("Plugin connected, start handling connection");
+                        info!("Plugin connected, start handling connection");
                         let _ =
                             Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone()).await;
                     }
@@ -1004,7 +1005,7 @@ impl PluginManager {
                 let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
-                        println!("Authenticate plugin: {}", running_plugin.name);
+                        info!("Authenticate plugin: {}", running_plugin.name);
                         let authenticate_request_any_wrapper = prost_types::Any {
                             type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
                             value: authenticate_request.encode_to_vec(),
@@ -1127,32 +1128,42 @@ impl PluginManager {
     }
 
     pub async fn stop_plugin(&self, name: &str) -> Result<()> {
-        let running_plugin = self.running_plugins.get(name);
-        if let Some(running_plugin) = running_plugin {
-            if running_plugin.state == PluginState::Running {
-                match &running_plugin.plugin_abort_tx {
-                    None => {
-                        return Err(anyhow::anyhow!(
-                            "Plugin '{}' abort channel not found",
-                            name
-                        ));
-                    }
-                    Some(abort_tx) => {
-                        info!("Stopping plugin '{}'...", name);
-                        let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
-                        if let Err(e) = abort_tx.send(notify_sender).await {
+        let abort_tx = {
+            let running_plugin = self.running_plugins.get(name);
+            if let Some(running_plugin) = running_plugin {
+                if running_plugin.state == PluginState::Running {
+                    match &running_plugin.plugin_abort_tx {
+                        None => {
                             return Err(anyhow::anyhow!(
-                                "Failed to send abort signal to plugin '{}': {}",
-                                name,
-                                e
+                                "plugin '{}' abort channel not found",
+                                name
                             ));
                         }
-                        let _ = notify_receiver.recv().await;
-                        info!("Plugin '{}' stopped successfully", name);
+                        Some(abort_tx) => {
+                            abort_tx.clone()
+                        }
                     }
+                } else {
+                    return Ok(());
                 }
+            } else {
+                return Err(anyhow::anyhow!("plugin '{}' not found", name));
             }
+        };
+
+        info!("stopping plugin '{}'...", name);
+        let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
+        if let Err(e) = abort_tx.send(notify_sender).await {
+            return Err(anyhow::anyhow!(
+                "failed to send abort signal to plugin '{}': {}",
+                name,
+                e
+            ));
         }
+        let _ = notify_receiver.recv().await;
+
+        info!("plugin '{}' stopped successfully", name);
+
         Ok(())
     }
 
@@ -1166,20 +1177,20 @@ impl PluginManager {
 
         if let Err(e) = self.stop_plugin(name).await {
             return Err(anyhow::anyhow!(
-                "Failed to stop plugin '{}' before restart: {}",
+                "failed to stop plugin '{}' before restart: {}",
                 name,
                 e
             ));
         } else {
-            info!("Plugin '{}' stopped successfully, starting...", name);
+            info!("plugin '{}' stopped successfully, starting...", name);
             if let Err(e) = self.start_plugin(name).await {
                 return Err(anyhow::anyhow!(
-                    "Failed to start plugin '{}' during restart: {}",
+                    "failed to start plugin '{}' during restart: {}",
                     name,
                     e
                 ));
             }
-            info!("Plugin '{}' restarted successfully", name);
+            info!("plugin '{}' restarted successfully", name);
         }
 
         Ok(())
@@ -1189,7 +1200,7 @@ impl PluginManager {
         let manifest = self
             .plugin_loader
             .get_plugin_manifest(name)
-            .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found", name))?
+            .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", name))?
             .clone();
 
         let auth_code = generate_auth_code(12);
@@ -1197,7 +1208,7 @@ impl PluginManager {
         let mut command = self
             .plugin_loader
             .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
-            .ok_or_else(|| anyhow::anyhow!("Plugin {} start command not exsited", name))?;
+            .ok_or_else(|| anyhow::anyhow!("plugin {} start command not exsited", name))?;
 
         let mut process = command
             .stdout(Stdio::piped())
@@ -1218,34 +1229,49 @@ impl PluginManager {
         let rx_cmd_sender = self.rx_cmd_sender.as_ref().ok_or_else(|| anyhow::anyhow!("rx_cmd_sender not found"))?.clone();
 
         let process_wait_handle = tokio::spawn(async move {
+            let mut pending_notify: Option<tokio::sync::mpsc::Sender<()>> = None;
+
             loop {
                 select! {
                     status_result = process.wait() => {
                         match status_result {
                             std::result::Result::Ok(s) => {
-                                println!("Plugin '{}' exited with status: {}", borrowed_name, s);
+                                info!("plugin '{}' exited with status: {}", borrowed_name, s);
                             }
                             Err(e) => {
-                                println!("Plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
+                                info!("plugin '{}' encountered an error while waiting: {}", borrowed_name, e);
                             }
                         }
-                        let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged(borrowed_name, PluginState::Stopped)).await;
+
+                        let (changed_notify_sender, changed_notify_receiver) = tokio::sync::oneshot::channel::<()>();
+                        let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged{
+                            plugin_name: borrowed_name,
+                            plugin_state: PluginState::Stopped,
+                            notify_sender: changed_notify_sender
+                        }).await;
+
+                        let _ = changed_notify_receiver.await;
+
+                        if let Some(notify_sender) = pending_notify.take() {
+                            let _ = notify_sender.send(()).await;
+                        }
+
                         break;
                     },
                     notify_sender = plugin_abort_rx.recv() => {
-                        println!("Plugin '{}' aborted", borrowed_name);
+                        info!("plugin '{}' aborted", borrowed_name);
+
+                        pending_notify = notify_sender;
+
                         if let Err(e) = process.kill().await {
-                            println!("Failed to kill plugin '{}': {}", borrowed_name, e);
+                            info!("failed to kill plugin '{}': {}", borrowed_name, e);
                         } else {
-                            println!("Plugin '{}' killed successfully", borrowed_name);
-                        }
-                        if let Some(notify_sender) = notify_sender {
-                            notify_sender.send(()).await.ok();
+                            info!("plugin '{}' killed successfully", borrowed_name);
                         }
                     }
                 }
             }
-            println!("process_wait_handle exit");
+            info!("process_wait_handle exit");
         });
 
         let logs = Arc::new(RwLock::new(Vec::new()));
@@ -1262,7 +1288,7 @@ impl PluginManager {
             loop {
                 select! {
                     _ = plugin_log_collector_quit_rx.recv() => {
-                        println!("Plugin '{}' log collector quit", borrowed_name);
+                        info!("plugin '{}' log collector quit", borrowed_name);
                         break;
                     },
                     std::result::Result::Ok(Some(line)) = stdout_reader.next_line() => {
