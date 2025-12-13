@@ -7,13 +7,22 @@ use tonic::transport::Server;
 
 use crate::protobuf::cluster_service_server::ClusterServiceServer;
 use crate::protobuf::raft_service_server::RaftServiceServer;
+use crate::router_actor::RouterActor;
 use crate::settings::Settings;
 
-#[derive(Default)]
-pub struct RpcActor {}
+pub struct RpcActor {
+    router_actor: Addr<RouterActor>,
+}
 
-impl SystemService for RpcActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
+impl RpcActor {
+    pub fn new(router_actor: Addr<RouterActor>) -> Self {
+        RpcActor { router_actor }
+    }
+}
+
+impl Actor for RpcActor {
+    type Context = Context<Self>;
+    fn started(&mut self, ctx: &mut Self::Context) {
         let settings = match Settings::new() {
             Ok(s) => s,
             Err(e) => {
@@ -33,9 +42,12 @@ impl SystemService for RpcActor {
                 std::process::exit(1);
             }
         };
+        let router_actor = self.router_actor.clone();
         ctx.spawn(
             async move {
-                let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl {};
+                let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl {
+                    router_actor
+                };
                 let rpc_service = crate::rpc::raft_service::RustServiceImpl {};
                 match Server::builder()
                     .add_service(ClusterServiceServer::new(cluster_service))
@@ -54,13 +66,7 @@ impl SystemService for RpcActor {
                     }
                 }
             }
-            .into_actor(self),
+                .into_actor(self),
         );
     }
-}
-
-impl Supervised for RpcActor {}
-
-impl Actor for RpcActor {
-    type Context = Context<Self>;
 }

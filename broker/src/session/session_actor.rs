@@ -1,6 +1,4 @@
-use actix::{
-    dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFutureExt, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture
-};
+use actix::{dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture};
 use log::{error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -42,6 +40,8 @@ use super::{
 };
 
 use crate::connection::ConnectionActorMessage;
+use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
+use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 
 pub struct Client {
 
@@ -216,6 +216,12 @@ pub struct SessionActor {
     state: Arc<RwLock<SessionState>>,
 
     session_lifecycle_tx: mpsc::Sender<SessionLifecycleMessage>,
+
+    session_state_raft_actor: Addr<SessionStateRaftActor>,
+
+    topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
+
+    router_actor: Addr<RouterActor>,
 }
 
 impl Actor for SessionActor {
@@ -257,6 +263,8 @@ impl Actor for SessionActor {
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
 
         let self_addr = ctx.address();
+        let topic_raft_actor = self.topic_raft_actor.clone();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
@@ -266,7 +274,6 @@ impl Actor for SessionActor {
             }
             let session_state_guard = state.write().await;
             let topic_iter = session_state_guard.subscriptions.iter();
-            let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
             for (topic, qos) in topic_iter {
                 info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
                 let qos_v = match qos {
@@ -274,7 +281,7 @@ impl Actor for SessionActor {
                     QoS::AtLeastOnce => 1,
                     QoS::ExactlyOnce => 2,
                 };
-                match topic_raft_actor_addr.send(
+                match topic_raft_actor.send(
                     crate::raft::topic::topic_raft_actor::Subscribe {
                         tenant_id: tenant_id.clone(),
                         client_identifier: client_id.clone(),
@@ -301,9 +308,8 @@ impl Actor for SessionActor {
             }
 
             //
-            let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
             loop {
-                match session_state_raft_actor_addr.send(
+                match session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::PopOfflineMessage {
                         tenant_id: tenant_id.clone(),
                         client_id: client_id.clone(),
@@ -356,11 +362,11 @@ struct HandlePublishResult {
 async fn do_handle_unsubscribe(
     unsubscribe_packet: UnsubscribePacket,
     client_info: &Client,
+    topic_raft_actor_addr: Addr<TopicRaftActor>
 ) -> HandleUnSubscribeResult {
     let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
     let mut succeed_unsubscriptions = vec![];
     {
-        let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
         for topic in unsub_topic_filters {
             let tenant_id = client_info.tenant_id.clone();
             let client_id = client_info.client_identifier.clone();
@@ -395,6 +401,9 @@ async fn do_handle_publish(
     plugin_manager: Arc<PluginManager>,
     session_state: Arc<RwLock<SessionState>>,
     clean_session: bool,
+    router_actor: Addr<RouterActor>,
+    session_state_raft_actor: Addr<SessionStateRaftActor>,
+    topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
 ) -> HandlePublishResult {
 
     let authorize_request =AuthorizeRequest {
@@ -452,8 +461,7 @@ async fn do_handle_publish(
 
             // if not clean session, should sync inflight rx packet to raft
             if !clean_session {
-                let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                let res = session_state_raft_actor_addr.send(
+                let res = session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::RegisterInflightRxPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
@@ -479,11 +487,10 @@ async fn do_handle_publish(
         // process retain messages
         if publish_packet.fix_header.retain == Some(true) {
             // register retain publish packet
-            let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
 
             // if publish packet paloyd is empty , clean retained publish packet
             if publish_packet.payload.payload.is_empty() {
-                match topic_raft_actor_addr.send(
+                match topic_raft_actor.send(
                     topic_raft_actor::CleanRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         topic_filter: publish_packet.variable_header.topic_name.clone(),
@@ -498,7 +505,7 @@ async fn do_handle_publish(
                     }
                 }
             } else {
-                match topic_raft_actor_addr.send(
+                match topic_raft_actor.send(
                     topic_raft_actor::RegisterRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
@@ -517,7 +524,6 @@ async fn do_handle_publish(
             //
         }
         //
-        let router_actor = RouterActor::from_registry();
         router_actor.do_send(crate::router_actor::RoutePacket{
             tenant_id: client_info.tenant_id.clone(),
             packet: MqttPacketV3::Publish(publish_packet.clone()),
@@ -635,6 +641,9 @@ impl SessionActor {
         peer_addr: SocketAddr,
         session_state: Arc<RwLock<SessionState>>,
         session_lifecycle_tx: Sender<SessionLifecycleMessage>,
+        session_state_raft_actor: Addr<SessionStateRaftActor>,
+        topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
+        router_actor: Addr<RouterActor>,
     ) -> Self {
         SessionActor {
             plugin_manager,
@@ -653,6 +662,9 @@ impl SessionActor {
             username: None,
             state: session_state,
             session_lifecycle_tx,
+            session_state_raft_actor,
+            topic_raft_actor,
+            router_actor
         }
     }
 
@@ -741,6 +753,9 @@ impl SessionActor {
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
         let clean_session = self.clean_session;
+        let router_actor = self.router_actor.clone();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
+        let topic_raft_actor = self.topic_raft_actor.clone();
 
         async move {
             do_handle_publish(
@@ -749,6 +764,9 @@ impl SessionActor {
                 plugin_manager,
                 session_state,
                 clean_session,
+                router_actor,
+                session_state_raft_actor,
+                topic_raft_actor
             )
             .await
         }
@@ -854,16 +872,16 @@ impl SessionActor {
         let session_state = self.state.clone();
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
+        let topic_raft_actor = self.topic_raft_actor.clone();
         async move {
-            let res = do_handle_unsubscribe(unsubscribe_packet, &client_info).await;
+            let res = do_handle_unsubscribe(unsubscribe_packet, &client_info, topic_raft_actor.clone()).await;
             for topic in res.succeed_unsubscriptions {
                 {
                     session_state.write().await.subscriptions.remove(&topic);
                 }
                 if !clean_session {
-                    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
 
-                    let res = topic_raft_actor_addr.send(
+                    let res = topic_raft_actor.send(
                         crate::raft::topic::topic_raft_actor::Unsubscribe {
                             tenant_id: client_info.tenant_id.clone(),
                             client_identifier: client_info.client_identifier.clone(),
@@ -902,6 +920,7 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
             let mut session_state_guard = session_state.write().await;
@@ -921,8 +940,7 @@ impl SessionActor {
                         .next_state(pubrel_packet.variable_header.packet_identifier);
 
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    let res = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -948,9 +966,8 @@ impl SessionActor {
                     }
                     session_state_guard.inflight.clean_finished_items().await;
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     if !matches!(inflight_state, InflightState::Finish) {
-                        match session_state_raft_actor_addr.send(
+                        match session_state_raft_actor.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
@@ -970,7 +987,7 @@ impl SessionActor {
                             }
                         }
                     }
-                    match session_state_raft_actor_addr.send(
+                    match session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1007,6 +1024,7 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
 
@@ -1017,9 +1035,8 @@ impl SessionActor {
             if clean_session {
                 next_state_packet = session_state_guard.inflight.get_next_state_packet(pubrec_packet.variable_header.packet_identifier).await;
             } else {
-                let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-                let next_state_packet_result = session_state_raft_actor_addr.send(
+                let next_state_packet_result = session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::GetNextInflightPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
@@ -1045,8 +1062,7 @@ impl SessionActor {
                         .inflight
                         .next_state(pubrec_packet.variable_header.packet_identifier);
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    let res = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1073,9 +1089,8 @@ impl SessionActor {
                     }
                     session_state_guard.inflight.clean_finished_items().await;
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     if !matches!(inflight_state, InflightState::Finish) {
-                        match session_state_raft_actor_addr.send(
+                        match session_state_raft_actor.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
@@ -1095,7 +1110,7 @@ impl SessionActor {
                             }
                         }
                     }
-                    match session_state_raft_actor_addr.send(
+                    match session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1132,6 +1147,7 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
             let mut next_state_packet = None;
@@ -1141,8 +1157,7 @@ impl SessionActor {
             if clean_session {
                 next_state_packet = session_state_guard.inflight.get_next_state_packet(puback_packet.variable_header.packet_identifier).await;
             } else {
-                let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                let next_state_packet_result = session_state_raft_actor_addr.send(
+                let next_state_packet_result = session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::GetNextInflightPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
@@ -1169,8 +1184,7 @@ impl SessionActor {
                         .inflight
                         .next_state(puback_packet.variable_header.packet_identifier);
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    let res = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1205,8 +1219,7 @@ impl SessionActor {
                     session_state_guard.inflight.clean_finished_items().await;
                 } else {
                     if !matches!(inflight_state, InflightState::Finish) {
-                        let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                        let res = session_state_raft_actor_addr.send(
+                        let res = session_state_raft_actor.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
@@ -1222,8 +1235,7 @@ impl SessionActor {
                                 .next_state(puback_packet.variable_header.packet_identifier);
                         }
                     }
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    match session_state_raft_actor_addr.send(
+                    match session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1260,6 +1272,7 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
 
@@ -1281,8 +1294,7 @@ impl SessionActor {
                         .inflight
                         .next_state(pubcomp_packet.variable_header.packet_identifier);
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    let res = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
@@ -1309,9 +1321,8 @@ impl SessionActor {
                     }
                     session_state_guard.inflight.clean_finished_items().await;
                 } else {
-                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     if !matches!(inflight_state, InflightState::Finish) {
-                        let res = session_state_raft_actor_addr.send(
+                        let res = session_state_raft_actor.send(
                             crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                                 tenant_id: client_info.tenant_id.clone(),
                                 client_id: client_info.client_identifier.clone(),
@@ -1327,7 +1338,7 @@ impl SessionActor {
                         }
                     }
 
-                    match session_state_raft_actor_addr
+                    match session_state_raft_actor
                         .send(
                             crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                                 tenant_id: client_info.tenant_id.clone(),
@@ -1396,6 +1407,7 @@ impl SessionActor {
     fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context, callback_fn: ThenCallback<SessionActor, ()>) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
+        let router_actor = self.router_actor.clone();
         async move {
             if will_message.is_some() {
                 let will_message = will_message.as_ref().unwrap();
@@ -1406,7 +1418,6 @@ impl SessionActor {
                 .retain(will_message.will_retain)
                 .qos(will_message.will_qos)
                 .build();
-                let router_actor = RouterActor::from_registry();
                 router_actor
                     .do_send(crate::router_actor::RoutePacket {
                         tenant_id,
@@ -1465,6 +1476,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         let tenant_id = self.tenant_id.clone();
                         let client_id = self.client_id.clone();
                         let clean_session = self.clean_session;
+                        let session_state_raft_actor = self.session_state_raft_actor.clone();
                         async move {
                             if packet.fix_header.qos.unwrap_or(0) > 0 {
                                 let mut session_state_guard = session_state.write().await;
@@ -1499,8 +1511,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                     }
                                     //session_state_guard.inflight.next_state(packet_identifier.unwrap()).await;
                                 } else {
-                                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                                    let res = session_state_raft_actor_addr
+                                    let res = session_state_raft_actor
                                         .send(
                                             RegisterInflightTxPacket {
                                                 tenant_id: tenant_id.clone(),
@@ -1519,8 +1530,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                                     packet.variable_header.packet_identifier =
                                                         Some(packet_id);
                                                     packet_identifier.replace(packet_id);
-                                                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                                                    let _ = session_state_raft_actor_addr
+                                                    let _ = session_state_raft_actor
                                                         .send(RegisterInflightTxPacket {
                                                             tenant_id,
                                                             client_id,
@@ -1583,6 +1593,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                             let session_state = self.state.clone();
                             let client_info = self.get_plugin_client_info();
                             let clean_session = self.clean_session;
+                            let session_state_raft_actor_addr = self.session_state_raft_actor.clone();
 
                             async move {
                                 let mut session_state_guard = session_state.write().await;
@@ -1590,8 +1601,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                                     .pending_messages
                                     .push(MqttPacketV3::Publish(publish_packet.clone()));
                                 if !clean_session {
-                                    let session_state_raft_actor_addr =
-                                        crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                                     let res = session_state_raft_actor_addr
                                         .send(
                                             crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage{
@@ -1715,6 +1724,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let session_actor_addr = ctx.address().clone();
                 let tenant_id = self.tenant_id.clone();
                 let client_identifier = self.client_id.clone();
+                let topic_raft_actor = self.topic_raft_actor.clone();
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for msg in session_state_guard.pending_messages.drain(..) {
@@ -1725,15 +1735,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                         "start update topic subscribe for session {}",
                         client_identifier
                     );
-                    let topic_raft_actor_addr =
-                        crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
                     for (topic, qos) in session_state_guard.subscriptions.iter() {
                         let qos_v = match qos {
                             QoS::AtLeastOnce => 1,
                             QoS::ExactlyOnce => 2,
                             QoS::AtMostOnce => 0,
                         };
-                        let res = topic_raft_actor_addr
+                        let res = topic_raft_actor
                             .send(crate::raft::topic::topic_raft_actor::Subscribe {
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: client_identifier.clone(),

@@ -4,9 +4,12 @@ use log::{info, warn};
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::session_manager_actor::{self, SendMessageToSession}, settings::Node};
+use crate::session::session_manager_actor::SessionManagerActor;
+use crate::settings::Settings;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum RouterActorError {
@@ -59,26 +62,12 @@ impl Default for DeadLetterConfig {
 
 pub struct RouterActor {
     pub current_node_id: NodeId,
-    pub settings: crate::settings::Settings,
+    pub settings: Arc<crate::settings::Settings>,
     pub dead_letter_queue: VecDeque<DeadLetterItem>,
     pub dead_letter_config: DeadLetterConfig,
+    pub session_manager_actor: Option<Addr<SessionManagerActor>>,
+    pub topic_raft_actor: Option<Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>>,
 }
-
-impl Default for RouterActor {
-    fn default() -> Self {
-        let settings = crate::settings::Settings::new().unwrap();
-        RouterActor {
-            current_node_id: settings.cluster.node_id,
-            settings,
-            dead_letter_queue: VecDeque::new(),
-            dead_letter_config: DeadLetterConfig::default(),
-        }
-    }
-}
-
-impl SystemService for RouterActor {}
-
-impl Supervised for RouterActor {}
 
 impl Actor for RouterActor {
     type Context = Context<Self>;
@@ -90,7 +79,7 @@ impl Actor for RouterActor {
         ctx.run_interval(
             Duration::from_secs(self.dead_letter_config.retry_interval_seconds),
             |act, _ctx| {
-                act.process_dead_letter_queue();
+                act.process_dead_letter_queue(_ctx.address());
             },
         );
 
@@ -110,7 +99,18 @@ impl Actor for RouterActor {
 
 impl RouterActor {
 
-    async fn route(current_node_id: &NodeId, cluster_nodes: &Vec<Node>, tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
+    pub fn new(settings: Arc<Settings>) -> Self {
+        RouterActor {
+            current_node_id: settings.cluster.node_id,
+            settings,
+            dead_letter_queue: VecDeque::new(),
+            dead_letter_config: DeadLetterConfig::default(),
+            session_manager_actor: None,
+            topic_raft_actor: None,
+        }
+    }
+
+    async fn route(session_manager_actor: Addr<SessionManagerActor>,router_actor: Addr<RouterActor>,current_node_id: &NodeId, cluster_nodes: &Vec<Node>, tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
         log::info!("in route logic Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
@@ -146,8 +146,7 @@ impl RouterActor {
                                         
                                         // Check if the packet should be added to the dead letter queue
                                         if Self::should_add_to_dead_letter_queue(packet) {
-                                            let router_addr = RouterActor::from_registry();
-                                            if let Err(dlq_err) = router_addr.send(AddToDeadLetterQueue {
+                                            if let Err(dlq_err) = router_actor.send(AddToDeadLetterQueue {
                                                 tenant_id: tenant_id.clone(),
                                                 packet: packet.clone(),
                                                 dest_addr,
@@ -171,7 +170,9 @@ impl RouterActor {
                                     if let Err(e) = Self::route_to_local_session(
                                         tenant_id,
                                         &item.client_identifier,
-                                        MqttPacketV3::Publish(publish_packet)).await 
+                                        MqttPacketV3::Publish(publish_packet),
+                                        session_manager_actor.clone()
+                                    ).await
                                     {
                                         warn!("Failed to route packet in local node for tenant {}: {}", tenant_id, e);
                                     }
@@ -212,10 +213,9 @@ impl RouterActor {
         Ok(())
     }
 
-    async fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3) -> Result<(), RouterActorError> {
+    async fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3, session_manager_actor_addr: Addr<SessionManagerActor>) -> Result<(), RouterActorError> {
         log::info!("Route to  local node session {} {} : {:?}",tenant_id, client_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
-            let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
             if let Err(err) = session_manager_actor_addr
                 .send(SendMessageToSession {
                     tenant_id: tenant_id.clone(),
@@ -236,11 +236,15 @@ impl RouterActor {
     }
 
     // Called by rpc service when receiving packet from other nodes
-    async fn publish_to_local_subscribers(tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
+    async fn publish_to_local_subscribers(
+        tenant_id: &String,
+        packet: &MqttPacketV3,
+        session_manager_actor_addr: Addr<SessionManagerActor>,
+        topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>
+    ) -> Result<(), RouterActorError> {
         log::info!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
-            let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
 
             let res = topic_raft_actor_addr.send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
                 tenant_id: tenant_id.clone(),
@@ -249,7 +253,6 @@ impl RouterActor {
 
             match res {
                 Ok(subscriptions) => {
-                    let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
                     for item in subscriptions.subscriptions {
                         let mut publish_packet = publish_packet.clone();
                         if publish_packet.fix_header.qos.unwrap_or_default() >= item.qos.into() {
@@ -322,7 +325,7 @@ impl RouterActor {
     }
 
     // Process the dead letter queue
-    fn process_dead_letter_queue(&mut self) {
+    fn process_dead_letter_queue(&mut self, router_actor: Addr<RouterActor>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -355,6 +358,7 @@ impl RouterActor {
             let dest_addr = item.dest_addr.clone();
             let tenant_id = item.tenant_id.clone();
             let packet = item.packet.clone();
+            let router_actor = router_actor.clone();
 
             actix::spawn(async move {
                 match Self::route_to_other_nodes(&dest_addr, &tenant_id, &packet).await {
@@ -367,8 +371,7 @@ impl RouterActor {
                               tenant_id, dest_addr, e);
                         
                         // Readd message to dead letter queue
-                        let router_addr = RouterActor::from_registry();
-                        if let Err(dlq_err) = router_addr.send(ReaddToDeadLetterQueue {
+                        if let Err(dlq_err) = router_actor.send(ReaddToDeadLetterQueue {
                             item: item_clone,
                         }).await {
                             warn!("Failed to readd message to dead letter queue: {}", dlq_err);
@@ -421,8 +424,10 @@ impl Handler<RoutePacket> for RouterActor {
         log::info!("In handler Routing packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
         let current_node_id = self.current_node_id;
         let cluster_nodes = self.settings.cluster.nodes.clone();
+        let router_actor = _ctx.address();
+        let session_manager_actor = self.session_manager_actor.as_ref().expect("session manager actor not set").clone();
         Box::pin(async move {
-            Self::route(&current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet).await?;
+            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet).await?;
             Ok(())
         }.into_actor(self))
     }
@@ -440,8 +445,15 @@ impl Handler<RouteFromOtherNode> for RouterActor {
 
     fn handle(&mut self, msg: RouteFromOtherNode, _ctx: &mut Self::Context) -> Self::Result {
         log::info!("In handler from other nodeRouting packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
+        let session_manager_actor = self.session_manager_actor.as_ref().expect("session manager actor not set").clone();
+        let topic_raft_actor = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
         Box::pin(async move {
-            Self::publish_to_local_subscribers(&msg.tenant_id, &msg.packet).await?;
+            Self::publish_to_local_subscribers(
+                &msg.tenant_id,
+                &msg.packet,
+                session_manager_actor,
+                topic_raft_actor
+            ).await?;
             Ok(())
         }.into_actor(self))
     }
@@ -457,11 +469,13 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
 
     fn handle(&mut self, msg: RoutePacketToAllTenants, _ctx: &mut Self::Context) -> Self::Result {
+        let session_manager_actor_addr = self.session_manager_actor.as_ref().expect("session manager actor not set").clone();
+        let topic_raft_actor_addr = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
+
         Box::pin(async move {
-            let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
             let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
             for tenant_id in tenant_ids {
-                Self::publish_to_local_subscribers(&tenant_id, &msg.packet).await?;
+                Self::publish_to_local_subscribers(&tenant_id, &msg.packet, session_manager_actor_addr.clone(), topic_raft_actor_addr.clone()).await?;
             }
             Ok(())
         }.into_actor(self))

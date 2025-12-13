@@ -1,6 +1,6 @@
 use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
-use actix::SystemService;
+use actix::{Addr, SystemService};
 use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 
@@ -66,13 +66,15 @@ pub struct SysTopicTask{
 
     interval_secs: u64,
 
+    router_actor: Option<Addr<RouterActor>>
+
 }
 
 
 impl SysTopicTask {
 
     pub fn new(metric: Arc<Metric>, interval_secs: u64) -> SysTopicTask {
-        SysTopicTask { metric, interval_secs }
+        SysTopicTask { metric, interval_secs, router_actor:None }
     }
 
     pub async fn run(&self) {
@@ -97,10 +99,9 @@ impl SysTopicTask {
             let bytes_sent_packet = PublishPacketBuilder::new(broker_bytes_sent_topic.clone(), vec![bytes_sent.to_le_bytes()[0]]).build();
             let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(), vec![metric.get_uptime().to_le_bytes()[0]]).build();
 
-            let router_actor_addr = RouterActor::from_registry();
+            let router_actor_addr = self.router_actor.as_ref().expect("Router actor not initialized").clone();
 
 
-                
             if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(clients_connected_packet)}).await.unwrap() {
                 warn!("Failed to send packet to all tenants, error: {}", e);
             }

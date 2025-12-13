@@ -11,6 +11,8 @@ use crate::{
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
     }, metric, raft::{Node, session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::session_manager_actor::SessionManagerActor, settings::Settings
 };
+use crate::arbiter_pool::ArbiterPool;
+use crate::service_registry::ServiceRegistry;
 
 // Representation of the application state.This struct can be shared around to share.
 pub struct YedMQApp {
@@ -51,14 +53,8 @@ impl YedMQApp {
         globals::init_session_clock(&settings).await;
 
         // start system service
-        info!("start system service");
-        RpcActor::from_registry();
-        SessionManagerActor::from_registry();
-        TopicRaftActor::from_registry();
-        SessionActorMapRaftActor::from_registry();
-        SessionStateRaftActor::from_registry();
-        RouterActor::from_registry();
-        info!("start system service succeed");
+        let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
+        let _ = ServiceRegistry::start(arbiter_pool , settings.clone());
         //
 
         // start api task

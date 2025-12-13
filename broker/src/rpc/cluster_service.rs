@@ -7,11 +7,13 @@ use crate::raft::session_state::session_state_raft_actor::{self, SessionStateRaf
 use crate::router_actor::{RouteFromOtherNode, RouterActor};
 use crate::session::session_actor_map_storage::SessionVersion;
 use crate::session::session_manager_actor::SessionManagerActor;
-use actix::SystemService;
+use actix::{Addr, SystemService};
 use tonic::{Request, Response, Status};
 use yedmq_mqtt::MqttPacketV3;
 
-pub struct ClusterServiceImpl;
+pub struct ClusterServiceImpl {
+    pub router_actor: Addr<RouterActor>
+}
 
 #[tonic::async_trait]
 impl ClusterService for ClusterServiceImpl {
@@ -572,8 +574,7 @@ impl ClusterService for ClusterServiceImpl {
         let packet: MqttPacketV3 = serde_json::from_str(&inner.payload)
             .map_err(|e| Status::invalid_argument(format!("Invalid packet format: {}", e)))?;
 
-        let router_actor_addr = RouterActor::from_registry();
-        router_actor_addr
+        self.router_actor
             .send(RouteFromOtherNode {
                 tenant_id: inner.tenant_id.clone(),
                 packet

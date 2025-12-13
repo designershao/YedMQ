@@ -8,9 +8,7 @@ use crate::{
         }
     }, session::session_actor::SessionActor, settings::Settings
 };
-use actix::{
-    dev::{ContextFutureSpawner, MessageResponse}, Actor, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture
-};
+use actix::{dev::{ContextFutureSpawner, MessageResponse}, Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture};
 use log::{error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
@@ -26,6 +24,9 @@ use super::{
     WillMessage,
 };
 use crate::connection::ConnectionActorMessage;
+use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
+use crate::raft::topic::topic_raft_actor::TopicRaftActor;
+use crate::router_actor::RouterActor;
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -99,6 +100,7 @@ impl Default for SessionManagerActor {
             settings: Arc::new(settings),
             session_clock: globals::get_session_clock(),
             current_node_id,
+            router_actor: None
         }
     }
 }
@@ -124,6 +126,8 @@ pub struct SessionManagerActor {
     session_clock: Arc<SessionClock>,
 
     current_node_id: NodeId,
+
+    router_actor: Option<Addr<RouterActor>>
 }
 
 impl Actor for SessionManagerActor {
@@ -213,6 +217,20 @@ impl Actor for SessionManagerActor {
         info!("session manager stopped");
     }
 }
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct SetRouterActor{
+    pub router_actor: Addr<RouterActor>
+}
+
+impl Handler<SetRouterActor> for SessionManagerActor {
+    type Result = ();
+    fn handle(&mut self, msg: SetRouterActor, _ctx: &mut Self::Context) -> Self::Result {
+        self.router_actor = Some(msg.router_actor);
+    }
+}
+
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -657,6 +675,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
         let session_clock = self.session_clock.clone();
         let current_node_id = self.current_node_id;
+        let router_actor = self.router_actor.as_ref().unwrap().clone();
 
 
         let future = async move {
@@ -844,6 +863,9 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 msg.peer_addr,
                 session_state,
                 session_lifecycle_tx,
+                SessionStateRaftActor::from_registry(),
+                TopicRaftActor::from_registry(),
+                router_actor
             );
 
             let session_actor_addr = session_actor.start();
