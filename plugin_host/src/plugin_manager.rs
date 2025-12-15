@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{tokio::prelude::*, tokio::Stream, ListenerOptions};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
@@ -977,7 +977,7 @@ impl PluginManager {
             std::result::Result::Ok(final_result)
         } else {
             // return default authorize result
-            info!("No plugins registered for OnAuthorize hook");
+            debug!("no plugins registered for OnAuthorize hook");
             std::result::Result::Ok(AuthorizeResult {
                 authorized: self.config.default_authorize_result,
                 reason: None,
@@ -1118,7 +1118,7 @@ impl PluginManager {
             }
             std::result::Result::Ok(final_result)
         } else {
-            info!("No plugins registered for OnAuthenticate hook");
+            debug!("no plugins registered for OnAuthenticate hook");
             std::result::Result::Ok(AuthenticateResult {
                 authenticated: self.config.default_authenticate_result,
                 error_reason: None,

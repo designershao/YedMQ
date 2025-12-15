@@ -54,7 +54,7 @@ impl YedMQApp {
 
         // start system service
         let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
-        let _ = ServiceRegistry::start(arbiter_pool , settings.clone());
+        let _ = ServiceRegistry::start(arbiter_pool.clone() , settings.clone());
         //
 
         // start api task
@@ -72,7 +72,7 @@ impl YedMQApp {
         info!("start api task succeed");
         //
 
-        let listener = MqttTcpListener { app: app.clone() };
+        let listener = MqttTcpListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
 
         let settings_clone = settings.clone();
         let tcp_listener_join = actix::spawn(async move {

@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    globals, protobuf::ForceStopSessionActorRequest, raft::{
+    arbiter_pool, globals, protobuf::ForceStopSessionActorRequest, raft::{
         NodeId, session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
@@ -9,7 +9,7 @@ use crate::{
     }, session::session_actor::SessionActor, settings::Settings
 };
 use actix::{dev::{ContextFutureSpawner, MessageResponse}, Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
 use yedmq_mqtt::
@@ -100,7 +100,8 @@ impl Default for SessionManagerActor {
             settings: Arc::new(settings),
             session_clock: globals::get_session_clock(),
             current_node_id,
-            router_actor: None
+            router_actor: None,
+            arbiter_pool: None,
         }
     }
 }
@@ -127,7 +128,9 @@ pub struct SessionManagerActor {
 
     current_node_id: NodeId,
 
-    router_actor: Option<Addr<RouterActor>>
+    router_actor: Option<Addr<RouterActor>>,
+
+    arbiter_pool: Option<Arc<crate::arbiter_pool::ArbiterPool>>,
 }
 
 impl Actor for SessionManagerActor {
@@ -220,6 +223,20 @@ impl Actor for SessionManagerActor {
 
 #[derive(Message)]
 #[rtype(result = "()")]
+pub struct SetArbiterPool {
+    pub arbiter_pool: Arc<crate::arbiter_pool::ArbiterPool>,
+}
+
+impl Handler<SetArbiterPool> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: SetArbiterPool, _ctx: &mut Self::Context) -> Self::Result {
+        self.arbiter_pool = Some(msg.arbiter_pool);
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
 pub struct SetRouterActor{
     pub router_actor: Addr<RouterActor>
 }
@@ -227,6 +244,7 @@ pub struct SetRouterActor{
 impl Handler<SetRouterActor> for SessionManagerActor {
     type Result = ();
     fn handle(&mut self, msg: SetRouterActor, _ctx: &mut Self::Context) -> Self::Result {
+        println!("set router actor in session manager");
         self.router_actor = Some(msg.router_actor);
     }
 }
@@ -243,36 +261,38 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
         for (tenant_id, tenant_sessions) in self.sessions.iter() {
             let tenant_sessions = tenant_sessions.clone();
             let tenant_id = tenant_id.clone();
-            async move {
-                info!("renew session lease for tenant {}", tenant_id);
-                let sessions = tenant_sessions
-                    .read()
-                    .await.keys().map(|client_id| RenewSession {
-                        tenant_id: tenant_id.clone(),
-                        session_id: client_id.clone(),
-                    })
-                    .collect::<Vec<RenewSession>>();
-                let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-                for session in &sessions {
-                    info!(
-                        "renew session lease for tenant {} session {}",
-                        tenant_id, session.session_id
-                    );
-                    let res = session_actor_map_raft_actor_addr
-                        .send(session_actor_map_raft_actor::RenewSession {
-                            tenant_id: session.tenant_id.clone(),
-                            client_id: session.session_id.clone(),
+            ctx.spawn(
+
+                async move {
+                    debug!("renew session lease for tenant {}", tenant_id);
+                    let sessions = tenant_sessions
+                        .read()
+                        .await.keys().map(|client_id| RenewSession {
+                            tenant_id: tenant_id.clone(),
+                            session_id: client_id.clone(),
                         })
-                        .await;
-                    if let Err(err) = res {
-                        error!("failed to renew session lease: {}", err);
-                    } else {
-                        info!("renew session lease for tenant {} succeed", tenant_id);
+                        .collect::<Vec<RenewSession>>();
+                    let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+                    for session in &sessions {
+                        debug!(
+                            "renew session lease for tenant {} session {}",
+                            tenant_id, session.session_id
+                        );
+                        let res = session_actor_map_raft_actor_addr
+                            .send(session_actor_map_raft_actor::RenewSession {
+                                tenant_id: session.tenant_id.clone(),
+                                client_id: session.session_id.clone(),
+                            })
+                            .await;
+                        if let Err(err) = res {
+                            error!("failed to renew session lease: {}", err);
+                        } else {
+                            debug!("renew session lease for tenant {} succeed", tenant_id);
+                        }
                     }
                 }
-            }
-            .into_actor(self)
-            .wait(ctx);
+                .into_actor(self)
+            );
         }
     }
 }
@@ -390,25 +410,25 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
     type Result = ();
 
     fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
-        info!("send packet to session {}", msg.client_id);
         let tenant_session = self.sessions.get(&msg.tenant_id);
         if let Some(tenant_session) = tenant_session {
             let tenant_session = tenant_session.clone();
+            ctx.spawn(
             async move {
-                let session = tenant_session.read().await;
-                let session = session.get(&msg.client_id);
-                if let Some(session) = session {
-                    let res = session
-                        .session_actor_message_recipient
-                        .send(SessionActorMessage::OutboundMessage(msg.packet))
-                        .await;
-                    if let Err(e) = res {
-                        error!("send packet to session {} failed: {}", msg.client_id, e);
+                    let session = tenant_session.read().await;
+                    let session = session.get(&msg.client_id);
+                    if let Some(session) = session {
+                        let res = session
+                            .session_actor_message_recipient
+                            .send(SessionActorMessage::OutboundMessage(msg.packet))
+                            .await;
+                        if let Err(e) = res {
+                            error!("send packet to session {} failed: {}", msg.client_id, e);
+                        }
                     }
                 }
-            }
-            .into_actor(self)
-            .wait(ctx);
+                .into_actor(self)
+            );
         } else {
             warn!("tenant {} not found", msg.tenant_id);
         }
@@ -676,6 +696,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let session_clock = self.session_clock.clone();
         let current_node_id = self.current_node_id;
         let router_actor = self.router_actor.as_ref().unwrap().clone();
+        let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
 
 
         let future = async move {
@@ -689,7 +710,6 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             ).await??;
 
             if let Some(entry) = &session_actor_map_entry {
-                info!("previous session actor map node id: {}", entry.node_id);
                 if entry.node_id != current_node_id {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
@@ -726,10 +746,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
                 }
             } else {
-                info!("previous session actor map node id not found");
+                debug!("previous session actor map node id not found");
             }
 
-            info!(
+            debug!(
                 "start register session actor map tenant_id: {}, client_id: {}, node_id: {}",
                 msg.tenant_id, msg.client_id, current_node_id
             );
@@ -767,7 +787,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 }
             }
 
-            info!(
+            debug!(
                 "register session actor map succeed tenant_id: {}, client_id: {}, node_id: {}",
                 msg.tenant_id, msg.client_id, current_node_id
             );
@@ -851,24 +871,28 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 }
 
             }
-            let session_actor = SessionActor::new(
-                msg.tenant_id.clone(),
-                msg.client_id.clone(),
-                msg.clean_session,
-                plugin_manager.clone(),
-                50,
-                msg.will_message,
-                msg.keep_alive,
-                msg.connection_addr,
-                msg.peer_addr,
-                session_state,
-                session_lifecycle_tx,
-                SessionStateRaftActor::from_registry(),
-                TopicRaftActor::from_registry(),
-                router_actor
-            );
+            let plugin_manager_clone = plugin_manager.clone();
+            let msg_client_id = msg.client_id.clone();
+            let msg_tenant_id = msg.tenant_id.clone();
+            let session_actor_addr = arbiter_pool.start_actor(move || {
+                SessionActor::new(
+                    msg_tenant_id,
+                    msg_client_id,
+                    msg.clean_session,
+                    plugin_manager_clone,
+                    50,
+                    msg.will_message,
+                    msg.keep_alive,
+                    msg.connection_addr,
+                    msg.peer_addr,
+                    session_state,
+                    session_lifecycle_tx,
+                    SessionStateRaftActor::from_registry(),
+                    TopicRaftActor::from_registry(),
+                    router_actor
+                )
+            });
 
-            let session_actor_addr = session_actor.start();
             let session_actor_message_recipient = session_actor_addr.clone().recipient();
             let get_session_info_recipient = session_actor_addr.clone().recipient();
             sessions_guard.insert(

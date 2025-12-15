@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use actix::Actor;
 use anyhow::Result;
 use tokio::net::TcpListener;
 
@@ -8,6 +7,7 @@ use crate::connection::ConnectionActor;
 
 pub struct MqttTcpListener {
     pub app: Arc<crate::app::YedMQApp>,
+    pub arbiter_pool: Arc<crate::arbiter_pool::ArbiterPool>,
 }
 
 impl MqttTcpListener {
@@ -17,15 +17,17 @@ impl MqttTcpListener {
             let (stream, _) = listener.accept().await?;
             let peer_addr = stream.peer_addr().unwrap();
             let settings = self.app.settings.clone();
-            ConnectionActor::new(
-                stream,
-                settings.mqtt.max_message_size,
-                4096,
-                peer_addr,
-                self.app.plugin_manager.clone(),
-                None
-            )
-            .start();
+            let plugin_manager = self.app.plugin_manager.clone();
+            self.arbiter_pool.start_actor(move || {
+                ConnectionActor::new(
+                    stream,
+                    settings.mqtt.max_message_size,
+                    4096,
+                    peer_addr,
+                    plugin_manager,
+                    None
+                )
+            });
         }
     }
 }

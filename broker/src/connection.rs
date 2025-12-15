@@ -6,7 +6,7 @@ use std::sync::Arc;
 use actix::prelude::*;
 use actix::{Actor, Addr, Context};
 use bytes::{Buf, BytesMut};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
@@ -321,19 +321,26 @@ where
                                         return;
                                     }
 
-                                    self_addr.send(UpdateSession { session: handle_initial_connect_result.session_recipient.clone() }).await.unwrap();
+                                    if self_addr.send(UpdateSession { session: handle_initial_connect_result.session_recipient.clone() }).await.is_err() {
+                                        error!("Failed to send UpdateSession message to self. The actor is likely shutting down.");
+                                        self_addr.do_send(ConnectionActorMessage::Disconnect);
+                                        return;
+                                    }
 
                                     loop {
                                         let packet =
                                             read_packet(&reader, &mut buffer, max_message_size).await;
                                         if let Ok(packet) = packet {
                                             if matches!(packet, MqttPacketV3::Disconnect(_)) {
-                                                self_addr
-                                                    .send(NotifyUpdateDisconnectedNormally {
-                                                        disconnected_normally: true,
-                                                    })
-                                                    .await
-                                                    .unwrap();
+                                                if self_addr
+                                                .send(NotifyUpdateDisconnectedNormally {
+                                                    disconnected_normally: true,
+                                                })
+                                                .await
+                                                .is_err()
+                                            {
+                                                error!("Failed to send NotifyUpdateDisconnectedNormally message to self. The actor is likely shutting down.");
+                                            }
                                             }
                                             handle_initial_connect_result.session_recipient.do_send(
                                                 session_actor::SessionActorMessage::InboundPacket(
@@ -451,7 +458,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn drop(&mut self) {
-        info!("🔥 ConnectionActor Dropped!");
+        debug!("🔥 ConnectionActor Dropped!");
     }
 }
 

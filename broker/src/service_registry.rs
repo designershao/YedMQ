@@ -4,11 +4,10 @@ use log::info;
 use crate::arbiter_pool::ArbiterPool;
 use crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor;
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
-use crate::raft::topic::topic_raft_actor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::router_actor::RouterActor;
 use crate::rpc::rpc_actor::RpcActor;
-use crate::session::session_manager_actor::{SessionManagerActor, SetRouterActor};
+use crate::session::session_manager_actor::{SessionManagerActor, SetArbiterPool, SetRouterActor};
 use crate::settings::Settings;
 
 #[derive(Clone)]
@@ -27,15 +26,18 @@ impl ServiceRegistry {
         let topic_raft = TopicRaftActor::from_registry();
         let session_map_raft = SessionActorMapRaftActor::from_registry();
         let session_state_raft = SessionStateRaftActor::from_registry();
+        let session_manager = SessionManagerActor::from_registry();
 
-        let session_manager = pools.start_actor(|| {
-            SessionManagerActor::default()
+
+        session_manager.do_send(SetArbiterPool{
+            arbiter_pool: pools.clone(),
         });
 
         let settings_clone = settings.clone();
+        let session_manager_clone = session_manager.clone();
 
         let router = pools.start_actor(|| {
-            RouterActor::new(settings_clone)
+            RouterActor::new(settings_clone, session_manager_clone)
         });
 
         let router_clone = router.clone();
