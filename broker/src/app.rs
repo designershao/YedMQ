@@ -86,7 +86,7 @@ impl YedMQApp {
             Ok(())
         });
 
-        let mut tcp_tls_listener = MqttTcpTlsListener { app: app.clone() };
+        let mut tcp_tls_listener = MqttTcpTlsListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
 
         let settings_clone = settings.clone();
         let tcp_tls_listener_join = actix::spawn(async move {
@@ -101,7 +101,7 @@ impl YedMQApp {
             Ok(())
         });
 
-        let ws_listener = MqttWsListener { app: app.clone() };
+        let ws_listener = MqttWsListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
         let settings_clone = settings.clone();
         let mqtt_ws_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
@@ -112,7 +112,7 @@ impl YedMQApp {
             Ok(())
         });
 
-        let wss_listener = MqttWssListener { app: app.clone() };
+        let wss_listener = MqttWssListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
         let settings_clone = settings.clone();
         let mqtt_wss_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();

@@ -15,6 +15,7 @@ use super::{
 };
 pub struct MqttWsListener {
     pub app: Arc<crate::app::YedMQApp>,
+    pub arbiter_pool: Arc<crate::arbiter_pool::ArbiterPool>,
 }
 
 impl MqttWsListener {
@@ -23,32 +24,40 @@ impl MqttWsListener {
         loop {
             let (stream, _) = listener.accept().await?;
 
-            let remote_addr = stream.peer_addr().unwrap();
+            match stream.peer_addr() {
+                Ok(remote_addr) => {
+                    let ws_stream = tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
 
-            let ws_stream = tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
+                    if let Ok(ws_stream) = ws_stream {
+                        let websocket_tunnel = WebsocketTunnel {
+                            inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
+                        };
 
-            if let Ok(ws_stream) = ws_stream {
-                let websocket_tunnel = WebsocketTunnel {
-                    inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
-                };
-
-                let settings = self.app.settings.clone();
-                ConnectionActor::new(
-                    websocket_tunnel,
-                    settings.mqtt.max_message_size,
-                    4096,
-                    remote_addr,
-                    self.app.plugin_manager.clone(),
-                    None
-                )
-                .start();
-            } else {
-                warn!(
-                    "Failed to accept WebSocket connection from {}, err {}",
-                    remote_addr,
-                    ws_stream.err().unwrap()
-                );
+                        let settings = self.app.settings.clone();
+                        let plugin_manager_clone = self.app.plugin_manager.clone();
+                        self.arbiter_pool.start_actor(move || {
+                            ConnectionActor::new(
+                                websocket_tunnel,
+                                settings.mqtt.max_message_size,
+                                4096,
+                                remote_addr,
+                                plugin_manager_clone,
+                                None
+                            )
+                        });
+                    } else {
+                        warn!(
+                            "Failed to accept WebSocket connection from {}, err {}",
+                            remote_addr,
+                            ws_stream.err().unwrap()
+                        );
+                    }
+                }
+                Err(_) => {
+                    warn!("failed to get peer address, close the connection");
+                }
             }
+
         }
     }
 }
