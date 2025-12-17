@@ -573,3 +573,105 @@ async fn test_ws_max_qos_subscription() {
         .expect("Subscriber task timed out")
         .unwrap();
 }
+
+#[actix::test]
+async fn test_persistent_session() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let broker_addr: SocketAddr = context.settings.listener.ws.external.as_str().parse().unwrap();
+    let topic = "test/persistent";
+    let payload = b"persistent message";
+    let url = format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port());
+
+    // Client 1 (Persistent) connects, subscribes, disconnects
+    let mut mqtt_options1 = MqttOptions::new("persistent-client", url.clone(), broker_addr.port());
+    mqtt_options1.set_keep_alive(Duration::from_secs(5));
+    mqtt_options1.set_transport(Transport::Ws);
+    mqtt_options1.set_clean_session(false);
+    let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
+
+    let task1 = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match eventloop1.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::SubAck(_))) => {
+                    client1.disconnect().await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                    if connected { return }
+                    panic!("Eventloop 1 error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), task1).await.expect("Task 1 timed out").unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Client 2 (Publisher) publishes a message
+    let mut mqtt_options_pub = MqttOptions::new("persistent-publisher", url.clone(), broker_addr.port());
+    mqtt_options_pub.set_keep_alive(Duration::from_secs(5));
+    mqtt_options_pub.set_transport(Transport::Ws);
+    let (client_pub, mut eventloop_pub) = AsyncClient::new(mqtt_options_pub, 10);
+
+    let task_pub = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match eventloop_pub.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    client_pub.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::PubAck(_))) => {
+                    client_pub.disconnect().await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                    if connected { return }
+                    panic!("Publisher eventloop error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), task_pub).await.expect("Publisher task timed out").unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Client 1 Reconnects
+    let mut mqtt_options2 = MqttOptions::new("persistent-client", url.clone(), broker_addr.port());
+    mqtt_options2.set_keep_alive(Duration::from_secs(5));
+    mqtt_options2.set_transport(Transport::Ws);
+    mqtt_options2.set_clean_session(false);
+    let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
+
+    let task2 = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match eventloop2.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                    connected = true;
+                    assert!(ack.session_present); // Expect session present
+                }
+                Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    assert_eq!(publish.topic, topic);
+                    assert_eq!(publish.payload.as_ref(), payload);
+                    client2.disconnect().await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                    if connected { return }
+                    panic!("Eventloop 2 error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), task2).await.expect("Task 2 timed out").unwrap();
+}
