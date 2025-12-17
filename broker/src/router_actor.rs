@@ -99,14 +99,14 @@ impl Actor for RouterActor {
 
 impl RouterActor {
 
-    pub fn new(settings: Arc<Settings>, session_manager_actor: Addr<SessionManagerActor>) -> Self {
+    pub fn new(settings: Arc<Settings>, session_manager_actor: Addr<SessionManagerActor>, topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>) -> Self {
         RouterActor {
             current_node_id: settings.cluster.node_id,
             settings,
             dead_letter_queue: VecDeque::new(),
             dead_letter_config: DeadLetterConfig::default(),
             session_manager_actor,
-            topic_raft_actor: None,
+            topic_raft_actor: Some(topic_raft_actor),
         }
     }
 

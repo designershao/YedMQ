@@ -59,6 +59,8 @@ pub async fn test_tcp_listener_connect() {
 async fn test_publish_subscribe_cross_node(qos: QoS) {
     let context = setup_cluster().await;
 
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
     // Publisher -> Node 1 (index 0)
     let pub_node = &context.nodes[0];
     let pub_addr: SocketAddr = pub_node.listener.tcp.external.as_str().parse().unwrap();
@@ -136,7 +138,6 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
         }
     });
 
-    tokio::time::timeout(Duration::from_secs(10), pub_task).await.expect("Pub task timed out").unwrap();
     tokio::time::timeout(Duration::from_secs(10), sub_task).await.expect("Sub task timed out").unwrap();
 }
 

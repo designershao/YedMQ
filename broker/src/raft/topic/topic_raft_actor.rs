@@ -73,7 +73,7 @@ pub enum TopicRaftError {
 
 pub struct TopicRaftActor {
     raft: OnceCell<Arc<TopicRaft>>,
-    settings: Arc<crate::settings::Settings>,
+    settings: Option<Arc<crate::settings::Settings>>,
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
     topic_storage: OnceCell<Arc<RwLock<TopicStorage>>>,
@@ -161,7 +161,7 @@ impl TopicRaftActor {
         command: crate::raft::topic::types::Request,
     ) -> Result<(), TopicRaftError> {
         raft.client_write(command).await.map_err(|e| {
-            log::error!("Failed to write command to raft: {}", e);
+            log::warn!("failed to write command to raft: {}", e);
             if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
                 e_inner,
             )) = e
@@ -231,10 +231,9 @@ impl TopicRaftActor {
 
 impl Default for TopicRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
-            settings: Arc::new(settings),
+            settings: None,
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
             topic_storage: OnceCell::new(),
@@ -242,9 +241,18 @@ impl Default for TopicRaftActor {
     }
 }
 
-impl SystemService for TopicRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = self.settings.clone();
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Initialize {
+    pub settings: Arc<crate::settings::Settings>,
+}
+
+impl Handler<Initialize> for TopicRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
+        self.settings = Some(msg.settings.clone());
+        let settings = msg.settings.clone();
         let addr = ctx.address();
 
         ctx.spawn(
@@ -252,8 +260,16 @@ impl SystemService for TopicRaftActor {
                 let raft_instance = Self::initialize_raft(settings).await;
                 addr.do_send(InitializationComplete(raft_instance));
             }
-            .into_actor(self),
+                .into_actor(self),
         );
+    }
+}
+
+
+
+
+impl SystemService for TopicRaftActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
     }
 }
 
@@ -1153,7 +1169,7 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get(){
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self.settings.cluster.nodes.iter() {
+                    for item in self.settings.as_ref().expect("settings should not be none").cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {

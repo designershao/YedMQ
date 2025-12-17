@@ -28,20 +28,24 @@ impl Drop for TestClusterContext {
 
 pub async fn setup_cluster() -> &'static TestClusterContext {
     ASYNC_SETUP.get_or_init(|| async {
+        /* 
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Info)
             .format_target(false)
             .format_timestamp(None)
             .is_test(true)
             .try_init();
+        */
 
         let original_dir = env::current_dir().unwrap();
         let temp_dir = TempDir::new().unwrap();
         
         // Try to copy yedmq.toml if it exists in current dir (which should be crate root during test)
+        /*
         if Path::new("yedmq.toml").exists() {
              let _ = fs::copy("yedmq.toml", temp_dir.path().join("yedmq.toml"));
         }
+        */
 
         env::set_current_dir(temp_dir.path()).unwrap();
 

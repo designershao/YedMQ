@@ -4,9 +4,9 @@ use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, S
 use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
-use crate::{globals, protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient}, session::session_actor_map_storage::SessionActorMapEntry};
+use crate::{protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient}, session::session_actor_map_storage::SessionActorMapEntry};
 
-use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion}};
+use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion, SessionClock}};
 
 
 #[derive(Debug, Clone)]
@@ -70,16 +70,18 @@ pub enum SessionActorMapRaftError {
 
 pub struct SessionActorMapRaftActor {
     raft: OnceCell<Arc<SessionActorMapRaft>>,
-    settings: Arc<crate::settings::Settings>,
+    settings: Option<Arc<crate::settings::Settings>>,
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
     session_actor_map_storage: OnceCell<Arc<RwLock<SessionActorMapStorage>>>,
+    session_clock: Option<Arc<SessionClock>>,
 }
 
 
 impl SessionActorMapRaftActor {
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
+        session_clock: Arc<SessionClock>,
     ) -> Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError> {
         let raft_config = Config {
             cluster_name: "yedmq_session_actor_map_raft_cluster".to_string(),
@@ -89,8 +91,6 @@ impl SessionActorMapRaftActor {
         let dir = Path::new(&settings.cluster.store_dir);
 
         let config = Arc::new(raft_config.validate().unwrap());
-
-        let session_clock = globals::get_session_clock();
 
         let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
         let (log_store, state_machine_store) = new_storage(
@@ -151,7 +151,7 @@ impl SessionActorMapRaftActor {
         command: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
         let res = raft.client_write(command).await.map_err(|e| {
-            log::error!("Failed to write command to raft: {}", e);
+            log::warn!("failed to write command to raft: {}", e);
             if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
                 e_inner,
             )) = e
@@ -253,30 +253,46 @@ impl SessionActorMapRaftActor {
 
 impl Default for SessionActorMapRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
-            settings: Arc::new(settings),
+            settings: None,
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
             session_actor_map_storage: OnceCell::new(),
+            session_clock: None,
         }
     }
 }
 
-impl SystemService for SessionActorMapRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = self.settings.clone();
-        let addr = ctx.address();
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Initialize {
+    pub settings: Arc<crate::settings::Settings>,
+    pub session_clock: Arc<SessionClock>,
+}
 
+impl Handler<Initialize> for SessionActorMapRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
+        self.settings = Some(msg.settings);
+        self.session_clock = Some(msg.session_clock);
+
+        let settings = self.settings.as_ref().unwrap().clone();
+        let session_clock = self.session_clock.as_ref().unwrap().clone();
+        let addr = ctx.address();
         ctx.spawn(
             async move {
-                let raft_instance = Self::initialize_raft(settings).await;
+                let raft_instance = Self::initialize_raft(settings, session_clock).await;
                 addr.do_send(InitializationComplete(raft_instance));
             }
             .into_actor(self),
         );
     }
+}
+
+impl SystemService for SessionActorMapRaftActor {
+    fn service_started(&mut self, _ctx: &mut Context<Self>) {}
 }
 
 impl Supervised for SessionActorMapRaftActor {}
@@ -758,7 +774,7 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get(){
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self.settings.cluster.nodes.iter() {
+                    for item in self.settings.as_ref().unwrap().cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {

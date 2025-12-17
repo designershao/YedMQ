@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    arbiter_pool, globals, protobuf::ForceStopSessionActorRequest, raft::{
+    protobuf::ForceStopSessionActorRequest, raft::{
         NodeId, session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
@@ -82,30 +82,6 @@ struct SessionActorRecipientWrapper {
     session_version: SessionVersion,
 }
 
-impl Default for SessionManagerActor {
-    fn default() -> Self {
-        let settings = match Settings::new() {
-            Ok(s) => s,
-            Err(e) => {
-                error!("Failed to load settings in RpcActor: {}", e);
-                error!("Session Manager Actor will not start due to settings load failure.");
-                std::process::exit(1);
-            }
-        };
-        let current_node_id = settings.cluster.node_id;
-        SessionManagerActor {
-            sessions: HashMap::new(),
-            plugin_manager: globals::get_plugin_manager(),
-            session_lifecycle_tx: None,
-            settings: Arc::new(settings),
-            session_clock: globals::get_session_clock(),
-            current_node_id,
-            router_actor: None,
-            arbiter_pool: None,
-        }
-    }
-}
-
 
 impl SystemService for SessionManagerActor {
     fn service_started(&mut self, _: &mut Context<Self>) {
@@ -118,13 +94,13 @@ impl Supervised for SessionManagerActor {}
 pub struct SessionManagerActor {
     sessions: HashMap<String, Arc<RwLock<HashMap<String, SessionActorRecipientWrapper>>>>,
 
-    plugin_manager: Arc<PluginManager>,
+    plugin_manager: Option<Arc<PluginManager>>,
 
     session_lifecycle_tx: Option<Sender<SessionLifecycleMessage>>,
 
-    settings: Arc<Settings>,
+    settings: Option<Arc<Settings>>,
 
-    session_clock: Arc<SessionClock>,
+    session_clock: Option<Arc<SessionClock>>,
 
     current_node_id: NodeId,
 
@@ -132,6 +108,41 @@ pub struct SessionManagerActor {
 
     arbiter_pool: Option<Arc<crate::arbiter_pool::ArbiterPool>>,
 }
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Initialize {
+    pub settings: Arc<Settings>,
+    pub plugin_manager: Arc<PluginManager>,
+    pub session_clock: Arc<SessionClock>,
+}
+
+impl Handler<Initialize> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: Initialize, _ctx: &mut Self::Context) -> Self::Result {
+        self.settings = Some(msg.settings.clone());
+        self.plugin_manager = Some(msg.plugin_manager);
+        self.session_clock = Some(msg.session_clock);
+        self.current_node_id = msg.settings.cluster.node_id;
+    }
+}
+
+impl Default for SessionManagerActor {
+    fn default() -> Self {
+        Self {
+            sessions: HashMap::new(),
+            plugin_manager: None,
+            session_lifecycle_tx: None,
+            settings: None,
+            session_clock: None,
+            current_node_id: 0,
+            router_actor: None,
+            arbiter_pool: None,
+        }
+    }
+}
+
 
 impl Actor for SessionManagerActor {
     type Context = Context<Self>;
@@ -688,12 +699,12 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let sessions = self.sessions.get(&msg.tenant_id)
             .expect("tenant must exist after tenant_existed check and create_tenant call").clone();
 
-        let plugin_manager = self.plugin_manager.clone();
-        let settings = self.settings.clone();
+        let plugin_manager = self.plugin_manager.as_ref().unwrap().clone();
+        let settings = self.settings.as_ref().unwrap().clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.as_ref()
             .expect("session lifecycle tx must exist").clone();
 
-        let session_clock = self.session_clock.clone();
+        let session_clock = self.session_clock.as_ref().unwrap().clone();
         let current_node_id = self.current_node_id;
         let router_actor = self.router_actor.as_ref().unwrap().clone();
         let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
@@ -714,7 +725,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
                         entry.node_id,
-                        settings.cluster.nodes.as_ref(),
+                        &settings.cluster.nodes,
                         msg.tenant_id.clone(),
                         msg.client_id.clone(),
                     )
@@ -1010,6 +1021,6 @@ impl Handler<GetLatestSessionClock> for SessionManagerActor {
     type Result = Option<Arc<SessionClock>>;
 
     fn handle(&mut self, _msg: GetLatestSessionClock, _ctx: &mut Self::Context) -> Self::Result {
-        Some(self.session_clock.clone())
+        self.session_clock.clone()
     }
 }

@@ -6,10 +6,10 @@ use tokio::sync::{ Mutex, RwLock};
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::{
-    globals, listener::{
+    listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, raft::{Node, session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::session_manager_actor::SessionManagerActor, settings::Settings
+    }, metric, raft::{Node, session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor, session_state::session_state_raft_actor::SessionStateRaftActor, topic::topic_raft_actor::TopicRaftActor}, rest_api, router_actor::RouterActor, rpc::rpc_actor::RpcActor, session::{session_manager_actor::SessionManagerActor, session_actor_map_storage::SessionClock}, settings::Settings
 };
 use crate::arbiter_pool::ArbiterPool;
 use crate::service_registry::ServiceRegistry;
@@ -24,6 +24,8 @@ pub struct YedMQApp {
     pub metric: Arc<metric::Metric>,
 
     pub settings: Arc<Settings>,
+
+    pub session_clock: Arc<SessionClock>,
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 }
@@ -50,11 +52,14 @@ impl YedMQApp {
         */
         //
 
-        globals::init_session_clock(&settings).await;
-
         // start system service
         let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
-        let _ = ServiceRegistry::start(arbiter_pool.clone() , settings.clone());
+        let _ = ServiceRegistry::start(
+            arbiter_pool.clone(),
+            settings.clone(),
+            app.plugin_manager.clone(),
+            app.session_clock.clone()
+        );
         //
 
         // start api task
@@ -167,8 +172,12 @@ impl YedMQApp {
             Err(e) => panic!("start all plugins failed: {}", e),
         }
 
-        globals::init_plugin_manager(plugin_manager.clone());
-        //
+        let session_clock = SessionClock::new(
+            settings.cluster.node_id,
+            settings.session.session_clock_path.clone(),
+        );
+        session_clock.restore().await.unwrap();
+        let session_clock = Arc::new(session_clock);
 
         let metric = Arc::new(metric::Metric::new());
 
@@ -179,6 +188,7 @@ impl YedMQApp {
             plugin_manager,
             settings,
             metric,
+            session_clock,
             join_handles,
             topic_router: Arc::new(RwLock::new(BTreeMap::new())),
         }

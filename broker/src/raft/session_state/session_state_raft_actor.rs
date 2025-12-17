@@ -69,7 +69,7 @@ pub enum SessionStateRaftError {
 
 pub struct SessionStateRaftActor {
     raft: OnceCell<Arc<SessionStateRaft>>,
-    settings: Arc<crate::settings::Settings>,
+    settings: Option<Arc<crate::settings::Settings>>,
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
     session_state_storage: OnceCell<Arc<RwLock<SessionStateStorage>>>
@@ -77,10 +77,9 @@ pub struct SessionStateRaftActor {
 
 impl Default for SessionStateRaftActor {
     fn default() -> Self {
-        let settings = crate::settings::Settings::new().unwrap();
         Self {
             raft: OnceCell::new(),
-            settings: Arc::new(settings),
+            settings: None,
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
             session_state_storage: OnceCell::new(),
@@ -88,9 +87,18 @@ impl Default for SessionStateRaftActor {
     }
 }
 
-impl SystemService for SessionStateRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
-        let settings = self.settings.clone();
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Initialize {
+    pub settings: Arc<crate::settings::Settings>,
+}
+
+impl Handler<Initialize> for SessionStateRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
+        self.settings = Some(msg.settings.clone());
+        let settings = msg.settings.clone();
         let addr = ctx.address();
 
         ctx.spawn(
@@ -100,6 +108,11 @@ impl SystemService for SessionStateRaftActor {
             }
                 .into_actor(self),
         );
+    }
+}
+
+impl SystemService for SessionStateRaftActor {
+    fn service_started(&mut self, ctx: &mut Context<Self>) {
     }
 }
 
@@ -173,7 +186,7 @@ impl SessionStateRaftActor {
         command: crate::raft::session_state::types::SessionStateRequest,
     ) -> Result<ClientWriteResponse<SessionStateTypeConfig>, SessionStateRaftError> {
         let res = raft.client_write(command).await.map_err(|e| {
-            log::error!("Failed to write command to raft: {}", e);
+            log::warn!("failed to write command to raft: {}", e);
             if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
                 e_inner,
             )) = e
@@ -598,7 +611,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
-                let inflight_duration = self.settings.mqtt.inflight_retry_interval_secs;
+                let inflight_duration = self.settings.as_ref().expect("settings should not be none").mqtt.inflight_retry_interval_secs;
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -1338,7 +1351,7 @@ impl Handler<InitRaftClusterMessage> for SessionStateRaftActor {
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get(){
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self.settings.cluster.nodes.iter() {
+                    for item in self.settings.as_ref().expect("settings should not be none").cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {
