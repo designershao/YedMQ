@@ -28,14 +28,12 @@ impl Drop for TestClusterContext {
 
 pub async fn setup_cluster() -> &'static TestClusterContext {
     ASYNC_SETUP.get_or_init(|| async {
-        /* 
         let _ = env_logger::builder()
             .filter_level(log::LevelFilter::Info)
             .format_target(false)
             .format_timestamp(None)
             .is_test(true)
             .try_init();
-        */
 
         let original_dir = env::current_dir().unwrap();
         let temp_dir = TempDir::new().unwrap();

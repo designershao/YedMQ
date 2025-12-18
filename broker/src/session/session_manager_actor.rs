@@ -812,6 +812,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
+            let mut session_present = false;
+
             if !msg.clean_session {
                 info!(
                     "session {} not clean session, into state recover or create logic.",
@@ -879,6 +881,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         ).await??;
                     }
 
+                    session_present = true;
+
                 }
 
             }
@@ -914,7 +918,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     session_version,
                 },
             );
-            Ok(CreateSessionMessageResponse { session_actor_recipient: session_actor_message_recipient, session_present: false })
+            Ok(CreateSessionMessageResponse { session_actor_recipient: session_actor_message_recipient, session_present })
         };
         Box::pin(future)
     }

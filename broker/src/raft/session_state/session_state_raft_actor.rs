@@ -552,8 +552,14 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                         if inner.success {
                                             if let Some(payload) = inner.payload {
                                                 println!("Got session state from leader: {}", payload);
-                                                let session_state = serde_json::from_str(&payload).unwrap();
-                                                Ok(Some(session_state))
+                                                match serde_json::from_str(&payload) {
+                                                    Ok(Some(session_state)) => Ok(Some(session_state)),
+                                                    Ok(None) => Ok(None),
+                                                    Err(e) => {
+                                                        log::error!("Failed to deserialize session state: {}", e);
+                                                        Ok(None)
+                                                    }
+                                                }
                                             } else {
                                                 Ok(None)
                                             }

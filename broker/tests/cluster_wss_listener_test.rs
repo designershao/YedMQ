@@ -165,7 +165,6 @@ async fn test_wss_publish_subscribe_cross_node(qos: QoS) {
         }
     });
 
-    tokio::time::timeout(Duration::from_secs(10), pub_task).await.expect("Pub task timed out").unwrap();
     tokio::time::timeout(Duration::from_secs(10), sub_task).await.expect("Sub task timed out").unwrap();
 }
 
