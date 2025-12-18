@@ -2,14 +2,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use actix::prelude::*;
-use actix::{Actor, Supervised, SystemService};
+use actix::Actor;
 use log::error;
 use tonic::transport::Server;
 
 use crate::protobuf::cluster_service_server::ClusterServiceServer;
 use crate::protobuf::raft_service_server::RaftServiceServer;
 use crate::router_actor::RouterActor;
-use crate::settings::{self, Settings};
+use crate::settings::Settings;
 
 pub struct RpcActor {
     router_actor: Addr<RouterActor>,

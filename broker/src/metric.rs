@@ -1,6 +1,6 @@
 use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
-use actix::{Addr, SystemService};
+use actix::Addr;
 use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 

@@ -7,7 +7,6 @@ use log::info;
 pub struct ArbiterPool {
     arbiters: Vec<Arbiter>,
     next_index: AtomicUsize,
-    pool_name: String,
 }
 
 impl ArbiterPool {
@@ -25,7 +24,6 @@ impl ArbiterPool {
         Arc::new(Self {
             arbiters,
             next_index: AtomicUsize::new(0),
-            pool_name: name.to_string(),
         })
     }
 

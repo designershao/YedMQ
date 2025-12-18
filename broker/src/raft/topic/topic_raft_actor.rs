@@ -269,7 +269,7 @@ impl Handler<Initialize> for TopicRaftActor {
 
 
 impl SystemService for TopicRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
+    fn service_started(&mut self, _ctx: &mut Context<Self>) {
     }
 }
 

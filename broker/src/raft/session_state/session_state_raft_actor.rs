@@ -112,7 +112,7 @@ impl Handler<Initialize> for SessionStateRaftActor {
 }
 
 impl SystemService for SessionStateRaftActor {
-    fn service_started(&mut self, ctx: &mut Context<Self>) {
+    fn service_started(&mut self, _ctx: &mut Context<Self>) {
     }
 }
 

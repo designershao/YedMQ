@@ -10,13 +10,13 @@ async fn main() {
     env_logger::init();
 
     // init setting 
-    let s = Settings::new();
-    if let Err(e) = s {
-        info!("load settings error: {}", e);
-        return;
-    }
-
-    let settings =Arc::new(s.unwrap());
+    let settings = match Settings::new() {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            info!("load settings error: {}", e);
+            return;
+        }
+    };
 
     let app = Arc::new(YedMQApp::new(settings.clone()).await);
 
