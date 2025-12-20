@@ -112,6 +112,22 @@ impl Default for Plugin {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RateLimit {
+    pub messages_rate: i32,
+    pub messages_burst: i32,
+}
+
+impl Default for RateLimit {
+    fn default() -> Self {
+        Self {
+            messages_rate: 1000,
+            messages_burst: 100
+        }
+    }
+}
+
+
 #[derive(Debug, Deserialize,Default)]
 pub struct Listener {
     pub tcp: Tcp,
@@ -171,13 +187,15 @@ impl Default for Wss {
 
 #[derive(Debug, Deserialize)]
 pub struct Tcp {
-    pub external: String
+    pub external: String,
+    pub rate_limit: RateLimit
 }
 
 impl Default for Tcp {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:1883".to_string()
+            external: "0.0.0.0:1883".to_string(),
+            rate_limit: RateLimit::default()
         }
     }
 }

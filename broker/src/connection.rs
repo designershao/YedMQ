@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::net::SocketAddr;
+use std::num::{NonZero, NonZeroU32};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use actix::prelude::*;
 use actix::{Actor, Addr, Context};
 use bytes::{Buf, BytesMut};
+use governor::{Quota, RateLimiter};
+use governor::clock::{Clock, DefaultClock};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
@@ -327,26 +330,37 @@ where
                                         return;
                                     }
 
+                                    let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(1000).unwrap()).allow_burst(NonZeroU32::new(100).unwrap()));
                                     loop {
                                         let packet =
                                             read_packet(&reader, &mut buffer, max_message_size).await;
                                         if let Ok(packet) = packet {
-                                            if matches!(packet, MqttPacketV3::Disconnect(_)) {
-                                                if self_addr
+                                            if matches!(packet, MqttPacketV3::Disconnect(_)) && self_addr
                                                 .send(NotifyUpdateDisconnectedNormally {
                                                     disconnected_normally: true,
                                                 })
                                                 .await
-                                                .is_err()
-                                            {
+                                                .is_err() {
                                                 error!("Failed to send NotifyUpdateDisconnectedNormally message to self. The actor is likely shutting down.");
                                             }
+
+
+                                            match rate_limiter.check() {
+                                                Ok(_) => {
+                                                    handle_initial_connect_result.session_recipient.do_send(
+                                                        session_actor::SessionActorMessage::InboundPacket(
+                                                            packet,
+                                                        ),
+                                                    );
+                                                },
+                                                Err(not_ready) => {
+                                                    let wait_time = not_ready.wait_time_from(DefaultClock::default().now());
+                                                    tokio::time::sleep(wait_time).await;
+                                                    println!("rate limited")
+                                                }
+
                                             }
-                                            handle_initial_connect_result.session_recipient.do_send(
-                                                session_actor::SessionActorMessage::InboundPacket(
-                                                    packet,
-                                                ),
-                                            );
+
                                         } else {
                                             break;
                                         }

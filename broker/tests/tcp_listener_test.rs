@@ -83,6 +83,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
                 external: format!("0.0.0.0:{}", tcp_port).to_string(),
+                rate_limit: Default::default(),
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("0.0.0.0:{}", tcp_port + 1).to_string(),

@@ -97,6 +97,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                 listener: yedmq::settings::Listener {
                     tcp: yedmq::settings::Tcp {
                         external: format!("0.0.0.0:{}", tcp),
+                        rate_limit: Default::default(),
                     },
                     tcp_tls: yedmq::settings::TcpTls {
                         external: format!("0.0.0.0:{}", tcp_tls),
