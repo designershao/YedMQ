@@ -1,4 +1,4 @@
-use bytes::{BytesMut, BufMut};
+use bytes::{BytesMut, BufMut, Bytes};
 use nom::{combinator::{map, map_res, rest, verify}, sequence::tuple, IResult};
 use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
@@ -25,12 +25,12 @@ pub struct PublishPacketBuilder {
     retain: bool,
     qos: u8,
     topic_name: String,
-    payload: Vec<u8>,
+    payload: Bytes,
     packet_identifier: Option<u16>,
 }
 
 impl PublishPacketBuilder {
-    pub fn new(topic_name: String, payload: Vec<u8>) -> PublishPacketBuilder {
+    pub fn new(topic_name: String, payload: Bytes) -> PublishPacketBuilder {
         PublishPacketBuilder {
             dup: false,
             retain: false,
@@ -61,7 +61,7 @@ impl PublishPacketBuilder {
        self 
     }
 
-    pub fn payload(mut self, payload: Vec<u8>) -> Self {
+    pub fn payload(mut self, payload: Bytes) -> Self {
        self.payload = payload;
        self
     }
@@ -143,7 +143,7 @@ impl VariableHeader {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
 
 impl Payload {
@@ -193,7 +193,7 @@ pub fn parse_with_max_message_size_limit(input: &[u8], max_message_size: usize) 
             move |(_, (variable_header, payload_bytes))| {
                 let cloned_fixed_header = fixed_header.clone();
                 let payload = Payload {
-                    payload: payload_bytes.to_vec()
+                    payload: Bytes::copy_from_slice(payload_bytes)
                 };
                 PublishPacket {
                     fix_header: cloned_fixed_header,
@@ -217,7 +217,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PublishPacket> {
             move |(_, (variable_header, payload_bytes))| {
                 let cloned_fixed_header = fixed_header.clone();
                 let payload = Payload {
-                    payload: payload_bytes.to_vec()
+                    payload: Bytes::copy_from_slice(payload_bytes)
                 };
                 PublishPacket {
                     fix_header: cloned_fixed_header,
@@ -270,6 +270,7 @@ impl MqttPacket for PublishPacket {
 mod tests {
     
     use nom::AsBytes;
+    use Bytes;
 
     use crate::PacketType;
 
@@ -287,7 +288,7 @@ mod tests {
     fn test_publish_packet_builder() {
         let publish_packet_builder = PublishPacketBuilder::new(
             "a/b".to_string(),
-            vec![0x01]
+            Bytes::copy_from_slice(vec![0x01].as_slice())
         );
         let publish_packet = publish_packet_builder.packet_identifier(0x10).dup(true).qos(1).build();
         assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
@@ -323,7 +324,7 @@ mod tests {
         };
 
         let payload = Payload{
-            payload: vec!(0x01)
+            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
         };
 
         let publish_packet = PublishPacket {
@@ -351,7 +352,7 @@ mod tests {
         };
 
         let payload = Payload{
-            payload: vec!(0x01)
+            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
         };
 
         let publish_packet = PublishPacket {
@@ -379,7 +380,7 @@ mod tests {
         };
 
         let payload = Payload{
-            payload: vec!(0x01)
+            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
         };
 
         let publish_packet = PublishPacket {

@@ -261,7 +261,7 @@ impl InflightItem {
 mod tests {
 
     use std::time::Duration;
-
+    use bytes::Bytes;
     use super::{Inflight, InflightState};
 
     async fn get_state(inflight: &Inflight, packet_identifier: u16) -> Option<InflightState> {
@@ -272,7 +272,7 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_tx_qos_1_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).qos(1).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
@@ -307,7 +307,7 @@ mod tests {
     async fn when_get_next_state_after_register_rx_qos_1_publish_packet_inflight_should_return_correct_state() {
 
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(1).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).qos(1).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
@@ -334,7 +334,7 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_rx_qos_2_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).qos(2).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test()]
     async fn when_get_next_state_after_register_tx_qos_2_publish_packet_inflight_should_return_correct_state() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).qos(2).build();
 
         let packet_identifier = publish_packet.variable_header.packet_identifier.unwrap();
 
@@ -453,13 +453,13 @@ mod tests {
     async fn when_register_tx_packet_with_duplicate_packet_identifier_should_return_error() {
         let mut inflight = Inflight::new(Duration::from_secs(10));
 
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).packet_identifier(123).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).packet_identifier(123).qos(2).build();
 
         let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
 
         inflight.register_with_tx_packet(&packet).await.unwrap();
 
-        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),vec![0x01]).packet_identifier(123).qos(2).build();
+        let publish_packet = yedmq_mqtt::v3::publish::PublishPacketBuilder::new("a/b/c".to_string(),Bytes::copy_from_slice(vec![0x01].as_slice())).packet_identifier(123).qos(2).build();
 
         let packet = yedmq_mqtt::MqttPacketV3::Publish(publish_packet);
         let res = inflight.register_with_tx_packet(&packet).await;

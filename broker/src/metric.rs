@@ -1,6 +1,7 @@
 use std::{sync::{atomic::AtomicU64, Arc}, time::{Duration, Instant}};
 
 use actix::Addr;
+use bytes::Bytes;
 use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 
@@ -94,10 +95,10 @@ impl SysTopicTask {
             let bytes_received = metric.bytes_received.load(std::sync::atomic::Ordering::SeqCst);
             let bytes_sent = metric.bytes_sent.load(std::sync::atomic::Ordering::SeqCst);
 
-            let clients_connected_packet = PublishPacketBuilder::new(clients_connected_topic.clone(), vec![clients_connected.to_le_bytes()[0]]).build();
-            let bytes_received_packet = PublishPacketBuilder::new(broker_bytes_received_topic.clone(), vec![bytes_received.to_le_bytes()[0]]).build();
-            let bytes_sent_packet = PublishPacketBuilder::new(broker_bytes_sent_topic.clone(), vec![bytes_sent.to_le_bytes()[0]]).build();
-            let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(), vec![metric.get_uptime().to_le_bytes()[0]]).build();
+            let clients_connected_packet = PublishPacketBuilder::new(clients_connected_topic.clone(), Bytes::copy_from_slice(vec![clients_connected.to_le_bytes()[0]].as_slice())).build();
+            let bytes_received_packet = PublishPacketBuilder::new(broker_bytes_received_topic.clone(),Bytes::copy_from_slice( vec![bytes_received.to_le_bytes()[0]].as_slice())).build();
+            let bytes_sent_packet = PublishPacketBuilder::new(broker_bytes_sent_topic.clone(),Bytes::copy_from_slice( vec![bytes_sent.to_le_bytes()[0]].as_slice())).build();
+            let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(),Bytes::copy_from_slice(vec![metric.get_uptime().to_le_bytes()[0]].as_slice())).build();
 
             let router_actor_addr = self.router_actor.as_ref().expect("Router actor not initialized").clone();
 

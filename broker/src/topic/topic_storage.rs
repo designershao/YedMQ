@@ -819,6 +819,7 @@ mod tests {
 
     use super::*;
     use std::thread;
+    use bytes::Bytes;
 
     #[test]
     fn when_subscribe_same_topic_from_other_node_should_update_subscription() {
@@ -1236,7 +1237,7 @@ mod tests {
         };
 
         let payload = Payload {
-            payload: vec![0x01],
+            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
         };
 
         let publish_packet = PublishPacket {

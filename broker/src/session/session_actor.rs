@@ -4,6 +4,7 @@ use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage}};
 use std::{cmp, net::SocketAddr, sync::Arc, time::Duration};
+use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -437,7 +438,7 @@ async fn do_handle_publish(
                 tenant_id: client_info.tenant_id.clone(),
                 client_id: client_info.client_identifier.clone(),
                 topic: publish_packet.variable_header.topic_name.clone(),
-                payload: publish_packet.payload.payload.clone(),
+                payload: publish_packet.payload.payload.to_vec(),
                 qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
                 retain: publish_packet.fix_header.retain.unwrap_or(false),
                 dup: publish_packet.fix_header.dup.unwrap_or(0) == 1,
@@ -1413,7 +1414,7 @@ impl SessionActor {
                 let will_message = will_message.as_ref().unwrap();
                 let publish_packet = PublishPacketBuilder::new(
                     will_message.will_topic.clone(),
-                    will_message.will_message.clone(),
+                    Bytes::copy_from_slice(will_message.will_message.as_slice()),
                 )
                 .retain(will_message.will_retain)
                 .qos(will_message.will_qos)
