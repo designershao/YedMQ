@@ -1,14 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use log::{info, warn};
-use tokio::sync::{ Mutex, RwLock};
+use tokio::sync:: Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, raft::Node, rest_api, session::session_actor_map_storage::SessionClock, settings::Settings
+    }, metric, rest_api, session::session_actor_map_storage::SessionClock, settings::Settings
 };
 use crate::arbiter_pool::ArbiterPool;
 use crate::service_registry::ServiceRegistry;
@@ -17,8 +17,6 @@ use crate::service_registry::ServiceRegistry;
 pub struct YedMQApp {
 
     pub plugin_manager: Arc<PluginManager>,
-
-    pub topic_router: Arc<RwLock<BTreeMap<String, Vec<Node>>>>,
 
     pub metric: Arc<metric::Metric>,
 
@@ -189,7 +187,6 @@ impl YedMQApp {
             metric,
             session_clock,
             join_handles,
-            topic_router: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 }
