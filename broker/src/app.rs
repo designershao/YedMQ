@@ -56,7 +56,7 @@ impl YedMQApp {
             settings.clone(),
             app.plugin_manager.clone(),
             app.session_clock.clone()
-        );
+        ).await;
         //
 
         // start api task

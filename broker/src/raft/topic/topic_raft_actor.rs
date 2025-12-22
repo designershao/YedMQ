@@ -17,6 +17,7 @@ use crate::{
     topic::{topic_storage::TopicStorage, TopicError},
 };
 use crate::protobuf::cluster_service_client::ClusterServiceClient;
+use crate::router_actor::DeadLetterStats;
 
 #[derive(Debug, Clone)]
 pub enum ActorState {
@@ -277,6 +278,41 @@ impl Supervised for TopicRaftActor {}
 
 impl Actor for TopicRaftActor {
     type Context = Context<Self>;
+}
+
+#[derive(Message, Clone)]
+#[rtype(result = "GetTopicStorageResponse")]
+pub struct GetTopicStorage;
+
+pub struct GetTopicStorageResponse {
+    pub topic_storage: Arc<RwLock<TopicStorage>>,
+}
+
+impl<A, M> MessageResponse<A, M> for GetTopicStorageResponse
+where
+    A: Actor,
+    M: Message<Result = GetTopicStorageResponse>,
+{
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
+        if let Some(tx) = tx {
+            let _ = tx.send(self);
+        }
+    }
+}
+
+
+impl Handler<GetTopicStorage> for TopicRaftActor {
+    type Result =GetTopicStorageResponse;
+
+    fn handle(&mut self, msg: GetTopicStorage, ctx: &mut Self::Context) -> Self::Result {
+        GetTopicStorageResponse {
+            topic_storage: self.topic_storage.get().unwrap().clone(),
+        }
+    }
 }
 
 #[derive(Message, Clone)]

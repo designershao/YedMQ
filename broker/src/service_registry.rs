@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use actix::{Addr, SystemService};
 use log::info;
 use yedmq_plugin_host::plugin_manager::PluginManager;
@@ -25,7 +26,7 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    pub fn start(
+    pub async fn start(
         pools: Arc<ArbiterPool>,
         settings: Arc<Settings>,
         plugin_manager: Arc<PluginManager>,
@@ -63,9 +64,14 @@ impl ServiceRegistry {
         let settings_clone = settings.clone();
         let session_manager_clone = session_manager.clone();
 
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let get_topic_storage_res = topic_raft.send(crate::raft::topic::topic_raft_actor::GetTopicStorage{}).await.expect("get topic storage error");
+
         let topic_raft_clone = topic_raft.clone();
+        let topic_storage =  get_topic_storage_res.topic_storage.clone();
         let router = pools.start_actor(|| {
-            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone)
+            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage)
         });
 
         let router_clone = router.clone();
