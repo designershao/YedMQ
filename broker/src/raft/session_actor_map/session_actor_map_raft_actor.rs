@@ -1,13 +1,14 @@
 use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
+use actix::dev::MessageResponse;
 use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
 use tokio::sync::RwLock;
 use crate::{protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient}, session::session_actor_map_storage::SessionActorMapEntry};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion, SessionClock}};
-
+use crate::topic::topic_storage::TopicStorage;
 
 #[derive(Debug, Clone)]
 pub enum ActorState {
@@ -417,6 +418,39 @@ impl Handler<RenewSession> for SessionActorMapRaftActor {
                         .into_actor(self),
                 )
             }            
+        }
+    }
+}
+
+pub struct GetSessionActorMapStorageResponse {
+    pub session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>
+}
+impl<A, M> MessageResponse<A, M> for GetSessionActorMapStorageResponse
+where
+    A: Actor,
+    M: Message<Result =GetSessionActorMapStorageResponse>,
+{
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
+        if let Some(tx) = tx {
+            let _ = tx.send(self);
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result="GetSessionActorMapStorageResponse")]
+pub struct GetSessionActorMapStorage;
+
+impl Handler<GetSessionActorMapStorage> for SessionActorMapRaftActor {
+    type Result = GetSessionActorMapStorageResponse;
+
+    fn handle(&mut self, msg: GetSessionActorMapStorage, ctx: &mut Self::Context) -> Self::Result {
+        GetSessionActorMapStorageResponse {
+            session_actor_map_storage: self.session_actor_map_storage.get().unwrap().clone()
         }
     }
 }

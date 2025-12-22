@@ -68,10 +68,13 @@ impl ServiceRegistry {
 
         let get_topic_storage_res = topic_raft.send(crate::raft::topic::topic_raft_actor::GetTopicStorage{}).await.expect("get topic storage error");
 
+        let get_session_actor_map_storage_res = session_map_raft.send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMapStorage{}).await.expect("get session actor map storage error");
+
         let topic_raft_clone = topic_raft.clone();
         let topic_storage =  get_topic_storage_res.topic_storage.clone();
+        let session_actor_map_storage = get_session_actor_map_storage_res.session_actor_map_storage.clone();
         let router = pools.start_actor(|| {
-            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage)
+            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage, session_actor_map_storage)
         });
 
         let router_clone = router.clone();
