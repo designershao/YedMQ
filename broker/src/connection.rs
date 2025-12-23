@@ -11,6 +11,7 @@ use governor::{Quota, RateLimiter};
 use governor::clock::{Clock, DefaultClock};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::RwLock;
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
@@ -73,8 +74,8 @@ pub struct NotifyUpdateDisconnectedNormally {
 
 pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     peer_addr: SocketAddr,
-    pub reader: Rc<RefCell<tokio::io::ReadHalf<T>>>,
-    pub writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
+    pub reader: Arc<RwLock<tokio::io::ReadHalf<T>>>,
+    pub writer: Arc<RwLock<tokio::io::WriteHalf<T>>>,
     pub plugin_service: Arc<PluginManager>,
     pub max_message_size: u32,
     pub disconnected_normally: bool,
@@ -98,8 +99,8 @@ where
     ) -> ConnectionActor<T> {
         let (reader, writer) = tokio::io::split(stream);
         ConnectionActor {
-            reader: Rc::new(RefCell::new(reader)),
-            writer: Rc::new(RefCell::new(writer)),
+            reader: Arc::new(RwLock::new(reader)),
+            writer: Arc::new(RwLock::new(writer)),
             client_certificate,
             max_message_size,
             disconnected_normally: false,
@@ -113,16 +114,16 @@ where
 }
 
 pub async fn write_packet<T: AsyncWrite>(
-    writer: Rc<RefCell<tokio::io::WriteHalf<T>>>,
+    writer: Arc<RwLock<tokio::io::WriteHalf<T>>>,
     packet: &MqttPacketV3,
 ) -> tokio::io::Result<()> {
-    writer.borrow_mut().write_all(&packet.to_bytes()).await?;
-    writer.borrow_mut().flush().await?;
+    writer.write().await.write_all(&packet.to_bytes()).await?;
+    writer.write().await.flush().await?;
     Ok(())
 }
 
 pub async fn read_packet<T: AsyncRead + Unpin>(
-    reader: &Rc<RefCell<tokio::io::ReadHalf<T>>>,
+    reader: Arc<RwLock<tokio::io::ReadHalf<T>>>,
     buffer: &mut BytesMut,
     max_message_size: u32,
 ) -> Result<MqttPacketV3, ConnectionError> {
@@ -139,7 +140,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
             let err = packet_result.err().unwrap();
             match err {
                 nom::Err::Incomplete(_) => {
-                    let n = reader.borrow_mut().read_buf(buffer).await?;
+                    let n = reader.write().await.read_buf(buffer).await?;
 
                     if 0 == n {
                         if buffer.is_empty() {
@@ -296,7 +297,7 @@ where
         let client_cert = self.client_certificate.clone();
         let handle = ctx.spawn(
             async move {
-                let first_packet = read_packet(&reader, &mut buffer, max_message_size).await;
+                let first_packet = read_packet(reader.clone(), &mut buffer, max_message_size).await;
                 if let Ok(packet) = first_packet {
                     match packet {
                         MqttPacketV3::Connect(packet) => {
@@ -333,7 +334,7 @@ where
                                     let rate_limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(1000).unwrap()).allow_burst(NonZeroU32::new(100).unwrap()));
                                     loop {
                                         let packet =
-                                            read_packet(&reader, &mut buffer, max_message_size).await;
+                                            read_packet(reader.clone(), &mut buffer, max_message_size).await;
                                         if let Ok(packet) = packet {
                                             if matches!(packet, MqttPacketV3::Disconnect(_)) && self_addr
                                                 .send(NotifyUpdateDisconnectedNormally {
@@ -497,7 +498,7 @@ where
 
                 let writer = self.writer.clone();
                 Box::pin(async move {
-                    writer.borrow_mut().shutdown().await?;
+                    writer.write().await.shutdown().await?;
                     Ok(())
                 })
             }
