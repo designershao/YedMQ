@@ -31,7 +31,7 @@ use crate::{
     inflight::{InflightError, InflightState},
     raft::{
         session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor
-    }, router_actor::RouterActor,
+    }, router_actor::RouterActor
 };
 
 use super::{
@@ -222,7 +222,8 @@ pub struct SessionActor {
 
     topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
 
-    router_actor: Addr<RouterActor>,
+    router_actor: Addr<RouterActor>
+
 }
 
 impl Actor for SessionActor {
@@ -665,7 +666,7 @@ impl SessionActor {
             session_lifecycle_tx,
             session_state_raft_actor,
             topic_raft_actor,
-            router_actor
+            router_actor,
         }
     }
 
@@ -767,7 +768,7 @@ impl SessionActor {
                 clean_session,
                 router_actor,
                 session_state_raft_actor,
-                topic_raft_actor
+                topic_raft_actor,
             )
             .await
             }

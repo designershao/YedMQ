@@ -1,4 +1,5 @@
 pub mod session_actor;
+pub mod session_registry;
 pub mod session_manager_actor;
 pub mod session_actor_map_storage;
 pub mod session_state_storage;

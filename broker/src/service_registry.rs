@@ -10,10 +10,12 @@ use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::router_actor::RouterActor;
 use crate::rpc::rpc_actor::RpcActor;
 use crate::session::session_manager_actor::{
-    Initialize as InitializeSessionManager, SessionManagerActor, SetArbiterPool, SetRouterActor,
+    Initialize as InitializeSessionManager, SessionManagerActor, SetArbiterPool, SetRouterActor
 };
 use crate::settings::Settings;
 use crate::session::session_actor_map_storage::SessionClock;
+
+use crate::session::session_registry::SessionRegistry;
 
 #[derive(Clone)]
 pub struct ServiceRegistry {
@@ -37,11 +39,14 @@ impl ServiceRegistry {
         let session_map_raft = SessionActorMapRaftActor::from_registry();
         let session_state_raft = SessionStateRaftActor::from_registry();
         let session_manager = SessionManagerActor::from_registry();
+        
+        let session_registry = SessionRegistry::new();
 
         session_manager.do_send(InitializeSessionManager {
             settings: settings.clone(),
             plugin_manager,
             session_clock: session_clock.clone(),
+            session_registry: session_registry.clone(),
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
@@ -73,8 +78,9 @@ impl ServiceRegistry {
         let topic_raft_clone = topic_raft.clone();
         let topic_storage =  get_topic_storage_res.topic_storage.clone();
         let session_actor_map_storage = get_session_actor_map_storage_res.session_actor_map_storage.clone();
-        let router = pools.start_actor(|| {
-            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage, session_actor_map_storage)
+        let session_registry_clone = session_registry.clone();
+        let router = pools.start_actor(move || {
+            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage, session_actor_map_storage, session_registry_clone)
         });
 
         let router_clone = router.clone();

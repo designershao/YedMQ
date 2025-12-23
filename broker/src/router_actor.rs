@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::session_manager_actor::{self, SendMessageToSession}, settings::Node};
+use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::{NodeId, session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor}, session::{session_registry::SessionRegistry, session_manager_actor::{self, SendMessageToSession}}, settings::Node};
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
@@ -74,13 +74,15 @@ pub struct RouterActor {
     pub session_manager_actor: Addr<SessionManagerActor>,
     pub topic_raft_actor: Option<Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>>,
     pub local_topic_storage: Arc<RwLock<TopicStorage>>,
-    pub local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>
+    pub local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+    pub session_registry: SessionRegistry,
 }
 
 impl Actor for RouterActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.set_mailbox_capacity(10000);
         log::info!("RouterActor started with node id: {}", self.current_node_id);
         
         // Start dead letter queue retry timer
@@ -112,7 +114,8 @@ impl RouterActor {
         session_manager_actor: Addr<SessionManagerActor>,
         topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         topic_storage: Arc<RwLock<TopicStorage>>,
-        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>
+        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+        session_registry: SessionRegistry,
     ) -> Self {
         RouterActor {
             current_node_id: settings.cluster.node_id,
@@ -122,7 +125,8 @@ impl RouterActor {
             session_manager_actor,
             topic_raft_actor: Some(topic_raft_actor),
             local_topic_storage: topic_storage,
-            local_session_actor_map_storage: session_actor_map_storage
+            local_session_actor_map_storage: session_actor_map_storage,
+            session_registry,
         }
     }
 
@@ -134,11 +138,11 @@ impl RouterActor {
         tenant_id: &String,
         packet: &MqttPacketV3,
         local_topic_storage: Arc<RwLock<TopicStorage>>,
-        local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>
+        local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+        session_registry: SessionRegistry
     ) -> Result<(), RouterActorError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
-            let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
 
             let local_topic_storage = local_topic_storage.read().await;
 
@@ -160,20 +164,26 @@ impl RouterActor {
                             continue;
                         }
                         let dest_addr = nodes[0].rpc_address.clone();
-                        if let Err(e) = Self::route_to_other_nodes(&dest_addr, tenant_id, packet).await {
-                            warn!("Failed to route packet to {}: {}", dest_addr, e);
+                        
+                        let tenant_id_clone = tenant_id.clone();
+                        let packet_clone = packet.clone();
+                        let router_actor_clone = router_actor.clone();
 
-                            // Check if the packet should be added to the dead letter queue
-                            if Self::should_add_to_dead_letter_queue(packet) {
-                                if let Err(dlq_err) = router_actor.send(AddToDeadLetterQueue {
-                                    tenant_id: tenant_id.clone(),
-                                    packet: packet.clone(),
-                                    dest_addr,
-                                }).await {
-                                    warn!("Failed to add message to dead letter queue: {}", dlq_err);
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::route_to_other_nodes(&dest_addr, &tenant_id_clone, &packet_clone).await {
+                                warn!("Failed to route packet to {}: {}", dest_addr, e);
+
+                                // Check if the packet should be added to the dead letter queue
+                                if Self::should_add_to_dead_letter_queue(&packet_clone) {
+                                    router_actor_clone.do_send(AddToDeadLetterQueue {
+                                        tenant_id: tenant_id_clone,
+                                        packet: packet_clone,
+                                        dest_addr,
+                                    });
                                 }
                             }
-                        }
+                        });
+                        
                         continue;
                     } else {
                         let mut publish_packet = publish_packet.clone();
@@ -190,8 +200,9 @@ impl RouterActor {
                             tenant_id,
                             &item.client_identifier,
                             MqttPacketV3::Publish(publish_packet),
-                            session_manager_actor.clone()
-                        ).await
+                            session_manager_actor.clone(),
+                            session_registry.clone()
+                        )
                         {
                             warn!("Failed to route packet in local node for tenant {}: {}", tenant_id, e);
                         }
@@ -223,23 +234,11 @@ impl RouterActor {
         Ok(())
     }
 
-    async fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3, session_manager_actor_addr: Addr<SessionManagerActor>) -> Result<(), RouterActorError> {
+    fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3, _session_manager_actor_addr: Addr<SessionManagerActor>, session_registry: SessionRegistry) -> Result<(), RouterActorError> {
         log::debug!("Route to  local node session {} {} : {:?}",tenant_id, client_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
-            if let Err(err) = session_manager_actor_addr
-                .send(SendMessageToSession {
-                    tenant_id: tenant_id.clone(),
-                    client_id: client_id.clone(),
-                    packet: MqttPacketV3::Publish(publish_packet),
-                })
-                .await
-            {
-                warn!(
-                    "tenant {} session {} send packet error, details: {}",
-                    tenant_id,
-                    client_id,
-                    err
-                );
+            if let Some(recipient) = session_registry.get_session(&tenant_id, &client_id) {
+                recipient.do_send(crate::session::session_actor::SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(publish_packet)));
             }
         }
         Ok(())
@@ -250,7 +249,8 @@ impl RouterActor {
         tenant_id: &String,
         packet: &MqttPacketV3,
         session_manager_actor_addr: Addr<SessionManagerActor>,
-        topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>
+        topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
+        session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
         log::debug!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
         if let MqttPacketV3::Publish(publish_packet) = packet {
@@ -275,13 +275,13 @@ impl RouterActor {
                             }
                         }
 
-                        session_manager_actor_addr
-                            .send(SendMessageToSession {
-                                tenant_id: tenant_id.clone(),
-                                client_id: item.client_identifier.clone(),
-                                packet: MqttPacketV3::Publish(publish_packet),
-                            })
-                            .await?;
+                        Self::route_to_local_session(
+                            tenant_id,
+                            &item.client_identifier,
+                            MqttPacketV3::Publish(publish_packet),
+                            session_manager_actor_addr.clone(),
+                            session_registry.clone()
+                        )?;
                     }
                     Ok(())
                 },
@@ -438,8 +438,9 @@ impl Handler<RoutePacket> for RouterActor {
         let session_manager_actor = self.session_manager_actor.clone();
         let topic_storage = self.local_topic_storage.clone();
         let session_actor_map_storage = self.local_session_actor_map_storage.clone();
+        let session_registry = self.session_registry.clone();
         Box::pin(async move {
-            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet, topic_storage, session_actor_map_storage).await?;
+            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet, topic_storage, session_actor_map_storage, session_registry).await?;
             Ok(())
         }.into_actor(self))
     }
@@ -459,12 +460,14 @@ impl Handler<RouteFromOtherNode> for RouterActor {
         log::debug!("In handler from other nodeRouting packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
         let session_manager_actor = self.session_manager_actor.clone();
         let topic_raft_actor = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
+        let session_registry = self.session_registry.clone();
         Box::pin(async move {
             Self::publish_to_local_subscribers(
                 &msg.tenant_id,
                 &msg.packet,
                 session_manager_actor,
-                topic_raft_actor
+                topic_raft_actor,
+                session_registry
             ).await?;
             Ok(())
         }.into_actor(self))
@@ -483,11 +486,12 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
     fn handle(&mut self, msg: RoutePacketToAllTenants, _ctx: &mut Self::Context) -> Self::Result {
         let session_manager_actor_addr = self.session_manager_actor.clone();
         let topic_raft_actor_addr = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
+        let session_registry = self.session_registry.clone();
 
         Box::pin(async move {
             let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
             for tenant_id in tenant_ids {
-                Self::publish_to_local_subscribers(&tenant_id, &msg.packet, session_manager_actor_addr.clone(), topic_raft_actor_addr.clone()).await?;
+                Self::publish_to_local_subscribers(&tenant_id, &msg.packet, session_manager_actor_addr.clone(), topic_raft_actor_addr.clone(), session_registry.clone()).await?;
             }
             Ok(())
         }.into_actor(self))
