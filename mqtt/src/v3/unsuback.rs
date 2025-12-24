@@ -34,6 +34,11 @@ pub struct VariableHeader {
 }
 
 impl VariableHeader {
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u16(self.packet_identifier);
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
         buf.put_u16(self.packet_identifier);
@@ -51,6 +56,11 @@ impl MqttPacket for UnSubackPacket {
         buf.put(variable_header_bytes);
 
         buf
+    }
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+        self.variable_header.encode(buf);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {

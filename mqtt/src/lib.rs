@@ -30,6 +30,8 @@ trait MqttPacket {
 
     fn to_bytes(&self) -> BytesMut;
 
+    fn encode(&self, buffer: &mut BytesMut);
+
     /*
      * Returns the packet type
      */
@@ -70,9 +72,57 @@ impl MqttPacketV3 {
             MqttPacketV3::Suback(p) => p.fix_header.dup = None,
             MqttPacketV3::Unsubscribe(p) => p.fix_header.dup = None,
             MqttPacketV3::Unsuback(p) => p.fix_header.dup = None,
+
             MqttPacketV3::Pingreq(p) => p.fix_header.dup = None,
             MqttPacketV3::Pingresp(p) => p.fix_header.dup = None,
             MqttPacketV3::Disconnect(p) => p.fix_header.dup = None,
+        }
+    }
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        match self {
+            MqttPacketV3::Publish(p) => {
+                p.encode(buf);
+            },
+            MqttPacketV3::Connect(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Connack(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Puback(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Pubrec(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Pubrel(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Pubcomp(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Subscribe(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Suback(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Unsubscribe(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Unsuback(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Pingreq(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Pingresp(p) => {
+                p.encode(buf);
+            }
+            MqttPacketV3::Disconnect(p) => {
+                p.encode(buf);
+            }
         }
     }
 

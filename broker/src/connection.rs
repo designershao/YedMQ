@@ -755,10 +755,11 @@ where
                 if self.network_sender.is_none() {
                     return Err(ConnectionError::ConnectionClosed);
                 }
-                
+
                 // write to buffer
-                let bytes = packet.to_bytes();
-                self.encode_buffer.extend_from_slice(&bytes);
+                packet.encode(&mut self.encode_buffer);
+                //let bytes = packet.to_bytes();
+                //self.encode_buffer.extend_from_slice(&bytes);
                 self.pending_count += 1;
 
                 // reach the limit, flush now

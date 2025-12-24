@@ -83,6 +83,7 @@ pub struct VariableHeader {
     pub connect_return_code: u8,
 }
 
+
 // MQTT Connect ACK Variable Header
 // +---------------------+----------+---+---+---+---+---+---+---+----+
 // |                     | Desc     | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0  |
@@ -123,6 +124,14 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnAckPacket> {
 }
 
 impl VariableHeader {
+    pub fn encode(&self, buf: &mut BytesMut) {
+        if self.session_present {
+            buf.put_u8(1);
+        } else {
+            buf.put_u8(0)
+        }
+        buf.put_u8(self.connect_return_code);
+    }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
@@ -145,6 +154,11 @@ impl MqttPacket for ConnAckPacket {
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf
+    }
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+        self.variable_header.encode(buf);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {

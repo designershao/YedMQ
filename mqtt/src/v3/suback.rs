@@ -38,6 +38,10 @@ pub struct VariableHeader {
 }
 
 impl VariableHeader {
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u16(self.packet_identifier);
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
         buf.put_u16(self.packet_identifier);
@@ -52,6 +56,17 @@ pub struct Payload {
 }
 
 impl Payload {
+    pub fn encode(&self, buf: &mut BytesMut) {
+        for code in self.return_code.iter() {
+            match code {
+                ReturnCode::MaxQos0 => buf.put_u8(0x00),
+                ReturnCode::MaxQos1 => buf.put_u8(0x01),
+                ReturnCode::MaxQos2 => buf.put_u8(0x02),
+                ReturnCode::Failure => buf.put_u8(0x80),
+                ReturnCode::Invalid => (),
+            }
+        }
+    }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(1);
@@ -81,6 +96,12 @@ impl MqttPacket for SubackPacket {
         buf.put(payload_bytes);
 
         buf
+    }
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+        self.variable_header.encode(buf);
+        self.payload.encode(buf);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {

@@ -383,6 +383,43 @@ impl VariableHeader {
         2 + self.protocol_name.len() + 2 + 2
     }
 
+    pub(crate) fn encode(&self, buf: &mut BytesMut) {
+
+        buf.put_u16(self.protocol_name.len() as u16);
+
+        for byte in self.protocol_name.as_bytes() {
+            buf.put_u8(*byte);
+        }
+        buf.put_u8(0x04);
+
+        let mut connect_flags:u8 = 0;
+
+        if self.username_flag {
+            connect_flags += 1 << 7;
+        }
+        if self.password_flag {
+            connect_flags += 1 << 6;
+        }
+
+        if self.will_retain {
+            connect_flags += 1 << 5;
+        }
+
+        connect_flags += self.will_qos << 3;
+
+        if self.will_flag {
+            connect_flags += 1 << 2;
+        }
+
+        if self.clean_session {
+            connect_flags += 1 << 1;
+        }
+
+        buf.put_u8(connect_flags);
+
+        buf.put_u16(self.keep_alive);
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(10);
 
@@ -426,6 +463,31 @@ impl VariableHeader {
 }
 
 impl Payload {
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u16(self.client_identifier.len() as u16);
+        buf.put(self.client_identifier.as_bytes());
+
+        if self.will_topic.is_some() {
+            buf.put_u16(self.will_topic.as_ref().unwrap().len() as u16);
+            buf.put(self.will_topic.as_ref().unwrap().as_bytes());
+        }
+
+        if self.will_message.is_some() {
+            buf.put_u16(self.will_message.as_ref().unwrap().len() as u16);
+            buf.put(self.will_message.as_ref().unwrap().as_bytes());
+        }
+
+        if self.username.is_some() {
+            buf.put_u16(self.username.as_ref().unwrap().len() as u16);
+            buf.put(self.username.as_ref().unwrap().as_bytes());
+        }
+
+        if self.password.is_some() {
+            buf.put_u16(self.password.as_ref().unwrap().len() as u16);
+            buf.put(self.password.as_ref().unwrap().as_bytes());
+        }
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length());
         buf.put_u16(self.client_identifier.len() as u16);
@@ -495,7 +557,13 @@ impl MqttPacket for ConnectPacket {
         buf.put(payload_bytes);
         buf
     }
-    
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+        self.variable_header.encode(buf);
+        self.payload.encode(buf);
+    }
+
     fn get_packet_type(&self) -> crate::PacketType {
         crate::PacketType::CONNECT
     }

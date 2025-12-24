@@ -43,6 +43,10 @@ impl VariableHeader {
         buf.put_u16(self.packet_identifier);
         buf
     }
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u16(self.packet_identifier);
+    }
 }
 
 
@@ -73,6 +77,11 @@ impl MqttPacket for PubCompPacket {
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf
+    }
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+        self.variable_header.encode(buf);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {

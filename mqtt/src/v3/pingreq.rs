@@ -49,6 +49,10 @@ impl MqttPacket for PingreqPacket {
         self.fix_header.to_bytes()
     }
 
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
+    }
+
     fn get_packet_type(&self) -> crate::PacketType {
         crate::PacketType::PINGREQ
     }

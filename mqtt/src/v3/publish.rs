@@ -121,6 +121,15 @@ pub struct VariableHeader {
 
 impl VariableHeader {
 
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u16(self.topic_name.len().try_into().unwrap());
+        buf.put(self.topic_name.as_bytes());
+
+        if self.packet_identifier.is_some() {
+            buf.put_u16(self.packet_identifier.unwrap());
+        }
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length());
         buf.put_u16(self.topic_name.len().try_into().unwrap());
@@ -147,6 +156,10 @@ pub struct Payload {
 }
 
 impl Payload {
+
+    pub fn encode(&self, buf: &mut BytesMut) {
+        buf.put_slice(&self.payload);
+    }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.payload.len());
@@ -259,6 +272,12 @@ impl MqttPacket for PublishPacket {
         buf.put(variable_header_bytes);
         buf.put(payload_bytes);
         buf
+    }
+
+    fn encode(&self, buffer: &mut BytesMut) {
+        self.fix_header.ecnode(buffer);
+        self.variable_header.encode(buffer);
+        self.payload.encode(buffer);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {

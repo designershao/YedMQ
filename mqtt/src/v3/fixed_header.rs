@@ -101,6 +101,50 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
 }
 
 impl FixHeader {
+    pub fn ecnode(&self, buf: &mut BytesMut) {
+        let packet_type_u8:u8 = match self.packet_type {
+            PacketType::CONNECT => 1,
+            PacketType::CONNACK => 2,
+            PacketType::PUBLISH => 3,
+            PacketType::PUBACK => 4,
+            PacketType::PUBREC => 5,
+            PacketType::PUBREL => 6,
+            PacketType::PUBCOMP => 7,
+            PacketType::SUBSCRIBE => 8,
+            PacketType::SUBACK => 9,
+            PacketType::UNSUBSCRIBE => 10,
+            PacketType::UNSUBACK => 11,
+            PacketType::PINGREQ => 12,
+            PacketType::PINGRESP => 13,
+            PacketType::DISCONNECT => 14,
+        };
+
+        if self.packet_type == PacketType::PUBLISH ||
+            self.packet_type == PacketType::PUBREL ||
+            self.packet_type == PacketType::PUBACK ||
+            self.packet_type == PacketType::PUBCOMP ||
+            self.packet_type == PacketType::PUBREC {
+            let mut r:u8 = packet_type_u8 << 4;
+            if self.dup.is_some() {
+                r += (self.dup.unwrap_or_default() as u8) << 3;
+            }
+
+            if self.qos.is_some() {
+                r += (self.qos.unwrap_or_default() as u8) << 1
+            }
+
+            if self.retain.is_some()
+                && self.retain.unwrap() {
+                r += 1;
+            }
+            buf.put_u8(r);
+        } else {
+            buf.put_u8(packet_type_u8 << 4);
+        }
+
+        Self::encode_remaining_length(self.remaining_length, buf);
+    }
+
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2 + FixHeader::get_variable_length_encoding_bytes_size(self.remaining_length));
         let packet_type_u8:u8 = match self.packet_type {
@@ -158,6 +202,20 @@ impl FixHeader {
             if size == 0 {
                 return length;
             }        
+        }
+    }
+
+    fn encode_remaining_length(size: usize, buf: &mut BytesMut) {
+        let mut size = size;
+        loop {
+            let byte = size % 128;
+            size /= 128;
+            if size > 0 {
+                buf.put_u8((byte | 128).try_into().unwrap());
+            } else {
+                buf.put_u8(byte.try_into().unwrap());
+                break;
+            }
         }
     }
     

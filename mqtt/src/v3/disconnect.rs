@@ -24,8 +24,14 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], DisconnectPacket> {
 }
 
 impl MqttPacket for DisconnectPacket {
+
+
     fn to_bytes(&self) -> BytesMut {
         self.fix_header.to_bytes()
+    }
+
+    fn encode(&self, buf: &mut BytesMut) {
+        self.fix_header.ecnode(buf);
     }
 
     fn get_packet_type(&self) -> crate::PacketType {
