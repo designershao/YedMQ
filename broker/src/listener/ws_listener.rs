@@ -34,16 +34,14 @@ impl MqttWsListener {
 
                         let settings = self.app.settings.clone();
                         let plugin_manager_clone = self.app.plugin_manager.clone();
-                        self.arbiter_pool.start_actor(move || {
-                            ConnectionActor::new(
-                                websocket_tunnel,
-                                settings.mqtt.max_message_size,
-                                4096,
-                                remote_addr,
-                                plugin_manager_clone,
-                                None
-                            )
-                        });
+                        ConnectionActor::create_and_start(
+                            websocket_tunnel,
+                            settings.mqtt.max_message_size,
+                            4096,
+                            remote_addr,
+                            plugin_manager_clone,
+                            None
+                        );
                     } else {
                         warn!(
                             "Failed to accept WebSocket connection from {}, err {}",

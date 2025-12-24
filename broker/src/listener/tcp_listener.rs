@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use actix::Actor;
 use anyhow::Result;
 use log::warn;
 use tokio::net::TcpListener;
@@ -20,16 +21,14 @@ impl MqttTcpListener {
                 Ok(peer_addr) => {
                     let settings = self.app.settings.clone();
                     let plugin_manager = self.app.plugin_manager.clone();
-                    self.arbiter_pool.start_actor(move || {
-                        ConnectionActor::new(
-                            stream,
-                            settings.mqtt.max_message_size,
-                            4096,
-                            peer_addr,
-                            plugin_manager,
-                            None
-                        )
-                    });
+                    ConnectionActor::create_and_start(
+                        stream,
+                        settings.mqtt.max_message_size,
+                        4096,
+                        peer_addr,
+                        plugin_manager,
+                        None
+                    );
                 }
                 Err(_) => {
                     warn!("failed to get peer address, close the connection");

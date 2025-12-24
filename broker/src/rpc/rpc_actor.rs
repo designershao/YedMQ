@@ -12,13 +12,13 @@ use crate::router_actor::RouterActor;
 use crate::settings::Settings;
 
 pub struct RpcActor {
-    router_actor: Addr<RouterActor>,
+    router_actors: Vec<Addr<RouterActor>>,
     settings: Arc<Settings>,
 }
 
 impl RpcActor {
-    pub fn new(router_actor: Addr<RouterActor>, settings: Arc<Settings>) -> Self {
-        RpcActor { router_actor, settings }
+    pub fn new(router_actors: Vec<Addr<RouterActor>>, settings: Arc<Settings>) -> Self {
+        RpcActor { router_actors, settings }
     }
 }
 
@@ -36,11 +36,11 @@ impl Actor for RpcActor {
                 std::process::exit(1);
             }
         };
-        let router_actor = self.router_actor.clone();
+        let router_actors = self.router_actors.clone();
         ctx.spawn(
             async move {
                 let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl {
-                    router_actor
+                    router_actors
                 };
                 let rpc_service = crate::rpc::raft_service::RustServiceImpl {};
                 match Server::builder()

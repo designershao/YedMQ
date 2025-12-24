@@ -10,7 +10,7 @@ use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::router_actor::RouterActor;
 use crate::rpc::rpc_actor::RpcActor;
 use crate::session::session_manager_actor::{
-    Initialize as InitializeSessionManager, SessionManagerActor, SetArbiterPool, SetRouterActor
+    Initialize as InitializeSessionManager, SessionManagerActor, SetArbiterPool, SetRouterActors
 };
 use crate::settings::Settings;
 use crate::session::session_actor_map_storage::SessionClock;
@@ -19,7 +19,7 @@ use crate::session::session_registry::SessionRegistry;
 
 #[derive(Clone)]
 pub struct ServiceRegistry {
-    pub router: Addr<RouterActor>,
+    pub routers: Vec<Addr<RouterActor>>,
     pub session_manager: Addr<SessionManagerActor>,
     pub rpc: Addr<RpcActor>,
     pub topic_raft: Addr<TopicRaftActor>,
@@ -66,37 +66,48 @@ impl ServiceRegistry {
             settings: settings.clone(),
         });
 
-        let settings_clone = settings.clone();
-        let session_manager_clone = session_manager.clone();
-
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         let get_topic_storage_res = topic_raft.send(crate::raft::topic::topic_raft_actor::GetTopicStorage{}).await.expect("get topic storage error");
 
         let get_session_actor_map_storage_res = session_map_raft.send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMapStorage{}).await.expect("get session actor map storage error");
 
-        let topic_raft_clone = topic_raft.clone();
         let topic_storage =  get_topic_storage_res.topic_storage.clone();
         let session_actor_map_storage = get_session_actor_map_storage_res.session_actor_map_storage.clone();
-        let session_registry_clone = session_registry.clone();
-        let router = pools.start_actor(move || {
-            RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage, session_actor_map_storage, session_registry_clone)
-        });
+        
+        let num_cpus = num_cpus::get();
+        let num_routers = std::cmp::max(1, num_cpus.saturating_sub(2));
+        info!("Starting {} router actors", num_routers);
 
-        let router_clone = router.clone();
+        let mut router_actors = Vec::new();
+        for _ in 0..num_routers {
+             let settings_clone = settings.clone();
+             let session_manager_clone = session_manager.clone();
+             let topic_raft_clone = topic_raft.clone();
+             let topic_storage = topic_storage.clone();
+             let session_actor_map_storage = session_actor_map_storage.clone();
+             let session_registry_clone = session_registry.clone();
+             
+             let router = pools.start_actor(move || {
+                RouterActor::new(settings_clone, session_manager_clone, topic_raft_clone, topic_storage, session_actor_map_storage, session_registry_clone)
+             });
+             router_actors.push(router);
+        }
+
+        let router_actors_clone = router_actors.clone();
 
         let settings_clone = settings.clone();
-        let rpc = pools.start_actor(|| {
-            RpcActor::new(router_clone, settings_clone)
+        let rpc = pools.start_actor(move || {
+            RpcActor::new(router_actors_clone, settings_clone)
         });
 
-        let router_clone = router.clone();
-        session_manager.do_send(SetRouterActor{
-            router_actor: router_clone
+        let router_actors_clone = router_actors.clone();
+        session_manager.do_send(SetRouterActors{
+            router_actors: router_actors_clone
         });
 
         Arc::new(ServiceRegistry {
-            router,
+            routers: router_actors,
             session_manager,
             rpc,
             topic_raft,

@@ -12,7 +12,7 @@ use tonic::{Request, Response, Status};
 use yedmq_mqtt::MqttPacketV3;
 
 pub struct ClusterServiceImpl {
-    pub router_actor: Addr<RouterActor>
+    pub router_actors: Vec<Addr<RouterActor>>
 }
 
 #[tonic::async_trait]
@@ -574,7 +574,16 @@ impl ClusterService for ClusterServiceImpl {
         let packet: MqttPacketV3 = serde_json::from_str(&inner.payload)
             .map_err(|e| Status::invalid_argument(format!("Invalid packet format: {}", e)))?;
 
-        self.router_actor
+        let router_actor = if let MqttPacketV3::Publish(ref publish) = packet {
+             let mut hasher = std::collections::hash_map::DefaultHasher::new();
+             std::hash::Hash::hash(&publish.variable_header.topic_name, &mut hasher);
+             let hash = std::hash::Hasher::finish(&hasher);
+             &self.router_actors[hash as usize % self.router_actors.len()]
+        } else {
+             &self.router_actors[0]
+        };
+
+        router_actor
             .send(RouteFromOtherNode {
                 tenant_id: inner.tenant_id.clone(),
                 packet

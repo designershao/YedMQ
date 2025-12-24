@@ -222,7 +222,7 @@ pub struct SessionActor {
 
     topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
 
-    router_actor: Addr<RouterActor>
+    router_actors: Vec<Addr<RouterActor>>
 
 }
 
@@ -403,7 +403,7 @@ async fn do_handle_publish(
     plugin_manager: Arc<PluginManager>,
     session_state: Arc<RwLock<SessionState>>,
     clean_session: bool,
-    router_actor: Addr<RouterActor>,
+    router_actors: Vec<Addr<RouterActor>>,
     session_state_raft_actor: Addr<SessionStateRaftActor>,
     topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
 ) -> HandlePublishResult {
@@ -526,6 +526,12 @@ async fn do_handle_publish(
             //
         }
         //
+        // select router actor based on topic
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&publish_packet.variable_header.topic_name, &mut hasher);
+        let hash = std::hash::Hasher::finish(&hasher);
+        let router_actor = &router_actors[hash as usize % router_actors.len()];
+
         router_actor.do_send(crate::router_actor::RoutePacket{
             tenant_id: client_info.tenant_id.clone(),
             packet: MqttPacketV3::Publish(publish_packet.clone()),
@@ -645,7 +651,7 @@ impl SessionActor {
         session_lifecycle_tx: Sender<SessionLifecycleMessage>,
         session_state_raft_actor: Addr<SessionStateRaftActor>,
         topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
-        router_actor: Addr<RouterActor>,
+        router_actors: Vec<Addr<RouterActor>>,
     ) -> Self {
         SessionActor {
             plugin_manager,
@@ -666,7 +672,7 @@ impl SessionActor {
             session_lifecycle_tx,
             session_state_raft_actor,
             topic_raft_actor,
-            router_actor,
+            router_actors,
         }
     }
 
@@ -754,7 +760,7 @@ impl SessionActor {
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
         let clean_session = self.clean_session;
-        let router_actor = self.router_actor.clone();
+        let router_actors = self.router_actors.clone();
         let session_state_raft_actor = self.session_state_raft_actor.clone();
         let topic_raft_actor = self.topic_raft_actor.clone();
 
@@ -766,7 +772,7 @@ impl SessionActor {
                 plugin_manager,
                 session_state,
                 clean_session,
-                router_actor,
+                router_actors,
                 session_state_raft_actor,
                 topic_raft_actor,
             )
@@ -1409,7 +1415,7 @@ impl SessionActor {
     fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context, callback_fn: ThenCallback<SessionActor, ()>) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
-        let router_actor = self.router_actor.clone();
+        let router_actors = self.router_actors.clone();
         async move {
             if will_message.is_some() {
                 let will_message = will_message.as_ref().unwrap();
@@ -1420,6 +1426,12 @@ impl SessionActor {
                 .retain(will_message.will_retain)
                 .qos(will_message.will_qos)
                 .build();
+                
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                std::hash::Hash::hash(&will_message.will_topic, &mut hasher);
+                let hash = std::hash::Hasher::finish(&hasher);
+                let router_actor = &router_actors[hash as usize % router_actors.len()];
+                
                 router_actor
                     .do_send(crate::router_actor::RoutePacket {
                         tenant_id,

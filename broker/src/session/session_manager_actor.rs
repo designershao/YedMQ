@@ -96,7 +96,7 @@ pub struct SessionManagerActor {
 
     current_node_id: NodeId,
 
-    router_actor: Option<Addr<RouterActor>>,
+    router_actors: Option<Vec<Addr<RouterActor>>>,
 
     arbiter_pool: Option<Arc<crate::arbiter_pool::ArbiterPool>>,
 }
@@ -131,7 +131,7 @@ impl Default for SessionManagerActor {
             settings: None,
             session_clock: None,
             current_node_id: 0,
-            router_actor: None,
+            router_actors: None,
             arbiter_pool: None,
         }
     }
@@ -242,15 +242,15 @@ impl Handler<SetArbiterPool> for SessionManagerActor {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct SetRouterActor{
-    pub router_actor: Addr<RouterActor>
+pub struct SetRouterActors {
+    pub router_actors: Vec<Addr<RouterActor>>
 }
 
-impl Handler<SetRouterActor> for SessionManagerActor {
+impl Handler<SetRouterActors> for SessionManagerActor {
     type Result = ();
-    fn handle(&mut self, msg: SetRouterActor, _ctx: &mut Self::Context) -> Self::Result {
-        println!("set router actor in session manager");
-        self.router_actor = Some(msg.router_actor);
+    fn handle(&mut self, msg: SetRouterActors, _ctx: &mut Self::Context) -> Self::Result {
+        println!("set router actors in session manager, count: {}", msg.router_actors.len());
+        self.router_actors = Some(msg.router_actors);
     }
 }
 
@@ -642,7 +642,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             .expect("session lifecycle tx must exist").clone();
         let session_clock = self.session_clock.as_ref().unwrap().clone();
         let current_node_id = self.current_node_id;
-        let router_actor = self.router_actor.as_ref().unwrap().clone();
+        let router_actors = self.router_actors.as_ref().unwrap().clone();
         let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
 
         let future = async move {
@@ -847,7 +847,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     session_lifecycle_tx,
                     SessionStateRaftActor::from_registry(),
                     TopicRaftActor::from_registry(),
-                    router_actor,
+                    router_actors,
                 )
             });
 
