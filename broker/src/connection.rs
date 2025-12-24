@@ -1,7 +1,5 @@
-use std::cell::RefCell;
 use std::net::SocketAddr;
-use std::num::{NonZero, NonZeroU32};
-use std::rc::Rc;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use actix::prelude::*;
@@ -11,7 +9,7 @@ use governor::{Quota, RateLimiter};
 use governor::clock::{Clock, DefaultClock};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex;
 use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
@@ -74,8 +72,8 @@ pub struct NotifyUpdateDisconnectedNormally {
 
 pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     peer_addr: SocketAddr,
-    pub reader: Arc<RwLock<tokio::io::ReadHalf<T>>>,
-    pub writer: Arc<RwLock<tokio::io::WriteHalf<T>>>,
+    pub reader: Arc<Mutex<tokio::io::ReadHalf<T>>>,
+    pub writer: Arc<Mutex<tokio::io::WriteHalf<T>>>,
     pub plugin_service: Arc<PluginManager>,
     pub max_message_size: u32,
     pub disconnected_normally: bool,
@@ -99,8 +97,8 @@ where
     ) -> ConnectionActor<T> {
         let (reader, writer) = tokio::io::split(stream);
         ConnectionActor {
-            reader: Arc::new(RwLock::new(reader)),
-            writer: Arc::new(RwLock::new(writer)),
+            reader: Arc::new(Mutex::new(reader)),
+            writer: Arc::new(Mutex::new(writer)),
             client_certificate,
             max_message_size,
             disconnected_normally: false,
@@ -114,16 +112,16 @@ where
 }
 
 pub async fn write_packet<T: AsyncWrite>(
-    writer: Arc<RwLock<tokio::io::WriteHalf<T>>>,
+    writer: Arc<Mutex<tokio::io::WriteHalf<T>>>,
     packet: &MqttPacketV3,
 ) -> tokio::io::Result<()> {
-    writer.write().await.write_all(&packet.to_bytes()).await?;
-    writer.write().await.flush().await?;
+    writer.lock().await.write_all(&packet.to_bytes()).await?;
+    writer.lock().await.flush().await?;
     Ok(())
 }
 
 pub async fn read_packet<T: AsyncRead + Unpin>(
-    reader: Arc<RwLock<tokio::io::ReadHalf<T>>>,
+    reader: Arc<Mutex<tokio::io::ReadHalf<T>>>,
     buffer: &mut BytesMut,
     max_message_size: u32,
 ) -> Result<MqttPacketV3, ConnectionError> {
@@ -140,7 +138,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
             let err = packet_result.err().unwrap();
             match err {
                 nom::Err::Incomplete(_) => {
-                    let n = reader.write().await.read_buf(buffer).await?;
+                    let n = reader.lock().await.read_buf(buffer).await?;
 
                     if 0 == n {
                         if buffer.is_empty() {
@@ -498,7 +496,7 @@ where
 
                 let writer = self.writer.clone();
                 Box::pin(async move {
-                    writer.write().await.shutdown().await?;
+                    writer.lock().await.shutdown().await?;
                     Ok(())
                 })
             }
