@@ -24,6 +24,13 @@ impl Drop for TestContext {
 
 async fn setup_instance() -> &'static TestContext {
     ASYNC_SETUP.get_or_init(|| async {
+        let _ = env_logger::builder()
+            .filter_level(log::LevelFilter::Info)
+            .format_target(false)
+            .format_timestamp(None)
+            .is_test(true)
+            .try_init();
+
         let original_dir = env::current_dir().unwrap();
 
         let temp_dir = TempDir::new().unwrap();
@@ -387,12 +394,25 @@ async fn test_last_will_message() {
     let (_will_client, mut will_eventloop) = AsyncClient::new(will_client_options, 10);
 
     let will_task = tokio::spawn(async move {
-        // Connect and then just stop polling, simulating a crash/network failure
-        let _ = will_eventloop.poll().await;
+        let mut connected = false;
+        while !connected {
+            match will_eventloop.poll().await {
+                Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
+                    connected = true;
+                }
+                Ok(_) => {}, // 继续处理其他初始化事件（如 SubAck 等）
+                Err(e) => {
+                    return;
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
     });
     
     // Wait for the will client to connect
-    tokio::time::timeout(Duration::from_secs(5), will_task).await.expect("Will client task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(6), will_task).await.expect("Will client task timed out").unwrap();
     
     // Wait for subscriber to receive the will message
     tokio::time::timeout(Duration::from_secs(10), sub_task).await.expect("Subscriber task timed out").unwrap();

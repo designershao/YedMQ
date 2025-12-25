@@ -40,7 +40,7 @@ use super::{
     WillMessage,
 };
 
-use crate::connection::ConnectionActorMessage;
+use crate::connection::{ConnectionActorMessage, DisconnectReason};
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 
@@ -230,7 +230,6 @@ impl Actor for SessionActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        debug!("session {} started", self.client_id);
         let keep_alive_task_handle =
             ctx.run_interval(Duration::from_secs((self.keep_alive as f64 * 1.5) as u64), |act, ctx| {
                 debug!(
@@ -241,6 +240,7 @@ impl Actor for SessionActor {
                     && act.keep_alive_expired {
                         ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
                     }
+                act.keep_alive_expired = true // reset keep alive expired flag
             });
         self.keep_alive_task_handle = Some(keep_alive_task_handle);
 
@@ -718,7 +718,7 @@ impl SessionActor {
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
         // if connection is still alive, stop the connection actor
         if let Some(conn_recipient) = &self.conn_recipient {
-            conn_recipient.do_send(ConnectionActorMessage::Disconnect);
+            conn_recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
         }
 
         self.notify_session_manager_stopped(ctx, |_, _, ctx| {
@@ -1380,7 +1380,7 @@ impl SessionActor {
         self.conn_recipient
             .clone()
             .unwrap()
-            .do_send(ConnectionActorMessage::Disconnect);
+            .do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
 
         let plugin_manager = self.plugin_manager.clone();
         let tenant_id = self.tenant_id.clone();
@@ -1431,7 +1431,6 @@ impl SessionActor {
                 std::hash::Hash::hash(&will_message.will_topic, &mut hasher);
                 let hash = std::hash::Hasher::finish(&hasher);
                 let router_actor = &router_actors[hash as usize % router_actors.len()];
-                
                 router_actor
                     .do_send(crate::router_actor::RoutePacket {
                         tenant_id,
@@ -1641,7 +1640,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.send_will_message(ctx, |_, actor, ctx| {
                     if let Some(recipient) = &actor.conn_recipient {
                         info!("keep alive expired, stop session {} connection", actor.client_id);
-                        recipient.do_send(ConnectionActorMessage::Disconnect);
+                        recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::KeepAliveExpired));
                         if !actor.clean_session {
                             actor.set_state(ctx, ActivityState::Inactive);
                         } else {
@@ -1680,7 +1679,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 if matches!(self.activity_state, ActivityState::Active) {
                     let conn = self.conn_recipient.clone().unwrap();
                     async move {
-                        conn.send(ConnectionActorMessage::Disconnect).await
+                        conn.send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal)).await
                     }
                     .into_actor(self)
                     .then(|res, act, ctx| {

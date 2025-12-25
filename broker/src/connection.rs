@@ -208,11 +208,18 @@ pub enum ConnectionError {
     PluginError(#[from] yedmq_plugin_host::plugin_manager::PluginManagerError),
 }
 
+#[derive(Debug)]
+pub enum DisconnectReason {
+    Normal,
+    KeepAliveExpired,
+    InternalError(String)
+}
+
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), ConnectionError>")]
 pub enum ConnectionActorMessage {
     WritePacketToClient(MqttPacketV3),
-    Disconnect,
+    Disconnect(DisconnectReason),
 }
 
 #[derive(Message)]
@@ -332,13 +339,13 @@ where
                                         ))
                                     .await {
                                         error!("send connack packet error, connection may be closed: {}", e);
-                                        read_addr.do_send(ConnectionActorMessage::Disconnect);
+                                        read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("send connack packet error, connection may be closed".to_string())));
                                         return;
                                     }
 
                                     if read_addr.send(UpdateSession { session: result.session_recipient.clone() }).await.is_err() {
                                         error!("Failed to send UpdateSession message to self. The actor is likely shutting down.");
-                                        read_addr.do_send(ConnectionActorMessage::Disconnect);
+                                        read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("Failed to send UpdateSession message to self. The actor is likely shutting down.".to_string())));
                                         return;
                                     }
                                     let rate_limiter = RateLimiter::direct(
@@ -432,7 +439,7 @@ where
                                         .await {
                                             error!("send connack packet error: {}", e);
                                         }
-                                    read_addr.do_send(ConnectionActorMessage::Disconnect);
+                                    read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("handle initial connect error".to_string())));
                                     return;                                    
                                 }
                             }
@@ -768,10 +775,15 @@ where
                 
                 Ok(())
             }
-            ConnectionActorMessage::Disconnect => {
-                info!("Connection received disconnect message from peer {}", self.peer_addr);
-                self.disconnected_normally = true;
-                
+            ConnectionActorMessage::Disconnect(reason) => {
+                match reason {
+                    DisconnectReason::Normal => {
+                        self.disconnected_normally = true;
+                    }
+                    _ => {
+                    }
+                }
+
                 self.flush_batch();
                 
                 if let Some(sender) = self.network_sender.take() {
