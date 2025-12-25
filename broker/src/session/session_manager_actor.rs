@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use crate::{
     protobuf::ForceStopSessionActorRequest, raft::{
@@ -8,7 +8,7 @@ use crate::{
         }
     }, session::{session_actor::SessionActor, session_registry::{SessionActorRecipientWrapper, SessionRegistry}}, settings::Settings
 };
-use actix::{Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseActFuture, ResponseFuture, Supervised, SystemService, WrapFuture, dev::MessageResponse};
+use actix::{Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture, dev::MessageResponse};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use thiserror::Error;
@@ -747,7 +747,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             );
             //
 
-            let mut sessions_guard = tenant_sessions;
+            let sessions_guard = tenant_sessions;
 
             let mut session_state = Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
                 settings.mqtt.inflight_retry_interval_secs,

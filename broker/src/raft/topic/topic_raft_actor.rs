@@ -17,7 +17,6 @@ use crate::{
     topic::{topic_storage::TopicStorage, TopicError},
 };
 use crate::protobuf::cluster_service_client::ClusterServiceClient;
-use crate::router_actor::DeadLetterStats;
 
 #[derive(Debug, Clone)]
 pub enum ActorState {

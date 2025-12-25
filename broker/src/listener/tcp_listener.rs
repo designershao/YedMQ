@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use actix::Actor;
 use anyhow::Result;
 use log::warn;
 use tokio::net::TcpListener;

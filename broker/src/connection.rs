@@ -1,4 +1,3 @@
-use core::error;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -11,9 +10,9 @@ use governor::{Quota, RateLimiter};
 use governor::clock::{Clock, DefaultClock};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use yedmq_mqtt::v3::connack::{self, ConnAckPacketBuilder, ConnackReturnCode};
+use yedmq_mqtt::v3::connack::{ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
