@@ -3,9 +3,9 @@ use actix::prelude::*;
 use log::{info, warn};
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::{session_registry::SessionRegistry, session_manager_actor::{self}}, settings::Node};
@@ -144,15 +144,19 @@ impl RouterActor {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
 
-            let local_topic_storage = local_topic_storage.read().await;
+            let subscriptions = {
+                let local_topic_storage= local_topic_storage.read();
 
-            let subscriptions = local_topic_storage.get_subscriptions(
-                tenant_id.clone(),
-                topic.clone(),
-            )?;
+                local_topic_storage.get_subscriptions(
+                    tenant_id.clone(),
+                    topic.clone(),
+                )?
+            };
+
+            let local_session_actor_map_storage =  local_session_actor_map_storage.read();
 
             for item in subscriptions {
-                let session_actor_map = local_session_actor_map_storage.read().await.get_session_actor_map(tenant_id, &item.client_identifier);
+                let session_actor_map = local_session_actor_map_storage.get_session_actor_map(tenant_id, &item.client_identifier);
                 if let Some(session_actor_addr) = session_actor_map {
                     if session_actor_addr.node_id != *current_node_id {
                         // Route to other nodes

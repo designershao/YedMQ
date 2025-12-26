@@ -5,8 +5,8 @@ use actix::prelude::*;
 use openraft::{
     error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics
 };
-use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
+use parking_lot::RwLock;
 
 use crate::{
     protobuf::{raft_service_client::RaftServiceClient, RaftType, WriteRequest},
@@ -619,7 +619,7 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                     async move {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
-                                let storage = topic_storage.read().await;
+                                let storage = topic_storage.read();
                                 let subscriptions = storage
                                     .get_subscriptions(msg.tenant_id, msg.topic)
                                     .map(|x| {
@@ -693,7 +693,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                             match Self::try_local_linearizable_read(raft_instance).await {
                                 Ok(_) => {
                                     if let Some(topic_storage) = topic_storage.get() {
-                                        let storage = topic_storage.read().await;
+                                        let storage = topic_storage.read();
                                         let subscriptions = storage
                                             .get_subscriptions(msg.tenant_id, msg.topic)
                                             .map(|x| {
@@ -792,7 +792,7 @@ impl Handler<GetRetainPublishPacket> for TopicRaftActor {
                     async move {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
-                                let storage = topic_storage.read().await;
+                                let storage = topic_storage.read();
                                 let packets = storage
                                     .get_retain_publish_packet(msg.tenant_id, msg.topic)
                                     .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
@@ -852,7 +852,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                             match Self::try_local_linearizable_read(raft_instance).await {
                                 Ok(_) => {
                                     if let Some(topic_storage) = topic_storage.get() {
-                                        let storage = topic_storage.read().await;
+                                        let storage = topic_storage.read();
                                         let packets = storage
                                             .get_retain_publish_packet(msg.tenant_id, msg.topic)
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
@@ -1077,7 +1077,7 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                     async move {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
-                                let storage = topic_storage.read().await;
+                                let storage = topic_storage.read();
                                 let res = storage.get_retain_message_list_with_pagination(
                                     &msg.tenant_id, msg.offset, msg.limit
                                 );
@@ -1149,7 +1149,7 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                     async move {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
-                                let storage = topic_storage.read().await;
+                                let storage = topic_storage.read();
                                 let res = storage.get_topic_list_with_pagination(
                                     &msg.tenant_id, msg.offset, msg.limit
                                 );

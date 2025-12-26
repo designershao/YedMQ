@@ -4,7 +4,7 @@ use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, S
 use actix::dev::MessageResponse;
 use log::info;
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 use crate::{protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient}, session::session_actor_map_storage::SessionActorMapEntry};
 
 use crate::{protobuf::{raft_service_client::RaftServiceClient, RaftType}, raft::{session_actor_map::{raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig, SessionActorMapRaft}, Node, NodeId}, session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion, SessionClock}};
@@ -587,7 +587,7 @@ impl Handler<GetSessionActorMap> for SessionActorMapRaftActor {
                 async move {
                     if raft.get().is_some() {
                         if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
-                            let storage = session_actor_map_storage.read().await;
+                            let storage = session_actor_map_storage.read();
                             let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
                             Ok(entry)
                         } else {
@@ -642,7 +642,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                         match Self::try_local_linearizable_read(raft_instance).await {
                             Ok(_) => {
                                 if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
-                                    let storage = session_actor_map_storage.read().await;
+                                    let storage = session_actor_map_storage.read();
                                     let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
                                     Ok(entry)
                                 } else {

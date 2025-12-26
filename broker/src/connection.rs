@@ -48,12 +48,12 @@ impl NetworkSender {
     where
         T: AsyncWrite + Unpin + Send + 'static,
     {
-        let (tx, mut rx) = mpsc::channel::<NetworkCommand>(10);
+        let (tx, mut rx) = mpsc::channel::<NetworkCommand>(1000);
         
         let task_handle = tokio::spawn(async move {
             let mut batch = BytesMut::with_capacity(64 * 1024);
             let mut msg_count = 0;
-            let mut interval = tokio::time::interval(Duration::from_millis(1));
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
             
             'main_loop: loop {
                 tokio::select! {
@@ -63,7 +63,7 @@ impl NetworkSender {
                                 batch.extend_from_slice(&data);
                                 msg_count += 1;
                                 
-                                if batch.len() >= 32 * 1024 || msg_count >= 50 {
+                                if batch.len() >= 64 * 1024 || msg_count >= 200 {
                                     if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count).await {
                                         error!("Write error: {}", e);
                                         let _ = event_tx.send(NetworkEvent::WriteError(e));
@@ -478,7 +478,7 @@ where
             network_sender: Some(network_sender),
             encode_buffer: BytesMut::with_capacity(64*1024),
             pending_count: 0,
-            batch_size: 10,
+            batch_size: 100,
             client_certificate,
             _phantom: std::marker::PhantomData,
             event_listener_handle: None,

@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{Arc},
 };
+
+use parking_lot::RwLock;
 
 use base64::{engine::general_purpose, Engine};
 use log::warn;
@@ -99,7 +101,6 @@ impl TopicStorageNode {
             subscriptions: self
                 .subscriptions
                 .read()
-                .unwrap()
                 .iter()
                 .map(|(k, v)| (k.clone(), (**v).clone()))
                 .collect(),
@@ -107,9 +108,8 @@ impl TopicStorageNode {
             leaves: self
                 .leaves
                 .read()
-                .unwrap()
                 .iter()
-                .map(|(k, v)| (k.clone(), v.read().unwrap().to_serializable()))
+                .map(|(k, v)| (k.clone(), v.read().to_serializable()))
                 .collect(),
         }
     }
@@ -147,7 +147,7 @@ impl TopicStorageNode {
         }
     }
 
-    pub fn add_subscription(&mut self, subscribtion: Subscription) {
+    pub fn add_subscription(&self, subscribtion: Subscription) {
         /*
         let client_existed = self
             .subscriptions
@@ -155,15 +155,15 @@ impl TopicStorageNode {
             .unwrap()
             .contains_key(&subscribtion.client_identifier);
         */
-        self.subscriptions.write().unwrap().insert(
+        self.subscriptions.write().insert(
             subscribtion.client_identifier.clone(),
             Arc::new(subscribtion),
         );
     }
 
     pub fn get_subscriptions(&self) -> Vec<Arc<Subscription>> {
-        let mut out = Vec::with_capacity(self.subscriptions.read().unwrap().len());
-        for (_, subscribtion) in self.subscriptions.read().unwrap().iter() {
+        let mut out = Vec::with_capacity(self.subscriptions.read().len());
+        for (_, subscribtion) in self.subscriptions.read().iter() {
             out.push(Arc::clone(subscribtion));
         }
         out
@@ -177,36 +177,34 @@ impl TopicStorageNode {
         self.retain_publish_packet = None;
     }
 
-    pub fn remove_subscription(&mut self, client_identifier: &String) {
+    pub fn remove_subscription(&self, client_identifier: &String) {
         let client_existed = self
             .subscriptions
             .read()
-            .unwrap()
             .contains_key(client_identifier);
 
         if client_existed {
             self.subscriptions
                 .write()
-                .unwrap()
                 .remove(client_identifier);
         }
     }
 
     fn get_leaf(&self, topic_pattern: String) -> Option<Arc<RwLock<TopicStorageNode>>> {
-        let sub_leaf_existed = self.leaves.read().unwrap().contains_key(&topic_pattern);
+        let sub_leaf_existed = self.leaves.read().contains_key(&topic_pattern);
 
         if sub_leaf_existed {
-            return Some(Arc::clone(&self.leaves.read().unwrap()[&topic_pattern]));
+            return Some(Arc::clone(&self.leaves.read()[&topic_pattern]));
         } else {
             None
         }
     }
 
-    fn find_or_create_leaf(&mut self, topic_pattern: String) -> Arc<RwLock<TopicStorageNode>> {
-        let sub_leaf_existed = self.leaves.read().unwrap().contains_key(&topic_pattern);
+    fn find_or_create_leaf(&self, topic_pattern: String) -> Arc<RwLock<TopicStorageNode>> {
+        let sub_leaf_existed = self.leaves.read().contains_key(&topic_pattern);
 
         if sub_leaf_existed {
-            return Arc::clone(&self.leaves.read().unwrap()[&topic_pattern]);
+            return Arc::clone(&self.leaves.read()[&topic_pattern]);
         } else {
             let leaf = Arc::new(RwLock::new(TopicStorageNode {
                 topic_parttern: topic_pattern.clone(),
@@ -217,7 +215,6 @@ impl TopicStorageNode {
             let topic_node_cloned = leaf.clone();
             self.leaves
                 .write()
-                .unwrap()
                 .insert(topic_pattern, leaf.clone());
             topic_node_cloned
         }
@@ -267,14 +264,13 @@ impl TopicStorage {
         if !self
             .retain_message_recorder
             .read()
-            .unwrap()
             .contains_key(tenant_identifier)
         {
             Err(anyhow::anyhow!(TopicError::TenantNotFound(
                 tenant_identifier.to_string()
             )))
         } else {
-            let retain_message_recorder = self.retain_message_recorder.read().unwrap();
+            let retain_message_recorder = self.retain_message_recorder.read();
             let retain_message_list = retain_message_recorder.get(tenant_identifier).unwrap();
             let total = retain_message_list.len() as u64;
             let mut result = vec![];
@@ -295,7 +291,7 @@ impl TopicStorage {
         offset: u64,
         limit: u64,
     ) -> anyhow::Result<(u64, Vec<(String, String, u8)>)> {
-        let topic_info_recorder = self.topic_info_recorder.read().unwrap();
+        let topic_info_recorder = self.topic_info_recorder.read();
         if topic_info_recorder.contains_key(tenant_id) {
             let items = topic_info_recorder.get(tenant_id).unwrap();
             let mut result_items = Vec::new();
@@ -314,7 +310,7 @@ impl TopicStorage {
 
     pub fn contains_tenant(&self, tenant_id: &String) -> bool {
         let topic_tree = self.topic_tree.clone();
-        let topic_tree = topic_tree.read().unwrap();
+        let topic_tree = topic_tree.read();
         topic_tree.contains_key(tenant_id)
     }
 
@@ -330,14 +326,13 @@ impl TopicStorage {
 
     fn to_serializable(&self) -> SerializableTopicStorage {
         SerializableTopicStorage {
-            retain_message_recorder: self.retain_message_recorder.read().unwrap().clone(),
-            topic_info_recorder: self.topic_info_recorder.read().unwrap().clone(),
+            retain_message_recorder: self.retain_message_recorder.read().clone(),
+            topic_info_recorder: self.topic_info_recorder.read().clone(),
             topic_tree: self
                 .topic_tree
                 .read()
-                .unwrap()
                 .iter()
-                .map(|(k, v)| (k.clone(), v.read().unwrap().to_serializable()))
+                .map(|(k, v)| (k.clone(), v.read().to_serializable()))
                 .collect(),
         }
     }
@@ -361,7 +356,7 @@ impl TopicStorage {
     }
 
     pub fn new() -> Self {
-        let mut instance = Self {
+        let instance = Self {
             retain_message_recorder: RwLock::new(HashMap::new()),
             topic_info_recorder: RwLock::new(HashMap::new()),
             topic_tree: Arc::new(RwLock::new(HashMap::new())),
@@ -370,9 +365,9 @@ impl TopicStorage {
         instance
     }
 
-    pub fn create_tenant(&mut self, tenant: &String) {
+    pub fn create_tenant(&self, tenant: &String) {
         let topic_tree = self.topic_tree.clone();
-        let mut topic_tree = topic_tree.write().unwrap();
+        let mut topic_tree = topic_tree.write();
         if !topic_tree.contains_key(tenant) {
             topic_tree.insert(
                 tenant.clone(),
@@ -380,19 +375,19 @@ impl TopicStorage {
             );
         }
 
-        let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+        let mut topic_info_recorder = self.topic_info_recorder.write();
         if !topic_info_recorder.contains_key(tenant) {
             topic_info_recorder.insert(tenant.clone(), HashMap::new());
         }
 
-        let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+        let mut retain_message_recorder = self.retain_message_recorder.write();
         if !retain_message_recorder.contains_key(tenant) {
             retain_message_recorder.insert(tenant.clone(), HashMap::new());
         }
     }
 
     pub fn subscribe(
-        &mut self,
+        &self,
         tenant_id: String,
         client_identifier: String,
         topic_filter: String,
@@ -404,7 +399,7 @@ impl TopicStorage {
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
             Err(TopicError::TenantNotFound(tenant_id))
@@ -420,7 +415,7 @@ impl TopicStorage {
                 Err(result.err().unwrap())
             } else {
                 // Update the topic_info_recorder
-                let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+                let mut topic_info_recorder = self.topic_info_recorder.write();
                 let topic_info_recorder_optional = topic_info_recorder.get_mut(&tenant_id);
 
                 let key = generate_key(&client_identifier, &topic_filter);
@@ -444,12 +439,11 @@ impl TopicStorage {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
-                .unwrap()
                 .find_or_create_leaf(topic_pattern.to_string());
             let topic_patterns_rest = topic_partterns.drain(1..).collect();
             Self::recursion_subscribe(topic_node_next, topic_patterns_rest, client_identifier, qos)
         } else {
-            topic_node.write().unwrap().add_subscription(Subscription {
+            topic_node.write().add_subscription(Subscription {
                 client_identifier,
                 qos,
             });
@@ -458,14 +452,14 @@ impl TopicStorage {
     }
 
     pub fn unsubscribe(
-        &mut self,
+        &self,
         tenant_id: &String,
         client_identifier: &String,
         topic_filter: &String,
     ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(tenant_id);
         if tenant_topic_root_optional.is_none() {
             Err(TopicError::TenantNotFound(tenant_id.clone()))
@@ -480,7 +474,7 @@ impl TopicStorage {
                 Err(result.err().unwrap())
             } else {
                 // Update the topic_info_recorder
-                let mut topic_info_recorder = self.topic_info_recorder.write().unwrap();
+                let mut topic_info_recorder = self.topic_info_recorder.write();
                 let topic_info_state_optional = topic_info_recorder.get_mut(tenant_id);
                 let key = generate_key(client_identifier, topic_filter);
                 let topic_info_state_item = topic_info_state_optional.unwrap();
@@ -503,7 +497,6 @@ impl TopicStorage {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
-                .unwrap()
                 .get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
                 Err(TopicError::TopicNotFound(topic_pattern.to_string()))
@@ -518,7 +511,6 @@ impl TopicStorage {
         } else {
             topic_node
                 .write()
-                .unwrap()
                 .remove_subscription(client_identifier);
             Ok(())
         }
@@ -531,7 +523,7 @@ impl TopicStorage {
     ) -> Result<Vec<Arc<Subscription>>, TopicError> {
         let topic_patterns: Vec<String> = msg_topic.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
             Err(TopicError::TenantNotFound(tenant_id))
@@ -551,17 +543,16 @@ impl TopicStorage {
         if !topic_partterns.is_empty() {
             let mut result = vec![];
             // Get # wildcard subscriptions
-            let topic_sharp_wildcard_option = topic_node.write().unwrap().get_leaf("#".to_string());
+            let topic_sharp_wildcard_option = topic_node.read().get_leaf("#".to_string());
             if topic_sharp_wildcard_option.is_some() {
                 let sharp_wildcard_subscriptions = topic_sharp_wildcard_option
                     .unwrap()
                     .read()
-                    .unwrap()
                     .get_subscriptions();
                 result.extend(sharp_wildcard_subscriptions);
             }
             // Get + wildcard subscriptions
-            let topic_plus_wildcard_option = topic_node.write().unwrap().get_leaf("+".to_string());
+            let topic_plus_wildcard_option = topic_node.read().get_leaf("+".to_string());
             if topic_plus_wildcard_option.is_some() {
                 let mut topic_plus_left = topic_partterns.clone();
                 let topic_plus_patterns_rest = topic_plus_left.drain(1..).collect();
@@ -573,8 +564,7 @@ impl TopicStorage {
 
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
-                .write()
-                .unwrap()
+                .read()
                 .get_leaf(topic_pattern.to_string());
             if topic_node_next.is_some() {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
@@ -586,7 +576,7 @@ impl TopicStorage {
             }
             result
         } else {
-            topic_node.read().unwrap().get_subscriptions()
+            topic_node.read().get_subscriptions()
         }
     }
 
@@ -599,7 +589,6 @@ impl TopicStorage {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
-                .unwrap()
                 .find_or_create_leaf(topic_pattern.to_string());
             let topic_patterns_rest = topic_partterns.drain(1..).collect();
             Self::recursion_retain_publish_packet(
@@ -610,7 +599,6 @@ impl TopicStorage {
         } else {
             topic_node
                 .write()
-                .unwrap()
                 .set_retain_publish_message(publish_packet);
             Ok(())
         }
@@ -624,7 +612,6 @@ impl TopicStorage {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
                 .write()
-                .unwrap()
                 .get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
                 Err(TopicError::TopicNotFound(topic_pattern.to_string()))
@@ -636,20 +623,20 @@ impl TopicStorage {
                 )
             }
         } else {
-            topic_node.write().unwrap().clean_retain_publish_message();
+            topic_node.write().clean_retain_publish_message();
             Ok(())
         }
     }
 
     // clean retain publish packet from the topic tree
     pub fn clean_retain_publish_packet(
-        &mut self,
+        &self,
         tenant_id: String,
         topic_filter: &String,
     ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
             Err(TopicError::TenantNotFound(tenant_id))
@@ -664,7 +651,7 @@ impl TopicStorage {
                 );
                 Err(err)
             } else {
-                let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+                let mut retain_message_recorder = self.retain_message_recorder.write();
                 let retain_message_recorder_optional = retain_message_recorder.get_mut(&tenant_id);
                 retain_message_recorder_optional
                     .unwrap()
@@ -682,7 +669,7 @@ impl TopicStorage {
         if !topic_patterns.is_empty() {
             let topic_pattern = &topic_patterns[0];
             if topic_pattern == &"+".to_string() || topic_pattern == &"#".to_string() {
-                for sub in topic_node.write().unwrap().leaves.read().unwrap().iter() {
+                for sub in topic_node.write().leaves.read().iter() {
                     let topic_patterns_rest = topic_patterns.clone().drain(1..).collect();
                     result.append(&mut Self::recursion_get_retain_packet(
                         sub.1.clone(),
@@ -692,7 +679,6 @@ impl TopicStorage {
             } else {
                 let topic_node_next = topic_node
                     .write()
-                    .unwrap()
                     .get_leaf(topic_pattern.to_string());
                 if topic_node_next.is_some() {
                     let topic_patterns_rest = topic_patterns.drain(1..).collect();
@@ -703,7 +689,7 @@ impl TopicStorage {
                 }
             }
         } else {
-            let topic_node = topic_node.read().unwrap();
+            let topic_node = topic_node.read();
             if let Some(p) = &topic_node.retain_publish_packet {
                 result.append(&mut vec![p.clone()])
             }
@@ -722,7 +708,7 @@ impl TopicStorage {
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if tenant_topic_root_optional.is_none() {
             Err(TopicError::TenantNotFound(tenant_id))
@@ -737,7 +723,7 @@ impl TopicStorage {
 
     // register retain publish packet to the topic tree
     pub fn register_retain_publish_packet(
-        &mut self,
+        &self,
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
@@ -750,7 +736,7 @@ impl TopicStorage {
 
             let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
             let map = self.topic_tree.clone();
-            let tenant_topic_root_rwlock = map.read().unwrap();
+            let tenant_topic_root_rwlock = map.read();
             let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
             if tenant_topic_root_optional.is_none() {
                 Err(TopicError::TenantNotFound(tenant_id))
@@ -765,7 +751,7 @@ impl TopicStorage {
                     Err(e)
                 } else {
                     // Update retain recorder
-                    let mut retain_message_recorder = self.retain_message_recorder.write().unwrap();
+                    let mut retain_message_recorder = self.retain_message_recorder.write();
                     let retain_message_recorder_optional =
                         retain_message_recorder.get_mut(&tenant_id);
                     let retain_message_recorder_item = retain_message_recorder_optional.unwrap();
@@ -786,7 +772,7 @@ impl TopicStorage {
     // get all tenant names
     pub fn get_tenant_names(&self) -> Vec<String> {
         let map = self.topic_tree.clone();
-        let tenant_topic_root_rwlock = map.read().unwrap();
+        let tenant_topic_root_rwlock = map.read();
         tenant_topic_root_rwlock.keys().map(String::from).collect()
     }
 }
@@ -823,7 +809,7 @@ mod tests {
 
     #[test]
     fn when_subscribe_same_topic_from_other_node_should_update_subscription() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -845,7 +831,7 @@ mod tests {
 
     #[test]
     fn test_add_subscription_and_get_subscriptions() {
-        let mut topic_node = TopicStorageNode {
+        let topic_node = TopicStorageNode {
             topic_parttern: "a".to_string(),
             subscriptions: RwLock::new(HashMap::new()),
             leaves: Arc::new(RwLock::new(HashMap::new())),
@@ -871,7 +857,7 @@ mod tests {
 
     #[test]
     fn test_find_or_create_leaf() {
-        let mut topic_node = TopicStorageNode {
+        let topic_node = TopicStorageNode {
             topic_parttern: "a".to_string(),
             subscriptions: RwLock::new(HashMap::new()),
             leaves: Arc::new(RwLock::new(HashMap::new())),
@@ -879,9 +865,9 @@ mod tests {
         };
 
         let new_topic_node = topic_node.find_or_create_leaf("b".to_string());
-        assert_eq!(new_topic_node.read().unwrap().topic_parttern, "b");
+        assert_eq!(new_topic_node.read().topic_parttern, "b");
 
-        assert!(topic_node.leaves.read().unwrap().contains_key("b"));
+        assert!(topic_node.leaves.read().contains_key("b"));
     }
 
     #[test]
@@ -899,23 +885,20 @@ mod tests {
         let thread_1 = thread::spawn(move || {
             let new_topic_node = topic_node_arc
                 .write()
-                .unwrap()
                 .find_or_create_leaf("b".to_string());
-            assert_eq!(new_topic_node.read().unwrap().topic_parttern, "b");
+            assert_eq!(new_topic_node.read().topic_parttern, "b");
         });
         let thread_3 = thread::spawn(move || {
             let subscriptions = topic_node_arc_read_clone
                 .read()
-                .unwrap()
                 .get_subscriptions();
             assert_eq!(subscriptions.len(), 0);
         });
         let thread_2 = thread::spawn(move || {
             let new_topic_node = topic_node_arc_clone
                 .write()
-                .unwrap()
                 .find_or_create_leaf("c".to_string());
-            assert_eq!(new_topic_node.read().unwrap().topic_parttern, "c");
+            assert_eq!(new_topic_node.read().topic_parttern, "c");
         });
 
         let _ = thread_1.join();
@@ -925,13 +908,13 @@ mod tests {
 
     #[test]
     fn test_subscribe_topic() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(tenant_name, "clientA".to_string(), "a/b/c".to_string(), 0);
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
-        let topic_info_recorder = topic_storage.topic_info_recorder.read().unwrap();
+        let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 1);
 
         assert_eq!(
@@ -953,7 +936,7 @@ mod tests {
 
     #[test]
     fn test_unsubscribe_topic() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -970,7 +953,7 @@ mod tests {
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);
 
-        let topic_info_recorder = topic_storage.topic_info_recorder.read().unwrap();
+        let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 1);
 
         assert_eq!(
@@ -984,7 +967,7 @@ mod tests {
 
     #[test]
     fn test_sharp_wildcard_subscriptions() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -999,7 +982,7 @@ mod tests {
 
     #[test]
     fn test_plus_wildcard_subscriptions() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -1014,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_multiple_subscription() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -1041,7 +1024,7 @@ mod tests {
 
     #[test]
     fn test_mix_wildcard_subscription() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -1089,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_invalid_topic_filter() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -1140,24 +1123,24 @@ mod tests {
     fn test_topic_subscription_multiple_thread() {
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
         let tenant_name = "hello".to_string();
-        topic_storage.write().unwrap().create_tenant(&tenant_name);
+        topic_storage.write().create_tenant(&tenant_name);
         let topic_storage_t_1 = topic_storage.clone();
         let topic_storage_t_2 = topic_storage.clone();
         let topic_storage_t_3 = topic_storage.clone();
         let thread_1 = thread::spawn(move || {
-            let _ = topic_storage_t_1.write().unwrap().subscribe(
+            let _ = topic_storage_t_1.write().subscribe(
                 "hello".to_string(),
                 "clientA".to_string(),
                 "a/b/c".to_string(),
                 0,
             );
-            let _ = topic_storage_t_1.write().unwrap().subscribe(
+            let _ = topic_storage_t_1.write().subscribe(
                 "hello".to_string(),
                 "clientB".to_string(),
                 "a/+/#".to_string(),
                 0,
             );
-            let _ = topic_storage_t_1.write().unwrap().subscribe(
+            let _ = topic_storage_t_1.write().subscribe(
                 "hello".to_string(),
                 "clientC".to_string(),
                 "a/+/+".to_string(),
@@ -1165,13 +1148,13 @@ mod tests {
             );
         });
         let thread_3 = thread::spawn(move || {
-            let _ = topic_storage_t_2.write().unwrap().subscribe(
+            let _ = topic_storage_t_2.write().subscribe(
                 "hello".to_string(),
                 "clientD".to_string(),
                 "a/+/+/+".to_string(),
                 0,
             );
-            let _ = topic_storage_t_2.write().unwrap().subscribe(
+            let _ = topic_storage_t_2.write().subscribe(
                 "hello".to_string(),
                 "clientE".to_string(),
                 "a/+".to_string(),
@@ -1179,7 +1162,7 @@ mod tests {
             );
         });
         let thread_2 = thread::spawn(move || {
-            let _ = topic_storage_t_3.write().unwrap().subscribe(
+            let _ = topic_storage_t_3.write().subscribe(
                 "hello".to_string(),
                 "clientF".to_string(),
                 "a/+/c".to_string(),
@@ -1193,7 +1176,6 @@ mod tests {
 
         let clients = topic_storage
             .write()
-            .unwrap()
             .get_subscriptions("hello".to_string(), "a/b/c/d".to_string());
         let clients = clients.unwrap();
         assert_eq!(clients.len(), 2);
@@ -1203,7 +1185,7 @@ mod tests {
 
     #[test]
     fn test_mutiple_subscription_the_same_topic_only_one_subscription() {
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         let _ = topic_storage.subscribe(
@@ -1246,7 +1228,7 @@ mod tests {
             payload,
         };
 
-        let mut topic_storage = TopicStorage::new();
+        let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
         topic_storage.create_tenant(&tenant_name);
         topic_storage

@@ -36,7 +36,7 @@ use rocksdb::Options;
 use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
-use tokio::sync::RwLock;
+use parking_lot::RwLock;
 
 use super::types;
 use super::types::{Response,Request};
@@ -88,7 +88,7 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
 
         let snapshot_json = {
             let snapshot_data = SnapshotWrapper {
-                topic_storage_snapshot: self.data.state.topic_storage.read().await.to_snapshot(),
+                topic_storage_snapshot: self.data.state.topic_storage.read().to_snapshot(),
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -168,7 +168,9 @@ impl StateMachineStore {
         self.data.last_applied_log_id = snapshot.meta.last_log_id;
         self.data.last_membership = snapshot.meta.last_membership.clone();
 
-        let mut topic_storage = self.data.state.topic_storage.write().await;
+        println!("update state machin in topic state machine store");
+
+        let mut topic_storage = self.data.state.topic_storage.write();
 
         *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot);
 
@@ -237,7 +239,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         topic,
                         qos,
                     } => {
-                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let topic_storage = self.data.state.topic_storage.read();
                         if !topic_storage.contains_tenant(&tenant_id) {
                             topic_storage.create_tenant(&tenant_id);
                         }
@@ -254,7 +256,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         client_identifier,
                         topic,
                     } => {
-                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let topic_storage = self.data.state.topic_storage.read();
 
                         let _ = topic_storage.unsubscribe(
                             &tenant_id,
@@ -268,7 +270,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         source_client_identifier,
                         publish_packet,
                     } => {
-                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let topic_storage = self.data.state.topic_storage.read();
 
                         topic_storage.register_retain_publish_packet(
                             tenant_id,
@@ -281,12 +283,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         tenant_id,
                         topic_filter,
                     } => {
-                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let topic_storage = self.data.state.topic_storage.read();
                         let _ = topic_storage.clean_retain_publish_packet(tenant_id, &topic_filter);
                         replies.push(Response::None);
                     },
                     Request::CreateTenant { tenant_id } => {
-                        let mut topic_storage = self.data.state.topic_storage.write().await;
+                        let topic_storage = self.data.state.topic_storage.read();
                         topic_storage.create_tenant(&tenant_id);
                         replies.push(Response::None);
                     }
