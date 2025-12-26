@@ -1490,116 +1490,114 @@ impl Handler<SessionActorMessage> for SessionActor {
                         let client_id = self.client_id.clone();
                         let clean_session = self.clean_session;
                         let session_state_raft_actor = self.session_state_raft_actor.clone();
-                        ctx.spawn(
-                            async move {
-                                if packet.fix_header.qos.unwrap_or(0) > 0 {
-                                    let mut session_state_guard = session_state.write().await;
+                        if packet.fix_header.qos.unwrap_or(0) == 0 {
+                            conn
+                                .do_send(ConnectionActorMessage::WritePacketToClient(
+                                    yedmq_mqtt::MqttPacketV3::Publish(packet),
+                                ));
+                        } else {
+                            ctx.spawn(
+                                async move {
+                                    if packet.fix_header.qos.unwrap_or(0) > 0 {
+                                        let mut session_state_guard = session_state.write().await;
 
-                                    let mut packet_identifier =
-                                        packet.variable_header.packet_identifier;
+                                        let mut packet_identifier =
+                                            packet.variable_header.packet_identifier;
 
-                                    if clean_session {
-                                        let res = session_state_guard.inflight.register_with_tx_packet(
-                                            &MqttPacketV3::Publish(packet.clone()),
-                                        ).await;
-                                        if res.is_err() {
-                                            match res.unwrap_err() {
-                                                InflightError::PacketIdentifierHasExisted => {
-                                                    let packet_id = session_state_guard
-                                                        .inflight
-                                                        .allocate_packet_id()
-                                                        .await;
-                                                    if let Some(packet_id) = packet_id {
-                                                        packet.variable_header.packet_identifier =
-                                                            Some(packet_id);
-                                                        packet_identifier.replace(packet_id);
-                                                        session_state_guard.inflight.register_with_tx_packet(
-                                                            &MqttPacketV3::Publish(packet.clone())
-                                                        ).await.unwrap();
-                                                    } else {
-                                                        error!("inflight allocate packet id error");
-                                                        return
-                                                    }
-                                                },
-                                            }
-                                        }
-                                        //session_state_guard.inflight.next_state(packet_identifier.unwrap()).await;
-                                    } else {
-                                        let res = session_state_raft_actor
-                                            .send(
-                                                RegisterInflightTxPacket {
-                                                    tenant_id: tenant_id.clone(),
-                                                    client_id: client_id.clone(),
-                                                    inflight_tx_packet: MqttPacketV3::Publish(packet.clone()),
-                                                }
-                                            ).await.unwrap();
-                                        if let Err(e) = res {
-                                            match e {
-                                                crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) => {
-                                                    let packet_id = session_state_guard
-                                                        .inflight
-                                                        .allocate_packet_id()
-                                                        .await;
-                                                    if let Some(packet_id) = packet_id {
-                                                        packet.variable_header.packet_identifier =
-                                                            Some(packet_id);
-                                                        packet_identifier.replace(packet_id);
-                                                        let _ = session_state_raft_actor
-                                                            .send(RegisterInflightTxPacket {
-                                                                tenant_id,
-                                                                client_id,
-                                                                inflight_tx_packet: MqttPacketV3::Publish(packet.clone()),
-                                                            })
+                                        if clean_session {
+                                            let res = session_state_guard.inflight.register_with_tx_packet(
+                                                &MqttPacketV3::Publish(packet.clone()),
+                                            ).await;
+                                            if res.is_err() {
+                                                match res.unwrap_err() {
+                                                    InflightError::PacketIdentifierHasExisted => {
+                                                        let packet_id = session_state_guard
+                                                            .inflight
+                                                            .allocate_packet_id()
                                                             .await;
-                                                    } else {
-                                                        warn!("infligh has no more packet id available");
+                                                        if let Some(packet_id) = packet_id {
+                                                            packet.variable_header.packet_identifier =
+                                                                Some(packet_id);
+                                                            packet_identifier.replace(packet_id);
+                                                            session_state_guard.inflight.register_with_tx_packet(
+                                                                &MqttPacketV3::Publish(packet.clone())
+                                                            ).await.unwrap();
+                                                        } else {
+                                                            error!("inflight allocate packet id error");
+                                                            return
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                            //session_state_guard.inflight.next_state(packet_identifier.unwrap()).await;
+                                        } else {
+                                            let res = session_state_raft_actor
+                                                .send(
+                                                    RegisterInflightTxPacket {
+                                                        tenant_id: tenant_id.clone(),
+                                                        client_id: client_id.clone(),
+                                                        inflight_tx_packet: MqttPacketV3::Publish(packet.clone()),
+                                                    }
+                                                ).await.unwrap();
+                                            if let Err(e) = res {
+                                                match e {
+                                                    crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) => {
+                                                        let packet_id = session_state_guard
+                                                            .inflight
+                                                            .allocate_packet_id()
+                                                            .await;
+                                                        if let Some(packet_id) = packet_id {
+                                                            packet.variable_header.packet_identifier =
+                                                                Some(packet_id);
+                                                            packet_identifier.replace(packet_id);
+                                                            let _ = session_state_raft_actor
+                                                                .send(RegisterInflightTxPacket {
+                                                                    tenant_id,
+                                                                    client_id,
+                                                                    inflight_tx_packet: MqttPacketV3::Publish(packet.clone()),
+                                                                })
+                                                                .await;
+                                                        } else {
+                                                            warn!("infligh has no more packet id available");
+                                                            return;
+                                                        }
+                                                    },
+                                                    _ => {
+                                                        error!("raft client unexpected error: {}", e);
                                                         return;
                                                     }
-                                                },
-                                                _ => {
-                                                    error!("raft client unexpected error: {}", e);
-                                                    return;
                                                 }
                                             }
                                         }
-                                    }
 
 
-                                    let res = conn
-                                        .send(ConnectionActorMessage::WritePacketToClient(
-                                            yedmq_mqtt::MqttPacketV3::Publish(packet),
-                                        ))
-                                        .await;
-                                    if let Err(e) = res {
-                                        error!("failed to send packet to client: {}", e);
-                                    } else {
-                                        /*
-                                        let res = raft_manager
-                                            .get_session_state_raft_client()
-                                            .inflight_next_state(
-                                                &tenant_id,
-                                                &client_id,
-                                                packet_identifier.unwrap(),
-                                            )
+                                        let res = conn
+                                            .send(ConnectionActorMessage::WritePacketToClient(
+                                                yedmq_mqtt::MqttPacketV3::Publish(packet),
+                                            ))
                                             .await;
-                                        if res.is_err() {
-                                            warn!("handle message inflight next state error, {}", res.unwrap_err())
+                                        if let Err(e) = res {
+                                            error!("failed to send packet to client: {}", e);
+                                        } else {
+                                            /*
+                                            let res = raft_manager
+                                                .get_session_state_raft_client()
+                                                .inflight_next_state(
+                                                    &tenant_id,
+                                                    &client_id,
+                                                    packet_identifier.unwrap(),
+                                                )
+                                                .await;
+                                            if res.is_err() {
+                                                warn!("handle message inflight next state error, {}", res.unwrap_err())
+                                            }
+                                            */
                                         }
-                                        */
-                                    }
-                                } else {
-                                    let res = conn
-                                        .send(ConnectionActorMessage::WritePacketToClient(
-                                            yedmq_mqtt::MqttPacketV3::Publish(packet),
-                                        ))
-                                        .await;
-                                    if let Err(e) = res {
-                                        error!("failed to send packet to client: {}", e);
                                     }
                                 }
-                            }
-                            .into_actor(self)
-                        );
+                                    .into_actor(self)
+                            );
+                        }
                     }
                 } else if matches!(packet, MqttPacketV3::Publish(_)) {
                     if let MqttPacketV3::Publish(publish_packet) = packet {
