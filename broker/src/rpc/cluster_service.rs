@@ -23,13 +23,11 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<StoreOfflineMessageResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
-        let packet = serde_json::from_str(&inner.payload)
-            .map_err(|e| Status::invalid_argument(format!("Invalid payload format: {}", e)))?;
         let store_offline_message_actor =
             crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                packets: packet,
+                packet_key: inner.packet_key,
             };
 
         session_state_raft_actor_addr
@@ -61,14 +59,10 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to pop offline message: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in popping offline message: {}", e)))?;
 
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
-            Status::internal(format!("Failed to serialize offline messages response: {}", e))
-        })?;
-
         Ok(Response::new(PopOfflineMessageResponse {
             success: true,
             error: None,
-            payload: Some(res_payload),
+            payload: res,
         }))
     }
 
@@ -149,14 +143,13 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<RegisterInflightRxPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
-        let inflight_rx_packet = serde_json::from_str(&inner.payload).map_err(|e| {
-            Status::invalid_argument(format!("Invalid inflight packet format: {}", e))
-        })?;
         let register_inflight_rx_packet_actor =
             session_state_raft_actor::RegisterInflightRxPacket {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                inflight_rx_packet,
+                packet_id: inner.packet_id as u16,
+                qos: inner.qos as u8,
+                packet_key: inner.packet_key,
             };
         let r= session_state_raft_actor_addr
             .send(register_inflight_rx_packet_actor)
@@ -177,14 +170,13 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<RegisterInflightTxPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
-        let inflight_tx_packet = serde_json::from_str(&inner.payload).map_err(|e| {
-            Status::invalid_argument(format!("Invalid inflight packet format: {}", e))
-        })?;
         let register_inflight_tx_packet_actor =
             session_state_raft_actor::RegisterInflightTxPacket {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                inflight_tx_packet,
+                packet_id: inner.packet_id as u16,
+                qos: inner.qos as u8,
+                packet_key: inner.packet_key,
             };
         session_state_raft_actor_addr
             .send(register_inflight_tx_packet_actor)

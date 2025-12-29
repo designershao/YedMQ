@@ -4,6 +4,7 @@ use std::{fmt::Display, io::Cursor};
 pub mod session_actor_map;
 pub mod session_state;
 pub mod topic;
+pub mod payload;
 
 pub type NodeId = u64;
 

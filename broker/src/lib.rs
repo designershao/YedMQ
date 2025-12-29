@@ -15,4 +15,7 @@ pub mod rpc;
 
 pub mod protobuf {
     tonic::include_proto!("yedmqpb");
+    pub mod raft_payload {
+        tonic::include_proto!("raft_payload");
+    }
 }

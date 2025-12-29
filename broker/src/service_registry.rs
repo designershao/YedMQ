@@ -35,6 +35,11 @@ impl ServiceRegistry {
         session_clock: Arc<SessionClock>
     ) -> Arc<Self> {
         info!("starting services");
+        
+        // Initialize PayloadStore
+        let payload_store_path = std::path::Path::new(&settings.cluster.store_dir).join("payload");
+        let payload_store = Arc::new(crate::raft::payload::RocksDBPayloadStore::new(payload_store_path).expect("failed to initialize payload store"));
+
         let topic_raft = TopicRaftActor::from_registry();
         let session_map_raft = SessionActorMapRaftActor::from_registry();
         let session_state_raft = SessionStateRaftActor::from_registry();
@@ -47,6 +52,7 @@ impl ServiceRegistry {
             plugin_manager,
             session_clock: session_clock.clone(),
             session_registry: session_registry.clone(),
+            payload_store: payload_store.clone(),
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
@@ -64,6 +70,7 @@ impl ServiceRegistry {
 
         session_state_raft.do_send(crate::raft::session_state::session_state_raft_actor::Initialize{
             settings: settings.clone(),
+            payload_store: payload_store.clone(),
         });
 
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -97,8 +104,9 @@ impl ServiceRegistry {
         let router_actors_clone = router_actors.clone();
 
         let settings_clone = settings.clone();
+        let payload_store_clone = payload_store.clone();
         let rpc = pools.start_actor(move || {
-            RpcActor::new(router_actors_clone, settings_clone)
+            RpcActor::new(router_actors_clone, settings_clone, payload_store_clone)
         });
 
         let router_actors_clone = router_actors.clone();

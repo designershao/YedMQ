@@ -83,6 +83,8 @@ impl SystemService for SessionManagerActor {
 
 impl Supervised for SessionManagerActor {}
 
+use crate::raft::payload::PayloadStore;
+
 pub struct SessionManagerActor {
     sessions: SessionRegistry,
 
@@ -99,6 +101,8 @@ pub struct SessionManagerActor {
     router_actors: Option<Vec<Addr<RouterActor>>>,
 
     arbiter_pool: Option<Arc<crate::arbiter_pool::ArbiterPool>>,
+
+    payload_store: Option<Arc<dyn PayloadStore>>,
 }
 
 #[derive(Message)]
@@ -108,6 +112,7 @@ pub struct Initialize {
     pub plugin_manager: Arc<PluginManager>,
     pub session_clock: Arc<SessionClock>,
     pub session_registry: SessionRegistry,
+    pub payload_store: Arc<dyn PayloadStore>,
 }
 
 impl Handler<Initialize> for SessionManagerActor {
@@ -119,6 +124,7 @@ impl Handler<Initialize> for SessionManagerActor {
         self.session_clock = Some(msg.session_clock);
         self.current_node_id = msg.settings.cluster.node_id;
         self.sessions = msg.session_registry;
+        self.payload_store = Some(msg.payload_store);
     }
 }
 
@@ -133,6 +139,7 @@ impl Default for SessionManagerActor {
             current_node_id: 0,
             router_actors: None,
             arbiter_pool: None,
+            payload_store: None,
         }
     }
 }
@@ -644,6 +651,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let current_node_id = self.current_node_id;
         let router_actors = self.router_actors.as_ref().unwrap().clone();
         let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
+        let payload_store = self.payload_store.clone();
 
         let future = async move {
             let existing = sessions.get(&tenant_id);
@@ -848,6 +856,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     SessionStateRaftActor::from_registry(),
                     TopicRaftActor::from_registry(),
                     router_actors,
+                    payload_store.clone(),
                 )
             });
 

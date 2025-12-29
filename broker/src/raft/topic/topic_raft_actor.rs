@@ -183,7 +183,7 @@ impl TopicRaftActor {
         match Self::try_local_write(raft, request.clone()).await {
             Ok(_) => Ok(()),
             Err(TopicRaftError::NotLeader { leader }) => {
-                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
                     Self::forward_to_leader(leader_node.rpc_addr, request).await
                 } else {
@@ -875,7 +875,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(payload) = inner.payload {
-                                                // 反序列化 payload 为 Vec<Arc<MqttPacketV3>>
+                                                // Deserialize payload to Vec<Arc<MqttPacketV3>>
                                                 let packets: Vec<Arc<MqttPacketV3>> = serde_json::from_str(&payload)
                                                     .map_err(|e| TopicRaftError::GRPC(format!("Failed to deserialize payload: {}", e)))?;
                                                 Ok(packets)

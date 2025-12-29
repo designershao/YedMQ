@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::{Arc, atomic::Ordering}, time::Duration};
 
 use actix::{Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService, WrapFuture};
 use openraft::{error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics};
@@ -70,9 +70,11 @@ pub enum SessionStateRaftError {
 pub struct SessionStateRaftActor {
     raft: OnceCell<Arc<SessionStateRaft>>,
     settings: Option<Arc<crate::settings::Settings>>,
+    payload_store: OnceCell<Arc<dyn crate::raft::payload::PayloadStore>>,
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
-    session_state_storage: OnceCell<Arc<RwLock<SessionStateStorage>>>
+    session_state_storage: OnceCell<Arc<RwLock<SessionStateStorage>>>,
+    is_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for SessionStateRaftActor {
@@ -80,9 +82,11 @@ impl Default for SessionStateRaftActor {
         Self {
             raft: OnceCell::new(),
             settings: None,
+            payload_store: OnceCell::new(),
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
             session_state_storage: OnceCell::new(),
+            is_ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 }
@@ -91,6 +95,7 @@ impl Default for SessionStateRaftActor {
 #[rtype(result = "()")]
 pub struct Initialize {
     pub settings: Arc<crate::settings::Settings>,
+    pub payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
 }
 
 impl Handler<Initialize> for SessionStateRaftActor {
@@ -98,12 +103,14 @@ impl Handler<Initialize> for SessionStateRaftActor {
 
     fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
         self.settings = Some(msg.settings.clone());
+        let _ = self.payload_store.set(msg.payload_store.clone());
         let settings = msg.settings.clone();
+        let payload_store = msg.payload_store.clone();
         let addr = ctx.address();
 
         ctx.spawn(
             async move {
-                let raft_instance = Self::initialize_raft(settings).await;
+                let raft_instance = Self::initialize_raft(settings, payload_store).await;
                 addr.do_send(InitializationComplete(raft_instance));
             }
                 .into_actor(self),
@@ -122,7 +129,8 @@ impl Supervised for SessionStateRaftActor {}
 impl SessionStateRaftActor {
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
-    ) -> Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>), SessionStateRaftError> {
+        payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
+    ) -> Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>, Arc<std::sync::atomic::AtomicBool>), SessionStateRaftError> {
         let raft_config = Config {
             cluster_name: "yedmq_session_state_raft_cluster".to_string(),
             ..Default::default()
@@ -134,9 +142,9 @@ impl SessionStateRaftActor {
 
         let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
 
-        let (log_store, state_machine_store) = new_storage(&dir, session_state_storage.clone()).await;
+        let (log_store, state_machine_store, is_ready) = new_storage(&dir, session_state_storage.clone(), payload_store.clone(), settings.clone()).await;
 
-        let network = Network {};
+        let network = Network::new(payload_store);
 
         let raft = openraft::Raft::new(
             settings.cluster.node_id,
@@ -163,7 +171,7 @@ impl SessionStateRaftActor {
         }
         //
 
-        Ok((raft, session_state_storage))
+        Ok((raft, session_state_storage, is_ready))
     }
 
     async fn try_local_linearizable_read(
@@ -204,6 +212,7 @@ impl SessionStateRaftActor {
     async fn handle_raft_write(
         raft: &SessionStateRaft,
         request: crate::raft::session_state::types::SessionStateRequest,
+        payload_store: Option<Arc<dyn crate::raft::payload::PayloadStore>>,
     ) -> Result<ClientWriteResponse<SessionStateTypeConfig>, SessionStateRaftError> {
         match Self::try_local_write(raft, request.clone()).await {
             Ok(r) => {
@@ -220,8 +229,26 @@ impl SessionStateRaftActor {
                 }
             },
             Err(SessionStateRaftError::NotLeader { leader }) => {
-                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
+                    if let Some(store) = payload_store {
+                        let key = match &request {
+                            SessionStateRequest::InflightRegisterRxPacket { packet_key, .. } => Some(packet_key),
+                            SessionStateRequest::InflightRegisterTxPacket { packet_key, .. } => Some(packet_key),
+                            SessionStateRequest::AppendToPendingQueue { packet_key, .. } => Some(packet_key),
+                            _ => None,
+                        };
+
+                        if let Some(k) = key {
+                            let client = crate::raft::payload::PayloadClient::new(store);
+                            let metrics_rx = raft.metrics();
+                            let term = metrics_rx.borrow().vote.leader_id.term;
+                            if let Err(e) = client.replicate(&leader_node.rpc_addr, k.clone(), term).await {
+                                log::error!("Failed to push payload to leader before forwarding: {}", e);
+                                return Err(SessionStateRaftError::GRPC(e.to_string()));
+                            }
+                        }
+                    }
                     Self::forward_to_leader(leader_node.rpc_addr, request).await
                 } else {
                     Err(SessionStateRaftError::NoLeaderAvailable)
@@ -297,20 +324,89 @@ impl SessionStateRaftActor {
 
 impl Actor for SessionStateRaftActor {
     type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.run_interval(Duration::from_secs(5), |_, ctx| {
+            ctx.address().do_send(PerformIntegrityCheck {});
+        });
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct PerformIntegrityCheck {}
+
+impl Handler<PerformIntegrityCheck> for SessionStateRaftActor {
+    type Result = ();
+
+    fn handle(&mut self, _msg: PerformIntegrityCheck, ctx: &mut Self::Context) -> Self::Result {
+        if !matches!(self.state, ActorState::Running) {
+            return;
+        }
+
+        let raft = self.raft.get().cloned();
+        let storage = self.session_state_storage.get().cloned();
+        let payload_store = self.payload_store.get().cloned();
+        let is_ready_flag = self.is_ready.clone();
+
+        if let (Some(raft), Some(storage), Some(payload_store)) = (raft, storage, payload_store) {
+            ctx.spawn(async move {
+                let active_keys = {
+                    let s = storage.read().await;
+                    s.ref_counts.keys().cloned().collect::<Vec<String>>()
+                };
+
+                let mut missing = Vec::new();
+                for key in active_keys {
+                    if !payload_store.contains(&key).await.unwrap_or(false) {
+                        missing.push(key);
+                    }
+                }
+
+                if missing.is_empty() {
+                    if !is_ready_flag.load(Ordering::SeqCst) {
+                        log::info!("Integrity check passed: all payloads present. Node is now READY.");
+                        is_ready_flag.store(true, Ordering::SeqCst);
+                    }
+                } else {
+                    if is_ready_flag.load(Ordering::SeqCst) {
+                        log::warn!("Integrity check failed: {} payloads missing. Node is NOT READY.", missing.len());
+                        is_ready_flag.store(false, Ordering::SeqCst);
+                    }
+
+                    // Try to sync missing payloads from leader
+                    if let Some(leader_id) = raft.current_leader().await {
+                        let metrics_rx = raft.metrics();
+                        let metrics = metrics_rx.borrow();
+                        let leader_node = metrics.membership_config.nodes().find(|(id, _)| **id == leader_id).map(|(_, n)| n);
+                        if let Some(node) = leader_node {
+                            log::info!("Syncing {} missing payloads from leader node {}", missing.len(), leader_id);
+                            let client = crate::raft::payload::PayloadClient::new(payload_store);
+                            let manifest = missing.into_iter().map(|k| (k, 0, 0)).collect();
+                            if let Err(e) = client.bulk_sync(&node.rpc_addr, manifest).await {
+                                log::warn!("Failed to sync missing payloads from leader: {}", e);
+                            }
+                        }
+                    }
+                }
+            }.into_actor(self));
+        }
+    }
 }
 
 #[derive(Message, Clone)]
 #[rtype(result = "()")]
-struct InitializationComplete(Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>), SessionStateRaftError>);
+struct InitializationComplete(Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>, Arc<std::sync::atomic::AtomicBool>), SessionStateRaftError>);
 
 impl Handler<InitializationComplete> for SessionStateRaftActor {
     type Result = ();
 
     fn handle(&mut self, msg: InitializationComplete, ctx: &mut Self::Context) -> Self::Result {
         match msg.0 {
-            Ok((raft_instance, session_state_storage)) => {
+            Ok((raft_instance, session_state_storage, is_ready)) => {
                 let _ = self.raft.set(Arc::new(raft_instance));
                 let _ = self.session_state_storage.set(session_state_storage);
+                self.is_ready = is_ready;
                 self.state = ActorState::Running;
                 log::info!("SessionStateRaftActor initialized successfully.");
                 self.process_pending_messages(ctx);
@@ -328,7 +424,7 @@ impl Handler<InitializationComplete> for SessionStateRaftActor {
 pub struct StoreOfflineMessage {
     pub tenant_id: String,
     pub client_id: String,
-    pub packets: MqttPacketV3
+    pub packet_key: String,
 }
 
 impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
@@ -343,15 +439,16 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = SessionStateRequest::AppendToPendingQueue { 
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id, 
-                            packet: msg.packets 
+                            packet_key: msg.packet_key
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -378,14 +475,14 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
 
 
 #[derive(Message, Clone)]
-#[rtype(result="Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+#[rtype(result="Result<Option<String>, SessionStateRaftError>")]
 pub struct PopOfflineMessage {
     pub tenant_id: String,
     pub client_id: String,
 }
 
 impl Handler<PopOfflineMessage> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Option<String>, SessionStateRaftError>>;
 
     fn handle(&mut self, msg: PopOfflineMessage, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
@@ -395,6 +492,7 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -402,10 +500,10 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id 
                         };
-                        let res = Self::handle_raft_write(raft_instance, command).await?;
+                        let res = Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         match res.data {
-                            super::types::SessionStateResponse::PopFromPendingQueueResult(mqtt_packet_v3) => {
-                                Ok(mqtt_packet_v3)
+                            super::types::SessionStateResponse::PopFromPendingQueueResult(packet_key) => {
+                                Ok(packet_key)
                             },
                             _ => {
                                 Err(SessionStateRaftError::UnexpectedResponseType(
@@ -535,7 +633,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                 }
                             },
                             Err(SessionStateRaftError::NotLeader { leader }) => {
-                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
                                     let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr.clone())).await.map_err(|e| {
                                         log::error!("Failed to connect to leader {}", e);
@@ -618,6 +716,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 let inflight_duration = self.settings.as_ref().expect("settings should not be none").mqtt.inflight_retry_interval_secs;
                 Box::pin(
                 async move {
@@ -627,7 +726,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
                             client_id: msg.client_id, 
                             inflight_duration_secs: inflight_duration 
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -671,6 +770,7 @@ impl Handler<DeleteSessionState> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -678,7 +778,7 @@ impl Handler<DeleteSessionState> for SessionStateRaftActor {
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id 
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -708,7 +808,9 @@ impl Handler<DeleteSessionState> for SessionStateRaftActor {
 pub struct RegisterInflightRxPacket {
     pub tenant_id: String,
     pub client_id: String,
-    pub inflight_rx_packet: MqttPacketV3,
+    pub packet_id: u16,
+    pub qos: u8,
+    pub packet_key: String,
 }
 
 impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
@@ -723,15 +825,18 @@ impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = SessionStateRequest::InflightRegisterRxPacket {  
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id, 
-                            packet: msg.inflight_rx_packet
+                            packet_id: msg.packet_id,
+                            qos: msg.qos,
+                            packet_key: msg.packet_key
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -763,7 +868,9 @@ impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
 pub struct RegisterInflightTxPacket {
     pub tenant_id: String,
     pub client_id: String,
-    pub inflight_tx_packet: MqttPacketV3,
+    pub packet_id: u16,
+    pub qos: u8,
+    pub packet_key: String,
 }
 
 impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
@@ -778,15 +885,18 @@ impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
                         let command = SessionStateRequest::InflightRegisterTxPacket {  
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id, 
-                            packet: msg.inflight_tx_packet
+                            packet_id: msg.packet_id,
+                            qos: msg.qos,
+                            packet_key: msg.packet_key
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -832,6 +942,7 @@ impl Handler<AdvanceInflightState> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -840,7 +951,7 @@ impl Handler<AdvanceInflightState> for SessionStateRaftActor {
                             client_id: msg.client_id, 
                             packet_identifier: msg.packet_id
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         Err(SessionStateRaftError::NotInitialized)
@@ -886,14 +997,58 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_state_storage = self.session_state_storage.clone();
+                let payload_store = self.payload_store.clone();
                 Box::pin(
                 async move {
                     if raft.get().is_some() {
                         if let Some(session_state_storage) = session_state_storage.get() {
                             let session_state_storage = session_state_storage.read().await;
-                            let inflight_packet = session_state_storage
-                                .inflight_get_current_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
-                            Ok(inflight_packet)
+                            let packet_id_u16 = msg.packet_id.try_into().unwrap();
+                            let state = session_state_storage
+                                .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                            
+                            let key = session_state_storage
+                                .inflight_get_current_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                            
+                            match state {
+                                Some(crate::inflight::InflightState::WaitPubcomp) => {
+                                    let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                    Ok(Some(packet))
+                                },
+                                Some(crate::inflight::InflightState::WaitPubrel) => {
+                                    let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                    Ok(Some(packet))
+                                },
+                                _ => {
+                                    if let Some(key) = key {
+                                        let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
+                                        match store.get(&key).await {
+                                            Ok(Some(data)) => {
+                                                match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                    Ok(mut packet) => {
+                                                        packet.set_dup(1);
+                                                        Ok(Some(packet))
+                                                    },
+                                                    Err(e) => {
+                                                        log::error!("Failed to deserialize packet: {}", e);
+                                                        Ok(None)
+                                                    }
+                                                }
+                                            },
+                                            Ok(None) => {
+                                                log::warn!("Payload missing for key: {}", key);
+                                                Ok(None)
+                                            },
+                                            Err(e) => {
+                                                log::error!("Store error: {}", e);
+                                                Err(SessionStateRaftError::ServiceUnavailable(e.to_string()))
+                                            }
+                                        }
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                            }
                         } else {
                             Err(SessionStateRaftError::NotInitialized)
                         }
@@ -941,6 +1096,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_state_storage = self.session_state_storage.clone();
+                let payload_store = self.payload_store.clone();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -948,15 +1104,47 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                             Ok(_) => {
                                 if let Some(session_state_storage) = session_state_storage.get() {
                                     let session_state_storage = session_state_storage.read().await;
-                                    let inflight_packet = session_state_storage
-                                        .inflight_get_current_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
-                                    Ok(inflight_packet)
+                                    let packet_id_u16 = msg.packet_id.try_into().unwrap();
+                                    let state = session_state_storage
+                                        .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                                    let key = session_state_storage
+                                        .inflight_get_current_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                                    
+                                    match state {
+                                        Some(crate::inflight::InflightState::WaitPubcomp) => {
+                                            let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                            Ok(Some(packet))
+                                        },
+                                        Some(crate::inflight::InflightState::WaitPubrel) => {
+                                            let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                            Ok(Some(packet))
+                                        },
+                                        _ => {
+                                            if let Some(key) = key {
+                                                let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
+                                                match store.get(&key).await {
+                                                    Ok(Some(data)) => {
+                                                        match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                            Ok(mut packet) => {
+                                                                packet.set_dup(1);
+                                                                Ok(Some(packet))
+                                                            },
+                                                            Err(e) => Ok(None)
+                                                        }
+                                                    },
+                                                    _ => Ok(None)
+                                                }
+                                            } else {
+                                                Ok(None)
+                                            }
+                                        }
+                                    }
                                 } else {
                                     Err(SessionStateRaftError::NotInitialized)
                                 }
                             },
                             Err(SessionStateRaftError::NotLeader { leader }) => {
-                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
                                     let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
                                         log::error!("Failed to connect to leader {}", e);
@@ -1036,14 +1224,57 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_state_storage = self.session_state_storage.clone();
+                let payload_store = self.payload_store.clone();
                 Box::pin(
                 async move {
                     if raft.get().is_some() {
                         if let Some(session_state_storage) = session_state_storage.get() {
                             let session_state_storage = session_state_storage.read().await;
-                            let inflight_packet = session_state_storage
-                                .inflight_get_next_state_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
-                            Ok(inflight_packet)
+                            let packet_id_u16 = msg.packet_id.try_into().unwrap();
+                            let state = session_state_storage
+                                .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                            let key = session_state_storage
+                                .inflight_get_next_state_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                            
+                            match state {
+                                Some(crate::inflight::InflightState::WaitPubcomp) => {
+                                    let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                    Ok(Some(packet))
+                                },
+                                Some(crate::inflight::InflightState::WaitPubrel) => {
+                                    let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                    Ok(Some(packet))
+                                },
+                                _ => {
+                                    if let Some(key) = key {
+                                        let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
+                                        match store.get(&key).await {
+                                            Ok(Some(data)) => {
+                                                match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                    Ok(mut packet) => {
+                                                        packet.set_dup(1);
+                                                        Ok(Some(packet))
+                                                    },
+                                                    Err(e) => {
+                                                        log::error!("Failed to deserialize packet: {}", e);
+                                                        Ok(None)
+                                                    }
+                                                }
+                                            },
+                                            Ok(None) => {
+                                                log::warn!("Payload missing for key: {}", key);
+                                                Ok(None)
+                                            },
+                                            Err(e) => {
+                                                log::error!("Store error: {}", e);
+                                                Err(SessionStateRaftError::ServiceUnavailable(e.to_string()))
+                                            }
+                                        }
+                                    } else {
+                                        Ok(None)
+                                    }
+                                }
+                            }
                         } else {
                             Err(SessionStateRaftError::NotInitialized)
                         }
@@ -1091,6 +1322,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let session_state_storage = self.session_state_storage.clone();
+                let payload_store = self.payload_store.clone();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -1098,9 +1330,41 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                             Ok(_) => {
                                 if let Some(session_state_storage) = session_state_storage.get() {
                                     let session_state_storage = session_state_storage.read().await;
-                                    let inflight_packet = session_state_storage
-                                        .inflight_get_next_state_packet(msg.tenant_id, msg.client_id, msg.packet_id.try_into().unwrap()).await;
-                                    Ok(inflight_packet)
+                                    let packet_id_u16 = msg.packet_id.try_into().unwrap();
+                                    let state = session_state_storage
+                                        .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                                    let key = session_state_storage
+                                        .inflight_get_next_state_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                                    
+                                    match state {
+                                        Some(crate::inflight::InflightState::WaitPubcomp) => {
+                                            let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                            Ok(Some(packet))
+                                        },
+                                        Some(crate::inflight::InflightState::WaitPubrel) => {
+                                            let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                            Ok(Some(packet))
+                                        },
+                                        _ => {
+                                            if let Some(key) = key {
+                                                let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
+                                                match store.get(&key).await {
+                                                    Ok(Some(data)) => {
+                                                        match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                            Ok(mut packet) => {
+                                                                packet.set_dup(1);
+                                                                Ok(Some(packet))
+                                                            },
+                                                            Err(e) => Ok(None)
+                                                        }
+                                                    },
+                                                    _ => Ok(None)
+                                                }
+                                            } else {
+                                                Ok(None)
+                                            }
+                                        }
+                                    }
                                 } else {
                                     Err(SessionStateRaftError::NotInitialized)
                                 }
@@ -1184,6 +1448,7 @@ impl Handler<InflightCleanFinishedItems> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
@@ -1191,7 +1456,7 @@ impl Handler<InflightCleanFinishedItems> for SessionStateRaftActor {
                             tenant_id: msg.tenant_id, 
                             client_id: msg.client_id 
                         };
-                        Self::handle_raft_write(raft_instance, command).await?;
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
                     } else {
                         log::error!("Raft instance not initialized");
@@ -1318,13 +1583,19 @@ impl Handler<VoteRequestMessage> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let is_ready = self.is_ready.load(std::sync::atomic::Ordering::SeqCst);
                 Box::pin(
                     async move {
+                        if !is_ready {
+                            log::warn!("Rejecting vote request: node is not ready (missing payloads)");
+                            return Err(SessionStateRaftError::NotReady("Missing payloads for snapshot".to_string()));
+                        }
+
                         if let Some(raft_instance) = raft.get() {
                             let res = raft_instance.vote(msg.payload).await?;
                             Ok(res)
                         } else {
-                            Err(SessionStateRaftError::NotReady("Initializing".to_string()))
+                            Err(SessionStateRaftError::NotInitialized)
                         }
                     }
                     .into_actor(self),
@@ -1540,10 +1811,11 @@ impl Handler<DirectWriteToRaft> for SessionStateRaftActor {
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
                 Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
-                            let res = raft_instance.client_write(msg.command).await?;
+                            let res = Self::handle_raft_write(raft_instance, msg.command, payload_store).await?;
                             Ok(res)
                         } else {
                             Err(SessionStateRaftError::NotReady("Initializing".to_string()))

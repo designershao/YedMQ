@@ -59,6 +59,10 @@ pub struct StateMachineData {
     pub state: State,
 }
 
+use crate::raft::payload::PayloadStore;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[derive(Debug, Clone)]
 pub struct StateMachineStore {
     pub data: StateMachineData,
@@ -66,6 +70,12 @@ pub struct StateMachineStore {
     snapshot_idx: u64,
 
     db: Arc<DB>,
+
+    payload_store: Arc<dyn PayloadStore>,
+
+    settings: Arc<crate::settings::Settings>,
+
+    pub is_ready: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,9 +135,16 @@ impl RaftSnapshotBuilder<SessionStateTypeConfig> for StateMachineStore {
 }
 
 impl StateMachineStore {
+    pub async fn get_active_payload_keys(&self) -> std::collections::HashSet<String> {
+        let storage = self.data.state.session_state_storage.read().await;
+        storage.ref_counts.keys().cloned().collect()
+    }
+
     async fn new(
         db: Arc<DB>,
         session_state_storage: Arc<RwLock<SessionStateStorage>>,
+        payload_store: Arc<dyn PayloadStore>,
+        settings: Arc<crate::settings::Settings>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
             data: StateMachineData {
@@ -139,6 +156,9 @@ impl StateMachineStore {
             },
             snapshot_idx: 0,
             db,
+            payload_store,
+            settings,
+            is_ready: Arc::new(AtomicBool::new(true)),
         };
 
         let snapshot = sm.get_current_snapshot_()?;
@@ -245,62 +265,74 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                     types::SessionStateRequest::InflightRegisterRxPacket {
                         tenant_id,
                         client_id,
-                        packet,
+                        packet_id,
+                        qos,
+                        packet_key,
                     } => {
-                        self.data
+                        let freed_key = self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_register_rx_packet(tenant_id, client_id, packet)
+                            .inflight_register_rx_packet(tenant_id, client_id, packet_id, qos, packet_key)
                             .await;
+                        if let Some(key) = freed_key {
+                            let _ = self.payload_store.delete(&key).await;
+                        }
                         replies.push(SessionStateResponse::InflightRegisterRxPacketResponse(Ok(())));
                     }
                     types::SessionStateRequest::InflightRegisterTxPacket {
                         tenant_id,
                         client_id,
-                        packet,
+                        packet_id,
+                        qos,
+                        packet_key,
                     } => {
                         let r = self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_register_tx_packet(tenant_id, client_id, packet)
+                            .inflight_register_tx_packet(tenant_id, client_id, packet_id, qos, packet_key)
                             .await;
 
-                        if let Err(e) = r {
-                            replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Err(e)));
-                        } else {
-                            replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())));
+                        match r {
+                            Ok(freed_key) => {
+                                if let Some(key) = freed_key {
+                                    let _ = self.payload_store.delete(&key).await;
+                                }
+                                replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())));
+                            }
+                            Err(e) => {
+                                replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Err(e)));
+                            }
                         }
-
                     }
                     types::SessionStateRequest::InflightGetCurrentPacket {
                         tenant_id,
                         client_id,
                         packet_identifier,
                     } => {
-                        let packet = self
+                        let packet_key = self
                             .data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_get_current_packet(
+                            .inflight_get_current_packet_key(
                                 tenant_id,
                                 client_id,
                                 packet_identifier.try_into().unwrap(),
                             )
                             .await;
-                        replies.push(SessionStateResponse::InflightGetCurrentPacketResult(packet));
+                        replies.push(SessionStateResponse::InflightGetCurrentPacketResult(packet_key));
                     }
                     types::SessionStateRequest::InflightNextState {
                         tenant_id,
                         client_id,
                         packet_identifier,
                     } => {
-                        self.data
+                        let freed_key = self.data
                             .state
                             .session_state_storage
                             .write()
@@ -311,32 +343,38 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 packet_identifier.try_into().unwrap(),
                             )
                             .await;
+                        if let Some(key) = freed_key {
+                            let _ = self.payload_store.delete(&key).await;
+                        }
                         replies.push(SessionStateResponse::None);
                     }
                     types::SessionStateRequest::InflightCleanFinishItems {
                         tenant_id,
                         client_id,
                     } => {
-                        self.data
+                        let freed_keys = self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
                             .inflight_clean_finished_items(tenant_id, client_id)
                             .await;
+                        for key in freed_keys {
+                            let _ = self.payload_store.delete(&key).await;
+                        }
                         replies.push(SessionStateResponse::None);
                     }
                     types::SessionStateRequest::AppendToPendingQueue {
                         tenant_id,
                         client_id,
-                        packet,
+                        packet_key,
                     } => {
                         self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .append_to_pending_queue(tenant_id, client_id, packet)
+                            .append_to_pending_queue(tenant_id, client_id, packet_key)
                             .await;
                         replies.push(SessionStateResponse::None);
                     }
@@ -344,7 +382,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                     } => {
-                        let packet = self
+                        let (packet_key, freed_key) = self
                             .data
                             .state
                             .session_state_storage
@@ -352,7 +390,10 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .await
                             .pop_from_pending_queue(tenant_id, client_id)
                             .await;
-                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet));
+                        if let Some(key) = freed_key {
+                            let _ = self.payload_store.delete(&key).await;
+                        }
+                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet_key));
                     }
                     types::SessionStateRequest::SubscribeTopic {
                         tenant_id,
@@ -401,13 +442,16 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                     } => {
-                        self.data
+                        let freed_keys = self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
                             .delete_session_state(&tenant_id, &client_id)
                             .await;
+                        for key in freed_keys {
+                            let _ = self.payload_store.delete(&key).await;
+                        }
                         replies.push(SessionStateResponse::None);
                     },
                 },
@@ -435,14 +479,90 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
         meta: &SnapshotMeta<NodeId, Node>,
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
+        let snapshot_data = snapshot.into_inner();
+        
+        // 0. Set is_ready to false during sync
+        self.is_ready.store(false, Ordering::SeqCst);
+
+        // 1. Parse snapshot data to find all packet keys
+        let wrapper: SnapshotWrapper = serde_json::from_slice(&snapshot_data)
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        
+        let storage_data: crate::session::session_state_storage::SerializableSessionStateStorage = 
+            serde_json::from_slice(&wrapper.session_state_storage_snapshot)
+            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+        
+        let mut keys_to_sync = std::collections::HashSet::new();
+        for tenant_map in storage_data.inner.values() {
+            for session_state in tenant_map.values() {
+                for key in &session_state.pending_messages {
+                    keys_to_sync.insert(key.clone());
+                }
+                for key in session_state.inflight.get_all_packet_keys() {
+                    keys_to_sync.insert(key);
+                }
+            }
+        }
+
+        // 2. Diff with local store
+        let mut missing_keys = Vec::new();
+        for key in keys_to_sync {
+            if !self.payload_store.contains(&key).await.unwrap_or(false) {
+                missing_keys.push(key);
+            }
+        }
+
+        if !missing_keys.is_empty() {
+            log::info!("Snapshot installation: found {} missing payloads, starting BulkSync", missing_keys.len());
+            
+            // 3. Try to sync from peers
+            let client = crate::raft::payload::PayloadClient::new(self.payload_store.clone());
+            let mut synced = false;
+            
+            // Try all nodes in membership
+            for (node_id, node) in meta.last_membership.nodes() {
+                if *node_id == self.settings.cluster.node_id {
+                    continue;
+                }
+                
+                log::info!("Trying to sync payloads from node {} at {}", node_id, node.rpc_addr);
+                
+                // Construct manifest for what we want to fetch
+                // For simplicity, we just ask for the keys we know are missing
+                let manifest = missing_keys.iter().map(|k| (k.clone(), 0, 0)).collect();
+                
+                match client.bulk_sync(&node.rpc_addr, manifest).await {
+                    Ok(_) => {
+                        log::info!("BulkSync from node {} succeed", node_id);
+                        synced = true;
+                        break;
+                    }
+                    Err(e) => {
+                        log::warn!("BulkSync from node {} failed: {}", node_id, e);
+                    }
+                }
+            }
+            
+            if !synced {
+                log::error!("Failed to sync missing payloads for snapshot. Data integrity compromised.");
+                // NOTE: We keep is_ready = false here
+                return Err(StorageError::IO {
+                    source: StorageIOError::read_snapshot(Some(meta.signature()), AnyError::new(&std::io::Error::new(std::io::ErrorKind::Other, "Payload sync failed"))),
+                });
+            }
+        }
+
         let new_snapshot = StoredSnapshot {
             meta: meta.clone(),
-            data: snapshot.into_inner(),
+            data: snapshot_data,
         };
 
         self.update_state_machine_(new_snapshot.clone()).await?;
 
         self.set_current_snapshot_(new_snapshot)?;
+
+        // 4. Set is_ready back to true
+        self.is_ready.store(true, Ordering::SeqCst);
 
         Ok(())
     }
@@ -461,6 +581,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
 #[derive(Debug, Clone)]
 pub struct LogStore {
     db: Arc<DB>,
+    payload_store: Arc<dyn PayloadStore>,
 }
 
 fn id_to_bin(id: u64) -> Vec<u8> {
@@ -651,9 +772,80 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
         I: IntoIterator<Item = Entry<SessionStateTypeConfig>> + Send,
         I::IntoIter: Send,
     {
-        for entry in entries {
+        let entries: Vec<_> = entries.into_iter().collect();
+        if entries.is_empty() {
+            callback.log_io_completed(Ok(()));
+            return Ok(());
+        }
+
+        // Get current log state to identify the safe boundary
+        let log_state = self.get_log_state().await?;
+        let last_persisted_index = log_state.last_log_id.map(|l| l.index).unwrap_or(0);
+
+        for entry in &entries {
+            // Safety Check: Payload Barrier
+            // We must have the payload for:
+            // 1. Any entry with index > last_persisted_index (New append)
+            // 2. Any entry that OVERWRITES an existing entry (index <= last_persisted_index)
+            //    unless it's exactly the same entry (same term).
+            
+            let mut need_payload_check = entry.log_id.index > last_persisted_index;
+            
+            if !need_payload_check {
+                // Check if it's an overwrite with a different term
+                let existing = self.try_get_log_entries(entry.log_id.index..=entry.log_id.index).await?;
+                if let Some(existing_entry) = existing.first() {
+                    if existing_entry.log_id.leader_id.term != entry.log_id.leader_id.term {
+                        need_payload_check = true;
+                    }
+                } else {
+                    // Gap in log? Should not happen in standard Raft, but be safe.
+                    need_payload_check = true;
+                }
+            }
+
+            if need_payload_check {
+                if let openraft::EntryPayload::Normal(req) = &entry.payload {
+                    let key = match req {
+                        types::SessionStateRequest::InflightRegisterRxPacket { packet_key, .. } => Some(packet_key),
+                        types::SessionStateRequest::InflightRegisterTxPacket { packet_key, .. } => Some(packet_key),
+                        types::SessionStateRequest::AppendToPendingQueue { packet_key, .. } => Some(packet_key),
+                        _ => None,
+                    };
+                    if let Some(k) = key {
+                        let mut found = false;
+                        // Tiny local retry loop to handle concurrent writes to the same local store
+                        for _i in 0..5 {
+                            match self.payload_store.contains(k).await {
+                                Ok(true) => {
+                                    found = true;
+                                    break;
+                                },
+                                _ => {
+                                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                                }
+                            }
+                        }
+
+                        if !found {
+                            // Critical Safety Failure
+                            let msg = format!("Payload missing for key: {} (Index: {}, Term: {})", k, entry.log_id.index, entry.log_id.leader_id.term);
+                            // log::error!("{}", msg);
+                            // Attempt to list keys or debug info?
+                            // For now just log strictly
+                            log::error!("Consistency Check Failed: {}", msg);
+                            
+                            let err_cb = std::io::Error::new(std::io::ErrorKind::NotFound, msg.clone());
+                            let err_ret = std::io::Error::new(std::io::ErrorKind::NotFound, msg);
+                            
+                            callback.log_io_completed(Err(err_cb));
+                            return Err(StorageIOError::write_logs(&err_ret).into());
+                        }
+                    }
+                }
+            }
+
             let id = id_to_bin(entry.log_id.index);
-            assert_eq!(bin_to_id(&id), entry.log_id.index);
             self.db
                 .put_cf(
                     self.logs(),
@@ -697,7 +889,9 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
 pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionStateStorage>>,
-) -> (LogStore, StateMachineStore) {
+    payload_store: Arc<dyn PayloadStore>,
+    settings: Arc<crate::settings::Settings>,
+) -> (LogStore, StateMachineStore, Arc<AtomicBool>) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
     db_opts.create_if_missing(true);
@@ -711,8 +905,9 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
 
-    let log_store = LogStore { db: db.clone() };
-    let sm_store = StateMachineStore::new(db, topic_storage).await.unwrap();
+    let log_store = LogStore { db: db.clone(), payload_store: payload_store.clone() };
+    let sm_store = StateMachineStore::new(db, topic_storage, payload_store, settings).await.unwrap();
+    let is_ready = sm_store.is_ready.clone();
 
-    (log_store, sm_store)
+    (log_store, sm_store, is_ready)
 }

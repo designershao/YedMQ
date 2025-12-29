@@ -14,11 +14,12 @@ use crate::settings::Settings;
 pub struct RpcActor {
     router_actors: Vec<Addr<RouterActor>>,
     settings: Arc<Settings>,
+    payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
 }
 
 impl RpcActor {
-    pub fn new(router_actors: Vec<Addr<RouterActor>>, settings: Arc<Settings>) -> Self {
-        RpcActor { router_actors, settings }
+    pub fn new(router_actors: Vec<Addr<RouterActor>>, settings: Arc<Settings>, payload_store: Arc<dyn crate::raft::payload::PayloadStore>) -> Self {
+        RpcActor { router_actors, settings, payload_store }
     }
 }
 
@@ -37,15 +38,21 @@ impl Actor for RpcActor {
             }
         };
         let router_actors = self.router_actors.clone();
+        let payload_store = self.payload_store.clone();
         ctx.spawn(
             async move {
                 let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl {
                     router_actors
                 };
-                let rpc_service = crate::rpc::raft_service::RustServiceImpl {};
+                let rpc_service = crate::rpc::raft_service::RustServiceImpl {
+                    store: payload_store.clone()
+                };
+                let payload_service = crate::raft::payload::PayloadServiceImpl::new(payload_store);
+
                 match Server::builder()
                     .add_service(ClusterServiceServer::new(cluster_service))
                     .add_service(RaftServiceServer::new(rpc_service))
+                    .add_service(crate::protobuf::raft_payload::payload_service_server::PayloadServiceServer::new(payload_service))
                     .serve(cluster_rpc_external)
                     .await {
                     Ok(_) => {

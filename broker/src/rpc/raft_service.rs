@@ -3,8 +3,12 @@ use log::{error, warn};
 use tonic::{Request, Response, Status};
 use crate::protobuf::{AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse, WriteRequest, WriteResponse};
 use crate::protobuf::raft_service_server::RaftService;
+use std::sync::Arc;
+use crate::raft::payload::PayloadStore;
 
-pub struct RustServiceImpl;
+pub struct RustServiceImpl {
+    pub store: Arc<dyn PayloadStore>,
+}
 
 #[tonic::async_trait]
 impl RaftService for RustServiceImpl {
@@ -161,8 +165,46 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionState => {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
-                let payload = serde_json::from_str(&inner.data)
+                let payload: openraft::raft::AppendEntriesRequest<crate::raft::session_state::types::SessionStateTypeConfig> = serde_json::from_str(&inner.data)
                     .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                
+                // Intercept and ensure payloads are present before passing to RaftCore
+                // This resolves the race condition between side-channel replication and log replication.
+                for entry in &payload.entries {
+                    if let openraft::EntryPayload::Normal(req) = &entry.payload {
+                        let key = match req {
+                            crate::raft::session_state::types::SessionStateRequest::InflightRegisterRxPacket { packet_key, .. } => Some(packet_key),
+                            crate::raft::session_state::types::SessionStateRequest::InflightRegisterTxPacket { packet_key, .. } => Some(packet_key),
+                            crate::raft::session_state::types::SessionStateRequest::AppendToPendingQueue { packet_key, .. } => Some(packet_key),
+                            _ => None,
+                        };
+
+                        if let Some(k) = key {
+                            // log::debug!("Interceptor checking payload for key: {}", k);
+                            let mut found = false;
+                            // Retry for up to 500ms (50 * 10ms) to allow for OS visibility/scheduling gap
+                            for _ in 0..50 {
+                                match self.store.contains(k).await {
+                                    Ok(true) => {
+                                        found = true;
+                                        break;
+                                    }
+                                    _ => {
+                                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                    }
+                                }
+                            }
+                            if !found {
+                                let msg = format!("Payload missing for key: {} after retry (AppendEntries). RPC aborted.", k);
+                                error!("{}", msg);
+                                return Err(Status::failed_precondition(msg));
+                            } else {
+                                // log::debug!("Interceptor payload check PASSED for key: {}", k);
+                            }
+                        }
+                    }
+                }
+
                 let append_entries_message = crate::raft::session_state::session_state_raft_actor::AppendEntriesRequestMessage {
                     payload
                 };

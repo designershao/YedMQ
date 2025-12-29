@@ -1,0 +1,75 @@
+syntax = "proto3";
+package raft_payload;
+
+service PayloadService {
+    // Single Payload replication (Side-channel push)
+    rpc ReplicatePayload (ReplicateRequest) returns (ReplicateResponse);
+
+    // Batch Payload replication (Optimization)
+    rpc ReplicateBatch (ReplicateBatchRequest) returns (ReplicateBatchResponse);
+    
+    // Active pulling (Fetch)
+    rpc FetchPayload (FetchRequest) returns (FetchResponse);
+    
+    // BulkSync: Manifest transfer
+    rpc StartBulkSync (BulkSyncStartRequest) returns (BulkSyncStartResponse);
+    
+    // BulkSync: Data stream transfer (Server Streaming)
+    rpc StreamBulkData (BulkSyncDataRequest) returns (stream BulkSyncChunk);
+}
+
+message ReplicateRequest {
+    string key = 1;
+    bytes data = 2;
+    uint64 term = 3; 
+}
+
+message ReplicateResponse {
+    bool success = 1;
+}
+
+message ReplicateBatchRequest {
+    repeated ReplicateRequest entries = 1;
+}
+
+message ReplicateBatchResponse {
+    bool success = 1;
+}
+
+message FetchRequest {
+    string key = 1;
+}
+
+message FetchResponse {
+    bool found = 1;
+    bytes data = 2;
+}
+
+message BulkSyncStartRequest {
+    string session_id = 1;
+    repeated PayloadManifestItem manifest = 2;
+}
+
+message PayloadManifestItem {
+    string key = 1;
+    uint64 size = 2;
+    uint32 checksum = 3;
+}
+
+message BulkSyncStartResponse {
+    bool accepted = 1;
+    // Follower returns keys it is missing
+    repeated string missing_keys = 2; 
+}
+
+message BulkSyncDataRequest {
+    string session_id = 1;
+    repeated string keys_to_fetch = 2; 
+}
+
+message BulkSyncChunk {
+    string key = 1;
+    bytes data = 2;
+    uint64 offset = 3;
+    bool is_last_chunk = 4;
+}

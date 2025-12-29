@@ -304,7 +304,7 @@ async fn test_tls_last_will_message_cross_node() {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
                     connected = true;
                 }
-                Ok(_) => {}, // 继续处理其他初始化事件（如 SubAck 等）
+                Ok(_) => {}, // Continue processing other initialization events (such as SubAck, etc.)
                 Err(e) => {
                     return;
                 }

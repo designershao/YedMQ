@@ -183,7 +183,7 @@ impl SessionActorMapRaftActor {
                 }
             },
             Err(SessionActorMapRaftError::NotLeader { leader }) => {
-                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
                     Self::forward_to_leader(leader_node.rpc_addr, request).await
                 } else {
@@ -650,7 +650,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                 }
                             }
                             Err(SessionActorMapRaftError::NotLeader { leader }) => {
-                                log::warn!("Not leader, forwarding request to leader: {:?}", leader);
+                                log::info!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
                                     let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
                                         log::error!("Failed to connect to leader: {}", e);

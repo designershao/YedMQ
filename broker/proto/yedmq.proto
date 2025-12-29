@@ -80,7 +80,7 @@ service ClusterService {
 message StoreOfflineMessageRequest {
     string tenant_id = 1; // Tenant identifier
     string client_id = 2; // Client identifier
-    string payload = 3;   // Message payload
+    string packet_key = 3;   // Message packet key
 }
 
 // Response for storing an offline message.
@@ -144,7 +144,9 @@ message DeleteSessionStateResponse {
 message RegisterInflightRxPacketRequest {
     string tenant_id = 1;
     string client_id = 2;
-    string payload = 3; // Packet data
+    uint32 packet_id = 3;
+    uint32 qos = 4;
+    string packet_key = 5;
 }
 
 // Response for registering a received inflight packet.
@@ -157,7 +159,9 @@ message RegisterInflightRxPacketResponse {
 message RegisterInflightTxPacketRequest {
     string tenant_id = 1;
     string client_id = 2;
-    string payload = 3; // Packet data
+    uint32 packet_id = 3;
+    uint32 qos = 4;
+    string packet_key = 5;
 }
 
 // Response for registering a transmitted inflight packet.
