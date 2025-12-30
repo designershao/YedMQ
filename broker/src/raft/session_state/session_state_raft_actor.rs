@@ -131,10 +131,11 @@ impl SessionStateRaftActor {
         settings: Arc<crate::settings::Settings>,
         payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
     ) -> Result<(SessionStateRaft, Arc<RwLock<SessionStateStorage>>, Arc<std::sync::atomic::AtomicBool>), SessionStateRaftError> {
-        let raft_config = Config {
-            cluster_name: "yedmq_session_state_raft_cluster".to_string(),
-            ..Default::default()
-        };
+        let mut raft_config = Config::default();
+        raft_config.cluster_name = "yedmq_session_state_raft_cluster".to_string();
+        raft_config.heartbeat_interval = settings.cluster.heartbeat_interval as u64;
+        raft_config.election_timeout_min = (settings.cluster.heartbeat_interval * 5) as u64;
+        raft_config.election_timeout_max = (settings.cluster.heartbeat_interval * 10) as u64;
 
         let dir = Path::new(&settings.cluster.store_dir);
 
@@ -240,13 +241,15 @@ impl SessionStateRaftActor {
                         };
 
                         if let Some(k) = key {
+                            log::info!("Forwarding: pushing payload key {} to leader {}", k, leader_node.rpc_addr);
                             let client = crate::raft::payload::PayloadClient::new(store);
                             let metrics_rx = raft.metrics();
                             let term = metrics_rx.borrow().vote.leader_id.term;
                             if let Err(e) = client.replicate(&leader_node.rpc_addr, k.clone(), term).await {
-                                log::error!("Failed to push payload to leader before forwarding: {}", e);
-                                return Err(SessionStateRaftError::GRPC(e.to_string()));
+                                log::error!("CRITICAL: Failed to push payload {} to leader {} before forwarding: {}", k, leader_node.rpc_addr, e);
+                                return Err(SessionStateRaftError::GRPC(format!("Payload push failed: {}", e)));
                             }
+                            log::info!("Forwarding: payload key {} pushed successfully", k);
                         }
                     }
                     Self::forward_to_leader(leader_node.rpc_addr, request).await
@@ -314,6 +317,10 @@ impl SessionStateRaftActor {
                 ctx.notify(msg.clone());
             } else if let Some(msg) = msg.downcast_ref::<DeleteSessionState>() {
                 ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<SubscribeTopic>() {
+                ctx.notify(msg.clone());
+            } else if let Some(msg) = msg.downcast_ref::<UnsubscribeTopic>() {
+                ctx.notify(msg.clone());
             } else {
                 log::warn!("Unknown pending message type: {:?}", msg);
             }
@@ -326,7 +333,7 @@ impl Actor for SessionStateRaftActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        ctx.run_interval(Duration::from_secs(5), |_, ctx| {
+        ctx.run_interval(Duration::from_secs(1), |_, ctx| {
             ctx.address().do_send(PerformIntegrityCheck {});
         });
     }
@@ -443,9 +450,9 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
-                        let command = SessionStateRequest::AppendToPendingQueue { 
-                            tenant_id: msg.tenant_id, 
-                            client_id: msg.client_id, 
+                        let command = SessionStateRequest::AppendToPendingQueue {
+                            tenant_id: msg.tenant_id,
+                            client_id: msg.client_id,
                             packet_key: msg.packet_key
                         };
                         Self::handle_raft_write(raft_instance, command, payload_store).await?;
@@ -468,7 +475,7 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
                     async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
                 )
-            }            
+            }
         }
     }
 }
@@ -496,9 +503,9 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
-                        let command = SessionStateRequest::PopFromPendingQueue { 
-                            tenant_id: msg.tenant_id, 
-                            client_id: msg.client_id 
+                        let command = SessionStateRequest::PopFromPendingQueue {
+                            tenant_id: msg.tenant_id,
+                            client_id: msg.client_id
                         };
                         let res = Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         match res.data {
@@ -529,7 +536,7 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                     async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
                 )
-            }            
+            }
         }
     }
 }
@@ -543,7 +550,7 @@ pub struct GetSessionState {
 
 impl Handler<GetSessionState> for SessionStateRaftActor {
     type Result = ResponseActFuture<Self, Result<Option<SessionState>, SessionStateRaftError>>;
-    
+
     fn handle(&mut self, msg: GetSessionState, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
@@ -588,7 +595,7 @@ impl Handler<GetSessionState> for SessionStateRaftActor {
                     async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
                 )
-            }            
+            }
         }
     }
 }
@@ -602,7 +609,7 @@ pub struct GetSessionStateEnsureLinearizable {
 
 impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
     type Result = ResponseActFuture<Self, Result<Option<SessionState>, SessionStateRaftError>>;
-    
+
     fn handle(&mut self, msg: GetSessionStateEnsureLinearizable, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
@@ -671,7 +678,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                             },
                             Err(e) => {
                                 log::error!("Failed to ensure linearizable read: {}", e);
-                                Err(e)    
+                                Err(e)
                             }
                         }
                     } else {
@@ -692,7 +699,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                     async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
                 )
-            }            
+            }
         }
     }
 }
@@ -706,7 +713,7 @@ pub struct CreateSessionState {
 
 impl Handler<CreateSessionState> for SessionStateRaftActor {
     type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
-    
+
     fn handle(&mut self, msg: CreateSessionState, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
@@ -721,10 +728,10 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
                 Box::pin(
                 async move {
                     if let Some(raft_instance) = raft.get() {
-                        let command = SessionStateRequest::CreateSessionState { 
-                            tenant_id: msg.tenant_id, 
-                            client_id: msg.client_id, 
-                            inflight_duration_secs: inflight_duration 
+                        let command = SessionStateRequest::CreateSessionState {
+                            tenant_id: msg.tenant_id,
+                            client_id: msg.client_id,
+                            inflight_duration_secs: inflight_duration
                         };
                         Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         Ok(())
@@ -746,7 +753,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
                     async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
                         .into_actor(self),
                 )
-            }            
+            }
         }
     }
 }
@@ -756,6 +763,116 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
 pub struct DeleteSessionState {
     pub tenant_id: String,
     pub client_id: String,
+}
+
+#[derive(Message, Clone)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct SubscribeTopic {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub topic: String,
+    pub qos: u8,
+}
+
+impl Handler<SubscribeTopic> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+
+    fn handle(&mut self, msg: SubscribeTopic, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
+                Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::SubscribeTopic {
+                            tenant_id: msg.tenant_id,
+                            client_id: msg.client_id,
+                            topic: msg.topic,
+                            qos: msg.qos,
+                        };
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                )
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                )
+            }
+            ActorState::Stopped => {
+                Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                )
+            }
+        }
+    }
+}
+
+#[derive(Message, Clone)]
+#[rtype(result="Result<(), SessionStateRaftError>")]
+pub struct UnsubscribeTopic {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub topic: String,
+}
+
+impl Handler<UnsubscribeTopic> for SessionStateRaftActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionStateRaftError>>;
+
+    fn handle(&mut self, msg: UnsubscribeTopic, _: &mut Context<Self>) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                self.pending_messages.push(Box::new(msg));
+                Box::pin(async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                let payload_store = self.payload_store.get().cloned();
+                Box::pin(
+                async move {
+                    if let Some(raft_instance) = raft.get() {
+                        let command = SessionStateRequest::UnsubscribeTopic {
+                            tenant_id: msg.tenant_id,
+                            client_id: msg.client_id,
+                            topic: msg.topic,
+                        };
+                        Self::handle_raft_write(raft_instance, command, payload_store).await?;
+                        Ok(())
+                    } else {
+                        Err(SessionStateRaftError::NotInitialized)
+                    }
+                }.into_actor(self)
+                )
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                Box::pin(
+                    async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                )
+            }
+            ActorState::Stopped => {
+                Box::pin(
+                    async { Err(SessionStateRaftError::NotReady("Actor is stopped".to_string())) }
+                        .into_actor(self),
+                )
+            }
+        }
+    }
 }
 
 impl Handler<DeleteSessionState> for SessionStateRaftActor {
