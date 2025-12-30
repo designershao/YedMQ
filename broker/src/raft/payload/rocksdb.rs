@@ -4,7 +4,7 @@ use crate::raft::payload::store::{PayloadStore, PayloadKey, PayloadError, Result
 use async_trait::async_trait;
 use bytes::Bytes;
 use rocksdb::{DB, Options, WriteBatch};
-use log::{info, error};
+use log::info;
 
 #[derive(Clone)]
 pub struct RocksDBPayloadStore {

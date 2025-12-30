@@ -7,8 +7,7 @@ use crate::protobuf::raft_payload::{
 };
 use crate::raft::payload::store::PayloadStore;
 use bytes::Bytes;
-use tokio_stream::StreamExt;
-use log::{info, warn, error, debug};
+use log::{warn, error, debug};
 
 pub struct PayloadServiceImpl {
     store: Arc<dyn PayloadStore>,

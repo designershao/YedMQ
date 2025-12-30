@@ -1387,7 +1387,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
                                 let qos = publish_packet.fix_header.qos.unwrap() as u8;
 
-                                let mut key = if let Some(store) = &payload_store {
+                                let key = if let Some(store) = &payload_store {
                                     let k = uuid::Uuid::new_v4().to_string();
                                     let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
                                     if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
@@ -1402,7 +1402,7 @@ impl Handler<SessionActorMessage> for SessionActor {
 
                                 if clean_session {
                                     if let Err(e) = session_state_guard.inflight.register_with_tx_packet(packet_id, qos, key.clone()) {
-                                        if let InflightError::PacketIdentifierHasExisted = e {
+                                        if matches!(e, InflightError::PacketIdentifierHasExisted) {
                                             if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
                                                 publish_packet.variable_header.packet_identifier = Some(new_id);
                                                 session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();

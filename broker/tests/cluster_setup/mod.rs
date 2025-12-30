@@ -1,7 +1,7 @@
 use env_logger;
 use std::{
     env, fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::Duration,
     thread,

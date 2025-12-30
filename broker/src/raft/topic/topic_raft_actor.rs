@@ -307,7 +307,7 @@ where
 impl Handler<GetTopicStorage> for TopicRaftActor {
     type Result =GetTopicStorageResponse;
 
-    fn handle(&mut self, msg: GetTopicStorage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: GetTopicStorage, _ctx: &mut Self::Context) -> Self::Result {
         GetTopicStorageResponse {
             topic_storage: self.topic_storage.get().unwrap().clone(),
         }

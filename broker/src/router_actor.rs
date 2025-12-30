@@ -3,7 +3,7 @@ use actix::prelude::*;
 use log::{info, warn};
 use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
-use std::{collections::VecDeque, time::Instant};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use parking_lot::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

@@ -1129,7 +1129,10 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                                 packet.set_dup(1);
                                                                 Ok(Some(packet))
                                                             },
-                                                            Err(e) => Ok(None)
+                                                            Err(e) => {
+                                                                log::warn!("Failed to deserialize packet: {}", e);
+                                                                Ok(None)
+                                                            }
                                                         }
                                                     },
                                                     _ => Ok(None)
@@ -1355,7 +1358,10 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                                                 packet.set_dup(1);
                                                                 Ok(Some(packet))
                                                             },
-                                                            Err(e) => Ok(None)
+                                                            Err(e) => {
+                                                                log::warn!("Failed to deserialize packet: {}", e);
+                                                                Ok(None)
+                                                            }
                                                         }
                                                     },
                                                     _ => Ok(None)

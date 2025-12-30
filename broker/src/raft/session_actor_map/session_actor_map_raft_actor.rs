@@ -447,7 +447,7 @@ pub struct GetSessionActorMapStorage;
 impl Handler<GetSessionActorMapStorage> for SessionActorMapRaftActor {
     type Result = GetSessionActorMapStorageResponse;
 
-    fn handle(&mut self, msg: GetSessionActorMapStorage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, _msg: GetSessionActorMapStorage, _ctx: &mut Self::Context) -> Self::Result {
         GetSessionActorMapStorageResponse {
             session_actor_map_storage: self.session_actor_map_storage.get().unwrap().clone()
         }

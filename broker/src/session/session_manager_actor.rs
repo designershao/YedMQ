@@ -899,19 +899,6 @@ impl Handler<CreateTenantMessage> for SessionManagerActor {
     }
 }
 
-impl SessionManagerActor {
-    async fn tenant_existed(&self, tenant_identifier: &str) -> bool {
-        self.sessions.get_inner().contains_key(tenant_identifier)
-    }
-
-    async fn create_tenant(&mut self, tenant_identifier: &str) {
-        self.sessions.get_inner().insert(
-            tenant_identifier.to_string(),
-            Arc::new(DashMap::new()),
-        );
-    }
-}
-
 #[derive(Message)]
 #[rtype(result = "Result<(), SessionManagerError>")]
 struct RemoveSessionMessage {
@@ -922,7 +909,7 @@ struct RemoveSessionMessage {
 impl Handler<RemoveSessionMessage> for SessionManagerActor {
     type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
-    fn handle(&mut self, msg: RemoveSessionMessage, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(&mut self, msg: RemoveSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
 
         let sessions = self.sessions.get_inner().clone();
         let tenant_id = msg.tenant_id.clone();

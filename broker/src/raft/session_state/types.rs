@@ -2,7 +2,6 @@ use crate::{raft::Node, session::session_state_storage::SessionStateStorageError
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateRequest {

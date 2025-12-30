@@ -1,10 +1,9 @@
 use std::sync::Arc;
-use tonic::transport::Channel;
 use crate::protobuf::raft_payload::payload_service_client::PayloadServiceClient;
 use crate::protobuf::raft_payload::{FetchRequest, BulkSyncStartRequest, BulkSyncDataRequest, PayloadManifestItem};
 use crate::raft::payload::store::{PayloadStore, PayloadKey};
 use bytes::Bytes;
-use log::{info, error, warn};
+use log::{info, warn};
 use tokio_stream::StreamExt;
 
 pub struct PayloadClient {
