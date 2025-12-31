@@ -524,11 +524,9 @@ impl Handler<ForceStop> for SessionManagerActor {
                 None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
                 Some(tenant_sessions) => {
                      if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        if let Err(e) = session
-                            .session_actor_message_recipient
-                            .send(SessionActorMessage::ForceStop)
-                            .await
-                        {
+                        let recipient = session.session_actor_message_recipient.clone();
+                        drop(session);
+                        if let Err(e) = recipient.send(SessionActorMessage::ForceStop).await {
                              warn!(
                                 "failed to send ForceStop to session actor {}: {}. It might have already stopped.",
                                 msg.client_id, e

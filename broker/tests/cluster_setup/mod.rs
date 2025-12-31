@@ -133,7 +133,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                 cluster: yedmq::settings::Cluster {
                     node_id: id,
                     cluster_name: "YedMQTestCluster".to_string(),
-                    heartbeat_interval: 10,
+                    heartbeat_interval: 50,
                     store_dir,
                     rpc: yedmq::settings::RPC {
                         external: format!("0.0.0.0:{}", rpc),
