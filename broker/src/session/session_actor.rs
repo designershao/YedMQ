@@ -147,7 +147,7 @@ pub enum SessionActorMessage {
 
     OutboundMessage(MqttPacketV3),
 
-    KeepAliveExpred,
+    KeepAliveExpired,
 
     InflightRetry,
 
@@ -241,7 +241,7 @@ impl Actor for SessionActor {
                 );
                 if matches!(act.activity_state, ActivityState::Active)
                     && act.keep_alive_expired {
-                        ctx.address().do_send(SessionActorMessage::KeepAliveExpred);
+                        ctx.address().do_send(SessionActorMessage::KeepAliveExpired);
                     }
                 act.keep_alive_expired = true // reset keep alive expired flag
             });
@@ -1462,7 +1462,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                     }
                 }
             }
-            SessionActorMessage::KeepAliveExpred => {
+            SessionActorMessage::KeepAliveExpired => {
                 // send will message and clean up
                 self.send_will_message(ctx, |_, actor, ctx| {
                     if let Some(recipient) = &actor.conn_recipient {

@@ -12,6 +12,7 @@ pub mod connection;
 pub mod service_registry;
 pub mod arbiter_pool;
 pub mod rpc;
+mod timer_actor;
 
 pub mod protobuf {
     tonic::include_proto!("yedmqpb");
