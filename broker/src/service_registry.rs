@@ -16,6 +16,7 @@ use crate::settings::Settings;
 use crate::session::session_actor_map_storage::SessionClock;
 
 use crate::session::session_registry::SessionRegistry;
+use crate::timer_actor::TimerActor;
 
 #[derive(Clone)]
 pub struct ServiceRegistry {
@@ -44,6 +45,10 @@ impl ServiceRegistry {
         let session_map_raft = SessionActorMapRaftActor::from_registry();
         let session_state_raft = SessionStateRaftActor::from_registry();
         let session_manager = SessionManagerActor::from_registry();
+
+        let timer_actor = pools.start_actor(move || {
+            TimerActor::new()
+        });
         
         let session_registry = SessionRegistry::new();
 
@@ -53,6 +58,7 @@ impl ServiceRegistry {
             session_clock: session_clock.clone(),
             session_registry: session_registry.clone(),
             payload_store: payload_store.clone(),
+            timer_actor
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {

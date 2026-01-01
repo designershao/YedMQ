@@ -115,7 +115,7 @@ pub enum TimerType {
     KeepAlive,
 }
 
-struct TimerActor {
+pub struct TimerActor {
     queue: DelayQueue<(String, String, TimerType)>, // (tenant_id, client_id, timer_type)
 
     sessions: HashMap<

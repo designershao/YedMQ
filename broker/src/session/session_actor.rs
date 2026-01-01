@@ -44,6 +44,7 @@ use crate::connection::{ConnectionActorMessage, DisconnectReason};
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::raft::payload::PayloadStore;
+use crate::timer_actor::{RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType};
 
 pub struct Client {
 
@@ -209,11 +210,7 @@ pub struct SessionActor {
 
     keep_alive_expired: bool,
 
-    keep_alive_task_handle: Option<SpawnHandle>,
-
     inflight_retry_interval: u64,
-
-    inflight_retry_task_handle: Option<SpawnHandle>,
 
     state: Arc<RwLock<SessionState>>,
 
@@ -227,39 +224,16 @@ pub struct SessionActor {
 
     payload_store: Option<Arc<dyn PayloadStore>>,
 
+    timer_actor: Addr<TimerActor>
+
 }
 
 impl Actor for SessionActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let keep_alive_task_handle =
-            ctx.run_interval(Duration::from_secs((self.keep_alive as f64 * 1.5) as u64), |act, ctx| {
-                debug!(
-                    "in keep alive current actor state {:?} ",
-                    act.activity_state
-                );
-                if matches!(act.activity_state, ActivityState::Active)
-                    && act.keep_alive_expired {
-                        ctx.address().do_send(SessionActorMessage::KeepAliveExpired);
-                    }
-                act.keep_alive_expired = true // reset keep alive expired flag
-            });
-        self.keep_alive_task_handle = Some(keep_alive_task_handle);
 
-        let inflight_retry_task_handle = ctx.run_interval(
-            Duration::from_secs(self.inflight_retry_interval),
-            |act, ctx| {
-                debug!(
-                    "in inflight retry current actor state {:?} ",
-                    act.activity_state
-                );
-                if matches!(act.activity_state, ActivityState::Active) {
-                    ctx.address().do_send(SessionActorMessage::InflightRetry);
-                }
-            },
-        );
-        self.inflight_retry_task_handle = Some(inflight_retry_task_handle);
+        self.start_inflight_and_keep_alive_timer(ctx);
 
         let state = self.state.clone();
         let tenant_id = self.tenant_id.clone();
@@ -684,18 +658,17 @@ impl SessionActor {
         topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
         router_actors: Vec<Addr<RouterActor>>,
         payload_store: Option<Arc<dyn PayloadStore>>,
+        timer_actor: Addr<TimerActor>
     ) -> Self {
         SessionActor {
             plugin_manager,
             conn_recipient: Some(connection_actor_addr),
             conn_addr: Some(peer_addr),
             activity_state: ActivityState::Active,
-            keep_alive_task_handle: None,
             clean_session,
             keep_alive,
             keep_alive_expired: true,
             inflight_retry_interval: inflight_retry_duration_secs,
-            inflight_retry_task_handle: None,
             tenant_id,
             client_id,
             will_message,
@@ -706,6 +679,7 @@ impl SessionActor {
             topic_raft_actor,
             router_actors,
             payload_store,
+            timer_actor
         }
     }
 
@@ -734,8 +708,54 @@ impl SessionActor {
         }
     }
 
+    fn register_inflight_retry_timer(&self, ctx: &mut <SessionActor as Actor>::Context) {
+        let inflight_retry_duration = Duration::from_secs(self.inflight_retry_interval);
+
+        self.timer_actor.do_send(RegisterInflight {
+            tenant_id: self.tenant_id.clone(),
+            session_id: self.client_id.clone(),
+            inflight_retry_duration,
+            addr: ctx.address().recipient(),
+        });
+    }
+
+    fn start_inflight_and_keep_alive_timer(&self, ctx: &mut <SessionActor as Actor>::Context) {
+        let keep_alive_duration = Duration::from_secs((self.keep_alive as f64 * 1.5) as u64);
+
+        self.timer_actor.do_send(RegisterKeepAlive {
+            tenant_id: self.tenant_id.clone(),
+            session_id: self.client_id.clone(),
+            keep_alive: keep_alive_duration,
+            addr: ctx.address().recipient(),
+        });
+
+        self.register_inflight_retry_timer(ctx);
+
+    }
+
+    fn stop_inflight_and_keep_alive_timer(&self) {
+        self.timer_actor.do_send(RemoveTimer {
+            tenant_id: self.tenant_id.clone(),
+            session_id: self.client_id.clone(),
+            timer_type: TimerType::Inflight,
+        });
+        self.timer_actor.do_send(RemoveTimer {
+            tenant_id: self.tenant_id.clone(),
+            session_id: self.client_id.clone(),
+            timer_type: TimerType::KeepAlive,
+        });
+    }
+
     fn set_state(&mut self, ctx: &mut <SessionActor as Actor>::Context, state: ActivityState) {
         info!("set session {} state to {:?}", self.client_id, state);
+        match state {
+            ActivityState::Inactive => {
+                self.stop_inflight_and_keep_alive_timer();
+            },
+            ActivityState::Active => {
+
+            }
+        }
         self.activity_state = state;
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
         async move {
@@ -1336,6 +1356,11 @@ impl Handler<SessionActorMessage> for SessionActor {
         match msg {
             SessionActorMessage::InboundPacket(packet) => {
                 self.reset_keep_alive_expired_flag();
+                self.timer_actor.do_send(RefreshTimer {
+                    tenant_id: self.tenant_id.clone(),
+                    session_id: self.client_id.clone(),
+                    timer_type: TimerType::KeepAlive,
+                });
                 match packet {
                     MqttPacketV3::Pingreq(_) => {
                         self.handle_pingreq();
@@ -1481,6 +1506,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let session_state = self.state.clone();
                 let session_actor_addr = ctx.address();
                 let payload_store = self.payload_store.clone();
+                self.register_inflight_retry_timer(ctx);
                 ctx.spawn(
                     async move {
                       let mut session_state_guard = session_state.write().await;
