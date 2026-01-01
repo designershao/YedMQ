@@ -20,13 +20,15 @@ impl MqttTcpListener {
                 Ok(peer_addr) => {
                     let settings = self.app.settings.clone();
                     let plugin_manager = self.app.plugin_manager.clone();
+                    let metric = self.app.metric.clone();
                     ConnectionActor::create_and_start(
                         stream,
                         settings.mqtt.max_message_size,
                         4096,
                         peer_addr,
                         plugin_manager,
-                        None
+                        None,
+                        metric
                     );
                 }
                 Err(_) => {

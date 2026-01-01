@@ -45,6 +45,7 @@ use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::raft::payload::PayloadStore;
 use crate::timer_actor::{RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType};
+use crate::metric::Metric;
 
 pub struct Client {
 
@@ -224,7 +225,9 @@ pub struct SessionActor {
 
     payload_store: Option<Arc<dyn PayloadStore>>,
 
-    timer_actor: Addr<TimerActor>
+    timer_actor: Addr<TimerActor>,
+
+    metric: Arc<Metric>
 
 }
 
@@ -658,7 +661,8 @@ impl SessionActor {
         topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
         router_actors: Vec<Addr<RouterActor>>,
         payload_store: Option<Arc<dyn PayloadStore>>,
-        timer_actor: Addr<TimerActor>
+        timer_actor: Addr<TimerActor>,
+        metric: Arc<Metric>
     ) -> Self {
         SessionActor {
             plugin_manager,
@@ -679,7 +683,8 @@ impl SessionActor {
             topic_raft_actor,
             router_actors,
             payload_store,
-            timer_actor
+            timer_actor,
+            metric
         }
     }
 
@@ -809,6 +814,7 @@ impl SessionActor {
         publish_packet: PublishPacket,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
+        self.metric.increase_messages_received();
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
@@ -878,6 +884,7 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let session_state = self.state.clone();
         let clean_session = self.clean_session;
+        let metric = self.metric.clone();
 
         async move {
             let res = do_handle_subscribe(
@@ -906,6 +913,11 @@ impl SessionActor {
             let client_info_ref = &client_info;
             let tenant_id = &client_info_ref.tenant_id;
             let client_id = &client_info_ref.client_identifier;
+
+            for _ in 0..res.succeed_subscriptions.len() {
+                metric.increase_subscriptions_count();
+            }
+
             if !clean_session {
                 for (topic, qos) in res.succeed_subscriptions {
                     let qos_v = match qos {
@@ -938,6 +950,14 @@ impl SessionActor {
                         );
                     }
                 }
+            } else {
+                 for (topic, qos) in res.succeed_subscriptions {
+                    session_state
+                        .write()
+                        .await
+                        .subscriptions
+                        .insert(topic.clone(), qos);
+                 }
             }
         }
         .into_actor(self)
@@ -961,8 +981,12 @@ impl SessionActor {
         let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let topic_raft_actor = self.topic_raft_actor.clone();
+        let metric = self.metric.clone();
         async move {
             let res = do_handle_unsubscribe(unsubscribe_packet, &client_info, topic_raft_actor.clone()).await;
+            for _ in 0..res.succeed_unsubscriptions.len() {
+                metric.decrease_subscriptions_count();
+            }
             for topic in res.succeed_unsubscriptions {
                 {
                     session_state.write().await.subscriptions.remove(&topic);
@@ -1394,6 +1418,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::OutboundMessage(packet) => {
                 if let MqttPacketV3::Publish(mut publish_packet) = packet {
+                    self.metric.increase_messages_sent();
                     let tenant_id = self.tenant_id.clone();
                     let client_id = self.client_id.clone();
                     let clean_session = self.clean_session;

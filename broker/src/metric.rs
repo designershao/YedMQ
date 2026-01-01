@@ -15,6 +15,18 @@ pub struct Metric {
 
     pub bytes_sent: AtomicU64,
 
+    pub packets_received: AtomicU64,
+
+    pub packets_sent: AtomicU64,
+
+    pub messages_received: AtomicU64,
+
+    pub messages_sent: AtomicU64,
+
+    pub messages_dropped: AtomicU64,
+
+    pub subscriptions_count: AtomicU64,
+
     pub start_time: Instant,
 }
 
@@ -34,6 +46,18 @@ impl Metric {
             bytes_received: AtomicU64::new(0),
 
             bytes_sent: AtomicU64::new(0),
+
+            packets_received: AtomicU64::new(0),
+
+            packets_sent: AtomicU64::new(0),
+
+            messages_received: AtomicU64::new(0),
+
+            messages_sent: AtomicU64::new(0),
+
+            messages_dropped: AtomicU64::new(0),
+
+            subscriptions_count: AtomicU64::new(0),
 
             start_time: Instant::now()
         }
@@ -59,6 +83,33 @@ impl Metric {
         self.bytes_sent.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
+    pub fn increase_packets_received(&self) {
+        self.packets_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn increase_packets_sent(&self) {
+        self.packets_sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn increase_messages_received(&self) {
+        self.messages_received.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn increase_messages_sent(&self) {
+        self.messages_sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn increase_messages_dropped(&self) {
+        self.messages_dropped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn increase_subscriptions_count(&self) {
+        self.subscriptions_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn decrease_subscriptions_count(&self) {
+        self.subscriptions_count.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 pub struct SysTopicTask{
@@ -78,12 +129,22 @@ impl SysTopicTask {
         SysTopicTask { metric, interval_secs, router_actor:None }
     }
 
+    pub fn set_router_actor(&mut self, router_actor: Addr<RouterActor>) {
+        self.router_actor = Some(router_actor);
+    }
+
     pub async fn run(&self) {
 
         let clients_connected_topic = "$SYS/broker/clients/connected".to_string();
         let broker_bytes_sent_topic = "$SYS/broker/bytes/sent".to_string();
         let broker_bytes_received_topic = "$SYS/broker/bytes/received".to_string();
         let broker_uptime_topic = "$SYS/broker/uptime".to_string();
+        let packets_received_topic = "$SYS/broker/packets/received".to_string();
+        let packets_sent_topic = "$SYS/broker/packets/sent".to_string();
+        let messages_received_topic = "$SYS/broker/messages/received".to_string();
+        let messages_sent_topic = "$SYS/broker/messages/sent".to_string();
+        let messages_dropped_topic = "$SYS/broker/messages/dropped".to_string();
+        let subscriptions_count_topic = "$SYS/broker/subscriptions/count".to_string();
 
         let mut sys_topic_interval = tokio::time::interval(Duration::from_secs(self.interval_secs));
         let metric = self.metric.clone();
@@ -94,26 +155,44 @@ impl SysTopicTask {
             let clients_connected = metric.clients_connected.load(std::sync::atomic::Ordering::SeqCst);
             let bytes_received = metric.bytes_received.load(std::sync::atomic::Ordering::SeqCst);
             let bytes_sent = metric.bytes_sent.load(std::sync::atomic::Ordering::SeqCst);
+            let packets_received = metric.packets_received.load(std::sync::atomic::Ordering::SeqCst);
+            let packets_sent = metric.packets_sent.load(std::sync::atomic::Ordering::SeqCst);
+            let messages_received = metric.messages_received.load(std::sync::atomic::Ordering::SeqCst);
+            let messages_sent = metric.messages_sent.load(std::sync::atomic::Ordering::SeqCst);
+            let messages_dropped = metric.messages_dropped.load(std::sync::atomic::Ordering::SeqCst);
+            let subscriptions_count = metric.subscriptions_count.load(std::sync::atomic::Ordering::SeqCst);
 
             let clients_connected_packet = PublishPacketBuilder::new(clients_connected_topic.clone(), Bytes::copy_from_slice(vec![clients_connected.to_le_bytes()[0]].as_slice())).build();
             let bytes_received_packet = PublishPacketBuilder::new(broker_bytes_received_topic.clone(),Bytes::copy_from_slice( vec![bytes_received.to_le_bytes()[0]].as_slice())).build();
             let bytes_sent_packet = PublishPacketBuilder::new(broker_bytes_sent_topic.clone(),Bytes::copy_from_slice( vec![bytes_sent.to_le_bytes()[0]].as_slice())).build();
             let uptime_packet = PublishPacketBuilder::new(broker_uptime_topic.clone(),Bytes::copy_from_slice(vec![metric.get_uptime().to_le_bytes()[0]].as_slice())).build();
+            
+            let packets_received_packet = PublishPacketBuilder::new(packets_received_topic.clone(), Bytes::copy_from_slice(vec![packets_received.to_le_bytes()[0]].as_slice())).build();
+            let packets_sent_packet = PublishPacketBuilder::new(packets_sent_topic.clone(), Bytes::copy_from_slice(vec![packets_sent.to_le_bytes()[0]].as_slice())).build();
+            let messages_received_packet = PublishPacketBuilder::new(messages_received_topic.clone(), Bytes::copy_from_slice(vec![messages_received.to_le_bytes()[0]].as_slice())).build();
+            let messages_sent_packet = PublishPacketBuilder::new(messages_sent_topic.clone(), Bytes::copy_from_slice(vec![messages_sent.to_le_bytes()[0]].as_slice())).build();
+            let messages_dropped_packet = PublishPacketBuilder::new(messages_dropped_topic.clone(), Bytes::copy_from_slice(vec![messages_dropped.to_le_bytes()[0]].as_slice())).build();
+            let subscriptions_count_packet = PublishPacketBuilder::new(subscriptions_count_topic.clone(), Bytes::copy_from_slice(vec![subscriptions_count.to_le_bytes()[0]].as_slice())).build();
 
             let router_actor_addr = self.router_actor.as_ref().expect("Router actor not initialized").clone();
 
+            let packets = vec![
+                clients_connected_packet,
+                bytes_received_packet,
+                bytes_sent_packet,
+                uptime_packet,
+                packets_received_packet,
+                packets_sent_packet,
+                messages_received_packet,
+                messages_sent_packet,
+                messages_dropped_packet,
+                subscriptions_count_packet,
+            ];
 
-            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(clients_connected_packet)}).await.unwrap() {
-                warn!("Failed to send packet to all tenants, error: {}", e);
-            }
-            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(bytes_received_packet)}).await.unwrap() {
-                warn!("Failed to send packet to all tenants, error: {}", e);
-            }
-            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(bytes_sent_packet)}).await.unwrap() {
-                warn!("Failed to send packet to all tenants, error: {}", e);
-            }
-            if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(uptime_packet)}).await.unwrap() {
-                warn!("Failed to send packet to all tenants, error: {}", e);
+            for packet in packets {
+                if let Err(e) = router_actor_addr.send(router_actor::RoutePacketToAllTenants{packet: yedmq_mqtt::MqttPacketV3::Publish(packet)}).await.unwrap() {
+                    warn!("Failed to send packet to all tenants, error: {}", e);
+                }
             }
         }
     }

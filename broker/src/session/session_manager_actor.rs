@@ -85,6 +85,7 @@ impl Supervised for SessionManagerActor {}
 
 use crate::raft::payload::PayloadStore;
 use crate::timer_actor::TimerActor;
+use crate::metric::Metric;
 
 pub struct SessionManagerActor {
     sessions: SessionRegistry,
@@ -105,7 +106,9 @@ pub struct SessionManagerActor {
 
     payload_store: Option<Arc<dyn PayloadStore>>,
 
-    timer_actor: Option<Addr<TimerActor>>
+    timer_actor: Option<Addr<TimerActor>>,
+
+    metric: Option<Arc<Metric>>
 }
 
 #[derive(Message)]
@@ -117,6 +120,7 @@ pub struct Initialize {
     pub session_registry: SessionRegistry,
     pub timer_actor: Addr<TimerActor>,
     pub payload_store: Arc<dyn PayloadStore>,
+    pub metric: Arc<Metric>,
 }
 
 impl Handler<Initialize> for SessionManagerActor {
@@ -130,6 +134,7 @@ impl Handler<Initialize> for SessionManagerActor {
         self.sessions = msg.session_registry;
         self.payload_store = Some(msg.payload_store);
         self.timer_actor = Some(msg.timer_actor);
+        self.metric = Some(msg.metric);
     }
 }
 
@@ -145,7 +150,8 @@ impl Default for SessionManagerActor {
             router_actors: None,
             arbiter_pool: None,
             payload_store: None,
-            timer_actor: None
+            timer_actor: None,
+            metric: None
         }
     }
 }
@@ -657,6 +663,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
         let payload_store = self.payload_store.clone();
         let timer_actor = self.timer_actor.as_ref().unwrap().clone();
+        let metric = self.metric.as_ref().unwrap().clone();
 
         let future = async move {
             let existing = sessions.get(&tenant_id);
@@ -862,7 +869,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     TopicRaftActor::from_registry(),
                     router_actors,
                     payload_store.clone(),
-                    timer_actor
+                    timer_actor,
+                    metric
                 )
             });
 

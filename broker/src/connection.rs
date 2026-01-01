@@ -21,6 +21,7 @@ use yedmq_plugin_host::protocol::plugin_protocol::AuthenticateRequest;
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
 use crate::session::{session_actor, WillMessage};
+use crate::metric::Metric;
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -44,6 +45,7 @@ impl NetworkSender {
     pub fn spawn<T>(
         mut writer: tokio::io::WriteHalf<T>,
         event_tx: mpsc::UnboundedSender<NetworkEvent>,
+        metric: Arc<Metric>,
     ) -> Self
     where
         T: AsyncWrite + Unpin + Send + 'static,
@@ -64,7 +66,7 @@ impl NetworkSender {
                                 msg_count += 1;
                                 
                                 if batch.len() >= 64 * 1024 || msg_count >= 200 {
-                                    if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count).await {
+                                    if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await {
                                         error!("Write error: {}", e);
                                         let _ = event_tx.send(NetworkEvent::WriteError(e));
                                         break 'main_loop;
@@ -86,7 +88,7 @@ impl NetworkSender {
                     
                     _ = interval.tick() => {
                         if !batch.is_empty() {
-                            if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count).await {
+                            if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await {
                                 error!("Periodic flush error: {}", e);
                                 let _ = event_tx.send(NetworkEvent::WriteError(e));
                                 break 'main_loop;
@@ -100,7 +102,7 @@ impl NetworkSender {
             
             if !batch.is_empty() {
                 info!("Flushing {} remaining bytes", batch.len());
-                let _ = Self::flush(&mut writer, &mut batch, &mut msg_count).await;
+                let _ = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await;
             }
             
             let mut remaining = 0;
@@ -113,7 +115,7 @@ impl NetworkSender {
             
             if !batch.is_empty() {
                 info!("Flushing {} remaining messages", remaining);
-                let _ = Self::flush(&mut writer, &mut batch, &mut msg_count).await;
+                let _ = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await;
             }
             
             if let Err(e) = writer.shutdown().await {
@@ -133,6 +135,7 @@ impl NetworkSender {
         writer: &mut tokio::io::WriteHalf<T>,
         batch: &mut BytesMut,
         count: &mut usize,
+        metric: &Arc<Metric>,
     ) -> std::io::Result<()>
     where
         T: AsyncWrite + Unpin,
@@ -141,9 +144,15 @@ impl NetworkSender {
             return Ok(());
         }
         
+        let len = batch.len();
         writer.write_all(&batch).await?;
         writer.flush().await?;
         
+        metric.increase_bytes_sent(len as u64);
+        for _ in 0..*count {
+            metric.increase_packets_sent();
+        }
+
         batch.clear();
         *count = 0;
         Ok(())
@@ -259,6 +268,8 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     read_packet_handle: Option<SpawnHandle>,
     event_listener_handle: Option<SpawnHandle>,
 
+    pub metric: Arc<Metric>,
+
     _phantom: std::marker::PhantomData<T>
 }
 
@@ -273,6 +284,7 @@ where
         peer_addr: SocketAddr,
         plugin_service: Arc<PluginManager>,
         client_certificate: Option<Vec<u8>>,
+        metric: Arc<Metric>,
     ) -> Addr<Self> {
         let addr = ConnectionActor::create(move |ctx| {
             let (mut actor, mut reader, mut event_rx) = Self::new(
@@ -282,6 +294,7 @@ where
                 peer_addr,
                 plugin_service.clone(),
                 client_certificate.clone(),
+                metric.clone(),
             );
             
             let self_addr = ctx.address();
@@ -302,12 +315,13 @@ where
             let plugin_svc = plugin_service.clone();
             let peer = peer_addr;
             let cert = client_certificate.clone();
+            let metric_clone = metric.clone();
 
             let handle = ctx.spawn(
                 async move {
                     let mut buffer = BytesMut::with_capacity(buf_size);
 
-                    let first_packet = match read_packet(&mut reader, &mut buffer, max_msg_size).await {
+                    let first_packet = match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
                         Ok(packet) => packet,
                         Err(e) => {
                             error!("Failed to read first packet: {}", e);
@@ -326,6 +340,7 @@ where
                                 &read_addr,
                                 peer,
                                 cert,
+                                metric_clone.clone(),
                             ).await {
                                 Ok(result) => {
                                     let connack = ConnAckPacketBuilder::new()
@@ -354,8 +369,9 @@ where
                                     );                                    
 
                                     loop {
-                                        match read_packet(&mut reader, &mut buffer, max_msg_size).await {
+                                        match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
                                             Ok(packet) => {
+                                                metric_clone.increase_packets_received();
                                                 if matches!(packet, MqttPacketV3::Disconnect(_)) && read_addr
                                                     .send(NotifyUpdateDisconnectedNormally {
                                                         disconnected_normally: true,
@@ -467,12 +483,13 @@ where
         peer_addr: SocketAddr,
         plugin_service: Arc<PluginManager>,
         client_certificate: Option<Vec<u8>>,
+        metric: Arc<Metric>,
     ) -> (Self, tokio::io::ReadHalf<T>, mpsc::UnboundedReceiver<NetworkEvent>) {
         let (reader, writer) = tokio::io::split(stream);
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
 
-        let network_sender = NetworkSender::spawn(writer, event_tx);
+        let network_sender = NetworkSender::spawn(writer, event_tx, metric.clone());
 
         let actor = ConnectionActor {
             network_sender: Some(network_sender),
@@ -489,6 +506,7 @@ where
             plugin_service,
             session: None,
             read_packet_handle: None,
+            metric,
         };
 
         (actor, reader, event_rx)
@@ -529,6 +547,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
     reader: &mut tokio::io::ReadHalf<T>,
     buffer: &mut BytesMut,
     max_message_size: u32,
+    metric: Option<Arc<Metric>>,
 ) -> Result<MqttPacketV3, ConnectionError> {
     loop {
         let packet_result: std::prelude::v1::Result<
@@ -544,6 +563,9 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
             match err {
                 nom::Err::Incomplete(_) => {
                     let n = reader.read_buf(buffer).await?;
+                    if let Some(m) = &metric {
+                         m.increase_bytes_received(n as u64);
+                    }
 
                     if 0 == n {
                         if buffer.is_empty() {
@@ -588,6 +610,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
     client_certificate: Option<Vec<u8>>,
+    metric: Arc<Metric>,
 ) -> Result<HandleInitialConnectResult, ConnectionError> {
     // invalid mqtt protocol name
     if packet.variable_header.protocol_name != "MQTT" {
@@ -669,6 +692,8 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                         session_recipient: r.session_actor_recipient, 
                         session_present: r.session_present }
                     );
+                
+                metric.increase_clients_connected();
                 recipient
             }
             AuthenticateResult {
@@ -718,6 +743,7 @@ where
         info!("ConnectionActor stopped for peer {}", self.peer_addr);
         
         if let Some(session) = &self.session {
+            self.metric.decrease_clients_connected();
             if self.disconnected_normally {
                 session.do_send(session_actor::SessionActorMessage::ClientDisconnected);
             } else {

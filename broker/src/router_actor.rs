@@ -13,6 +13,7 @@ use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
 use crate::topic::topic_storage::TopicStorage;
+use crate::metric::Metric;
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum RouterActorError {
@@ -76,6 +77,7 @@ pub struct RouterActor {
     pub local_topic_storage: Arc<RwLock<TopicStorage>>,
     pub local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
     pub session_registry: SessionRegistry,
+    pub metric: Arc<Metric>,
 }
 
 impl Actor for RouterActor {
@@ -116,6 +118,7 @@ impl RouterActor {
         topic_storage: Arc<RwLock<TopicStorage>>,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
         session_registry: SessionRegistry,
+        metric: Arc<Metric>,
     ) -> Self {
         RouterActor {
             current_node_id: settings.cluster.node_id,
@@ -127,6 +130,7 @@ impl RouterActor {
             local_topic_storage: topic_storage,
             local_session_actor_map_storage: session_actor_map_storage,
             session_registry,
+            metric,
         }
     }
 
@@ -139,7 +143,8 @@ impl RouterActor {
         packet: &MqttPacketV3,
         local_topic_storage: Arc<RwLock<TopicStorage>>,
         local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_registry: SessionRegistry
+        session_registry: SessionRegistry,
+        metric: Arc<Metric>
     ) -> Result<(), RouterActorError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
@@ -152,6 +157,10 @@ impl RouterActor {
                     topic.clone(),
                 )?
             };
+
+            if subscriptions.is_empty() {
+                metric.increase_messages_dropped();
+            }
 
             let local_session_actor_map_storage =  local_session_actor_map_storage.read();
 
@@ -315,6 +324,7 @@ impl RouterActor {
         // check if the dead letter queue is full
         if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
             warn!("Dead letter queue is full, dropping oldest message");
+            self.metric.increase_messages_dropped();
             self.dead_letter_queue.pop_front();
         }
 
@@ -353,6 +363,7 @@ impl RouterActor {
             if item.retry_count >= self.dead_letter_config.max_retry_count {
                 warn!("Message exceeded max retry count, dropping: tenant={}, dest={}", 
                       item.tenant_id, item.dest_addr);
+                self.metric.increase_messages_dropped();
                 continue;
             }
 
@@ -410,6 +421,9 @@ impl RouterActor {
 
         let removed_count = initial_size - self.dead_letter_queue.len();
         if removed_count > 0 {
+            for _ in 0..removed_count {
+                self.metric.increase_messages_dropped();
+            }
             log::info!("Cleaned up {} expired messages from dead letter queue", removed_count);
         }
     }
@@ -443,8 +457,9 @@ impl Handler<RoutePacket> for RouterActor {
         let topic_storage = self.local_topic_storage.clone();
         let session_actor_map_storage = self.local_session_actor_map_storage.clone();
         let session_registry = self.session_registry.clone();
+        let metric = self.metric.clone();
         Box::pin(async move {
-            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet, topic_storage, session_actor_map_storage, session_registry).await?;
+            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet, topic_storage, session_actor_map_storage, session_registry, metric).await?;
             Ok(())
         }.into_actor(self))
     }

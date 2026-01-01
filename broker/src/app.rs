@@ -34,29 +34,31 @@ impl YedMQApp {
 
         //
 
+        // start system service
+        let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
+        let service_registry = ServiceRegistry::start(
+            arbiter_pool.clone(),
+            settings.clone(),
+            app.plugin_manager.clone(),
+            app.session_clock.clone(),
+            app.metric.clone()
+        ).await;
+        //
+
         // sys topic task
-        /*
         info!("start sys topic task");
-        let sys_topic_task = metric::SysTopicTask::new(
+        let mut sys_topic_task = metric::SysTopicTask::new(
             app.metric.clone(),
             settings.mqtt.sys_topic_interval_secs,
         );
+        if let Some(router) = service_registry.routers.first() {
+            sys_topic_task.set_router_actor(router.clone());
+        }
         let sys_topic_task_join_handle = actix::spawn(async move {
             sys_topic_task.run().await;
             Ok(())
         });
         info!("start sys topic task succeed");
-        */
-        //
-
-        // start system service
-        let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
-        let _ = ServiceRegistry::start(
-            arbiter_pool.clone(),
-            settings.clone(),
-            app.plugin_manager.clone(),
-            app.session_clock.clone()
-        ).await;
         //
 
         // start api task
@@ -129,7 +131,7 @@ impl YedMQApp {
 
         let mut hn = app.join_handles.lock().await;
 
-        //hn.push(sys_topic_task_join_handle);
+        hn.push(sys_topic_task_join_handle);
         hn.push(tcp_listener_join);
         hn.push(tcp_tls_listener_join);
         hn.push(mqtt_ws_listener_join);

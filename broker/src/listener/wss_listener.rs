@@ -66,6 +66,7 @@ impl MqttWssListener {
                                 };
                                 let settings = self.app.settings.clone();
                                 let plugin_manager_clone = self.app.plugin_manager.clone();
+                                let metric = self.app.metric.clone();
                                 ConnectionActor::create_and_start(
                                     websocket_tunnel,
                                     settings.mqtt.max_message_size,
@@ -73,6 +74,7 @@ impl MqttWssListener {
                                     remote_addr,
                                     plugin_manager_clone,
                                     client_certificate_vec,
+                                    metric
                                 );
                             } else {
                                 warn!(
