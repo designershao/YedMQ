@@ -255,9 +255,13 @@ impl Actor for SessionActor {
                 self_addr.send(SessionActorMessage::ForceStop).await.unwrap();
                 return;
             }
-            let session_state_guard = state.write().await;
-            let topic_iter = session_state_guard.subscriptions.iter();
-            for (topic, qos) in topic_iter {
+            let subscriptions: Vec<(String, QoS)> = {
+                let session_state_guard = state.read().await;
+                session_state_guard.subscriptions.iter()
+                    .map(|(topic, qos)| (topic.clone(), qos.clone()))
+                    .collect()
+            };
+            for (topic, qos) in subscriptions {
                 info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
                 let qos_v = match qos {
                     QoS::AtMostOnce => 0,
@@ -315,7 +319,10 @@ impl Actor for SessionActor {
                             }
                         }
                     },
-                    Ok(None) => break,
+                    Ok(None) => {
+                        info!("recovery from pending messages stopped due to no payload store");
+                        break
+                    },
                     Err(e) => {
                         warn!("session state raft client pop from pending queue error, {}", e);
                         break
