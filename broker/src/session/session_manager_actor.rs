@@ -378,36 +378,41 @@ impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
         let sessions = self.sessions.get_inner().clone();
         let self_addr = ctx.address();
         ctx.spawn(async move {
-            if let Some(tenant_sessions) = sessions.get(&msg.tenant_id) {
+            let should_stop = if let Some(tenant_sessions) = sessions.get(&msg.tenant_id) {
                 if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                     if msg.session_version.is_newer_than(&session.session_version) {
-                        match self_addr
-                            .send(ForceStop {
-                                tenant_id: msg.tenant_id.clone(),
-                                client_id: msg.client_id.clone(),
-                            })
-                            .await {
-                            Ok(res) => {
-                                if let Err(e) = res {
-                                    error!(
-                                        "force stop duplicate session {} failed: {}",
-                                        msg.client_id, e
-                                    );
-                                } else {
-                                    info!("remove duplicate session {} succeed", msg.client_id);
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "send ForceStop message to self for duplicate session {} failed: {}",
-                                    msg.client_id, e
-                                );
-                            }
-                        }
-                    }
+                     msg.session_version.is_newer_than(&session.session_version)
+                } else {
+                    false
                 }
             } else {
                 warn!("tenant {} not found", msg.tenant_id);
+                false
+            };
+
+            if should_stop {
+                match self_addr
+                    .send(ForceStop {
+                        tenant_id: msg.tenant_id.clone(),
+                        client_id: msg.client_id.clone(),
+                    })
+                    .await {
+                    Ok(res) => {
+                        if let Err(e) = res {
+                            error!(
+                                "force stop duplicate session {} failed: {}",
+                                msg.client_id, e
+                            );
+                        } else {
+                            info!("remove duplicate session {} succeed", msg.client_id);
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "send ForceStop message to self for duplicate session {} failed: {}",
+                            msg.client_id, e
+                        );
+                    }
+                }
             }
         }.into_actor(self));
     }
@@ -501,8 +506,9 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
                 Some(tenant_sessions) => {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
                         if msg.session_version.is_newer_than(&session.session_version) {
-                             let res = session
-                                .session_actor_message_recipient
+                             let recipient = session.session_actor_message_recipient.clone();
+                             drop(session);
+                             let res = recipient
                                 .send(SessionActorMessage::ForceStop)
                                 .await;
                             if let Err(e) = res {
@@ -703,10 +709,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
                 } else {
                     info!("previous session in current node, force disconnect");
-                    if tenant_sessions.get(&msg.client_id).is_some() {
-                        let session = tenant_sessions.get(&msg.client_id).unwrap();
-                        let res = session
-                            .session_actor_message_recipient
+                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
+                        let recipient = session.session_actor_message_recipient.clone();
+                        drop(session);
+                        let res = recipient
                             .send(SessionActorMessage::ForceDisconnect)
                             .await;
                         if res.is_err() {
