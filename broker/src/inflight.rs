@@ -95,6 +95,18 @@ impl Inflight {
         Ok(old_key)
     }
 
+    pub fn get_all_packet_keys_and_refresh_expired_time(&mut self) -> Vec<(u16, String)> {
+        let mut result_vec: Vec<(u16, String)> = vec![];
+        //let mut inner = self.inner.write().await;
+        for item in self.inner.values_mut() {
+            if let Some(packet_key) = &item.packet_key {
+                result_vec.push((item.packet_identifier, packet_key.clone()));
+            }
+            item.last_modified = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        }    
+        result_vec
+    }
+
     // Get all packet keys which should be resend to the client and refresh expired time
     pub fn get_all_expired_packet_keys_and_refresh_expired_time(&mut self) -> Vec<(u16, String)> {
         let mut result_vec: Vec<(u16, String)> = vec![];

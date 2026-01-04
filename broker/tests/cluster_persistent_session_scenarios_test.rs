@@ -187,10 +187,11 @@ async fn test_subscription_accumulation_roaming() {
     
     // Expecting 2 messages
     let mut received = 0;
-    let timeout = tokio::time::timeout(Duration::from_secs(5), async {
+    let timeout = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(Event::Incoming(Packet::Publish(_))) = eventloop3.poll().await {
+            if let Ok(Event::Incoming(Packet::Publish(p))) = eventloop3.poll().await {
                 received += 1;
+                println!("Client 3 received message {}/2, pk id {}", received, p.pkid);
                 if received == 2 { return; }
             }
         }

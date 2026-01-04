@@ -144,6 +144,10 @@ pub struct GetSessionInfo {}
 
 #[derive(Message)]
 #[rtype(result = "()")]
+struct AllInflightRetryImmediate {}
+
+#[derive(Message)]
+#[rtype(result = "()")]
 pub enum SessionActorMessage {
     InboundPacket(MqttPacketV3),
 
@@ -250,6 +254,7 @@ impl Actor for SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
+
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
                 error!("send session started message to session manager error: {}, force stop the current session actor", e);
                 self_addr.send(SessionActorMessage::ForceStop).await.unwrap();
@@ -332,6 +337,7 @@ impl Actor for SessionActor {
             }
             //
 
+            self_addr.do_send(AllInflightRetryImmediate{});
         }
         .into_actor(self)
         .wait(ctx);
@@ -1440,7 +1446,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                             conn.do_send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet)));
                         } else {
                             ctx.spawn(async move {
-                                let mut session_state_guard = session_state.write().await;
                                 let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
                                 let qos = publish_packet.fix_header.qos.unwrap() as u8;
 
@@ -1458,12 +1463,15 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 };
 
                                 if clean_session {
+                                    let mut session_state_guard = session_state.write().await;
                                     if let Err(e) = session_state_guard.inflight.register_with_tx_packet(packet_id, qos, key.clone()) {
                                         if matches!(e, InflightError::PacketIdentifierHasExisted) {
                                             if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
                                                 publish_packet.variable_header.packet_identifier = Some(new_id);
                                                 session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();
-                                            } else { return; }
+                                            } else {
+                                                 return; 
+                                            }
                                         }
                                     }
                                 } else {
@@ -1477,7 +1485,11 @@ impl Handler<SessionActorMessage> for SessionActor {
 
                                     if let Err(e) = res {
                                         if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
-                                            if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
+                                            let new_id = {
+                                                let mut session_state_guard = session_state.write().await;
+                                                session_state_guard.inflight.allocate_packet_id()
+                                            };
+                                            if let Some(new_id) = new_id {
                                                 publish_packet.variable_header.packet_identifier = Some(new_id);
                                                 let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
                                                     tenant_id,
@@ -1505,7 +1517,9 @@ impl Handler<SessionActorMessage> for SessionActor {
                                     return;
                                 }
                                 k
-                            } else { return; };
+                            } else { 
+                                return; 
+                            };
 
                             session_state_guard.pending_messages.push(key.clone());
                             if !clean_session {
@@ -1545,7 +1559,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                       let packets = session_state_guard
                         .inflight
                         .get_all_expired_packet_keys_and_refresh_expired_time();
-                      
+
                       if let Some(store) = &payload_store {
                           for (packet_id, key) in packets {
                               let state = session_state_guard.inflight.get_inflight_current_state(packet_id);
@@ -1731,5 +1745,52 @@ impl Handler<GetSessionInfo> for SessionActor {
         };
 
         Box::pin(future)
+    }
+}
+
+
+impl Handler<AllInflightRetryImmediate> for SessionActor {
+    type Result = ();
+
+    fn handle(&mut self, _msg: AllInflightRetryImmediate, ctx: &mut Self::Context) -> Self::Result {
+        let session_state = self.state.clone();
+        let session_actor_addr = ctx.address();
+        let payload_store = self.payload_store.clone();
+        ctx.spawn(
+            async move {
+              let mut session_state_guard = session_state.write().await;
+              let packets = session_state_guard
+                .inflight
+                .get_all_packet_keys_and_refresh_expired_time();
+
+              if let Some(store) = &payload_store {
+                  for (packet_id, key) in packets {
+                      let state = session_state_guard.inflight.get_inflight_current_state(packet_id);
+                      
+                      match state {
+                          Some(InflightState::WaitPubcomp) => {
+                              let packet = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
+                              session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                          },
+                          Some(InflightState::WaitPubrel) => {
+                              let packet = MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
+                              session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                          },
+                          _ => {
+                              match store.get(&key).await {
+                                  Ok(Some(data)) => {
+                                      if let Ok(mut packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
+                                          packet.set_dup(1);
+                                          session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                                      }
+                                  }
+                                  _ => {}
+                              }
+                          }
+                      }
+                  }
+              }
+            }.into_actor(self)
+        );
     }
 }
