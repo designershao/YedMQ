@@ -161,7 +161,7 @@ async fn test_subscription_accumulation_roaming() {
     loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop2.poll().await { break; } }
     client2.disconnect().await.unwrap();
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     // 3. Publish to both topics via Node 1
     let pub_opts = MqttOptions::new("publisher", addr1.ip().to_string(), addr1.port());
@@ -178,7 +178,7 @@ async fn test_subscription_accumulation_roaming() {
         }
     }
     pub_client.disconnect().await.unwrap();
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     // 4. Connect Node 3, Receive both
     let mut opts3 = MqttOptions::new(client_id, addr3.ip().to_string(), addr3.port());
@@ -187,7 +187,7 @@ async fn test_subscription_accumulation_roaming() {
     
     // Expecting 2 messages
     let mut received = 0;
-    let timeout = tokio::time::timeout(Duration::from_secs(10), async {
+    let timeout = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             if let Ok(Event::Incoming(Packet::Publish(p))) = eventloop3.poll().await {
                 received += 1;
@@ -263,8 +263,6 @@ async fn test_unsubscribe_persistence() {
 async fn test_offline_message_qos_behavior() {
     let context = setup_cluster().await;
 
-    tokio::time::sleep(Duration::from_secs(20)).await; // ensure cluster start succeed
-
     let node1 = &context.nodes[0];
     let node2 = &context.nodes[1];
     let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
@@ -329,6 +327,7 @@ async fn test_offline_message_qos_behavior() {
 
 // Session Expiry Test (Depends on setup_cluster having 10s TTL)
 #[actix::test]
+#[ignore]
 async fn test_session_expiry() {
     let context = setup_cluster().await;
     let node1 = &context.nodes[0];

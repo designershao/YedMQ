@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::Path, sync::atomic::{AtomicU64, Ordering}, time::SystemTime};
 
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -161,6 +162,7 @@ impl SessionActorMapStorage {
                         tenant_id: tenant_id.clone(),
                         session_id: session_id.clone(),
                         node_id: session.node_id,
+                        session_version: session.version.clone()
                     });
                 }
             }
@@ -192,8 +194,17 @@ impl SessionActorMapStorage {
         Ok(())
     }
 
-    pub fn unregister_session_actor(&mut self, tenant_id: String, session_id: String) {
-        self.inner.get_mut(&tenant_id).unwrap().remove(&session_id);
+    pub fn unregister_session_actor(&mut self, tenant_id: String, session_id: String, version: &SessionVersion) {
+        if let Some(tenant_map) = self.inner.get_mut(&tenant_id) {
+            if let Some(existing) = tenant_map.get(&session_id) {
+                if existing.version.counter == version.counter && existing.version.node_id == version.node_id {
+                    tenant_map.remove(&session_id);
+                    info!("Session {} unregistered for tenant {} by version {}", session_id, tenant_id, version);
+                } else {
+                    warn!("Reject stale unregister for {}, current version is {}, request version is {}", session_id, existing.version, version);
+                }
+            }
+        }
     }
 
     fn to_serializable(&self) -> SerializableSessionActorMapStorage {

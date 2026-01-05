@@ -72,6 +72,7 @@ pub enum SessionLifecycleMessage {
     SessionStopped {
         tenant_id: String,
         client_id: String,
+        version: SessionVersion,
     },
 }
 
@@ -174,60 +175,43 @@ impl Actor for SessionManagerActor {
                     SessionLifecycleMessage::SessionStopped {
                         tenant_id,
                         client_id,
+                        version,
                     } => {
                         info!(
                             "received session lifectcle message SessionStopped session {} stopped",
                             client_id
                         );
-                        let session_option = self_addr.send(GetLatestSessionClock{}).await;
-                        match session_option {
+                        let res = session_actor_map_actor_addr.send(
+                            crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
+                                tenant_id: tenant_id.clone(),
+                                client_id: client_id.clone(),
+                                version: version.clone(),
+                            }
+                        ).await;
+                        if let Err(err) = res {
+                            warn!("failed to unregister session actor map: {}", err);
+                        }
+                        // Because the session should renew the session lease before it stops,
+                        // so if we send unregister error, we just log it and continue to remove session from local map and 
+                        // let the raft state machine to clean up the session actor map later.
+                        match self_addr
+                            .send(RemoveSessionMessage {
+                                tenant_id,
+                                client_id,
+                            })
+                            .await {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(e)) => {
+                                if let SessionManagerError::TenantNotExisted(tenant_id) = e {
+                                    warn!("tenant {} not existed when removing session from local map, maybe tenant has been removed", tenant_id);
+                                } else {
+                                    error!("failed to remove session from local map: {}", e);
+                                }
+                            }
                             Err(err) => {
-                                error!("get session clock for unregister session actor map error: {}", err);
-                                continue;
+                                error!("failed to send RemoveSessionMessage to self: {:?}", err);
                             }
-                            Ok(Some(session_clock)) => {
-                                let session_version = session_clock.next();
-                                let res = session_actor_map_actor_addr.send(
-                                    crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
-                                        tenant_id: tenant_id.clone(),
-                                        client_id: client_id.clone(),
-                                        version: session_version.clone(),
-                                    }
-                                ).await;
-                                if let Err(err) = res {
-                                    warn!("failed to unregister session actor map: {}", err);
-                                }
-                                // Because the session should renew the session lease before it stops,
-                                // so if we send unregister error, we just log it and continue to remove session from local map and 
-                                // let the raft state machine to clean up the session actor map later.
-                                match self_addr
-                                    .send(RemoveSessionMessage {
-                                        tenant_id,
-                                        client_id,
-                                    })
-                                    .await {
-                                    Ok(res) => {
-                                        match res {
-                                            Ok(_) => {}
-                                            Err(e) => {
-                                                if let SessionManagerError::TenantNotExisted(tenant_id) = e {
-                                                    warn!("tenant {} not existed when removing session from local map, maybe tenant has been removed", tenant_id);
-                                                } else {
-                                                    error!("failed to remove session from local map: {}", e);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!("failed to send RemoveSessionMessage to self: {}", err);
-                                    }
-                                }
-                            }
-                            Ok(None) => {
-                                error!("session clock not found when unregister session actor map");
-                                continue;
-                            }
-                        };
+                        }
                     }
                 }
             }
@@ -858,6 +842,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             let plugin_manager_clone = plugin_manager.clone();
             let msg_client_id = msg.client_id.clone();
             let msg_tenant_id = msg.tenant_id.clone();
+            let session_version_clone = session_version.clone();
             let session_actor_addr = arbiter_pool.start_actor(move || {
                 SessionActor::new(
                     msg_tenant_id,
@@ -876,7 +861,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     router_actors,
                     payload_store.clone(),
                     timer_actor,
-                    metric
+                    metric,
+                    session_version_clone
                 )
             });
 

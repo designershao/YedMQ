@@ -285,7 +285,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             let mut session_actor_map_storage =
                                 self.data.state.session_actor_map.write();
                             session_actor_map_storage
-                                .unregister_session_actor(tenant_id.clone(), session_id.clone());
+                                .unregister_session_actor(tenant_id.clone(), session_id.clone(), &session_version);
                             self.session_clock.bump(&session_version);
                         }
                         self.session_clock.persist().await.unwrap();
@@ -296,7 +296,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             self.data.state.session_actor_map.write();
                         for session in sessions {
                             session_actor_map_storage
-                                .unregister_session_actor(session.tenant_id.clone(), session.session_id.clone());
+                                .unregister_session_actor(session.tenant_id.clone(), session.session_id.clone(), &session.session_version);
                             // Force stop the session if the session is expired
                             if session.node_id == self.node_id {
                                 let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();

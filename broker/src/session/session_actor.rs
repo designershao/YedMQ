@@ -37,6 +37,7 @@ use crate::{
 use super::{
     session_manager_actor::SessionLifecycleMessage,
     session_state_storage::SessionState,
+    session_actor_map_storage::SessionVersion,
     WillMessage,
 };
 
@@ -231,7 +232,9 @@ pub struct SessionActor {
 
     timer_actor: Addr<TimerActor>,
 
-    metric: Arc<Metric>
+    metric: Arc<Metric>,
+
+    session_version: SessionVersion,
 
 }
 
@@ -681,7 +684,8 @@ impl SessionActor {
         router_actors: Vec<Addr<RouterActor>>,
         payload_store: Option<Arc<dyn PayloadStore>>,
         timer_actor: Addr<TimerActor>,
-        metric: Arc<Metric>
+        metric: Arc<Metric>,
+        session_version: SessionVersion,
     ) -> Self {
         SessionActor {
             plugin_manager,
@@ -703,7 +707,8 @@ impl SessionActor {
             router_actors,
             payload_store,
             timer_actor,
-            metric
+            metric,
+            session_version,
         }
     }
 
@@ -812,11 +817,13 @@ impl SessionActor {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
+        let version = self.session_version.clone();
         async move {
             if let Err(e) = session_lifecycle_tx
                 .send(SessionLifecycleMessage::SessionStopped {
                     tenant_id,
                     client_id,
+                    version,
                 })
                 .await
             {
@@ -968,6 +975,23 @@ impl SessionActor {
                             res.unwrap_err()
                         );
                     }
+                    
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::SubscribeTopic {
+                            tenant_id: tenant_id.clone(),
+                            client_id: client_id.clone(),
+                            topic: topic.clone(),
+                            qos: qos_v,
+                        },
+                    ).await.unwrap();
+                    if res.is_err() {
+                        warn!(
+                            "persistent session raft add subscribe topic {} error, {}",
+                            topic.clone(),
+                            res.unwrap_err()
+                        );
+                    }
                 }
             } else {
                  for (topic, qos) in res.succeed_subscriptions {
@@ -1023,6 +1047,22 @@ impl SessionActor {
                     if res.is_err() {
                         warn!(
                             "persistent session add unsubscribe topic {} error, {}",
+                            topic.clone(),
+                            res.unwrap_err()
+                        );
+                    }
+
+                    let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+                    let res = session_state_raft_actor_addr.send(
+                        crate::raft::session_state::session_state_raft_actor::UnsubscribeTopic {
+                            tenant_id: client_info.tenant_id.clone(),
+                            client_id: client_info.client_identifier.clone(),
+                            topic: topic.clone(),
+                        },
+                    ).await.unwrap();
+                    if res.is_err() {
+                        warn!(
+                            "persistent session raft add unsubscribe topic {} error, {}",
                             topic.clone(),
                             res.unwrap_err()
                         );

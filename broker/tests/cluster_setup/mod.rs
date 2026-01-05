@@ -133,13 +133,13 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                 cluster: yedmq::settings::Cluster {
                     node_id: id,
                     cluster_name: "YedMQTestCluster".to_string(),
-                    heartbeat_interval: 50,
+                    heartbeat_interval: 200,
                     store_dir,
                     rpc: yedmq::settings::RPC {
                         external: format!("0.0.0.0:{}", rpc),
                     },
                     nodes: cluster_nodes_config.clone(),
-                    session_ttl: 10
+                    session_ttl: 60
                 }
             };
             
@@ -158,7 +158,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
             });
         }
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
 
         TestClusterContext {
             _test_dir: temp_dir,

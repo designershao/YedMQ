@@ -18,7 +18,7 @@ pub enum SessionActorMapRequest {
         session_version: SessionVersion
     },
     CleanExpiredSessions {
-        sessions: Vec<ExpiredSession>
+        sessions: Vec<ExpiredSession>,
     },
     SessionLeaseRenewRequest {
         sessions: Vec<RenewSession>
@@ -30,6 +30,7 @@ pub struct ExpiredSession {
     pub tenant_id: String,
     pub session_id: String,
     pub node_id: NodeId,
+    pub session_version: SessionVersion
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
