@@ -482,14 +482,14 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
 
 
 #[derive(Message, Clone)]
-#[rtype(result="Result<Option<String>, SessionStateRaftError>")]
+#[rtype(result="Result<(Option<String>, Option<Vec<u8>>), SessionStateRaftError>")]
 pub struct PopOfflineMessage {
     pub tenant_id: String,
     pub client_id: String,
 }
 
 impl Handler<PopOfflineMessage> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<String>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<(Option<String>, Option<Vec<u8>>), SessionStateRaftError>>;
 
     fn handle(&mut self, msg: PopOfflineMessage, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
@@ -509,8 +509,8 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                         };
                         let res = Self::handle_raft_write(raft_instance, command, payload_store).await?;
                         match res.data {
-                            super::types::SessionStateResponse::PopFromPendingQueueResult(packet_key) => {
-                                Ok(packet_key)
+                            super::types::SessionStateResponse::PopFromPendingQueueResult(packet_key, payload) => {
+                                Ok((packet_key, payload))
                             },
                             _ => {
                                 Err(SessionStateRaftError::UnexpectedResponseType(

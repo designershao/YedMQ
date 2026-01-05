@@ -99,7 +99,8 @@ message PopOfflineMessageRequest {
 message PopOfflineMessageResponse {
     bool success = 1;
     ErrorDetail error = 2;
-    optional string payload = 3; // The popped message payload
+    optional string packet_key = 3; // The popped message key
+    optional bytes packet_data = 4; // The popped message payload data
 }
 
 // Request to get the session state for a client.

@@ -62,7 +62,8 @@ impl ClusterService for ClusterServiceImpl {
         Ok(Response::new(PopOfflineMessageResponse {
             success: true,
             error: None,
-            payload: res,
+            packet_key: res.0,
+            packet_data: res.1,
         }))
     }
 

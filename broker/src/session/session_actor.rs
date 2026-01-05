@@ -307,25 +307,31 @@ impl Actor for SessionActor {
                         client_id: client_id.clone(),
                     }
                 ).await.unwrap() {
-                    Ok(Some(key)) => {
-                        if let Some(store) = &payload_store {
+                    Ok((Some(key), payload_opt)) => {
+                        let data = if let Some(payload) = payload_opt {
+                             Some(bytes::Bytes::from(payload))
+                        } else if let Some(store) = &payload_store {
                             match store.get(&key).await {
-                                Ok(Some(data)) => {
-                                    if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                        session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                                    }
-                                }
-                                Ok(None) => {
-                                    warn!("Payload missing during recovery for key: {}", key);
-                                }
+                                Ok(res) => res,
                                 Err(e) => {
                                     error!("Store error during recovery: {}", e);
+                                    None
                                 }
                             }
+                        } else {
+                            None
+                        };
+
+                        if let Some(data) = data {
+                             if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
+                                  session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                             }
+                        } else {
+                             warn!("Payload missing during recovery for key: {}", key);
                         }
                     },
-                    Ok(None) => {
-                        info!("recovery from pending messages stopped due to no payload store");
+                    Ok((None, _)) => {
+                        info!("recovery from pending messages finished");
                         break
                     },
                     Err(e) => {

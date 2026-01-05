@@ -390,10 +390,15 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .await
                             .pop_from_pending_queue(tenant_id, client_id)
                             .await;
+                        
+                        let mut payload_data = None;
                         if let Some(key) = freed_key {
+                            if let Ok(Some(bytes)) = self.payload_store.get(&key).await {
+                                payload_data = Some(bytes.to_vec());
+                            }
                             let _ = self.payload_store.delete(&key).await;
                         }
-                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet_key));
+                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet_key, payload_data));
                     }
                     types::SessionStateRequest::SubscribeTopic {
                         tenant_id,

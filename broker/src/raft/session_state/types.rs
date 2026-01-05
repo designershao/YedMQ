@@ -69,7 +69,7 @@ pub enum SessionStateResponse {
     InflightGetCurrentPacketResult(Option<String>), // Return Key instead of Packet
     InflightRegisterTxPacketResponse(Result<(), SessionStateStorageError>),
     InflightRegisterRxPacketResponse(Result<(), SessionStateStorageError>),
-    PopFromPendingQueueResult(Option<String>), // Return Key instead of Packet
+    PopFromPendingQueueResult(Option<String>, Option<Vec<u8>>), // Return Key and Payload
     None,
 }
 
