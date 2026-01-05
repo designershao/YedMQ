@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use dashmap::DashMap;
-use actix::Recipient;
-use crate::session::session_actor::{SessionActorMessage, GetSessionInfo};
+use crate::session::session_actor::{GetSessionInfo, SessionActorMessage};
 use crate::session::session_actor_map_storage::SessionVersion;
+use actix::Recipient;
+use dashmap::DashMap;
+use std::sync::Arc;
 
 pub struct SessionActorRecipientWrapper {
     pub session_actor_message_recipient: Recipient<SessionActorMessage>,
@@ -30,7 +30,11 @@ impl SessionRegistry {
         Self::default()
     }
 
-    pub fn get_session(&self, tenant_id: &str, client_id: &str) -> Option<Recipient<SessionActorMessage>> {
+    pub fn get_session(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+    ) -> Option<Recipient<SessionActorMessage>> {
         if let Some(tenant_sessions) = self.sessions.get(tenant_id) {
             if let Some(wrapper) = tenant_sessions.get(client_id) {
                 return Some(wrapper.session_actor_message_recipient.clone());
@@ -41,7 +45,9 @@ impl SessionRegistry {
 
     // This exposes the inner structure for SessionManagerActor to manipulate directly.
     // In a cleaner design we would wrap all operations, but for refactoring speed we expose the inner map.
-    pub fn get_inner(&self) -> Arc<DashMap<String, Arc<DashMap<String, SessionActorRecipientWrapper>>>> {
+    pub fn get_inner(
+        &self,
+    ) -> Arc<DashMap<String, Arc<DashMap<String, SessionActorRecipientWrapper>>>> {
         self.sessions.clone()
     }
 }

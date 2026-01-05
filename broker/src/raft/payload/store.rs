@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use thiserror::Error;
 use bytes::Bytes;
+use thiserror::Error;
 
 pub type PayloadKey = String; // Use String for convenience, or Uuid
 
@@ -23,7 +23,7 @@ use std::fmt::Debug;
 #[async_trait]
 pub trait PayloadStore: Send + Sync + Debug + 'static {
     /// Write Payload
-    /// 
+    ///
     /// It is recommended to include fsync logic in the implementation to ensure durability
     async fn put(&self, key: &PayloadKey, data: Bytes) -> Result<()>;
 

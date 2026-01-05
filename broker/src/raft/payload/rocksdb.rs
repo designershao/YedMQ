@@ -1,10 +1,10 @@
-use std::path::Path;
-use std::sync::Arc;
-use crate::raft::payload::store::{PayloadStore, PayloadKey, PayloadError, Result};
+use crate::raft::payload::store::{PayloadError, PayloadKey, PayloadStore, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use rocksdb::{DB, Options, WriteBatch};
 use log::info;
+use rocksdb::{Options, WriteBatch, DB};
+use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RocksDBPayloadStore {
@@ -27,9 +27,7 @@ impl RocksDBPayloadStore {
 
         let db = DB::open(&opts, path).map_err(|e| PayloadError::Storage(e.to_string()))?;
         info!("RocksDBPayloadStore initialized.");
-        Ok(Self {
-            db: Arc::new(db),
-        })
+        Ok(Self { db: Arc::new(db) })
     }
 }
 
@@ -41,7 +39,8 @@ impl PayloadStore for RocksDBPayloadStore {
         let data = data.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            db.put(key.as_bytes(), data).map_err(|e| PayloadError::Storage(e.to_string()))
+            db.put(key.as_bytes(), data)
+                .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
         .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
@@ -54,7 +53,8 @@ impl PayloadStore for RocksDBPayloadStore {
         let key = key.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            db.get(key.as_bytes()).map_err(|e| PayloadError::Storage(e.to_string()))
+            db.get(key.as_bytes())
+                .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
         .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
@@ -67,7 +67,8 @@ impl PayloadStore for RocksDBPayloadStore {
         let key = key.clone();
 
         tokio::task::spawn_blocking(move || {
-            db.delete(key.as_bytes()).map_err(|e| PayloadError::Storage(e.to_string()))
+            db.delete(key.as_bytes())
+                .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
         .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
@@ -78,13 +79,14 @@ impl PayloadStore for RocksDBPayloadStore {
     async fn contains(&self, key: &PayloadKey) -> Result<bool> {
         let db = self.db.clone();
         let key = key.clone();
-        
+
         let result = tokio::task::spawn_blocking(move || {
-             db.get(key.as_bytes()).map_err(|e| PayloadError::Storage(e.to_string()))
+            db.get(key.as_bytes())
+                .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
         .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
-        
+
         Ok(result.is_some())
     }
 
@@ -96,7 +98,8 @@ impl PayloadStore for RocksDBPayloadStore {
             for (key, val) in entries {
                 batch.put(key.as_bytes(), val.as_ref());
             }
-            db.write(batch).map_err(|e| PayloadError::Storage(e.to_string()))
+            db.write(batch)
+                .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
         .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;

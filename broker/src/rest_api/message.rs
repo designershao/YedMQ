@@ -25,13 +25,17 @@ pub async fn clean_retain_message(
     State(_): State<Arc<YedMQApp>>,
     Path((tenant_id, topic_filter)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-    let r = topic_raft_actor_addr.send(
-        crate::raft::topic::topic_raft_actor::CleanRetainPublishPacket {
-            tenant_id: tenant_id.clone(),
-            topic_filter: topic_filter.clone(),
-        },
-    ).await.unwrap();
+    let topic_raft_actor_addr =
+        crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let r = topic_raft_actor_addr
+        .send(
+            crate::raft::topic::topic_raft_actor::CleanRetainPublishPacket {
+                tenant_id: tenant_id.clone(),
+                topic_filter: topic_filter.clone(),
+            },
+        )
+        .await
+        .unwrap();
     if let Err(err) = r {
         error!("clean retain message error: {}", err);
         let error_response = super::ErrorResponse {
@@ -51,17 +55,21 @@ pub async fn retain_message_list(
     let offset_param = pagination.offset.unwrap_or(0);
     let limit_param = pagination.limit.unwrap_or(10);
 
-    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-    let r = topic_raft_actor_addr.send(
-        crate::raft::topic::topic_raft_actor::GetRetainMessageListWithPagination {
-            tenant_id: tenant_id.clone(),
-            offset: offset_param,
-            limit: limit_param
-        }
-    ).await.unwrap();
+    let topic_raft_actor_addr =
+        crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let r = topic_raft_actor_addr
+        .send(
+            crate::raft::topic::topic_raft_actor::GetRetainMessageListWithPagination {
+                tenant_id: tenant_id.clone(),
+                offset: offset_param,
+                limit: limit_param,
+            },
+        )
+        .await
+        .unwrap();
 
     if let Err(err) = r {
-        if let crate::raft::topic::topic_raft_actor::TopicRaftError::TopicError(topic_error) = err{
+        if let crate::raft::topic::topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
             let error_response = match topic_error {
                 crate::topic::TopicError::TenantNotFound(_) => {
                     let error_response = super::ErrorResponse {

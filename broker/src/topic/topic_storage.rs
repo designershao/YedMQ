@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc},
-};
+use std::{collections::HashMap, sync::Arc};
 
 use parking_lot::RwLock;
 
@@ -178,15 +175,10 @@ impl TopicStorageNode {
     }
 
     pub fn remove_subscription(&self, client_identifier: &String) {
-        let client_existed = self
-            .subscriptions
-            .read()
-            .contains_key(client_identifier);
+        let client_existed = self.subscriptions.read().contains_key(client_identifier);
 
         if client_existed {
-            self.subscriptions
-                .write()
-                .remove(client_identifier);
+            self.subscriptions.write().remove(client_identifier);
         }
     }
 
@@ -213,9 +205,7 @@ impl TopicStorageNode {
                 retain_publish_packet: None,
             }));
             let topic_node_cloned = leaf.clone();
-            self.leaves
-                .write()
-                .insert(topic_pattern, leaf.clone());
+            self.leaves.write().insert(topic_pattern, leaf.clone());
             topic_node_cloned
         }
     }
@@ -240,8 +230,7 @@ fn test_topic(topic: &String) -> bool {
             if s.contains('#') || s.contains('+') {
                 return false;
             }
-        } else if s.contains('#')
-        && index != length {
+        } else if s.contains('#') && index != length {
             return false;
         }
     }
@@ -495,9 +484,7 @@ impl TopicStorage {
     ) -> Result<(), TopicError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
-            let topic_node_next = topic_node
-                .write()
-                .get_leaf(topic_pattern.to_string());
+            let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
                 Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             } else {
@@ -509,9 +496,7 @@ impl TopicStorage {
                 )
             }
         } else {
-            topic_node
-                .write()
-                .remove_subscription(client_identifier);
+            topic_node.write().remove_subscription(client_identifier);
             Ok(())
         }
     }
@@ -563,9 +548,7 @@ impl TopicStorage {
             }
 
             let topic_pattern = &topic_partterns[0];
-            let topic_node_next = topic_node
-                .read()
-                .get_leaf(topic_pattern.to_string());
+            let topic_node_next = topic_node.read().get_leaf(topic_pattern.to_string());
             if topic_node_next.is_some() {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 let subscriptions = Self::recursion_get_subscriptions(
@@ -610,9 +593,7 @@ impl TopicStorage {
     ) -> Result<(), TopicError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
-            let topic_node_next = topic_node
-                .write()
-                .get_leaf(topic_pattern.to_string());
+            let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
             if topic_node_next.is_none() {
                 Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             } else {
@@ -677,9 +658,7 @@ impl TopicStorage {
                     ));
                 }
             } else {
-                let topic_node_next = topic_node
-                    .write()
-                    .get_leaf(topic_pattern.to_string());
+                let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
                 if topic_node_next.is_some() {
                     let topic_patterns_rest = topic_patterns.drain(1..).collect();
                     result.append(&mut Self::recursion_get_retain_packet(
@@ -794,7 +773,6 @@ struct SerializableTopicStorage {
 
 #[cfg(test)]
 mod tests {
-
     use yedmq_mqtt::{
         v3::{
             fixed_header::FixHeader,
@@ -804,8 +782,8 @@ mod tests {
     };
 
     use super::*;
-    use std::thread;
     use bytes::Bytes;
+    use std::thread;
 
     #[test]
     fn when_subscribe_same_topic_from_other_node_should_update_subscription() {
@@ -883,15 +861,11 @@ mod tests {
         let topic_node_arc_clone = topic_node_arc.clone();
         let topic_node_arc_read_clone = topic_node_arc.clone();
         let thread_1 = thread::spawn(move || {
-            let new_topic_node = topic_node_arc
-                .write()
-                .find_or_create_leaf("b".to_string());
+            let new_topic_node = topic_node_arc.write().find_or_create_leaf("b".to_string());
             assert_eq!(new_topic_node.read().topic_parttern, "b");
         });
         let thread_3 = thread::spawn(move || {
-            let subscriptions = topic_node_arc_read_clone
-                .read()
-                .get_subscriptions();
+            let subscriptions = topic_node_arc_read_clone.read().get_subscriptions();
             assert_eq!(subscriptions.len(), 0);
         });
         let thread_2 = thread::spawn(move || {
@@ -945,11 +919,8 @@ mod tests {
             "a/b/c".to_string(),
             0,
         );
-        let _ = topic_storage.unsubscribe(
-            &tenant_name,
-            &"clientA".to_string(),
-            &"a/b/c".to_string(),
-        );
+        let _ =
+            topic_storage.unsubscribe(&tenant_name, &"clientA".to_string(), &"a/b/c".to_string());
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);
 

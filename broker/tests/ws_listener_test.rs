@@ -311,7 +311,10 @@ async fn test_ws_retained_message() {
 
     // Client 1 publishes a retained message and disconnects
     let mut mqtt_options1 = MqttOptions::new(
-        "retained-publisher", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+        "retained-publisher",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
     mqtt_options1.set_transport(Transport::Ws);
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
@@ -350,8 +353,11 @@ async fn test_ws_retained_message() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Client 2 connects and subscribes, should receive the retained message
-    let mut mqtt_options2 =
-        MqttOptions::new("retained-subscriber", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+    let mut mqtt_options2 = MqttOptions::new(
+        "retained-subscriber",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
     mqtt_options2.set_transport(Transport::Ws);
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
@@ -404,7 +410,11 @@ async fn test_ws_last_will_message() {
     let last_will = LastWill::new(will_topic, will_message, QoS::AtLeastOnce, false);
 
     // Subscriber client
-    let mut sub_options = MqttOptions::new("will-subscriber", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+    let mut sub_options = MqttOptions::new(
+        "will-subscriber",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     sub_options.set_keep_alive(Duration::from_secs(5));
     sub_options.set_transport(Transport::Ws);
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
@@ -446,7 +456,11 @@ async fn test_ws_last_will_message() {
     notify_sub_succeed_receiver.recv().await.unwrap();
 
     // Client with Last Will, will simulate an unclean disconnect
-    let mut will_client_options = MqttOptions::new("will-client", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+    let mut will_client_options = MqttOptions::new(
+        "will-client",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     will_client_options
         .set_keep_alive(Duration::from_secs(2))
         .set_last_will(last_will);
@@ -460,7 +474,7 @@ async fn test_ws_last_will_message() {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
                     connected = true;
                 }
-                Ok(_) => {}, // Continue processing other initialization events (such as SubAck, etc.)
+                Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
                 Err(e) => {
                     return;
                 }
@@ -468,11 +482,13 @@ async fn test_ws_last_will_message() {
         }
 
         tokio::time::sleep(Duration::from_secs(5)).await;
-
     });
 
     // Wait for the will client to connect
-    tokio::time::timeout(Duration::from_secs(6), will_task).await.expect("Will client task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(6), will_task)
+        .await
+        .expect("Will client task timed out")
+        .unwrap();
 
     // Wait for subscriber to receive the will message
     tokio::time::timeout(Duration::from_secs(10), sub_task)
@@ -498,13 +514,21 @@ async fn test_ws_max_qos_subscription() {
     let topic = "test/max_qos";
 
     // Subscriber with QoS 1
-    let mut sub_options = MqttOptions::new("max-qos-subscriber", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+    let mut sub_options = MqttOptions::new(
+        "max-qos-subscriber",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     sub_options.set_keep_alive(Duration::from_secs(5));
     sub_options.set_transport(Transport::Ws);
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
     // Publisher
-    let mut pub_options = MqttOptions::new("max-qos-publisher", format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()), broker_addr.port());
+    let mut pub_options = MqttOptions::new(
+        "max-qos-publisher",
+        format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port()),
+        broker_addr.port(),
+    );
     pub_options.set_keep_alive(Duration::from_secs(5));
     pub_options.set_transport(Transport::Ws);
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_options, 10);
@@ -589,7 +613,14 @@ async fn test_ws_max_qos_subscription() {
 async fn test_persistent_session() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let broker_addr: SocketAddr = context.settings.listener.ws.external.as_str().parse().unwrap();
+    let broker_addr: SocketAddr = context
+        .settings
+        .listener
+        .ws
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
     let topic = "test/persistent";
     let payload = b"persistent message";
     let url = format!("ws://{}:{}/mqtt", broker_addr.ip(), broker_addr.port());
@@ -614,19 +645,25 @@ async fn test_persistent_session() {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Eventloop 1 error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task1).await.expect("Task 1 timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task1)
+        .await
+        .expect("Task 1 timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Client 2 (Publisher) publishes a message
-    let mut mqtt_options_pub = MqttOptions::new("persistent-publisher", url.clone(), broker_addr.port());
+    let mut mqtt_options_pub =
+        MqttOptions::new("persistent-publisher", url.clone(), broker_addr.port());
     mqtt_options_pub.set_keep_alive(Duration::from_secs(5));
     mqtt_options_pub.set_transport(Transport::Ws);
     let (client_pub, mut eventloop_pub) = AsyncClient::new(mqtt_options_pub, 10);
@@ -637,21 +674,29 @@ async fn test_persistent_session() {
             match eventloop_pub.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    client_pub.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                    client_pub
+                        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
                     client_pub.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Publisher eventloop error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task_pub).await.expect("Publisher task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task_pub)
+        .await
+        .expect("Publisher task timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -677,12 +722,17 @@ async fn test_persistent_session() {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Eventloop 2 error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task2).await.expect("Task 2 timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task2)
+        .await
+        .expect("Task 2 timed out")
+        .unwrap();
 }

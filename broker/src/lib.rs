@@ -1,18 +1,18 @@
-pub mod session;
+pub mod app;
+pub mod arbiter_pool;
+pub mod connection;
 pub mod inflight;
-pub mod router_actor;
-pub mod topic;
-pub mod settings;
 pub mod listener;
 pub mod metric;
-pub mod rest_api;
-pub mod app;
 pub mod raft;
-pub mod connection;
-pub mod service_registry;
-pub mod arbiter_pool;
+pub mod rest_api;
+pub mod router_actor;
 pub mod rpc;
+pub mod service_registry;
+pub mod session;
+pub mod settings;
 mod timer_actor;
+pub mod topic;
 
 pub mod protobuf {
     tonic::include_proto!("yedmqpb");

@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, Json};
 use serde::Serialize;
 
 use crate::app::YedMQApp;
@@ -20,7 +16,6 @@ pub struct SystemInfo {
 
     uptime: u64,
 }
-
 
 pub async fn system_info(State(app_state): State<Arc<YedMQApp>>) -> (StatusCode, Json<SystemInfo>) {
     let metric = app_state.metric.clone();

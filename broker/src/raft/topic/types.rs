@@ -73,4 +73,3 @@ impl tonic::IntoRequest<crate::protobuf::InstallSnapshotRequest>
         tonic::Request::new(mes)
     }
 }
-

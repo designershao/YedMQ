@@ -1,13 +1,14 @@
-use std::sync::Arc;
-use tonic::{Request, Response, Status};
 use crate::protobuf::raft_payload::payload_service_server::PayloadService;
 use crate::protobuf::raft_payload::{
-    ReplicateRequest, ReplicateResponse, ReplicateBatchRequest, ReplicateBatchResponse, FetchRequest, FetchResponse,
-    BulkSyncStartRequest, BulkSyncStartResponse, BulkSyncDataRequest, BulkSyncChunk
+    BulkSyncChunk, BulkSyncDataRequest, BulkSyncStartRequest, BulkSyncStartResponse, FetchRequest,
+    FetchResponse, ReplicateBatchRequest, ReplicateBatchResponse, ReplicateRequest,
+    ReplicateResponse,
 };
 use crate::raft::payload::store::PayloadStore;
 use bytes::Bytes;
-use log::{warn, error, debug};
+use log::{debug, error, warn};
+use std::sync::Arc;
+use tonic::{Request, Response, Status};
 
 pub struct PayloadServiceImpl {
     store: Arc<dyn PayloadStore>,
@@ -33,8 +34,10 @@ impl PayloadService for PayloadServiceImpl {
     ) -> Result<Response<ReplicateResponse>, Status> {
         let req = request.into_inner();
         // info!("Received payload replication for key: {}", req.key);
-        
-        self.store.put(&req.key, Bytes::from(req.data)).await
+
+        self.store
+            .put(&req.key, Bytes::from(req.data))
+            .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(ReplicateResponse { success: true }))
@@ -48,13 +51,15 @@ impl PayloadService for PayloadServiceImpl {
         // debug!("Received batch payload replication with {} entries", req.entries.len());
 
         // Prepare vector for batch put
-        let entries: Vec<(String, Bytes)> = req.entries.into_iter()
+        let entries: Vec<(String, Bytes)> = req
+            .entries
+            .into_iter()
             .map(|e| (e.key, Bytes::from(e.data)))
             .collect();
 
         if let Err(e) = self.store.put_batch(entries).await {
-             error!("Failed to batch write payloads: {}", e);
-             return Err(Status::internal(e.to_string()));
+            error!("Failed to batch write payloads: {}", e);
+            return Err(Status::internal(e.to_string()));
         }
 
         Ok(Response::new(ReplicateBatchResponse { success: true }))
@@ -107,7 +112,8 @@ impl PayloadService for PayloadServiceImpl {
         }))
     }
 
-    type StreamBulkDataStream = tokio_stream::wrappers::ReceiverStream<Result<BulkSyncChunk, Status>>;
+    type StreamBulkDataStream =
+        tokio_stream::wrappers::ReceiverStream<Result<BulkSyncChunk, Status>>;
 
     async fn stream_bulk_data(
         &self,
@@ -126,7 +132,7 @@ impl PayloadService for PayloadServiceImpl {
                         let mut offset = 0;
 
                         if total_len == 0 {
-                             let chunk = BulkSyncChunk {
+                            let chunk = BulkSyncChunk {
                                 key: key.clone(),
                                 data: Vec::new(),
                                 offset: 0,
@@ -167,6 +173,8 @@ impl PayloadService for PayloadServiceImpl {
             }
         });
 
-        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        Ok(Response::new(tokio_stream::wrappers::ReceiverStream::new(
+            rx,
+        )))
     }
 }

@@ -1,10 +1,17 @@
-use bytes::{BytesMut, BufMut, Bytes};
-use nom::{combinator::{map, map_res, rest, verify}, sequence::tuple, IResult};
-use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
-use rand::{Rng, thread_rng};
+use bytes::{BufMut, Bytes, BytesMut};
+use nom::{
+    combinator::{map, map_res, rest, verify},
+    sequence::tuple,
+    IResult,
+};
+use rand::{thread_rng, Rng};
+use serde::{Deserialize, Serialize};
 
-use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
+use super::{
+    common::parse_utf8_complete,
+    fixed_header::{self, FixHeader},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishPacket {
@@ -42,33 +49,33 @@ impl PublishPacketBuilder {
     }
 
     pub fn dup(mut self, dup: bool) -> Self {
-       self.dup = dup;
-       self
+        self.dup = dup;
+        self
     }
 
     pub fn retain(mut self, retain: bool) -> Self {
-       self.retain = retain;
-       self 
+        self.retain = retain;
+        self
     }
 
     pub fn qos(mut self, qos: u8) -> Self {
-       self.qos = qos; 
-       self
+        self.qos = qos;
+        self
     }
 
     pub fn topic_name(mut self, topic_name: String) -> Self {
-       self.topic_name = topic_name;
-       self 
+        self.topic_name = topic_name;
+        self
     }
 
     pub fn payload(mut self, payload: Bytes) -> Self {
-       self.payload = payload;
-       self
+        self.payload = payload;
+        self
     }
 
     pub fn packet_identifier(mut self, packet_identifier: u16) -> Self {
-       self.packet_identifier = Some(packet_identifier);
-       self
+        self.packet_identifier = Some(packet_identifier);
+        self
     }
 
     fn generate_random_u16() -> u16 {
@@ -107,10 +114,12 @@ impl PublishPacketBuilder {
 
         fix_header.remaining_length = variable_header.to_bytes().len() + payload.to_bytes().len();
 
-        PublishPacket { fix_header, variable_header,payload }
-
+        PublishPacket {
+            fix_header,
+            variable_header,
+            payload,
+        }
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,7 +129,6 @@ pub struct VariableHeader {
 }
 
 impl VariableHeader {
-
     pub fn encode(&self, buf: &mut BytesMut) {
         buf.put_u16(self.topic_name.len().try_into().unwrap());
         buf.put(self.topic_name.as_bytes());
@@ -156,7 +164,6 @@ pub struct Payload {
 }
 
 impl Payload {
-
     pub fn encode(&self, buf: &mut BytesMut) {
         buf.put_slice(&self.payload);
     }
@@ -166,78 +173,83 @@ impl Payload {
         buf.put_slice(&self.payload);
         buf
     }
-
 }
 
-fn variable_header(qos_1_or_2:bool) -> impl Fn(&[u8]) -> IResult<&[u8], VariableHeader> {
+fn variable_header(qos_1_or_2: bool) -> impl Fn(&[u8]) -> IResult<&[u8], VariableHeader> {
     move |i| {
         if qos_1_or_2 {
             map(
-            tuple((parse_utf8_complete, nom::number::complete::be_u16)),
-            |(topic_name, packet_identifier)| {
-                VariableHeader {
+                tuple((parse_utf8_complete, nom::number::complete::be_u16)),
+                |(topic_name, packet_identifier)| VariableHeader {
                     topic_name,
                     packet_identifier: Some(packet_identifier),
-                }
-            })(i)
+                },
+            )(i)
         } else {
-            map(
-            parse_utf8_complete,
-            |topic_name| {
-                VariableHeader {
-                    topic_name,
-                    packet_identifier: None,
-                }
+            map(parse_utf8_complete, |topic_name| VariableHeader {
+                topic_name,
+                packet_identifier: None,
             })(i)
         }
     }
 }
 
-pub fn parse_with_max_message_size_limit(input: &[u8], max_message_size: usize) -> IResult<&[u8], PublishPacket> {
-    verify(
-        fixed_header::parse,
-        |fixed_header| fixed_header.remaining_length <= max_message_size
-    )(input).and_then(|(input, fixed_header)| {
+pub fn parse_with_max_message_size_limit(
+    input: &[u8],
+    max_message_size: usize,
+) -> IResult<&[u8], PublishPacket> {
+    verify(fixed_header::parse, |fixed_header| {
+        fixed_header.remaining_length <= max_message_size
+    })(input)
+    .and_then(|(input, fixed_header)| {
         map(
             map_res(
                 nom::bytes::streaming::take(fixed_header.remaining_length),
-                tuple((variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),rest))
+                tuple((
+                    variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),
+                    rest,
+                )),
             ),
             move |(_, (variable_header, payload_bytes))| {
                 let cloned_fixed_header = fixed_header.clone();
                 let payload = Payload {
-                    payload: Bytes::copy_from_slice(payload_bytes)
+                    payload: Bytes::copy_from_slice(payload_bytes),
                 };
                 PublishPacket {
                     fix_header: cloned_fixed_header,
                     variable_header,
-                    payload
+                    payload,
                 }
-            })(input)
+            },
+        )(input)
     })
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], PublishPacket> {
-    verify(
-        fixed_header::parse,
-        |fixed_header| fixed_header.remaining_length <= 1000
-    )(input).and_then(|(input, fixed_header)| {
+    verify(fixed_header::parse, |fixed_header| {
+        fixed_header.remaining_length <= 1000
+    })(input)
+    .and_then(|(input, fixed_header)| {
         map(
             map_res(
                 nom::bytes::streaming::take(fixed_header.remaining_length),
-                tuple((variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),rest))
+                tuple((
+                    variable_header(fixed_header.qos == Some(1) || fixed_header.qos == Some(2)),
+                    rest,
+                )),
             ),
             move |(_, (variable_header, payload_bytes))| {
                 let cloned_fixed_header = fixed_header.clone();
                 let payload = Payload {
-                    payload: Bytes::copy_from_slice(payload_bytes)
+                    payload: Bytes::copy_from_slice(payload_bytes),
                 };
                 PublishPacket {
                     fix_header: cloned_fixed_header,
                     variable_header,
-                    payload
+                    payload,
                 }
-            })(input)
+            },
+        )(input)
     })
     /*
     flat_map(fixed_header::parse, |fixed_header| {
@@ -267,7 +279,9 @@ impl MqttPacket for PublishPacket {
         let variable_header_bytes = self.variable_header.to_bytes();
         let payload_bytes = self.payload.to_bytes();
 
-        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len() + payload_bytes.len());
+        let mut buf: BytesMut = BytesMut::with_capacity(
+            fix_header_bytes.len() + variable_header_bytes.len() + payload_bytes.len(),
+        );
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf.put(payload_bytes);
@@ -287,7 +301,6 @@ impl MqttPacket for PublishPacket {
 
 #[cfg(test)]
 mod tests {
-    
     use nom::AsBytes;
     use Bytes;
 
@@ -295,9 +308,9 @@ mod tests {
 
     use super::*;
 
-    #[test] 
+    #[test]
     fn test_variable_header() {
-        let input = &[0x00,0x03,0x61,0x2F,0x62];
+        let input = &[0x00, 0x03, 0x61, 0x2F, 0x62];
         let output = variable_header(false)(input).unwrap();
         assert_eq!(output.1.topic_name, "a/b".to_string());
         assert_eq!(output.1.packet_identifier, None);
@@ -307,15 +320,22 @@ mod tests {
     fn test_publish_packet_builder() {
         let publish_packet_builder = PublishPacketBuilder::new(
             "a/b".to_string(),
-            Bytes::copy_from_slice(vec![0x01].as_slice())
+            Bytes::copy_from_slice(vec![0x01].as_slice()),
         );
-        let publish_packet = publish_packet_builder.packet_identifier(0x10).dup(true).qos(1).build();
-        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
+        let publish_packet = publish_packet_builder
+            .packet_identifier(0x10)
+            .dup(true)
+            .qos(1)
+            .build();
+        assert_eq!(
+            publish_packet.to_bytes().as_bytes(),
+            &[0x3B, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01]
+        );
     }
 
     #[test]
     fn test_parse() {
-        let input = &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01];
+        let input = &[0x3B, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01];
         let out = parse(input).unwrap();
         assert_eq!(out.1.payload.payload, vec!(0x01));
         assert_eq!(out.1.variable_header.topic_name, "a/b".to_string());
@@ -323,8 +343,8 @@ mod tests {
     }
     #[test]
     fn test_parse_with_max_message_size_limit() {
-        let input = &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01];
-        let out = parse_with_max_message_size_limit(input,2);
+        let input = &[0x3B, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01];
+        let out = parse_with_max_message_size_limit(input, 2);
         assert!(out.is_err());
     }
 
@@ -342,18 +362,20 @@ mod tests {
             packet_identifier: Some(0x10),
         };
 
-        let payload = Payload{
-            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
+        let payload = Payload {
+            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
         };
 
         let publish_packet = PublishPacket {
             fix_header,
             variable_header,
-            payload
+            payload,
         };
 
-        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x31,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
-
+        assert_eq!(
+            publish_packet.to_bytes().as_bytes(),
+            &[0x31, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01]
+        );
     }
 
     #[test]
@@ -370,18 +392,20 @@ mod tests {
             packet_identifier: Some(0x10),
         };
 
-        let payload = Payload{
-            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
+        let payload = Payload {
+            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
         };
 
         let publish_packet = PublishPacket {
             fix_header,
             variable_header,
-            payload
+            payload,
         };
 
-        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x30,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
-
+        assert_eq!(
+            publish_packet.to_bytes().as_bytes(),
+            &[0x30, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01]
+        );
     }
 
     #[test]
@@ -398,17 +422,19 @@ mod tests {
             packet_identifier: Some(0x10),
         };
 
-        let payload = Payload{
-            payload: Bytes::copy_from_slice(vec!(0x01).as_slice())
+        let payload = Payload {
+            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
         };
 
         let publish_packet = PublishPacket {
             fix_header,
             variable_header,
-            payload
+            payload,
         };
 
-        assert_eq!(publish_packet.to_bytes().as_bytes(), &[0x3B,0x08,0x00,0x03,0x61,0x2F,0x62,0x00,0x10,0x01]);
+        assert_eq!(
+            publish_packet.to_bytes().as_bytes(),
+            &[0x3B, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01]
+        );
     }
-
 }

@@ -7,14 +7,14 @@ pub struct Settings {
     pub plugin: Plugin,
     pub listener: Listener,
     pub mqtt: Mqtt,
-    pub cluster: Cluster
+    pub cluster: Cluster,
 }
 
 #[derive(Debug, PartialEq, Default)]
 pub enum DefaultAuthenticationValue {
     #[default]
     Allow,
-    Deny
+    Deny,
 }
 
 impl<'de> Deserialize<'de> for DefaultAuthenticationValue {
@@ -35,7 +35,7 @@ impl<'de> Deserialize<'de> for DefaultAuthenticationValue {
 pub enum DefaultAuthorizationValue {
     #[default]
     Allow,
-    Deny
+    Deny,
 }
 
 impl<'de> Deserialize<'de> for DefaultAuthorizationValue {
@@ -68,16 +68,16 @@ impl Default for Mqtt {
             max_message_size: yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE, // The maximum allowed message size is 256 MB
             default_authentication: DefaultAuthenticationValue::default(),
             default_authorization: DefaultAuthorizationValue::default(),
-            inflight_retry_interval_secs: 10
+            inflight_retry_interval_secs: 10,
         }
     }
 }
 
-#[derive(Debug,Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Session {
-    pub qos_expired_secs: u64, // qos context expired seconds
+    pub qos_expired_secs: u64,            // qos context expired seconds
     pub packet_resend_interval_secs: u64, // session packet resend interval seconds
-    pub session_clock_path: String, // session clock path 
+    pub session_clock_path: String,       // session clock path
 }
 
 impl Default for Session {
@@ -107,7 +107,7 @@ impl Default for Plugin {
             dir: "./plugins".to_string(),
             default_authenticate_result: true,
             default_authorize_result: true,
-            local_socket_path: "/tmp/yedmq_plugin_host.sock".to_string()
+            local_socket_path: "/tmp/yedmq_plugin_host.sock".to_string(),
         }
     }
 }
@@ -122,26 +122,25 @@ impl Default for RateLimit {
     fn default() -> Self {
         Self {
             messages_rate: 1000,
-            messages_burst: 100
+            messages_burst: 100,
         }
     }
 }
 
-
-#[derive(Debug, Deserialize,Default)]
+#[derive(Debug, Deserialize, Default)]
 pub struct Listener {
     pub tcp: Tcp,
     pub tcp_tls: TcpTls,
     pub ws: Ws,
     pub wss: Wss,
-    pub api: Api
+    pub api: Api,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TcpTls {
     pub external: String,
     pub cert_file: String,
-    pub key_file: String
+    pub key_file: String,
 }
 
 impl Default for TcpTls {
@@ -149,20 +148,20 @@ impl Default for TcpTls {
         Self {
             external: "0.0.0.0:8883".to_string(),
             cert_file: "".to_string(),
-            key_file: "".to_string()
+            key_file: "".to_string(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Ws {
-    pub external: String
+    pub external: String,
 }
 
 impl Default for Ws {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:8083".to_string()
+            external: "0.0.0.0:8083".to_string(),
         }
     }
 }
@@ -171,7 +170,7 @@ impl Default for Ws {
 pub struct Wss {
     pub external: String,
     pub cert_file: String,
-    pub key_file: String
+    pub key_file: String,
 }
 
 impl Default for Wss {
@@ -179,30 +178,28 @@ impl Default for Wss {
         Self {
             external: "0.0.0.0:8084".to_string(),
             cert_file: "".to_string(),
-            key_file: "".to_string()
+            key_file: "".to_string(),
         }
     }
-    
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Tcp {
     pub external: String,
-    pub rate_limit: RateLimit
+    pub rate_limit: RateLimit,
 }
 
 impl Default for Tcp {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:1883".to_string(),
-            rate_limit: RateLimit::default()
+            rate_limit: RateLimit::default(),
         }
     }
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Cluster {
-
     pub cluster_name: String,
 
     pub heartbeat_interval: u32,
@@ -215,8 +212,7 @@ pub struct Cluster {
 
     pub nodes: Vec<Node>,
 
-    pub session_ttl: u64
-
+    pub session_ttl: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -226,9 +222,7 @@ pub struct Node {
     pub api_address: String,
 }
 
-
 impl Default for Cluster {
-
     fn default() -> Self {
         let rpc = RPC::default();
         Self {
@@ -238,41 +232,35 @@ impl Default for Cluster {
             node_id: 1,
             rpc: rpc.clone(),
             nodes: vec![],
-            session_ttl: 10
+            session_ttl: 10,
         }
     }
 }
 
-
-#[derive(Debug, Deserialize,Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct RPC {
-    pub external: String
+    pub external: String,
 }
 
-impl Default for RPC  {
+impl Default for RPC {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:3457".to_string()
+            external: "0.0.0.0:3457".to_string(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Api {
-
     pub external: String,
 
-    pub auth: AuthConfig
-
+    pub auth: AuthConfig,
 }
 
-
-#[derive(Debug, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Default)]
 pub struct AuthConfig {
-    pub users: Vec<User>
+    pub users: Vec<User>,
 }
-
 
 #[derive(Debug, Deserialize)]
 pub struct User {
@@ -280,24 +268,21 @@ pub struct User {
     pub password: String,
 }
 
-
 impl Default for Api {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:3456".to_string(),
-            auth: AuthConfig::default()
+            auth: AuthConfig::default(),
         }
     }
 }
 
-
 impl Settings {
-
     pub fn new() -> Result<Self, ConfigError> {
         let s = Config::builder()
             .set_default("mqtt.default_authentication", "allow")?
             .set_default("mqtt.default_authorization", "allow")?
-            .set_default("mqtt.sys_topic_interval_secs", 10)? 
+            .set_default("mqtt.sys_topic_interval_secs", 10)?
             .set_default("session.qos_expired_secs", 10)?
             .set_default("session.packet_resend_interval_secs", 10)?
             .set_default("session.session_clock_path", "./clock")?
@@ -311,20 +296,15 @@ impl Settings {
             .set_default("listener.wss.cert_file", "")?
             .set_default("listener.wss.key_file", "")?
             .set_default("listener.api.external", "0.0.0.0:3456")?
-            .set_default("cluster.cluster_name", "YedMQ")?  
+            .set_default("cluster.cluster_name", "YedMQ")?
             .set_default("cluster.heartbeat_interval", 10)?
             .set_default("cluster.rpc.external", "0.0.0.0:3457")?
             .set_default("cluster.session_ttl", 10)?
-            .add_source(
-                File::with_name("/etc/yedmq/config.toml").required(false)
-            )
-            .add_source(
-                File::with_name("./yedmq.toml")
-            )
+            .add_source(File::with_name("/etc/yedmq/config.toml").required(false))
+            .add_source(File::with_name("./yedmq.toml"))
             .build()?;
         s.try_deserialize()
     }
-
 }
 
 #[cfg(test)]
@@ -337,8 +317,14 @@ mod tests {
         assert_eq!(10, s.session.qos_expired_secs);
         assert_eq!(10, s.session.packet_resend_interval_secs);
         assert_eq!("0.0.0.0:1883", s.listener.tcp.external);
-        assert_eq!(DefaultAuthenticationValue::Allow, s.mqtt.default_authentication);
-        assert_eq!(DefaultAuthorizationValue::Allow, s.mqtt.default_authorization);
+        assert_eq!(
+            DefaultAuthenticationValue::Allow,
+            s.mqtt.default_authentication
+        );
+        assert_eq!(
+            DefaultAuthorizationValue::Allow,
+            s.mqtt.default_authorization
+        );
         assert_eq!(1001, s.cluster.nodes[0].id);
     }
 }

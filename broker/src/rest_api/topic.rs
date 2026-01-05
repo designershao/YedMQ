@@ -1,12 +1,18 @@
 use std::sync::Arc;
 
+use crate::{
+    app::YedMQApp,
+    raft::topic::topic_raft_actor::{self, TopicRaftActor},
+};
 use actix::SystemService;
 use axum::{
-    extract::{Path, Query, State}, http::StatusCode, response::IntoResponse, Json
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
 };
 use log::error;
 use serde::Serialize;
-use crate::{app::YedMQApp, raft::topic::topic_raft_actor::{self, TopicRaftActor}};
 
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
@@ -27,13 +33,14 @@ pub async fn topic_list(
     let limit_param = pagination.limit.unwrap_or(10);
 
     let topic_raft_actor_addr = TopicRaftActor::from_registry();
-    let topic_list_result = topic_raft_actor_addr.send(
-        topic_raft_actor::GetTopicListWithPagination{
+    let topic_list_result = topic_raft_actor_addr
+        .send(topic_raft_actor::GetTopicListWithPagination {
             tenant_id: tenant_id.clone(),
             offset: offset_param,
-            limit: limit_param
-        }
-    ).await.unwrap();
+            limit: limit_param,
+        })
+        .await
+        .unwrap();
 
     if let Err(err) = topic_list_result {
         if let topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
@@ -44,7 +51,7 @@ pub async fn topic_list(
                         message: format!("tenant {} not existed", tenant_id),
                     };
                     (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                },
+                }
                 _ => {
                     error!("get retain message list error: {}", topic_error);
                     let error_response = super::ErrorResponse {

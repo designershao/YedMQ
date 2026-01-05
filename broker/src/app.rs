@@ -1,21 +1,23 @@
 use std::sync::Arc;
 
 use log::{info, warn};
-use tokio::sync:: Mutex;
+use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
+use crate::arbiter_pool::ArbiterPool;
+use crate::service_registry::ServiceRegistry;
 use crate::{
     listener::{
         tcp_listener::MqttTcpListener, tcp_tls_listener::MqttTcpTlsListener,
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
-    }, metric, rest_api, session::session_actor_map_storage::SessionClock, settings::Settings
+    },
+    metric, rest_api,
+    session::session_actor_map_storage::SessionClock,
+    settings::Settings,
 };
-use crate::arbiter_pool::ArbiterPool;
-use crate::service_registry::ServiceRegistry;
 
 // Representation of the application state.This struct can be shared around to share.
 pub struct YedMQApp {
-
     pub plugin_manager: Arc<PluginManager>,
 
     pub metric: Arc<metric::Metric>,
@@ -29,7 +31,6 @@ pub struct YedMQApp {
 
 impl YedMQApp {
     pub async fn start(app: Arc<YedMQApp>) {
-
         let settings = app.settings.clone();
 
         //
@@ -41,16 +42,15 @@ impl YedMQApp {
             settings.clone(),
             app.plugin_manager.clone(),
             app.session_clock.clone(),
-            app.metric.clone()
-        ).await;
+            app.metric.clone(),
+        )
+        .await;
         //
 
         // sys topic task
         info!("start sys topic task");
-        let mut sys_topic_task = metric::SysTopicTask::new(
-            app.metric.clone(),
-            settings.mqtt.sys_topic_interval_secs,
-        );
+        let mut sys_topic_task =
+            metric::SysTopicTask::new(app.metric.clone(), settings.mqtt.sys_topic_interval_secs);
         if let Some(router) = service_registry.routers.first() {
             sys_topic_task.set_router_actor(router.clone());
         }
@@ -76,7 +76,10 @@ impl YedMQApp {
         info!("start api task succeed");
         //
 
-        let listener = MqttTcpListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
+        let listener = MqttTcpListener {
+            app: app.clone(),
+            arbiter_pool: arbiter_pool.clone(),
+        };
 
         let settings_clone = settings.clone();
         let tcp_listener_join = actix::spawn(async move {
@@ -90,7 +93,10 @@ impl YedMQApp {
             Ok(())
         });
 
-        let mut tcp_tls_listener = MqttTcpTlsListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
+        let mut tcp_tls_listener = MqttTcpTlsListener {
+            app: app.clone(),
+            arbiter_pool: arbiter_pool.clone(),
+        };
 
         let settings_clone = settings.clone();
         let tcp_tls_listener_join = actix::spawn(async move {
@@ -105,7 +111,10 @@ impl YedMQApp {
             Ok(())
         });
 
-        let ws_listener = MqttWsListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
+        let ws_listener = MqttWsListener {
+            app: app.clone(),
+            arbiter_pool: arbiter_pool.clone(),
+        };
         let settings_clone = settings.clone();
         let mqtt_ws_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
@@ -116,7 +125,10 @@ impl YedMQApp {
             Ok(())
         });
 
-        let wss_listener = MqttWssListener { app: app.clone(), arbiter_pool: arbiter_pool.clone() };
+        let wss_listener = MqttWssListener {
+            app: app.clone(),
+            arbiter_pool: arbiter_pool.clone(),
+        };
         let settings_clone = settings.clone();
         let mqtt_wss_listener_join = actix::spawn(async move {
             let settings = settings_clone.clone();
@@ -155,8 +167,7 @@ impl YedMQApp {
             default_authenticate_result: settings.plugin.default_authenticate_result,
         };
 
-        let mut plugin_manager =
-            PluginManager::new(plugin_host_config).await.unwrap();
+        let mut plugin_manager = PluginManager::new(plugin_host_config).await.unwrap();
         info!("plugin manager load succeed");
 
         match plugin_manager.start_listener().await {

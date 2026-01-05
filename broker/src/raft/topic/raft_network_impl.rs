@@ -20,7 +20,6 @@ impl RaftNetworkFactory<TypeConfig> for Network {
     type Network = NetworkConnection;
 
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-
         NetworkConnection::new(node)
     }
 }
@@ -29,12 +28,9 @@ pub struct NetworkConnection {
     node: Node,
 }
 
-
 impl NetworkConnection {
     pub fn new(node: &Node) -> Self {
-        NetworkConnection {
-            node: node.clone(),
-        }
+        NetworkConnection { node: node.clone() }
     }
 
     async fn c<E: std::error::Error + DeserializeOwned>(
@@ -43,10 +39,8 @@ impl NetworkConnection {
         let addr = format!("http://{}", self.node.rpc_addr);
 
         match Channel::builder(addr.parse().unwrap()).connect().await {
-            Ok(channel) => Ok(RaftServiceClient::new(channel)), 
-            Err(e) => {
-                Err(RPCError::Unreachable(Unreachable::new(&e)))
-            }
+            Ok(channel) => Ok(RaftServiceClient::new(channel)),
+            Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
         }
     }
 }

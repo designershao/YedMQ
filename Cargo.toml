@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "broker", 
+    "broker",
     "mqtt",
-    "plugin_host", 
+    "plugin_host",
     "mock_plugin_harness"]
 
 [workspace.dependencies]

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use crate::app::YedMQApp;
 use axum::{
     body::Body,
     extract::State,
@@ -9,14 +9,14 @@ use axum::{
 use base64::{engine::general_purpose, Engine as _};
 use log::info;
 use serde::{Deserialize, Serialize};
-use crate::app::YedMQApp;
+use std::sync::Arc;
 
-mod topic;
-mod plugin;
-mod message;
 mod client;
-mod system;
 mod cluster;
+mod message;
+mod plugin;
+mod system;
+mod topic;
 
 #[derive(Deserialize, Debug)]
 struct Pagination {
@@ -104,9 +104,18 @@ pub async fn run_rest_api_task(
 
     let app = axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin::plugin_list))
-        .route("/api/v1/:tenant_id/topics", axum::routing::get(topic::topic_list))
-        .route("/api/v1/:tenant_id/messages/retained", axum::routing::get(message::retain_message_list))
-        .route("/api/v1/:tenant_id/messages/retained/*topic_filter", axum::routing::delete(message::clean_retain_message))
+        .route(
+            "/api/v1/:tenant_id/topics",
+            axum::routing::get(topic::topic_list),
+        )
+        .route(
+            "/api/v1/:tenant_id/messages/retained",
+            axum::routing::get(message::retain_message_list),
+        )
+        .route(
+            "/api/v1/:tenant_id/messages/retained/*topic_filter",
+            axum::routing::delete(message::clean_retain_message),
+        )
         .route(
             "/api/v1/:tenant_id/clients",
             axum::routing::get(client::client_list),
@@ -115,17 +124,50 @@ pub async fn run_rest_api_task(
             "/api/v1/:tenant_id/clients/:client_id/kickoff",
             axum::routing::post(client::kickoff_client),
         )
-        .route("/api/v1/system_info", axum::routing::get(system::system_info))
-        .route("/api/v1/cluster/metrics", axum::routing::get(cluster::metrics))
-        .route("/api/v1/cluster/learners", axum::routing::post(cluster::add_learner))
-        .route("/api/v1/cluster/membership", axum::routing::post(cluster::change_membership))
-        .route("/api/v1/cluster/topic/membership", axum::routing::post(cluster::topic_raft_change_membership))
-        .route("/api/v1/cluster/session_actor_map/membership", axum::routing::post(cluster::session_actor_map_raft_change_membership))
-        .route("/api/v1/cluster/session_state/membership", axum::routing::post(cluster::session_state_raft_change_membership))
-        .route("/api/v1/cluster/init", axum::routing::post(cluster::init_cluster))
-        .route("/api/v1/cluster/raft/topic/init", axum::routing::post(cluster::init_topic_raft))
-        .route("/api/v1/cluster/raft/session_actor_map/init", axum::routing::post(cluster::init_session_actor_map_raft))
-        .route("/api/v1/cluster/raft/session_state/init", axum::routing::post(cluster::init_session_state_raft))
+        .route(
+            "/api/v1/system_info",
+            axum::routing::get(system::system_info),
+        )
+        .route(
+            "/api/v1/cluster/metrics",
+            axum::routing::get(cluster::metrics),
+        )
+        .route(
+            "/api/v1/cluster/learners",
+            axum::routing::post(cluster::add_learner),
+        )
+        .route(
+            "/api/v1/cluster/membership",
+            axum::routing::post(cluster::change_membership),
+        )
+        .route(
+            "/api/v1/cluster/topic/membership",
+            axum::routing::post(cluster::topic_raft_change_membership),
+        )
+        .route(
+            "/api/v1/cluster/session_actor_map/membership",
+            axum::routing::post(cluster::session_actor_map_raft_change_membership),
+        )
+        .route(
+            "/api/v1/cluster/session_state/membership",
+            axum::routing::post(cluster::session_state_raft_change_membership),
+        )
+        .route(
+            "/api/v1/cluster/init",
+            axum::routing::post(cluster::init_cluster),
+        )
+        .route(
+            "/api/v1/cluster/raft/topic/init",
+            axum::routing::post(cluster::init_topic_raft),
+        )
+        .route(
+            "/api/v1/cluster/raft/session_actor_map/init",
+            axum::routing::post(cluster::init_session_actor_map_raft),
+        )
+        .route(
+            "/api/v1/cluster/raft/session_state/init",
+            axum::routing::post(cluster::init_session_state_raft),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state_for_basic_auth,
             basic_auth_middleware,

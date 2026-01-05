@@ -1,21 +1,29 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
-    protobuf::ForceStopSessionActorRequest, raft::{
-        NodeId, session_actor_map::{
+    protobuf::ForceStopSessionActorRequest,
+    raft::{
+        session_actor_map::{
             session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
             types::RenewSession,
-        }
-    }, session::{session_actor::SessionActor, session_registry::{SessionActorRecipientWrapper, SessionRegistry}}, settings::Settings
+        },
+        NodeId,
+    },
+    session::{
+        session_actor::SessionActor,
+        session_registry::{SessionActorRecipientWrapper, SessionRegistry},
+    },
+    settings::Settings,
 };
-use actix::{Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised, SystemService, WrapFuture, dev::MessageResponse};
+use actix::{
+    dev::MessageResponse, Actor, Addr, AsyncContext, Context, Handler, Message, Recipient,
+    ResponseFuture, Supervised, SystemService, WrapFuture,
+};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
-use yedmq_mqtt::
-    MqttPacketV3
-;
+use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
@@ -47,17 +55,22 @@ pub enum SessionManagerError {
     NewerSessionExisted,
 
     #[error("session actor map error {0}")]
-    SessionActorMapError(#[from] crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError),
+    SessionActorMapError(
+        #[from]
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+    ),
 
     #[error("session state raft error {0}")]
-    SessionStateRaftError(#[from] crate::raft::session_state::session_state_raft_actor::SessionStateRaftError),
+    SessionStateRaftError(
+        #[from] crate::raft::session_state::session_state_raft_actor::SessionStateRaftError,
+    ),
 
     #[error("send message error {0}")]
     SendMessageError(#[from] actix::MailboxError),
 
     #[error("node not found {0}")]
     NodeNotFound(String),
-        
+
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
@@ -84,9 +97,9 @@ impl SystemService for SessionManagerActor {
 
 impl Supervised for SessionManagerActor {}
 
+use crate::metric::Metric;
 use crate::raft::payload::PayloadStore;
 use crate::timer_actor::TimerActor;
-use crate::metric::Metric;
 
 pub struct SessionManagerActor {
     sessions: SessionRegistry,
@@ -109,11 +122,11 @@ pub struct SessionManagerActor {
 
     timer_actor: Option<Addr<TimerActor>>,
 
-    metric: Option<Arc<Metric>>
+    metric: Option<Arc<Metric>>,
 }
 
 #[derive(Message)]
-#[rtype(result = "()" )]
+#[rtype(result = "()")]
 pub struct Initialize {
     pub settings: Arc<Settings>,
     pub plugin_manager: Arc<PluginManager>,
@@ -152,11 +165,10 @@ impl Default for SessionManagerActor {
             arbiter_pool: None,
             payload_store: None,
             timer_actor: None,
-            metric: None
+            metric: None,
         }
     }
 }
-
 
 impl Actor for SessionManagerActor {
     type Context = Context<Self>;
@@ -192,14 +204,15 @@ impl Actor for SessionManagerActor {
                             warn!("failed to unregister session actor map: {}", err);
                         }
                         // Because the session should renew the session lease before it stops,
-                        // so if we send unregister error, we just log it and continue to remove session from local map and 
+                        // so if we send unregister error, we just log it and continue to remove session from local map and
                         // let the raft state machine to clean up the session actor map later.
                         match self_addr
                             .send(RemoveSessionMessage {
                                 tenant_id,
                                 client_id,
                             })
-                            .await {
+                            .await
+                        {
                             Ok(Ok(_)) => {}
                             Ok(Err(e)) => {
                                 if let SessionManagerError::TenantNotExisted(tenant_id) = e {
@@ -246,13 +259,16 @@ impl Handler<SetArbiterPool> for SessionManagerActor {
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct SetRouterActors {
-    pub router_actors: Vec<Addr<RouterActor>>
+    pub router_actors: Vec<Addr<RouterActor>>,
 }
 
 impl Handler<SetRouterActors> for SessionManagerActor {
     type Result = ();
     fn handle(&mut self, msg: SetRouterActors, _ctx: &mut Self::Context) -> Self::Result {
-        println!("set router actors in session manager, count: {}", msg.router_actors.len());
+        println!(
+            "set router actors in session manager, count: {}",
+            msg.router_actors.len()
+        );
         self.router_actors = Some(msg.router_actors);
     }
 }
@@ -266,40 +282,44 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
 
     fn handle(&mut self, _msg: RenewSessionLease, ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner().clone();
-        ctx.spawn(async move {
-            for entry in sessions.iter() {
-                let tenant_sessions = entry.value();
-                let tenant_id = entry.key();
-                
-                debug!("renew session lease for tenant {}", tenant_id);
-                let sessions_keys: Vec<RenewSession> = tenant_sessions
-                    .iter()
-                    .map(|entry| RenewSession {
-                        tenant_id: tenant_id.clone(),
-                        session_id: entry.key().clone(),
-                    })
-                    .collect();
+        ctx.spawn(
+            async move {
+                for entry in sessions.iter() {
+                    let tenant_sessions = entry.value();
+                    let tenant_id = entry.key();
 
-                let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-                for session in &sessions_keys {
-                    debug!(
-                        "renew session lease for tenant {} session {}",
-                        tenant_id, session.session_id
-                    );
-                    let res = session_actor_map_raft_actor_addr
-                        .send(session_actor_map_raft_actor::RenewSession {
-                            tenant_id: session.tenant_id.clone(),
-                            client_id: session.session_id.clone(),
+                    debug!("renew session lease for tenant {}", tenant_id);
+                    let sessions_keys: Vec<RenewSession> = tenant_sessions
+                        .iter()
+                        .map(|entry| RenewSession {
+                            tenant_id: tenant_id.clone(),
+                            session_id: entry.key().clone(),
                         })
-                        .await;
-                    if let Err(err) = res {
-                        error!("failed to renew session lease: {}", err);
-                    } else {
-                        debug!("renew session lease for tenant {} succeed", tenant_id);
+                        .collect();
+
+                    let session_actor_map_raft_actor_addr =
+                        SessionActorMapRaftActor::from_registry();
+                    for session in &sessions_keys {
+                        debug!(
+                            "renew session lease for tenant {} session {}",
+                            tenant_id, session.session_id
+                        );
+                        let res = session_actor_map_raft_actor_addr
+                            .send(session_actor_map_raft_actor::RenewSession {
+                                tenant_id: session.tenant_id.clone(),
+                                client_id: session.session_id.clone(),
+                            })
+                            .await;
+                        if let Err(err) = res {
+                            error!("failed to renew session lease: {}", err);
+                        } else {
+                            debug!("renew session lease for tenant {} succeed", tenant_id);
+                        }
                     }
                 }
             }
-        }.into_actor(self));
+            .into_actor(self),
+        );
     }
 }
 
@@ -323,7 +343,8 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
                 Some(tenant_sessions) => {
                     let session = tenant_sessions.get(&msg.client_id);
                     if let Some(session) = session {
-                        session.session_actor_message_recipient
+                        session
+                            .session_actor_message_recipient
                             .do_send(SessionActorMessage::ForceStop);
                         info!(
                             "force stop session {} remove from local node session map",
@@ -361,44 +382,48 @@ impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
         info!("remove duplicate session {}", msg.client_id);
         let sessions = self.sessions.get_inner().clone();
         let self_addr = ctx.address();
-        ctx.spawn(async move {
-            let should_stop = if let Some(tenant_sessions) = sessions.get(&msg.tenant_id) {
-                if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                     msg.session_version.is_newer_than(&session.session_version)
-                } else {
-                    false
-                }
-            } else {
-                warn!("tenant {} not found", msg.tenant_id);
-                false
-            };
-
-            if should_stop {
-                match self_addr
-                    .send(ForceStop {
-                        tenant_id: msg.tenant_id.clone(),
-                        client_id: msg.client_id.clone(),
-                    })
-                    .await {
-                    Ok(res) => {
-                        if let Err(e) = res {
-                            error!(
-                                "force stop duplicate session {} failed: {}",
-                                msg.client_id, e
-                            );
-                        } else {
-                            info!("remove duplicate session {} succeed", msg.client_id);
-                        }
+        ctx.spawn(
+            async move {
+                let should_stop = if let Some(tenant_sessions) = sessions.get(&msg.tenant_id) {
+                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
+                        msg.session_version.is_newer_than(&session.session_version)
+                    } else {
+                        false
                     }
-                    Err(e) => {
-                        error!(
+                } else {
+                    warn!("tenant {} not found", msg.tenant_id);
+                    false
+                };
+
+                if should_stop {
+                    match self_addr
+                        .send(ForceStop {
+                            tenant_id: msg.tenant_id.clone(),
+                            client_id: msg.client_id.clone(),
+                        })
+                        .await
+                    {
+                        Ok(res) => {
+                            if let Err(e) = res {
+                                error!(
+                                    "force stop duplicate session {} failed: {}",
+                                    msg.client_id, e
+                                );
+                            } else {
+                                info!("remove duplicate session {} succeed", msg.client_id);
+                            }
+                        }
+                        Err(e) => {
+                            error!(
                             "send ForceStop message to self for duplicate session {} failed: {}",
                             msg.client_id, e
                         );
+                        }
                     }
                 }
             }
-        }.into_actor(self));
+            .into_actor(self),
+        );
     }
 }
 
@@ -415,15 +440,20 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
 
     fn handle(&mut self, msg: SendMessageToSession, ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner().clone();
-        ctx.spawn(async move {
-            if let Some(tenant_session) = sessions.get(&msg.tenant_id) {
-                if let Some(session) = tenant_session.get(&msg.client_id) {
-                    session.session_actor_message_recipient.do_send(SessionActorMessage::OutboundMessage(msg.packet));
+        ctx.spawn(
+            async move {
+                if let Some(tenant_session) = sessions.get(&msg.tenant_id) {
+                    if let Some(session) = tenant_session.get(&msg.client_id) {
+                        session
+                            .session_actor_message_recipient
+                            .do_send(SessionActorMessage::OutboundMessage(msg.packet));
+                    }
+                } else {
+                    warn!("tenant {} not found", msg.tenant_id);
                 }
-            } else {
-                warn!("tenant {} not found", msg.tenant_id);
             }
-        }.into_actor(self));
+            .into_actor(self),
+        );
     }
 }
 
@@ -455,13 +485,11 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
                         .take(msg.limit_param as usize);
                     for session in iter {
                         let session_info_recipient = session.get_session_info_recipient.clone();
-                        let session_info = session_info_recipient
-                            .send(GetSessionInfo {})
-                            .await?;
+                        let session_info = session_info_recipient.send(GetSessionInfo {}).await?;
                         session_infos.push(session_info);
                     }
                     Ok((total_len as u64, session_infos))
-                },
+                }
             }
         })
     }
@@ -490,11 +518,9 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
                 Some(tenant_sessions) => {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
                         if msg.session_version.is_newer_than(&session.session_version) {
-                             let recipient = session.session_actor_message_recipient.clone();
-                             drop(session);
-                             let res = recipient
-                                .send(SessionActorMessage::ForceStop)
-                                .await;
+                            let recipient = session.session_actor_message_recipient.clone();
+                            drop(session);
+                            let res = recipient.send(SessionActorMessage::ForceStop).await;
                             if let Err(e) = res {
                                 error!("force stop session {} failed: {}", msg.client_id, e);
                             }
@@ -525,11 +551,11 @@ impl Handler<ForceStop> for SessionManagerActor {
             match sessions.get(&msg.tenant_id) {
                 None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
                 Some(tenant_sessions) => {
-                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
+                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
                         let recipient = session.session_actor_message_recipient.clone();
                         drop(session);
                         if let Err(e) = recipient.send(SessionActorMessage::ForceStop).await {
-                             warn!(
+                            warn!(
                                 "failed to send ForceStop to session actor {}: {}. It might have already stopped.",
                                 msg.client_id, e
                             );
@@ -540,9 +566,9 @@ impl Handler<ForceStop> for SessionManagerActor {
                         );
                         tenant_sessions.remove(&msg.client_id);
                         Ok(())
-                     } else {
+                    } else {
                         Err(SessionManagerError::SessionNotExisted(msg.client_id))
-                     }
+                    }
                 }
             }
         })
@@ -562,27 +588,27 @@ impl Handler<ForceDisconnect> for SessionManagerActor {
     fn handle(&mut self, msg: ForceDisconnect, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner().clone();
         Box::pin(async move {
-             match sessions.get(&msg.tenant_id) {
+            match sessions.get(&msg.tenant_id) {
                 None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
                 Some(tenant_sessions) => {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        session.session_actor_message_recipient.do_send(SessionActorMessage::ForceDisconnect);
+                        session
+                            .session_actor_message_recipient
+                            .do_send(SessionActorMessage::ForceDisconnect);
                         Ok(())
                     } else {
                         Err(SessionManagerError::SessionNotExisted(msg.client_id))
                     }
                 }
-             }
+            }
         })
     }
 }
 
 pub struct CreateSessionMessageResponse {
-
     pub session_actor_recipient: Recipient<SessionActorMessage>,
 
     pub session_present: bool,
-
 }
 
 #[derive(Message)]
@@ -609,21 +635,26 @@ async fn call_force_disconnect(
 
     let node = nodes
         .iter()
-        .find(|node| node.id == node_id).ok_or_else(|| SessionManagerError::NodeNotFound(node_id.to_string()))?;
+        .find(|node| node.id == node_id)
+        .ok_or_else(|| SessionManagerError::NodeNotFound(node_id.to_string()))?;
 
     let addr = format!("http://{}", node.rpc_address);
 
-    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone()).await?;
+    let mut client =
+        crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone())
+            .await?;
 
     for i in 0..max_retries {
         info!(
             "force disconnect session {} from node {} in {} retry",
             client_id, node_id, i
         );
-        let res = client.force_stop_session_actor(ForceStopSessionActorRequest {
-            tenant_id: tenant_id.clone(),
-            client_id: client_id.clone(),
-        }).await;
+        let res = client
+            .force_stop_session_actor(ForceStopSessionActorRequest {
+                tenant_id: tenant_id.clone(),
+                client_id: client_id.clone(),
+            })
+            .await;
         if res.is_ok() {
             info!(
                 "force disconnect session {} from node {} succeed",
@@ -640,13 +671,15 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
     type Result = ResponseFuture<Result<CreateSessionMessageResponse, SessionManagerError>>;
 
     fn handle(&mut self, msg: CreateSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
-
         let sessions = self.sessions.get_inner();
         let tenant_id = msg.tenant_id.clone();
         let plugin_manager = self.plugin_manager.as_ref().unwrap().clone();
         let settings = self.settings.as_ref().unwrap().clone();
-        let session_lifecycle_tx = self.session_lifecycle_tx.as_ref()
-            .expect("session lifecycle tx must exist").clone();
+        let session_lifecycle_tx = self
+            .session_lifecycle_tx
+            .as_ref()
+            .expect("session lifecycle tx must exist")
+            .clone();
         let session_clock = self.session_clock.as_ref().unwrap().clone();
         let current_node_id = self.current_node_id;
         let router_actors = self.router_actors.as_ref().unwrap().clone();
@@ -667,12 +700,12 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             // Force previous session to disconnect if exists
             let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-            let session_actor_map_entry = session_actor_map_raft_actor_addr.send(
-                session_actor_map_raft_actor::GetSessionActorMap{
+            let session_actor_map_entry = session_actor_map_raft_actor_addr
+                .send(session_actor_map_raft_actor::GetSessionActorMap {
                     tenant_id: msg.tenant_id.clone(),
                     client_id: msg.client_id.clone(),
-                }
-            ).await??;
+                })
+                .await??;
 
             if let Some(entry) = &session_actor_map_entry {
                 if entry.node_id != current_node_id {
@@ -696,9 +729,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
                         let recipient = session.session_actor_message_recipient.clone();
                         drop(session);
-                        let res = recipient
-                            .send(SessionActorMessage::ForceDisconnect)
-                            .await;
+                        let res = recipient.send(SessionActorMessage::ForceDisconnect).await;
                         if res.is_err() {
                             warn!(
                                 "force disconnect in current node failed: {}",
@@ -722,28 +753,29 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
 
-            let res = session_actor_map_raft_actor_addr.send(
-                session_actor_map_raft_actor::RegisterSessionActorMap {
+            let res = session_actor_map_raft_actor_addr
+                .send(session_actor_map_raft_actor::RegisterSessionActorMap {
                     tenant_id: msg.tenant_id.clone(),
                     client_id: msg.client_id.clone(),
                     node_id: current_node_id,
                     version: session_version.clone(),
-                }
-            ).await?;
+                })
+                .await?;
 
             match res {
                 Ok(_) => {}
                 Err(e) => {
                     match e {
-                        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected { 
-                            current_version, 
-                            existing_version } => {
+                        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
+                            current_version,
+                            existing_version
+                        } => {
                             info!(
                                 "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
                                 msg.tenant_id, msg.client_id, current_version, existing_version
                             );
                             return Err(SessionManagerError::NewerSessionExisted);
-                        },
+                        }
                         _ => {
                             return Err(SessionManagerError::SessionActorMapError(e));
                         }
@@ -805,12 +837,12 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                                 .await
                                 .unwrap();
                             let session_recipient = sessions_guard.get(&msg.client_id).unwrap();
-                            return Ok(
-                                CreateSessionMessageResponse {
-                                    session_actor_recipient: session_recipient.session_actor_message_recipient.clone(),
-                                    session_present: true,
-                                }
-                            );
+                            return Ok(CreateSessionMessageResponse {
+                                session_actor_recipient: session_recipient
+                                    .session_actor_message_recipient
+                                    .clone(),
+                                session_present: true,
+                            });
                             // in current node, send reconnect
                         } else {
                             info!(
@@ -835,9 +867,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     }
 
                     session_present = true;
-
                 }
-
             }
             let plugin_manager_clone = plugin_manager.clone();
             let msg_client_id = msg.client_id.clone();
@@ -862,7 +892,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     payload_store.clone(),
                     timer_actor,
                     metric,
-                    session_version_clone
+                    session_version_clone,
                 )
             });
 
@@ -876,7 +906,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     session_version,
                 },
             );
-            Ok(CreateSessionMessageResponse { session_actor_recipient: session_actor_message_recipient, session_present })
+            Ok(CreateSessionMessageResponse {
+                session_actor_recipient: session_actor_message_recipient,
+                session_present,
+            })
         };
         Box::pin(future)
     }
@@ -916,7 +949,6 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
     type Result = ResponseFuture<Result<(), SessionManagerError>>;
 
     fn handle(&mut self, msg: RemoveSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
-
         let sessions = self.sessions.get_inner().clone();
         let tenant_id = msg.tenant_id.clone();
         let future = async move {
@@ -939,7 +971,6 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
     }
 }
 
-
 #[derive(Message)]
 #[rtype(result = "Vec<String>")]
 pub struct GetAllTenantIds {}
@@ -949,14 +980,9 @@ impl Handler<GetAllTenantIds> for SessionManagerActor {
 
     fn handle(&mut self, _msg: GetAllTenantIds, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner();
-        Box::pin(async move {
-           sessions.iter().map(|entry| {
-                entry.key().clone()
-           }).collect()
-        })
+        Box::pin(async move { sessions.iter().map(|entry| entry.key().clone()).collect() })
     }
 }
-
 
 #[derive(Message)]
 #[rtype(result = "Option<Arc<SessionClock>>")]
@@ -966,17 +992,17 @@ impl<A, M> MessageResponse<A, M> for SessionClock
 where
     A: Actor,
     M: Message<Result = SessionClock>,
-    {
-        fn handle(
-            self,
-            _ctx: &mut <A as Actor>::Context,
-            tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
-        ) {
-            if let Some(tx) = tx {
-                let _ = tx.send(self);
-            }
+{
+    fn handle(
+        self,
+        _ctx: &mut <A as Actor>::Context,
+        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
+    ) {
+        if let Some(tx) = tx {
+            let _ = tx.send(self);
         }
     }
+}
 
 impl Handler<GetLatestSessionClock> for SessionManagerActor {
     type Result = Option<Arc<SessionClock>>;

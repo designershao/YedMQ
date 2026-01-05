@@ -9,13 +9,15 @@ use openraft::{
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
     Vote,
 };
+use parking_lot::RwLock;
 use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Direction, Options, DB};
 use serde::{Deserialize, Serialize};
-use parking_lot::RwLock;
 
 use crate::{
     raft::{Node, NodeId},
-    session::session_actor_map_storage::{SessionActorMapError, SessionActorMapStorage, SessionClock},
+    session::session_actor_map_storage::{
+        SessionActorMapError, SessionActorMapStorage, SessionClock,
+    },
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};
@@ -74,12 +76,7 @@ impl RaftSnapshotBuilder<SessionActorMapTypeConfig> for StateMachineStore {
 
         let snapshot_json = {
             let snapshot_data = SnapshotWrapper {
-                session_actor_map_snapshot: self
-                    .data
-                    .state
-                    .session_actor_map
-                    .read()
-                    .to_snapshot(),
+                session_actor_map_snapshot: self.data.state.session_actor_map.read().to_snapshot(),
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -233,19 +230,19 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         tenant_id,
                         session_id,
                         node_id,
-                        version
+                        version,
                     } => {
                         let register_result = {
                             let mut session_actor_map_storage =
                                 self.data.state.session_actor_map.write();
                             session_actor_map_storage.register_session_actor(
-                                tenant_id.clone(), 
-                                session_id.clone(), 
-                                node_id, 
-                                &version, 
-                                self.session_ttl
+                                tenant_id.clone(),
+                                session_id.clone(),
+                                node_id,
+                                &version,
+                                self.session_ttl,
                             )
-                        };  
+                        };
                         match register_result {
                             Ok(()) => {
                                 // Check local node , force stop the session if the session version is older
@@ -266,26 +263,33 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                                 self.session_clock.bump(&version);
                                 self.session_clock.persist().await.unwrap();
                                 replies.push(SessionActorMapResponse::None)
-                            },
-                            Err(e) =>  {
-                                match e {
-                                    SessionActorMapError::SessionVersionRejected { current_version, existing_version } => {
-                                        replies.push(SessionActorMapResponse::Rejected { current_version, existing_version });
-                                    }
+                            }
+                            Err(e) => match e {
+                                SessionActorMapError::SessionVersionRejected {
+                                    current_version,
+                                    existing_version,
+                                } => {
+                                    replies.push(SessionActorMapResponse::Rejected {
+                                        current_version,
+                                        existing_version,
+                                    });
                                 }
-                            }               
+                            },
                         }
                     }
                     types::SessionActorMapRequest::UnregisterSession {
                         tenant_id,
                         session_id,
-                        session_version
+                        session_version,
                     } => {
                         {
                             let mut session_actor_map_storage =
                                 self.data.state.session_actor_map.write();
-                            session_actor_map_storage
-                                .unregister_session_actor(tenant_id.clone(), session_id.clone(), &session_version);
+                            session_actor_map_storage.unregister_session_actor(
+                                tenant_id.clone(),
+                                session_id.clone(),
+                                &session_version,
+                            );
                             self.session_clock.bump(&session_version);
                         }
                         self.session_clock.persist().await.unwrap();
@@ -295,16 +299,20 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write();
                         for session in sessions {
-                            session_actor_map_storage
-                                .unregister_session_actor(session.tenant_id.clone(), session.session_id.clone(), &session.session_version);
+                            session_actor_map_storage.unregister_session_actor(
+                                session.tenant_id.clone(),
+                                session.session_id.clone(),
+                                &session.session_version,
+                            );
                             // Force stop the session if the session is expired
                             if session.node_id == self.node_id {
                                 let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
-                                session_manager_actor_addr
-                                    .do_send(crate::session::session_manager_actor::RemoveExpiredSession {
+                                session_manager_actor_addr.do_send(
+                                    crate::session::session_manager_actor::RemoveExpiredSession {
                                         tenant_id: session.tenant_id,
                                         client_id: session.session_id,
-                                    });
+                                    },
+                                );
                             }
                         }
                         replies.push(SessionActorMapResponse::None);
@@ -312,8 +320,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                     types::SessionActorMapRequest::SessionLeaseRenewRequest { sessions } => {
                         let mut session_actor_map_storage =
                             self.data.state.session_actor_map.write();
-                        session_actor_map_storage
-                            .session_lease_renew(sessions, self.session_ttl);
+                        session_actor_map_storage.session_lease_renew(sessions, self.session_ttl);
                         replies.push(SessionActorMapResponse::None);
                     }
                 },
@@ -605,7 +612,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
     session_clock: Arc<SessionClock>,
-    session_ttl: u64
+    session_ttl: u64,
 ) -> (LogStore, StateMachineStore) {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
@@ -626,7 +633,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         topic_storage,
         current_node_id,
         session_clock,
-        session_ttl
+        session_ttl,
     )
     .await
     .unwrap();

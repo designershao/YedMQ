@@ -1,9 +1,14 @@
-use bytes::{BytesMut, BufMut};
-use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, error::Error};
-use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
+use bytes::{BufMut, BytesMut};
+use nom::{
+    combinator::{flat_map, map, map_res},
+    error::Error,
+    number::streaming::be_u16,
+    IResult,
+};
+use serde::{Deserialize, Serialize};
 
-use super::fixed_header::{FixHeader, self};
+use super::fixed_header::{self, FixHeader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnSubackPacket {
@@ -21,9 +26,7 @@ impl UnSubackPacket {
                 dup: None,
                 remaining_length: 2,
             },
-            variable_header: VariableHeader {
-                packet_identifier,
-            },
+            variable_header: VariableHeader { packet_identifier },
         }
     }
 }
@@ -34,7 +37,6 @@ pub struct VariableHeader {
 }
 
 impl VariableHeader {
-
     pub fn encode(&self, buf: &mut BytesMut) {
         buf.put_u16(self.packet_identifier);
     }
@@ -51,7 +53,8 @@ impl MqttPacket for UnSubackPacket {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
 
-        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len());
+        let mut buf: BytesMut =
+            BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len());
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
 
@@ -72,18 +75,18 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnSubackPacket> {
     flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
-            nom::bytes::streaming::take(fixed_header.remaining_length),
-            be_u16::<&[u8], Error<&[u8]>>),
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                be_u16::<&[u8], Error<&[u8]>>,
+            ),
             move |(_, packet_identifier)| {
                 let cloned_fixed_header = fixed_header.clone();
                 UnSubackPacket {
                     fix_header: cloned_fixed_header,
-                    variable_header: VariableHeader {
-                        packet_identifier
-                    },
+                    variable_header: VariableHeader { packet_identifier },
                 }
-            })
-        })(input)
+            },
+        )
+    })(input)
 }
 
 #[cfg(test)]
@@ -96,7 +99,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = &[0xB0, 0x02, 0x00,0x01];
+        let input = &[0xB0, 0x02, 0x00, 0x01];
         let out = parse(input).unwrap();
         assert_eq!(out.1.variable_header.packet_identifier, 1);
     }
@@ -111,8 +114,8 @@ mod tests {
             remaining_length: 2,
         };
 
-        let variable_header = VariableHeader{
-            packet_identifier: 1
+        let variable_header = VariableHeader {
+            packet_identifier: 1,
         };
 
         let suback_packet = UnSubackPacket {
@@ -120,6 +123,9 @@ mod tests {
             variable_header,
         };
 
-        assert_eq!(suback_packet.to_bytes().as_bytes(), &[0xB0, 0x02, 0x00, 0x01]);
+        assert_eq!(
+            suback_packet.to_bytes().as_bytes(),
+            &[0xB0, 0x02, 0x00, 0x01]
+        );
     }
 }

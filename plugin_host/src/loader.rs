@@ -1,13 +1,17 @@
-use std::{collections::HashMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 use tokio::process::Command;
 
-use serde::{Serialize, Deserialize};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
     pub plugin: PluginInfo,
-    pub runtime: RuntimeConfig
+    pub runtime: RuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,7 +22,7 @@ pub struct PluginInfo {
     pub author: String,
     pub license: Option<String>,
     pub homepage: Option<String>,
-    pub repository: Option<String>,    
+    pub repository: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,24 +48,22 @@ pub struct PluginLoader {
 }
 
 impl PluginLoader {
-    pub fn new<P:AsRef<Path>>(plugins_dir: P) -> Self {
+    pub fn new<P: AsRef<Path>>(plugins_dir: P) -> Self {
         Self {
             plugins_dir: plugins_dir.as_ref().to_path_buf(),
             loaded_plugins: HashMap::new(),
         }
     }
 
-
     pub async fn scan_plugins(&mut self) -> Result<Vec<String>> {
         let mut discovered_plugins = Vec::new();
         if !self.plugins_dir.exists() {
-            fs::create_dir_all(&self.plugins_dir)
-                .context("Failed to create plugins directory")?;
+            fs::create_dir_all(&self.plugins_dir).context("Failed to create plugins directory")?;
             return Ok(discovered_plugins);
         }
 
-        let mut entries = fs::read_dir(&self.plugins_dir)
-            .context("Failed to read plugins directory")?;
+        let mut entries =
+            fs::read_dir(&self.plugins_dir).context("Failed to read plugins directory")?;
 
         while let Some(entry) = entries.next().transpose()? {
             let path = entry.path();
@@ -73,9 +75,12 @@ impl PluginLoader {
                             let plugin_name = manifest.plugin.name.clone();
                             self.loaded_plugins.insert(plugin_name.clone(), manifest);
                             discovered_plugins.push(plugin_name);
-                        },
+                        }
                         Err(e) => {
-                            eprintln!("Failed to load plugin manifest from {:?}: {}", manifest_path, e);
+                            eprintln!(
+                                "Failed to load plugin manifest from {:?}: {}",
+                                manifest_path, e
+                            );
                         }
                     }
                 }
@@ -85,11 +90,11 @@ impl PluginLoader {
     }
 
     async fn load_plugin_manifest(&self, manifest_path: &Path) -> Result<PluginManifest> {
-        let content = fs::read_to_string(manifest_path)
-            .context("Failed to read plugin manifest")?;
-        
-        let manifest: PluginManifest = toml::from_str(&content)
-            .context("Failed to parse plugin manifest")?;
+        let content =
+            fs::read_to_string(manifest_path).context("Failed to read plugin manifest")?;
+
+        let manifest: PluginManifest =
+            toml::from_str(&content).context("Failed to parse plugin manifest")?;
 
         self.validate_manifest(&manifest)?;
         Ok(manifest)
@@ -108,13 +113,15 @@ impl PluginLoader {
                 if manifest.runtime.executable.is_none() {
                     anyhow::bail!("Runtime executable must be specified for 'process' type");
                 }
-            },
+            }
         }
         Ok(())
     }
 
     pub fn get_plugin_path(&self, plugin_name: &str) -> Option<PathBuf> {
-        self.loaded_plugins.get(plugin_name).map(|_| self.plugins_dir.join(plugin_name))
+        self.loaded_plugins
+            .get(plugin_name)
+            .map(|_| self.plugins_dir.join(plugin_name))
     }
 
     pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {
@@ -125,13 +132,21 @@ impl PluginLoader {
         self.loaded_plugins.keys().map(|k| k.as_str()).collect()
     }
 
-    pub fn get_plugin_command(&self, plugin_name: &str, auth_code: &str, socket_path: &str) -> Result<Option<Command>> {
-        let manifest = self.get_plugin_manifest(plugin_name)
+    pub fn get_plugin_command(
+        &self,
+        plugin_name: &str,
+        auth_code: &str,
+        socket_path: &str,
+    ) -> Result<Option<Command>> {
+        let manifest = self
+            .get_plugin_manifest(plugin_name)
             .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found", plugin_name))?;
         match manifest.runtime.runtime_type {
             RuntimeType::Process => {
                 if let Some(executable) = &manifest.runtime.executable {
-                    let plugin_dir = self.get_plugin_path(plugin_name).ok_or_else(|| anyhow!("Plugin '{}' path not existed", plugin_name))?;
+                    let plugin_dir = self
+                        .get_plugin_path(plugin_name)
+                        .ok_or_else(|| anyhow!("Plugin '{}' path not existed", plugin_name))?;
                     let exe_path = plugin_dir.join(executable);
                     let mut cmd = Command::new(exe_path);
 
@@ -160,7 +175,6 @@ impl PluginLoader {
         }
         Ok(None)
     }
-
 }
 
 #[cfg(test)]
@@ -200,8 +214,17 @@ mod tests {
         assert_eq!(manifest.plugin.name, "test_plugin");
         assert_eq!(manifest.runtime.runtime_type, RuntimeType::Process);
 
-        let cmd = loader.get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?.unwrap();
-        assert_eq!(cmd.as_std().get_program().to_str().unwrap().ends_with("test_executable"), true);
+        let cmd = loader
+            .get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?
+            .unwrap();
+        assert_eq!(
+            cmd.as_std()
+                .get_program()
+                .to_str()
+                .unwrap()
+                .ends_with("test_executable"),
+            true
+        );
         Ok(())
     }
 }

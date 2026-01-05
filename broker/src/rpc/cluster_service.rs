@@ -1,6 +1,20 @@
 use crate::protobuf::cluster_service_server::ClusterService;
 use crate::protobuf::{
-    AdvanceInflightStateRequest, AdvanceInflightStateResponse, CleanRetainPublishMessageRequest, CleanRetainPublishMessageResponse, CreateSessionStateRequest, CreateSessionStateResponse, DeleteSessionStateRequest, DeleteSessionStateResponse, ForceStopSessionActorRequest, ForceStopSessionActorResponse, GetCurrentInflightPacketRequest, GetCurrentInflightPacketResponse, GetNextInflightPacketRequest, GetNextInflightPacketResponse, GetRetainPublishMessageRequest, GetRetainPublishMessageResponse, GetSessionActorMapRequest, GetSessionActorMapResponse, GetSessionStateRequest, GetSessionStateResponse, GetSubscribersByTopicRequest, GetSubscribersByTopicResponse, PopOfflineMessageRequest, PopOfflineMessageResponse, RegisterInflightRxPacketRequest, RegisterInflightRxPacketResponse, RegisterInflightTxPacketRequest, RegisterInflightTxPacketResponse, RegisterRetainPublishMessageRequest, RegisterRetainPublishMessageResponse, RegisterSessionActorMapRequest, RegisterSessionActorMapResponse, RenewSessionLeaseRequest, RenewSessionLeaseResponse, StoreOfflineMessageRequest, StoreOfflineMessageResponse, SubscribeTopicRequest, SubscribeTopicResponse, UnregisterSessionActorMapRequest, UnregisterSessionActorMapResponse, UnsubscribeTopicRequest, UnsubscribeTopicResponse
+    AdvanceInflightStateRequest, AdvanceInflightStateResponse, CleanRetainPublishMessageRequest,
+    CleanRetainPublishMessageResponse, CreateSessionStateRequest, CreateSessionStateResponse,
+    DeleteSessionStateRequest, DeleteSessionStateResponse, ForceStopSessionActorRequest,
+    ForceStopSessionActorResponse, GetCurrentInflightPacketRequest,
+    GetCurrentInflightPacketResponse, GetNextInflightPacketRequest, GetNextInflightPacketResponse,
+    GetRetainPublishMessageRequest, GetRetainPublishMessageResponse, GetSessionActorMapRequest,
+    GetSessionActorMapResponse, GetSessionStateRequest, GetSessionStateResponse,
+    GetSubscribersByTopicRequest, GetSubscribersByTopicResponse, PopOfflineMessageRequest,
+    PopOfflineMessageResponse, RegisterInflightRxPacketRequest, RegisterInflightRxPacketResponse,
+    RegisterInflightTxPacketRequest, RegisterInflightTxPacketResponse,
+    RegisterRetainPublishMessageRequest, RegisterRetainPublishMessageResponse,
+    RegisterSessionActorMapRequest, RegisterSessionActorMapResponse, RenewSessionLeaseRequest,
+    RenewSessionLeaseResponse, StoreOfflineMessageRequest, StoreOfflineMessageResponse,
+    SubscribeTopicRequest, SubscribeTopicResponse, UnregisterSessionActorMapRequest,
+    UnregisterSessionActorMapResponse, UnsubscribeTopicRequest, UnsubscribeTopicResponse,
 };
 use crate::raft::session_actor_map::session_actor_map_raft_actor;
 use crate::raft::session_state::session_state_raft_actor::{self, SessionStateRaftActor};
@@ -12,7 +26,7 @@ use tonic::{Request, Response, Status};
 use yedmq_mqtt::MqttPacketV3;
 
 pub struct ClusterServiceImpl {
-    pub router_actors: Vec<Addr<RouterActor>>
+    pub router_actors: Vec<Addr<RouterActor>>,
 }
 
 #[tonic::async_trait]
@@ -83,7 +97,7 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| Status::internal(format!("Failed to get session state: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in getting session state: {}", e)))?;
 
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
+        let res_payload = serde_json::to_string(&res).map_err(|e| {
             Status::internal(format!("Failed to serialize session state response: {}", e))
         })?;
 
@@ -105,7 +119,7 @@ impl ClusterService for ClusterServiceImpl {
             client_id: inner.client_id.clone(),
         };
 
-        let r  = session_state_raft_actor_addr
+        let r = session_state_raft_actor_addr
             .send(create_session_state_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to create session state: {}", e)))?;
@@ -152,7 +166,7 @@ impl ClusterService for ClusterServiceImpl {
                 qos: inner.qos as u8,
                 packet_key: inner.packet_key,
             };
-        let r= session_state_raft_actor_addr
+        let r = session_state_raft_actor_addr
             .send(register_inflight_rx_packet_actor)
             .await
             .map_err(|e| {
@@ -182,10 +196,10 @@ impl ClusterService for ClusterServiceImpl {
         session_state_raft_actor_addr
             .send(register_inflight_tx_packet_actor)
             .await
+            .map_err(|e| Status::internal(format!("Failed to register inflight TX packet: {}", e)))?
             .map_err(|e| {
-                Status::internal(format!("Failed to register inflight TX packet: {}", e))
-            })?
-            .map_err(|e| Status::internal(format!("Error in registering inflight TX packet: {}", e)))?;
+                Status::internal(format!("Error in registering inflight TX packet: {}", e))
+            })?;
         Ok(Response::new(RegisterInflightTxPacketResponse {
             success: true,
             error: None,
@@ -233,8 +247,11 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting current inflight packet: {}", e))
             })?;
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
-            Status::internal(format!("Failed to serialize current inflight packet response: {}", e))
+        let res_payload = serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!(
+                "Failed to serialize current inflight packet response: {}",
+                e
+            ))
         })?;
         Ok(Response::new(GetCurrentInflightPacketResponse {
             success: true,
@@ -261,8 +278,11 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting next inflight packet: {}", e))
             })?;
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
-            Status::internal(format!("Failed to serialize next inflight packet response: {}", e))
+        let res_payload = serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!(
+                "Failed to serialize next inflight packet response: {}",
+                e
+            ))
         })?;
         Ok(Response::new(GetNextInflightPacketResponse {
             success: true,
@@ -376,7 +396,12 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Failed to register retain publish message: {}", e))
             })?
-            .map_err(|e| Status::internal(format!("Error in registering retain publish message: {}", e)))?;
+            .map_err(|e| {
+                Status::internal(format!(
+                    "Error in registering retain publish message: {}",
+                    e
+                ))
+            })?;
         Ok(Response::new(RegisterRetainPublishMessageResponse {
             success: true,
             error: None,
@@ -402,8 +427,11 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Error in getting retain publish message: {}", e))
             })?;
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
-            Status::internal(format!("Failed to serialize retain publish message response: {}", e))
+        let res_payload = serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!(
+                "Failed to serialize retain publish message response: {}",
+                e
+            ))
         })?;
         Ok(Response::new(GetRetainPublishMessageResponse {
             success: true,
@@ -430,7 +458,9 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| {
                 Status::internal(format!("Failed to clean retain publish message: {}", e))
             })?
-        .map_err(|e| Status::internal(format!("Error in cleaning retain publish message: {}", e)))?;
+            .map_err(|e| {
+                Status::internal(format!("Error in cleaning retain publish message: {}", e))
+            })?;
         Ok(Response::new(CleanRetainPublishMessageResponse {
             success: true,
             error: None,
@@ -444,13 +474,19 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
-        let version = inner.session_version
-            .map_or_else(|| Err(Status::invalid_argument("Session version is required for registering session actor map")), |s| {
-            Ok(SessionVersion {
-                counter: s.counter,
-                node_id: s.node_id,
-            })
-        })?;
+        let version = inner.session_version.map_or_else(
+            || {
+                Err(Status::invalid_argument(
+                    "Session version is required for registering session actor map",
+                ))
+            },
+            |s| {
+                Ok(SessionVersion {
+                    counter: s.counter,
+                    node_id: s.node_id,
+                })
+            },
+        )?;
         let register_session_actor_map_actor =
             session_actor_map_raft_actor::RegisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
@@ -461,12 +497,10 @@ impl ClusterService for ClusterServiceImpl {
         session_actor_map_raft_actor_addr
             .send(register_session_actor_map_actor)
             .await
+            .map_err(|e| Status::internal(format!("Failed to register session actor map: {}", e)))?
             .map_err(|e| {
-                Status::internal(format!("Failed to register session actor map: {}", e))
-            })?
-            .map_err(|e| {
-            Status::internal(format!("Error in registering session actor map: {}", e))
-        })?;
+                Status::internal(format!("Error in registering session actor map: {}", e))
+            })?;
         Ok(Response::new(RegisterSessionActorMapResponse {
             success: true,
             error: None,
@@ -481,13 +515,19 @@ impl ClusterService for ClusterServiceImpl {
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
 
-        let version = inner.session_version
-            .map_or_else(|| Err(Status::invalid_argument("Session version is required for unregistering session actor map")), |s| {
-            Ok(SessionVersion {
-                counter: s.counter,
-                node_id: s.node_id,
-            })
-        })?;
+        let version = inner.session_version.map_or_else(
+            || {
+                Err(Status::invalid_argument(
+                    "Session version is required for unregistering session actor map",
+                ))
+            },
+            |s| {
+                Ok(SessionVersion {
+                    counter: s.counter,
+                    node_id: s.node_id,
+                })
+            },
+        )?;
 
         let unregister_session_actor_map_actor =
             session_actor_map_raft_actor::UnregisterSessionActorMap {
@@ -502,8 +542,8 @@ impl ClusterService for ClusterServiceImpl {
                 Status::internal(format!("Failed to unregister session actor map: {}", e))
             })?
             .map_err(|e| {
-            Status::internal(format!("Error in unregistering session actor map: {}", e))
-        })?;
+                Status::internal(format!("Error in unregistering session actor map: {}", e))
+            })?;
         Ok(Response::new(UnregisterSessionActorMapResponse {
             success: true,
             error: None,
@@ -549,8 +589,11 @@ impl ClusterService for ClusterServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("Failed to get session actor map: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in getting session actor map: {}", e)))?;
-        let res_payload =  serde_json::to_string(&res).map_err(|e| {
-            Status::internal(format!("Failed to serialize session actor map response: {}", e))
+        let res_payload = serde_json::to_string(&res).map_err(|e| {
+            Status::internal(format!(
+                "Failed to serialize session actor map response: {}",
+                e
+            ))
         })?;
         Ok(Response::new(GetSessionActorMapResponse {
             success: true,
@@ -568,23 +611,23 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| Status::invalid_argument(format!("Invalid packet format: {}", e)))?;
 
         let router_actor = if let MqttPacketV3::Publish(ref publish) = packet {
-             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-             std::hash::Hash::hash(&publish.variable_header.topic_name, &mut hasher);
-             let hash = std::hash::Hasher::finish(&hasher);
-             &self.router_actors[hash as usize % self.router_actors.len()]
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&publish.variable_header.topic_name, &mut hasher);
+            let hash = std::hash::Hasher::finish(&hasher);
+            &self.router_actors[hash as usize % self.router_actors.len()]
         } else {
-             &self.router_actors[0]
+            &self.router_actors[0]
         };
 
         router_actor
             .send(RouteFromOtherNode {
                 tenant_id: inner.tenant_id.clone(),
-                packet
+                packet,
             })
             .await
             .map_err(|e| Status::internal(format!("Failed to route packet: {}", e)))?
             .map_err(|e| Status::internal(format!("Error in routing packet: {}", e)))?;
-        
+
         Ok(Response::new(crate::protobuf::RoutePacketResponse {
             success: true,
             error: None,
@@ -597,14 +640,16 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<ForceStopSessionActorResponse>, Status> {
         let session_manager_actor_addr = SessionManagerActor::from_registry();
         let inner = request.into_inner();
-        session_manager_actor_addr.send(
-            crate::session::session_manager_actor::ForceStop {
+        session_manager_actor_addr
+            .send(crate::session::session_manager_actor::ForceStop {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-            }
-        ).await
-        .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?
-        .map_err(|e| Status::internal(format!("Error in force stopping session actor: {}", e)))?;
+            })
+            .await
+            .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?
+            .map_err(|e| {
+                Status::internal(format!("Error in force stopping session actor: {}", e))
+            })?;
         Ok(Response::new(ForceStopSessionActorResponse {
             success: true,
             error: None,

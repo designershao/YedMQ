@@ -1,12 +1,12 @@
-pub mod plugin_manager;
-pub mod loader;
-pub mod protocol;
 pub mod hook;
+pub mod loader;
 pub mod plugin_host_config;
+pub mod plugin_manager;
+pub mod protocol;
 
+use chrono::Utc;
 use prost_types::Timestamp;
 use uuid::Uuid;
-use chrono::Utc;
 
 pub fn create_timestamp() -> Timestamp {
     let now = Utc::now();

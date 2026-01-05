@@ -1,5 +1,5 @@
+use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS};
 use std::{net::SocketAddr, time::Duration};
-use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS, LastWill};
 
 mod cluster_setup;
 use cluster_setup::setup_cluster;
@@ -7,7 +7,7 @@ use cluster_setup::setup_cluster;
 #[actix::test]
 pub async fn test_tcp_listener_connect() {
     let context = setup_cluster().await;
-    
+
     // Connect to Node 1
     let settings = &context.nodes[0];
     let broker_addr: SocketAddr = settings.listener.tcp.external.as_str().parse().unwrap();
@@ -15,7 +15,7 @@ pub async fn test_tcp_listener_connect() {
     let mut options = MqttOptions::new(
         "test_cluster_client_connect",
         broker_addr.ip().to_string(),
-        broker_addr.port()
+        broker_addr.port(),
     );
     options.set_keep_alive(Duration::from_secs(5));
 
@@ -44,16 +44,13 @@ pub async fn test_tcp_listener_connect() {
         }
         Ok(rumqttc::ConnectReturnCode::Success)
     });
-    
-    let result = tokio::time::timeout(
-        Duration::from_secs(5),
-        connection_handle
-    ).await;
-    
+
+    let result = tokio::time::timeout(Duration::from_secs(5), connection_handle).await;
+
     assert!(result.is_ok());
     let connect_result = result.unwrap().unwrap();
     assert!(connect_result.is_ok());
-    assert_eq!(connect_result.unwrap(), rumqttc::ConnectReturnCode::Success);   
+    assert_eq!(connect_result.unwrap(), rumqttc::ConnectReturnCode::Success);
 }
 
 async fn test_publish_subscribe_cross_node(qos: QoS) {
@@ -73,20 +70,27 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
     let payload = format!("hello cluster {:?}", qos).into_bytes();
 
     // Subscriber Setup
-    let mut sub_opts = MqttOptions::new(format!("sub-{:?}", qos), sub_addr.ip().to_string(), sub_addr.port());
+    let mut sub_opts = MqttOptions::new(
+        format!("sub-{:?}", qos),
+        sub_addr.ip().to_string(),
+        sub_addr.port(),
+    );
     sub_opts.set_keep_alive(Duration::from_secs(5));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_opts, 10);
 
     let payload_clone = payload.clone();
     let topic_clone = topic.clone();
-    
+
     let sub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
             match sub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    sub_client.subscribe(topic_clone.clone(), qos).await.unwrap();
+                    sub_client
+                        .subscribe(topic_clone.clone(), qos)
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
                     // Ready to receive
@@ -99,7 +103,9 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return; }
+                    if connected {
+                        return;
+                    }
                     panic!("Sub Eventloop error: {:?}", e);
                 }
                 _ => {}
@@ -113,7 +119,11 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Publisher Setup
-    let mut pub_opts = MqttOptions::new(format!("pub-{:?}", qos), pub_addr.ip().to_string(), pub_addr.port());
+    let mut pub_opts = MqttOptions::new(
+        format!("pub-{:?}", qos),
+        pub_addr.ip().to_string(),
+        pub_addr.port(),
+    );
     pub_opts.set_keep_alive(Duration::from_secs(5));
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
 
@@ -123,22 +133,31 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
             match pub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    pub_client.publish(topic.clone(), qos, false, payload.clone()).await.unwrap();
+                    pub_client
+                        .publish(topic.clone(), qos, false, payload.clone())
+                        .await
+                        .unwrap();
                 }
-                Ok(Event::Incoming(Packet::PubAck(_))) | Ok(Event::Incoming(Packet::PubComp(_))) => {
+                Ok(Event::Incoming(Packet::PubAck(_)))
+                | Ok(Event::Incoming(Packet::PubComp(_))) => {
                     pub_client.disconnect().await.unwrap();
                 }
-                 Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                     if connected { return; }
-                     panic!("Pub Eventloop error: {:?}", e);
+                    if connected {
+                        return;
+                    }
+                    panic!("Pub Eventloop error: {:?}", e);
                 }
                 _ => {}
             }
         }
     });
 
-    tokio::time::timeout(Duration::from_secs(10), sub_task).await.expect("Sub task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), sub_task)
+        .await
+        .expect("Sub task timed out")
+        .unwrap();
 }
 
 #[actix::test]
@@ -161,7 +180,7 @@ async fn test_retained_message_cross_node() {
     let context = setup_cluster().await;
     let pub_settings = &context.nodes[0];
     let sub_settings = &context.nodes[1];
-    
+
     let pub_addr: SocketAddr = pub_settings.listener.tcp.external.as_str().parse().unwrap();
     let sub_addr: SocketAddr = sub_settings.listener.tcp.external.as_str().parse().unwrap();
 
@@ -169,7 +188,8 @@ async fn test_retained_message_cross_node() {
     let payload = b"cluster retained message";
 
     // Client 1 publishes retained to Node 1 and disconnects
-    let mut mqtt_options1 = MqttOptions::new("retained-pub", pub_addr.ip().to_string(), pub_addr.port());
+    let mut mqtt_options1 =
+        MqttOptions::new("retained-pub", pub_addr.ip().to_string(), pub_addr.port());
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
 
@@ -179,24 +199,36 @@ async fn test_retained_message_cross_node() {
             match eventloop1.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    client1.publish(topic, QoS::AtLeastOnce, true, payload.to_vec()).await.unwrap();
+                    client1
+                        .publish(topic, QoS::AtLeastOnce, true, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     client1.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                Err(e) => { if connected { return } panic!("Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task1).await.expect("Pub task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task1)
+        .await
+        .expect("Pub task timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Client 2 connects to Node 2 and subscribes
-    let mut mqtt_options2 = MqttOptions::new("retained-sub", sub_addr.ip().to_string(), sub_addr.port());
+    let mut mqtt_options2 =
+        MqttOptions::new("retained-sub", sub_addr.ip().to_string(), sub_addr.port());
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
 
@@ -215,18 +247,26 @@ async fn test_retained_message_cross_node() {
                     client2.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                Err(e) => { if connected { return } panic!("Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task2).await.expect("Sub task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task2)
+        .await
+        .expect("Sub task timed out")
+        .unwrap();
 }
 
 #[actix::test]
 async fn test_last_will_message_cross_node() {
     let context = setup_cluster().await;
-    
+
     // Will Client connects to Node 1
     let node1 = &context.nodes[0];
     let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
@@ -243,8 +283,9 @@ async fn test_last_will_message_cross_node() {
     let mut sub_opts = MqttOptions::new("will-sub", addr2.ip().to_string(), addr2.port());
     sub_opts.set_keep_alive(Duration::from_secs(5));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_opts, 10);
-    
-    let (notify_sub_succeed_sender, mut notify_sub_succeed_receiver) = tokio::sync::broadcast::channel(1);
+
+    let (notify_sub_succeed_sender, mut notify_sub_succeed_receiver) =
+        tokio::sync::broadcast::channel(1);
 
     let sub_task = tokio::spawn(async move {
         let mut connected = false;
@@ -252,10 +293,13 @@ async fn test_last_will_message_cross_node() {
             match sub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    sub_client.subscribe(will_topic, QoS::AtLeastOnce).await.unwrap();
+                    sub_client
+                        .subscribe(will_topic, QoS::AtLeastOnce)
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
-                     notify_sub_succeed_sender.send(()).unwrap();
+                    notify_sub_succeed_sender.send(()).unwrap();
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
                     assert_eq!(publish.topic, will_topic);
@@ -263,7 +307,12 @@ async fn test_last_will_message_cross_node() {
                     sub_client.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                 Err(e) => { if connected { return } panic!("Sub Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Sub Error: {:?}", e)
+                }
                 _ => {}
             }
         }
@@ -273,7 +322,9 @@ async fn test_last_will_message_cross_node() {
 
     // Will Client
     let mut will_opts = MqttOptions::new("will-client", addr1.ip().to_string(), addr1.port());
-    will_opts.set_keep_alive(Duration::from_secs(2)).set_last_will(last_will);
+    will_opts
+        .set_keep_alive(Duration::from_secs(2))
+        .set_last_will(last_will);
     let (_will_client, mut will_eventloop) = AsyncClient::new(will_opts, 10);
 
     let will_task = tokio::spawn(async move {
@@ -283,7 +334,7 @@ async fn test_last_will_message_cross_node() {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
                     connected = true;
                 }
-                Ok(_) => {}, // Continue processing other initialization events (such as SubAck, etc.)
+                Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
                 Err(e) => {
                     return;
                 }
@@ -291,19 +342,24 @@ async fn test_last_will_message_cross_node() {
         }
 
         tokio::time::sleep(Duration::from_secs(5)).await;
-
     });
 
     // Wait for the will client to connect
-    tokio::time::timeout(Duration::from_secs(6), will_task).await.expect("Will client task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(6), will_task)
+        .await
+        .expect("Will client task timed out")
+        .unwrap();
 
-    tokio::time::timeout(Duration::from_secs(10), sub_task).await.expect("Sub task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), sub_task)
+        .await
+        .expect("Sub task timed out")
+        .unwrap();
 }
 
 #[actix::test]
 async fn test_persistent_session_cross_node() {
     let context = setup_cluster().await;
-    
+
     // Node 1 (Pub connects here)
     let pub_node = &context.nodes[0];
     let pub_addr: SocketAddr = pub_node.listener.tcp.external.as_str().parse().unwrap();
@@ -316,7 +372,11 @@ async fn test_persistent_session_cross_node() {
     let payload = b"cluster persistent message";
 
     // Sub Client (Persistent) connects to Node 2
-    let mut sub_opts = MqttOptions::new("cluster-persistent-sub", sub_addr.ip().to_string(), sub_addr.port());
+    let mut sub_opts = MqttOptions::new(
+        "cluster-persistent-sub",
+        sub_addr.ip().to_string(),
+        sub_addr.port(),
+    );
     sub_opts.set_keep_alive(Duration::from_secs(5));
     sub_opts.set_clean_session(false);
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_opts, 10);
@@ -333,17 +393,29 @@ async fn test_persistent_session_cross_node() {
                     sub_client.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                Err(e) => { if connected { return } panic!("Sub Setup Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Sub Setup Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), sub_setup_task).await.expect("Sub Setup timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), sub_setup_task)
+        .await
+        .expect("Sub Setup timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Pub Client connects to Node 1
-    let mut pub_opts = MqttOptions::new("cluster-persistent-pub", pub_addr.ip().to_string(), pub_addr.port());
+    let mut pub_opts = MqttOptions::new(
+        "cluster-persistent-pub",
+        pub_addr.ip().to_string(),
+        pub_addr.port(),
+    );
     pub_opts.set_keep_alive(Duration::from_secs(5));
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
 
@@ -353,23 +425,38 @@ async fn test_persistent_session_cross_node() {
             match pub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    pub_client.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                    pub_client
+                        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
                     pub_client.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                Err(e) => { if connected { return } panic!("Pub Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Pub Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), pub_task).await.expect("Pub timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), pub_task)
+        .await
+        .expect("Pub timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Sub Client Reconnects to Node 2
-    let mut sub_opts2 = MqttOptions::new("cluster-persistent-sub", sub_addr.ip().to_string(), sub_addr.port());
+    let mut sub_opts2 = MqttOptions::new(
+        "cluster-persistent-sub",
+        sub_addr.ip().to_string(),
+        sub_addr.port(),
+    );
     sub_opts2.set_keep_alive(Duration::from_secs(5));
     sub_opts2.set_clean_session(false);
     let (sub_client2, mut sub_eventloop2) = AsyncClient::new(sub_opts2, 10);
@@ -388,10 +475,18 @@ async fn test_persistent_session_cross_node() {
                     sub_client2.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                Err(e) => { if connected { return } panic!("Sub Verify Error: {:?}", e) },
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
+                    panic!("Sub Verify Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), sub_verify_task).await.expect("Sub Verify timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), sub_verify_task)
+        .await
+        .expect("Sub Verify timed out")
+        .unwrap();
 }

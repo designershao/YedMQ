@@ -1,4 +1,3 @@
-
 use tokio_tungstenite::tungstenite::{handshake::server::Callback, http::HeaderValue};
 
 pub mod tcp_listener;
@@ -34,4 +33,3 @@ impl Callback for WsCallBack {
         std::prelude::v1::Ok(mut_response)
     }
 }
-

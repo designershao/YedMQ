@@ -1,19 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, io::Cursor};
 
+pub mod payload;
 pub mod session_actor_map;
 pub mod session_state;
 pub mod topic;
-pub mod payload;
 
 pub type NodeId = u64;
 
 pub trait NodeTrait {
-
     fn rpc_addr(&self) -> &String;
 
     fn api_addr(&self) -> &String;
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

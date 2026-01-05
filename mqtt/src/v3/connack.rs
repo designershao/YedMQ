@@ -1,12 +1,17 @@
 use bytes::BufMut;
-use nom::{IResult, combinator::{map_res, flat_map, map}, sequence::tuple, error::Error};
-use nom::bytes::streaming::take;
 use ::bytes::BytesMut;
+use nom::bytes::streaming::take;
+use nom::{
+    combinator::{flat_map, map, map_res},
+    error::Error,
+    sequence::tuple,
+    IResult,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{MqttPacket, PacketType};
 
-use super::fixed_header::{FixHeader, self};
+use super::fixed_header::{self, FixHeader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnAckPacket {
@@ -25,7 +30,7 @@ pub enum ConnackReturnCode {
 
 pub struct ConnAckPacketBuilder {
     return_code: ConnackReturnCode,
-    session_present: bool
+    session_present: bool,
 }
 
 impl Default for ConnAckPacketBuilder {
@@ -36,7 +41,10 @@ impl Default for ConnAckPacketBuilder {
 
 impl ConnAckPacketBuilder {
     pub fn new() -> ConnAckPacketBuilder {
-        ConnAckPacketBuilder { return_code: ConnackReturnCode::Accept, session_present: false }
+        ConnAckPacketBuilder {
+            return_code: ConnackReturnCode::Accept,
+            session_present: false,
+        }
     }
 
     pub fn set_session_present(mut self, session_present: bool) -> Self {
@@ -69,8 +77,8 @@ impl ConnAckPacketBuilder {
             session_present: self.session_present,
             connect_return_code: return_code,
         };
-        
-        ConnAckPacket{
+
+        ConnAckPacket {
             fix_header,
             variable_header,
         }
@@ -83,7 +91,6 @@ pub struct VariableHeader {
     pub connect_return_code: u8,
 }
 
-
 // MQTT Connect ACK Variable Header
 // +---------------------+----------+---+---+---+---+---+---+---+----+
 // |                     | Desc     | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0  |
@@ -93,16 +100,16 @@ pub struct VariableHeader {
 // | Connect Return Code                                             |
 // | byte2               |          | x | x | x | x | x | x | x | x  |
 // +---------------------+----------+---+---+---+---+---+---+---+----+
-fn variable_header(input:&[u8]) -> IResult<&[u8], VariableHeader> {
+fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
     map(
-        tuple((take::<u8, &[u8], Error<&[u8]>>(1u8),take(1u8))),
+        tuple((take::<u8, &[u8], Error<&[u8]>>(1u8), take(1u8))),
         |v| {
             let session_present = v.0[0] & 0x1 == 0x1;
-            VariableHeader{
+            VariableHeader {
                 session_present,
-                connect_return_code: v.1[0]
+                connect_return_code: v.1[0],
             }
-        }
+        },
     )(input)
 }
 
@@ -110,15 +117,16 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], ConnAckPacket> {
     flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
-            nom::bytes::streaming::take(fixed_header.remaining_length),
-            variable_header
-            ), move |(_,variable_header)| {
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                variable_header,
+            ),
+            move |(_, variable_header)| {
                 let cloned_fixed_header = fixed_header.clone();
-                ConnAckPacket { 
-                    fix_header:cloned_fixed_header , 
-                    variable_header 
+                ConnAckPacket {
+                    fix_header: cloned_fixed_header,
+                    variable_header,
                 }
-            }
+            },
         )
     })(input)
 }
@@ -184,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = &[0x20,0x02,0x01,0x01];
+        let input = &[0x20, 0x02, 0x01, 0x01];
         let out = parse(input).unwrap();
         assert_eq!(out.1.variable_header.connect_return_code, 0x01);
         assert_eq!(out.1.variable_header.session_present, true);
@@ -203,13 +211,13 @@ mod tests {
             session_present: true,
             connect_return_code: 1,
         };
-        let connack_packet = ConnAckPacket{
+        let connack_packet = ConnAckPacket {
             fix_header,
             variable_header,
         };
         let connack_packet_bytes = connack_packet.to_bytes();
 
-        let input = &[0x20,0x02,0x01,0x01];
+        let input = &[0x20, 0x02, 0x01, 0x01];
 
         assert_eq!(connack_packet_bytes.as_bytes(), input);
     }

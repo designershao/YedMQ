@@ -1,9 +1,9 @@
-pub mod store;
+pub mod client;
 pub mod rocksdb;
 pub mod service;
-pub mod client;
+pub mod store;
 
-pub use store::{PayloadStore, PayloadKey, PayloadError, Result};
+pub use client::PayloadClient;
 pub use rocksdb::RocksDBPayloadStore;
 pub use service::PayloadServiceImpl;
-pub use client::PayloadClient;
+pub use store::{PayloadError, PayloadKey, PayloadStore, Result};

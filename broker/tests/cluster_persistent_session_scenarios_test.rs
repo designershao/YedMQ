@@ -1,5 +1,5 @@
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use std::{net::SocketAddr, time::Duration};
-use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS};
 
 mod cluster_setup;
 use cluster_setup::setup_cluster;
@@ -24,7 +24,8 @@ async fn wait_for_disconnect(eventloop: &mut rumqttc::EventLoop) {
                 _ => continue,
             }
         }
-    }).await;
+    })
+    .await;
     assert!(timeout.is_ok(), "Timed out waiting for disconnect");
 }
 
@@ -81,7 +82,9 @@ async fn test_clean_session_reconnect_clears_messages() {
     client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
     // Wait for SubAck
     loop {
-        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; }
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
     }
     client1.disconnect().await.unwrap();
     // Wait for disconnect to propagate
@@ -91,9 +94,14 @@ async fn test_clean_session_reconnect_clears_messages() {
     let pub_opts = MqttOptions::new("pub-client", addr1.ip().to_string(), addr1.port());
     let (pub_client, mut pub_loop) = AsyncClient::new(pub_opts, 10);
     wait_for_connect(&mut pub_loop).await;
-    pub_client.publish(topic, QoS::AtLeastOnce, false, b"offline-msg".to_vec()).await.unwrap();
+    pub_client
+        .publish(topic, QoS::AtLeastOnce, false, b"offline-msg".to_vec())
+        .await
+        .unwrap();
     loop {
-        if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await { break; }
+        if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await {
+            break;
+        }
     }
     pub_client.disconnect().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -102,12 +110,15 @@ async fn test_clean_session_reconnect_clears_messages() {
     let mut opts2 = MqttOptions::new(client_id, addr2.ip().to_string(), addr2.port());
     opts2.set_clean_session(true);
     let (client2, mut eventloop2) = AsyncClient::new(opts2, 10);
-    
+
     // Check ConnAck session_present
     loop {
         match eventloop2.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(ack))) => {
-                assert!(!ack.session_present, "Session should not be present for clean=true");
+                assert!(
+                    !ack.session_present,
+                    "Session should not be present for clean=true"
+                );
                 break;
             }
             Ok(_) => continue,
@@ -122,8 +133,9 @@ async fn test_clean_session_reconnect_clears_messages() {
                 panic!("Should not receive offline message with clean=true");
             }
         }
-    }).await;
-    
+    })
+    .await;
+
     // Timeout is success here
     assert!(timeout.is_err());
     let _ = client2.disconnect().await;
@@ -149,7 +161,11 @@ async fn test_subscription_accumulation_roaming() {
     let (client1, mut eventloop1) = AsyncClient::new(opts1, 10);
     wait_for_connect(&mut eventloop1).await;
     client1.subscribe(topic1, QoS::AtLeastOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; } }
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
+    }
     client1.disconnect().await.unwrap();
 
     // 2. Connect Node 2, Sub Topic 2, Disconnect
@@ -158,7 +174,11 @@ async fn test_subscription_accumulation_roaming() {
     let (client2, mut eventloop2) = AsyncClient::new(opts2, 10);
     wait_for_connect(&mut eventloop2).await;
     client2.subscribe(topic2, QoS::AtLeastOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop2.poll().await { break; } }
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop2.poll().await {
+            break;
+        }
+    }
     client2.disconnect().await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -167,14 +187,22 @@ async fn test_subscription_accumulation_roaming() {
     let pub_opts = MqttOptions::new("publisher", addr1.ip().to_string(), addr1.port());
     let (pub_client, mut pub_loop) = AsyncClient::new(pub_opts, 10);
     wait_for_connect(&mut pub_loop).await;
-    pub_client.publish(topic1, QoS::AtLeastOnce, false, b"msg1".to_vec()).await.unwrap();
-    pub_client.publish(topic2, QoS::AtLeastOnce, false, b"msg2".to_vec()).await.unwrap();
+    pub_client
+        .publish(topic1, QoS::AtLeastOnce, false, b"msg1".to_vec())
+        .await
+        .unwrap();
+    pub_client
+        .publish(topic2, QoS::AtLeastOnce, false, b"msg2".to_vec())
+        .await
+        .unwrap();
     // Wait for PubAcks
     let mut acks = 0;
     loop {
         if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await {
             acks += 1;
-            if acks == 2 { break; }
+            if acks == 2 {
+                break;
+            }
         }
     }
     pub_client.disconnect().await.unwrap();
@@ -184,7 +212,7 @@ async fn test_subscription_accumulation_roaming() {
     let mut opts3 = MqttOptions::new(client_id, addr3.ip().to_string(), addr3.port());
     opts3.set_clean_session(false);
     let (client3, mut eventloop3) = AsyncClient::new(opts3, 10);
-    
+
     // Expecting 2 messages
     let mut received = 0;
     let timeout = tokio::time::timeout(Duration::from_secs(20), async {
@@ -192,12 +220,19 @@ async fn test_subscription_accumulation_roaming() {
             if let Ok(Event::Incoming(Packet::Publish(p))) = eventloop3.poll().await {
                 received += 1;
                 println!("Client 3 received message {}/2, pk id {}", received, p.pkid);
-                if received == 2 { return; }
+                if received == 2 {
+                    return;
+                }
             }
         }
-    }).await;
-    
-    assert!(timeout.is_ok(), "Timed out waiting for accumulated messages. Received: {}", received);
+    })
+    .await;
+
+    assert!(
+        timeout.is_ok(),
+        "Timed out waiting for accumulated messages. Received: {}",
+        received
+    );
     let _ = client3.disconnect().await;
 }
 
@@ -220,7 +255,11 @@ async fn test_unsubscribe_persistence() {
     let (client1, mut eventloop1) = AsyncClient::new(opts1, 10);
     wait_for_connect(&mut eventloop1).await;
     client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; } }
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
+    }
     client1.disconnect().await.unwrap();
 
     // 2. Connect Node 2, Unsub, Disconnect
@@ -229,7 +268,11 @@ async fn test_unsubscribe_persistence() {
     let (client2, mut eventloop2) = AsyncClient::new(opts2, 10);
     wait_for_connect(&mut eventloop2).await;
     client2.unsubscribe(topic).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::UnsubAck(_))) = eventloop2.poll().await { break; } }
+    loop {
+        if let Ok(Event::Incoming(Packet::UnsubAck(_))) = eventloop2.poll().await {
+            break;
+        }
+    }
     client2.disconnect().await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -238,23 +281,31 @@ async fn test_unsubscribe_persistence() {
     let pub_opts = MqttOptions::new("publisher-unsub", addr1.ip().to_string(), addr1.port());
     let (pub_client, mut pub_loop) = AsyncClient::new(pub_opts, 10);
     wait_for_connect(&mut pub_loop).await;
-    pub_client.publish(topic, QoS::AtLeastOnce, false, b"msg".to_vec()).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await { break; } }
+    pub_client
+        .publish(topic, QoS::AtLeastOnce, false, b"msg".to_vec())
+        .await
+        .unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await {
+            break;
+        }
+    }
     pub_client.disconnect().await.unwrap();
 
     // 4. Connect Node 3, Should NOT receive message
     let mut opts3 = MqttOptions::new(client_id, addr3.ip().to_string(), addr3.port());
     opts3.set_clean_session(false);
     let (client3, mut eventloop3) = AsyncClient::new(opts3, 10);
-    
+
     let timeout = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Ok(Event::Incoming(Packet::Publish(_))) = eventloop3.poll().await {
                 panic!("Received message after unsubscribe");
             }
         }
-    }).await;
-    
+    })
+    .await;
+
     assert!(timeout.is_err()); // Timeout means success (no message)
     let _ = client3.disconnect().await;
 }
@@ -277,10 +328,24 @@ async fn test_offline_message_qos_behavior() {
     opts1.set_clean_session(false);
     let (client1, mut eventloop1) = AsyncClient::new(opts1, 10);
     wait_for_connect(&mut eventloop1).await;
-    client1.subscribe(topic_qos0, QoS::AtMostOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; } }
-    client1.subscribe(topic_qos1, QoS::AtLeastOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; } }
+    client1
+        .subscribe(topic_qos0, QoS::AtMostOnce)
+        .await
+        .unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
+    }
+    client1
+        .subscribe(topic_qos1, QoS::AtLeastOnce)
+        .await
+        .unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
+    }
     client1.disconnect().await.unwrap();
 
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -289,14 +354,24 @@ async fn test_offline_message_qos_behavior() {
     let pub_opts = MqttOptions::new("pub-qos", addr2.ip().to_string(), addr2.port());
     let (pub_client, mut pub_loop) = AsyncClient::new(pub_opts, 10);
     wait_for_connect(&mut pub_loop).await;
-    
-    pub_client.publish(topic_qos0, QoS::AtMostOnce, false, b"qos0-msg".to_vec()).await.unwrap();
+
+    pub_client
+        .publish(topic_qos0, QoS::AtMostOnce, false, b"qos0-msg".to_vec())
+        .await
+        .unwrap();
     // QoS 0 no ack, just wait a bit
     tokio::time::sleep(Duration::from_millis(100)).await;
-    
-    pub_client.publish(topic_qos1, QoS::AtLeastOnce, false, b"qos1-msg".to_vec()).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await { break; } }
-    
+
+    pub_client
+        .publish(topic_qos1, QoS::AtLeastOnce, false, b"qos1-msg".to_vec())
+        .await
+        .unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::PubAck(_))) = pub_loop.poll().await {
+            break;
+        }
+    }
+
     pub_client.disconnect().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -304,24 +379,31 @@ async fn test_offline_message_qos_behavior() {
     let mut opts2 = MqttOptions::new(client_id, addr2.ip().to_string(), addr2.port());
     opts2.set_clean_session(false);
     let (client2, mut eventloop2) = AsyncClient::new(opts2, 10);
-    
+
     let mut received_qos0 = false;
     let mut received_qos1 = false;
 
     let timeout = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if let Ok(Event::Incoming(Packet::Publish(p))) = eventloop2.poll().await {
-                if p.topic == topic_qos0 { received_qos0 = true; }
-                if p.topic == topic_qos1 { received_qos1 = true; }
-                if received_qos1 { return; } // Found the expected one, wait a bit more for unexpected?
+                if p.topic == topic_qos0 {
+                    received_qos0 = true;
+                }
+                if p.topic == topic_qos1 {
+                    received_qos1 = true;
+                }
+                if received_qos1 {
+                    return;
+                } // Found the expected one, wait a bit more for unexpected?
             }
         }
-    }).await;
-    
+    })
+    .await;
+
     assert!(timeout.is_ok(), "Timed out waiting for QoS 1 message");
     assert!(received_qos1, "Should receive QoS 1 message");
     assert!(!received_qos0, "Should NOT receive QoS 0 offline message");
-    
+
     let _ = client2.disconnect().await;
 }
 
@@ -344,7 +426,11 @@ async fn test_session_expiry() {
     let (client1, mut eventloop1) = AsyncClient::new(opts1, 10);
     wait_for_connect(&mut eventloop1).await;
     client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
-    loop { if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await { break; } }
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = eventloop1.poll().await {
+            break;
+        }
+    }
     client1.disconnect().await.unwrap();
 
     println!("Waiting 20s for session expiry (TTL is 10s)...");

@@ -35,57 +35,54 @@ impl MqttWssListener {
             let (stream, _) = listener.accept().await?;
 
             match stream.peer_addr() {
-                Ok(remote_addr) => {
-
-                    match tls_acceptor.accept(stream).await {
-                        Err(e) => {
-                            log::error!("TLS accept error from {}: {}", remote_addr, e);
-                            continue;
-                        }
-                        Ok(tls_stream) => {
-                            let client_certs = tls_stream.get_ref().1.peer_certificates();
-                            let client_certificate_vec = {
-                                if let Some(certs) = client_certs {
-                                    if let Some(client_cert_der) = certs.first() {
-                                        let certificate_vec = client_cert_der.as_ref().to_vec();
-                                        Some(certificate_vec)
-                                    } else {
-                                        None
-                                    }
+                Ok(remote_addr) => match tls_acceptor.accept(stream).await {
+                    Err(e) => {
+                        log::error!("TLS accept error from {}: {}", remote_addr, e);
+                        continue;
+                    }
+                    Ok(tls_stream) => {
+                        let client_certs = tls_stream.get_ref().1.peer_certificates();
+                        let client_certificate_vec = {
+                            if let Some(certs) = client_certs {
+                                if let Some(client_cert_der) = certs.first() {
+                                    let certificate_vec = client_cert_der.as_ref().to_vec();
+                                    Some(certificate_vec)
                                 } else {
                                     None
                                 }
-                            };
-
-                            let ws_stream =
-                                tokio_tungstenite::accept_hdr_async(tls_stream, WsCallBack {}).await;
-
-                            if let Ok(ws_stream) = ws_stream {
-                                let websocket_tunnel = WebsocketTlsTunnel {
-                                    inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
-                                };
-                                let settings = self.app.settings.clone();
-                                let plugin_manager_clone = self.app.plugin_manager.clone();
-                                let metric = self.app.metric.clone();
-                                ConnectionActor::create_and_start(
-                                    websocket_tunnel,
-                                    settings.mqtt.max_message_size,
-                                    4096,
-                                    remote_addr,
-                                    plugin_manager_clone,
-                                    client_certificate_vec,
-                                    metric
-                                );
                             } else {
-                                warn!(
-                            "Failed to accept WebSocket connection from {}, err {}",
-                            remote_addr,
-                            ws_stream.err().unwrap()
-                        );
+                                None
                             }
+                        };
+
+                        let ws_stream =
+                            tokio_tungstenite::accept_hdr_async(tls_stream, WsCallBack {}).await;
+
+                        if let Ok(ws_stream) = ws_stream {
+                            let websocket_tunnel = WebsocketTlsTunnel {
+                                inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
+                            };
+                            let settings = self.app.settings.clone();
+                            let plugin_manager_clone = self.app.plugin_manager.clone();
+                            let metric = self.app.metric.clone();
+                            ConnectionActor::create_and_start(
+                                websocket_tunnel,
+                                settings.mqtt.max_message_size,
+                                4096,
+                                remote_addr,
+                                plugin_manager_clone,
+                                client_certificate_vec,
+                                metric,
+                            );
+                        } else {
+                            warn!(
+                                "Failed to accept WebSocket connection from {}, err {}",
+                                remote_addr,
+                                ws_stream.err().unwrap()
+                            );
                         }
                     }
-                }
+                },
                 Err(_) => {
                     warn!("failed to get peer address, close the connection");
                 }

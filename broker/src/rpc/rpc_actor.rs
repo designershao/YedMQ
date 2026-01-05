@@ -18,8 +18,16 @@ pub struct RpcActor {
 }
 
 impl RpcActor {
-    pub fn new(router_actors: Vec<Addr<RouterActor>>, settings: Arc<Settings>, payload_store: Arc<dyn crate::raft::payload::PayloadStore>) -> Self {
-        RpcActor { router_actors, settings, payload_store }
+    pub fn new(
+        router_actors: Vec<Addr<RouterActor>>,
+        settings: Arc<Settings>,
+        payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
+    ) -> Self {
+        RpcActor {
+            router_actors,
+            settings,
+            payload_store,
+        }
     }
 }
 

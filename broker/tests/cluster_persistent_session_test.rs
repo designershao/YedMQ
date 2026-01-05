@@ -1,5 +1,5 @@
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use std::{net::SocketAddr, time::Duration};
-use rumqttc::{MqttOptions, AsyncClient, Event, Packet, QoS};
 
 mod cluster_setup;
 use cluster_setup::setup_cluster;
@@ -7,7 +7,7 @@ use cluster_setup::setup_cluster;
 #[actix::test]
 async fn test_persistent_session_switch_node() {
     let context = setup_cluster().await;
-    
+
     // We'll use Node 1 and Node 2 for switching
     let node1 = &context.nodes[0];
     let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
@@ -32,8 +32,14 @@ async fn test_persistent_session_switch_node() {
             match sub_eventloop1.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(ack))) => {
                     connected = true;
-                    println!("Sub connected to Node 1, session_present: {}", ack.session_present);
-                    sub_client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
+                    println!(
+                        "Sub connected to Node 1, session_present: {}",
+                        ack.session_present
+                    );
+                    sub_client1
+                        .subscribe(topic, QoS::AtLeastOnce)
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::SubAck(ack))) => {
                     println!("Subscribed to topic on Node 1, ack: {:?}", ack);
@@ -47,17 +53,20 @@ async fn test_persistent_session_switch_node() {
                 Ok(ev) => {
                     println!("Sub received event from Node 1: {:?}", ev);
                 }
-                Err(e) => { 
-                    if connected { 
+                Err(e) => {
+                    if connected {
                         println!("Sub connection to Node 1 closed: {:?}", e);
-                        return; 
-                    } 
-                    panic!("Sub Setup Error: {:?}", e) 
-                },
+                        return;
+                    }
+                    panic!("Sub Setup Error: {:?}", e)
+                }
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(30), sub_setup_task).await.expect("Sub Setup timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), sub_setup_task)
+        .await
+        .expect("Sub Setup timed out")
+        .unwrap();
 
     println!("Waiting for session to be fully saved and cluster to stabilize...");
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -65,7 +74,11 @@ async fn test_persistent_session_switch_node() {
     // 2. Pub Client connects to Node 2 and publishes
     // We expect this message to be queued for the persistent session
     println!("Step 2: Connecting to Node 2 and publishing message...");
-    let mut pub_opts = MqttOptions::new("cluster-persistent-pub", addr2.ip().to_string(), addr2.port());
+    let mut pub_opts = MqttOptions::new(
+        "cluster-persistent-pub",
+        addr2.ip().to_string(),
+        addr2.port(),
+    );
     pub_opts.set_keep_alive(Duration::from_secs(30));
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
 
@@ -76,7 +89,10 @@ async fn test_persistent_session_switch_node() {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
                     println!("Pub connected to Node 2");
-                    pub_client.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                    pub_client
+                        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(ack))) => {
                     println!("Message published to Node 2, ack: {:?}", ack);
@@ -90,17 +106,20 @@ async fn test_persistent_session_switch_node() {
                 Ok(ev) => {
                     println!("Pub received event from Node 2: {:?}", ev);
                 }
-                Err(e) => { 
-                    if connected { 
+                Err(e) => {
+                    if connected {
                         println!("Pub connection to Node 2 closed: {:?}", e);
-                        return; 
-                    } 
-                    panic!("Pub Error: {:?}", e) 
-                },
+                        return;
+                    }
+                    panic!("Pub Error: {:?}", e)
+                }
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(30), pub_task).await.expect("Pub timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), pub_task)
+        .await
+        .expect("Pub timed out")
+        .unwrap();
 
     println!("Waiting for message to be routed and stored...");
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -119,7 +138,10 @@ async fn test_persistent_session_switch_node() {
             match sub_eventloop2.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(ack))) => {
                     connected = true;
-                    println!("Reconnected to Node 2, session_present: {}", ack.session_present);
+                    println!(
+                        "Reconnected to Node 2, session_present: {}",
+                        ack.session_present
+                    );
                     // assert!(ack.session_present, "Session should be present on Node 2");
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
@@ -138,17 +160,20 @@ async fn test_persistent_session_switch_node() {
                 Ok(ev) => {
                     println!("Sub verify task received event: {:?}", ev);
                 }
-                Err(e) => { 
-                    if connected && message_received { 
+                Err(e) => {
+                    if connected && message_received {
                         println!("Sub verify task connection closed after success: {:?}", e);
-                        return; 
-                    } 
+                        return;
+                    }
                     println!("Sub verify task error: {:?}", e);
-                    panic!("Sub Verify Error: {:?}", e) 
-                },
+                    panic!("Sub Verify Error: {:?}", e)
+                }
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(60), sub_verify_task).await.expect("Sub Verify timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(60), sub_verify_task)
+        .await
+        .expect("Sub Verify timed out")
+        .unwrap();
     println!("Test passed!");
 }

@@ -1,34 +1,37 @@
-use bytes::{BytesMut, BufMut};
-use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, error::Error};
-use serde::{Deserialize, Serialize};
 use crate::{MqttPacket, PacketType};
+use bytes::{BufMut, BytesMut};
+use nom::{
+    combinator::{flat_map, map, map_res},
+    error::Error,
+    number::streaming::be_u16,
+    IResult,
+};
+use serde::{Deserialize, Serialize};
 
-use super::fixed_header::{FixHeader, self};
+use super::fixed_header::{self, FixHeader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PubCompPacket {
     pub fix_header: FixHeader,
-    pub variable_header: VariableHeader
+    pub variable_header: VariableHeader,
 }
 
 impl PubCompPacket {
     pub fn new(packet_identifier: u16) -> PubCompPacket {
-            let fix_header = FixHeader {
-                packet_type: PacketType::PUBCOMP,
-                qos: None,
-                retain: None,
-                dup: None,
-                remaining_length: 2,
-            };
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBCOMP,
+            qos: None,
+            retain: None,
+            dup: None,
+            remaining_length: 2,
+        };
 
-            let variable_header = VariableHeader {
-                packet_identifier
-            };
+        let variable_header = VariableHeader { packet_identifier };
 
-            PubCompPacket {
-                fix_header,
-                variable_header
-            }
+        PubCompPacket {
+            fix_header,
+            variable_header,
+        }
     }
 }
 
@@ -49,22 +52,23 @@ impl VariableHeader {
     }
 }
 
-
 pub fn parse(input: &[u8]) -> IResult<&[u8], PubCompPacket> {
     flat_map(fixed_header::parse, |fixed_header| {
         map(
             map_res(
-            nom::bytes::streaming::take(fixed_header.remaining_length),
-            be_u16::<&[u8], Error<&[u8]>>
-            ), move |packet_identifier| {
+                nom::bytes::streaming::take(fixed_header.remaining_length),
+                be_u16::<&[u8], Error<&[u8]>>,
+            ),
+            move |packet_identifier| {
                 let cloned_fixed_header = fixed_header.clone();
                 PubCompPacket {
                     fix_header: cloned_fixed_header,
                     variable_header: VariableHeader {
-                        packet_identifier: packet_identifier.1
-                    }
+                        packet_identifier: packet_identifier.1,
+                    },
                 }
-            })
+            },
+        )
     })(input)
 }
 
@@ -73,7 +77,8 @@ impl MqttPacket for PubCompPacket {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
 
-        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len());
+        let mut buf: BytesMut =
+            BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len());
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf
@@ -90,7 +95,7 @@ impl MqttPacket for PubCompPacket {
 }
 
 #[cfg(test)]
-mod tests{
+mod tests {
     use nom::AsBytes;
 
     use crate::PacketType;
@@ -116,16 +121,17 @@ mod tests{
         };
 
         let variable_header = VariableHeader {
-            packet_identifier: 10
+            packet_identifier: 10,
         };
 
         let pubcomp_packet = PubCompPacket {
             fix_header,
-            variable_header
+            variable_header,
         };
 
-        assert_eq!(pubcomp_packet.to_bytes().as_bytes(), &[0x70, 0x02, 0x00, 0x0A]);
+        assert_eq!(
+            pubcomp_packet.to_bytes().as_bytes(),
+            &[0x70, 0x02, 0x00, 0x0A]
+        );
     }
-
 }
-

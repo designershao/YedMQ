@@ -6,8 +6,8 @@ use std::time::Duration;
 use actix::prelude::*;
 use actix::{Actor, Addr, Context};
 use bytes::{Buf, Bytes, BytesMut};
-use governor::{Quota, RateLimiter};
 use governor::clock::{Clock, DefaultClock};
+use governor::{Quota, RateLimiter};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -18,10 +18,10 @@ use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
 use yedmq_plugin_host::protocol::plugin_protocol::AuthenticateRequest;
 
+use crate::metric::Metric;
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
 use crate::session::{session_actor, WillMessage};
-use crate::metric::Metric;
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -51,12 +51,12 @@ impl NetworkSender {
         T: AsyncWrite + Unpin + Send + 'static,
     {
         let (tx, mut rx) = mpsc::channel::<NetworkCommand>(1000);
-        
+
         let task_handle = tokio::spawn(async move {
             let mut batch = BytesMut::with_capacity(64 * 1024);
             let mut msg_count = 0;
             let mut interval = tokio::time::interval(Duration::from_millis(10));
-            
+
             'main_loop: loop {
                 tokio::select! {
                     cmd = rx.recv() => {
@@ -64,7 +64,7 @@ impl NetworkSender {
                             Some(NetworkCommand::Send(data)) => {
                                 batch.extend_from_slice(&data);
                                 msg_count += 1;
-                                
+
                                 if batch.len() >= 64 * 1024 || msg_count >= 200 {
                                     if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await {
                                         error!("Write error: {}", e);
@@ -73,19 +73,19 @@ impl NetworkSender {
                                     }
                                 }
                             }
-                            
+
                             Some(NetworkCommand::Shutdown) => {
                                 info!("NetworkSender received shutdown command");
                                 break 'main_loop;
                             }
-                            
+
                             None => {
                                 info!("NetworkSender command channel closed");
                                 break 'main_loop;
                             }
                         }
                     }
-                    
+
                     _ = interval.tick() => {
                         if !batch.is_empty() {
                             if let Err(e) = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await {
@@ -97,14 +97,14 @@ impl NetworkSender {
                     }
                 }
             }
-            
+
             info!("NetworkSender cleanup started");
-            
+
             if !batch.is_empty() {
                 info!("Flushing {} remaining bytes", batch.len());
                 let _ = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await;
             }
-            
+
             let mut remaining = 0;
             while let Ok(cmd) = rx.try_recv() {
                 if let NetworkCommand::Send(data) = cmd {
@@ -112,25 +112,25 @@ impl NetworkSender {
                     remaining += 1;
                 }
             }
-            
+
             if !batch.is_empty() {
                 info!("Flushing {} remaining messages", remaining);
                 let _ = Self::flush(&mut writer, &mut batch, &mut msg_count, &metric).await;
             }
-            
+
             if let Err(e) = writer.shutdown().await {
                 error!("Shutdown error: {}", e);
             }
-            
+
             info!("NetworkSender task exited");
         });
-        
+
         Self {
             tx,
             task_handle: Some(task_handle),
         }
     }
-    
+
     async fn flush<T>(
         writer: &mut tokio::io::WriteHalf<T>,
         batch: &mut BytesMut,
@@ -143,11 +143,11 @@ impl NetworkSender {
         if batch.is_empty() {
             return Ok(());
         }
-        
+
         let len = batch.len();
         writer.write_all(&batch).await?;
         writer.flush().await?;
-        
+
         metric.increase_bytes_sent(len as u64);
         for _ in 0..*count {
             metric.increase_packets_sent();
@@ -157,16 +157,16 @@ impl NetworkSender {
         *count = 0;
         Ok(())
     }
-    
+
     pub fn try_send(&self, data: Bytes) -> Result<(), mpsc::error::TrySendError<NetworkCommand>> {
         self.tx.try_send(NetworkCommand::Send(data))
     }
-    
+
     pub async fn shutdown(mut self) {
         info!("NetworkSender shutdown initiated");
-        
+
         let _ = self.tx.send(NetworkCommand::Shutdown).await;
-        
+
         if let Some(handle) = self.task_handle.take() {
             match tokio::time::timeout(Duration::from_secs(5), handle).await {
                 Ok(Ok(())) => info!("NetworkSender task completed"),
@@ -188,8 +188,8 @@ impl Drop for NetworkSender {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
-
-    #[error("unsupported protocol version. Supported versions: {supported_versions:?}, current version: {current_version}")]
+    #[error("unsupported protocol version. Supported versions: {supported_versions:?}, current version: {current_version}"
+    )]
     UnsupportedProtocolVersion {
         supported_versions: Vec<String>,
         current_version: String,
@@ -221,7 +221,7 @@ pub enum ConnectionError {
 pub enum DisconnectReason {
     Normal,
     KeepAliveExpired,
-    InternalError(String)
+    InternalError(String),
 }
 
 #[derive(Message, Debug)]
@@ -270,7 +270,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
 
     pub metric: Arc<Metric>,
 
-    _phantom: std::marker::PhantomData<T>
+    _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T> ConnectionActor<T>
@@ -296,9 +296,9 @@ where
                 client_certificate.clone(),
                 metric.clone(),
             );
-            
+
             let self_addr = ctx.address();
-            
+
             let event_addr = self_addr.clone();
             let event_handle = ctx.spawn(
                 async move {
@@ -306,9 +306,9 @@ where
                         event_addr.do_send(event);
                     }
                 }
-                .into_actor(&actor)
+                .into_actor(&actor),
             );
-            actor.event_listener_handle = Some(event_handle);            
+            actor.event_listener_handle = Some(event_handle);
             let read_addr = self_addr.clone();
             let max_msg_size = actor.max_message_size;
             let buf_size = actor.buffer_size;
@@ -352,7 +352,7 @@ where
                                         .send(ConnectionActorMessage::WritePacketToClient(
                                             yedmq_mqtt::MqttPacketV3::Connack(connack),
                                         ))
-                                    .await {
+                                        .await {
                                         error!("send connack packet error, connection may be closed: {}", e);
                                         read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("send connack packet error, connection may be closed".to_string())));
                                         return;
@@ -366,7 +366,7 @@ where
                                     let rate_limiter = RateLimiter::direct(
                                         Quota::per_second(NonZeroU32::new(1000).unwrap())
                                             .allow_burst(NonZeroU32::new(100).unwrap())
-                                    );                                    
+                                    );
 
                                     loop {
                                         match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
@@ -388,13 +388,12 @@ where
                                                                 packet,
                                                             ),
                                                         );
-                                                    },
+                                                    }
                                                     Err(not_ready) => {
                                                         let wait_time = not_ready.wait_time_from(DefaultClock::default().now());
                                                         tokio::time::sleep(wait_time).await;
                                                         info!("rate limited")
                                                     }
-
                                                 }
                                             }
                                             Err(ConnectionError::ConnectionClosed) => {
@@ -407,15 +406,14 @@ where
                                                 read_addr.do_send(NetworkEvent::ReadError(
                                                     std::io::Error::new(
                                                         std::io::ErrorKind::InvalidData,
-                                                        e.to_string()
+                                                        e.to_string(),
                                                     )
                                                 ));
                                                 break;
                                             }
                                         }
                                     }
-
-                                },
+                                }
                                 Err(e) => {
                                     let connack_packet = match e {
                                         ConnectionError::UnsupportedProtocolVersion { .. } => {
@@ -453,10 +451,10 @@ where
                                             yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
                                         ))
                                         .await {
-                                            error!("send connack packet error: {}", e);
-                                        }
+                                        error!("send connack packet error: {}", e);
+                                    }
                                     read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("handle initial connect error".to_string())));
-                                    return;                                    
+                                    return;
                                 }
                             }
                         }
@@ -464,12 +462,11 @@ where
                             error!("client first packet is not connect packet");
                             return;
                         }
-
                     }
                 }
-                .into_actor(&actor)
+                    .into_actor(&actor)
             );
-            
+
             actor.read_packet_handle = Some(handle);
             actor
         });
@@ -484,7 +481,11 @@ where
         plugin_service: Arc<PluginManager>,
         client_certificate: Option<Vec<u8>>,
         metric: Arc<Metric>,
-    ) -> (Self, tokio::io::ReadHalf<T>, mpsc::UnboundedReceiver<NetworkEvent>) {
+    ) -> (
+        Self,
+        tokio::io::ReadHalf<T>,
+        mpsc::UnboundedReceiver<NetworkEvent>,
+    ) {
         let (reader, writer) = tokio::io::split(stream);
 
         let (event_tx, event_rx) = mpsc::unbounded_channel();
@@ -493,7 +494,7 @@ where
 
         let actor = ConnectionActor {
             network_sender: Some(network_sender),
-            encode_buffer: BytesMut::with_capacity(64*1024),
+            encode_buffer: BytesMut::with_capacity(64 * 1024),
             pending_count: 0,
             batch_size: 100,
             client_certificate,
@@ -516,7 +517,7 @@ where
         if self.pending_count == 0 {
             return;
         }
-        
+
         if let Some(sender) = &self.network_sender {
             let data = self.encode_buffer.split().freeze();
             if let Err(e) = sender.try_send(data) {
@@ -524,11 +525,11 @@ where
             }
             self.pending_count = 0;
         }
-    }    
+    }
 
     fn handle_disconnection(&mut self, ctx: &mut Context<Self>, reason: String) {
         warn!("Connection disconnecting: {}", reason);
-        
+
         if let Some(session) = &self.session {
             if self.disconnected_normally {
                 session.do_send(session_actor::SessionActorMessage::ClientDisconnected);
@@ -536,12 +537,10 @@ where
                 session.do_send(session_actor::SessionActorMessage::UnexpectClientDisconnected);
             }
         }
-        
+
         ctx.stop();
     }
-
 }
-
 
 pub async fn read_packet<T: AsyncRead + Unpin>(
     reader: &mut tokio::io::ReadHalf<T>,
@@ -564,7 +563,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
                 nom::Err::Incomplete(_) => {
                     let n = reader.read_buf(buffer).await?;
                     if let Some(m) = &metric {
-                         m.increase_bytes_received(n as u64);
+                        m.increase_bytes_received(n as u64);
                     }
 
                     if 0 == n {
@@ -632,19 +631,31 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
 
     let authenticate_request = AuthenticateRequest {
         client_id: packet.payload.client_identifier.clone(),
-        username: packet.payload.username.as_ref().unwrap_or(&"".to_string()).clone(),
-        password: packet.payload.password.as_ref().unwrap_or(&"".to_string()).clone(),
+        username: packet
+            .payload
+            .username
+            .as_ref()
+            .unwrap_or(&"".to_string())
+            .clone(),
+        password: packet
+            .payload
+            .password
+            .as_ref()
+            .unwrap_or(&"".to_string())
+            .clone(),
         client_ip: peer_addr.ip().to_string(),
         client_cert: client_certificate.unwrap_or_default(),
         protocol_version: "3.1.1".to_string(),
         properties: None,
     };
 
-    let plugin_authenticate_result = plugin_service.call_authenticate_hook(authenticate_request).await;
+    let plugin_authenticate_result = plugin_service
+        .call_authenticate_hook(authenticate_request)
+        .await;
 
     match plugin_authenticate_result {
         Ok(result) => match result {
-            AuthenticateResult{
+            AuthenticateResult {
                 authenticated: true,
                 tenant_id,
                 ..
@@ -664,7 +675,8 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 };
                 let tenant_id = tenant_id.unwrap_or("public".to_string());
                 let recipient = self_addr.clone().recipient();
-                let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
+                let session_manager_actor_addr =
+                    crate::session::session_manager_actor::SessionManagerActor::from_registry();
                 let recipient = session_manager_actor_addr
                     .send(CreateSessionMessage {
                         tenant_id,
@@ -680,32 +692,34 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     .map_err(|e| match e {
                         MailboxError::Closed => {
                             error!("session manager actor mailbox closed");
-                            ConnectionError::SessionManagerServiceUnavailable("Session manager actor mailbox closed".to_string())
+                            ConnectionError::SessionManagerServiceUnavailable(
+                                "Session manager actor mailbox closed".to_string(),
+                            )
                         }
                         MailboxError::Timeout => {
                             error!("session manager actor mailbox timeout");
-                            ConnectionError::SessionManagerServiceUnavailable("Session manager actor mailbox timeout".to_string())
+                            ConnectionError::SessionManagerServiceUnavailable(
+                                "Session manager actor mailbox timeout".to_string(),
+                            )
                         }
                     })?
                     .map_err(|e| ConnectionError::SessionManagerServiceUnavailable(e.to_string()))
-                    .map(|r| HandleInitialConnectResult { 
-                        session_recipient: r.session_actor_recipient, 
-                        session_present: r.session_present }
-                    );
-                
+                    .map(|r| HandleInitialConnectResult {
+                        session_recipient: r.session_actor_recipient,
+                        session_present: r.session_present,
+                    });
+
                 metric.increase_clients_connected();
                 recipient
             }
             AuthenticateResult {
                 authenticated: false,
                 ..
-            } => {
-                Err(ConnectionError::Unauthenticate("authenticate plugin rejected".to_string()))
-            }
+            } => Err(ConnectionError::Unauthenticate(
+                "authenticate plugin rejected".to_string(),
+            )),
         },
-        Err(e) => {
-            Err(ConnectionError::PluginError(e))
-        }
+        Err(e) => Err(ConnectionError::PluginError(e)),
     }
 }
 
@@ -717,9 +731,9 @@ where
 
     fn started(&mut self, ctx: &mut Self::Context) {
         info!("ConnectionActor started for peer {}", self.peer_addr);
-        
+
         ctx.set_mailbox_capacity(0);
-        
+
         ctx.run_interval(Duration::from_millis(1), |act, _| {
             act.flush_batch();
         });
@@ -727,32 +741,33 @@ where
 
     fn stopping(&mut self, _ctx: &mut Self::Context) -> Running {
         info!("ConnectionActor stopping for peer {}", self.peer_addr);
-        
+
         self.flush_batch();
-        
+
         if let Some(sender) = self.network_sender.take() {
             actix::spawn(async move {
                 sender.shutdown().await;
             });
         }
-        
+
         Running::Stop
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("ConnectionActor stopped for peer {}", self.peer_addr);
-        
+
         if let Some(session) = &self.session {
             self.metric.decrease_clients_connected();
             if self.disconnected_normally {
                 session.do_send(session_actor::SessionActorMessage::ClientDisconnected);
             } else {
-                warn!("ConnectionActor stopped unexpectedly! Sending UnexpectDisconnect to session");
+                warn!(
+                    "ConnectionActor stopped unexpectedly! Sending UnexpectDisconnect to session"
+                );
                 session.do_send(session_actor::SessionActorMessage::UnexpectClientDisconnected);
             }
         }
-    }    
-
+    }
 }
 
 impl<T> Handler<UpdateSession> for ConnectionActor<T>
@@ -798,7 +813,7 @@ where
                 if self.pending_count >= self.batch_size {
                     self.flush_batch();
                 }
-                
+
                 Ok(())
             }
             ConnectionActorMessage::Disconnect(reason) => {
@@ -806,12 +821,11 @@ where
                     DisconnectReason::Normal => {
                         self.disconnected_normally = true;
                     }
-                    _ => {
-                    }
+                    _ => {}
                 }
 
                 self.flush_batch();
-                
+
                 if let Some(sender) = self.network_sender.take() {
                     let fut = async move {
                         sender.shutdown().await;
@@ -822,7 +836,7 @@ where
                 } else {
                     ctx.stop();
                 }
-                
+
                 Ok(())
             }
         }
@@ -856,12 +870,12 @@ where
                 error!("Write error for peer {}: {}", self.peer_addr, e);
                 self.handle_disconnection(ctx, format!("Write error: {}", e));
             }
-            
+
             NetworkEvent::ReadError(e) => {
                 error!("Read error for peer {}: {}", self.peer_addr, e);
                 self.handle_disconnection(ctx, format!("Read error: {}", e));
             }
-            
+
             NetworkEvent::ClientDisconnected => {
                 info!("Client disconnected from peer {}", self.peer_addr);
                 self.disconnected_normally = true;

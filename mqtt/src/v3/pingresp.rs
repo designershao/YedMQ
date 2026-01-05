@@ -1,10 +1,10 @@
 use bytes::BytesMut;
-use nom::{IResult, combinator::map};
+use nom::{combinator::map, IResult};
 use serde::{Deserialize, Serialize};
 
 use crate::{MqttPacket, PacketType};
 
-use super::fixed_header::{FixHeader, self};
+use super::fixed_header::{self, FixHeader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PingrespPacket {
@@ -18,7 +18,6 @@ impl Default for PingrespPacket {
 }
 
 impl PingrespPacket {
-
     pub fn new() -> PingrespPacket {
         PingrespPacket {
             fix_header: FixHeader {
@@ -27,19 +26,14 @@ impl PingrespPacket {
                 retain: None,
                 dup: None,
                 remaining_length: 0,
-            }
+            },
         }
     }
-
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], PingrespPacket> {
-    map(
-    fixed_header::parse,
-    |fixed_header| {
-        PingrespPacket {
-            fix_header: fixed_header,
-        } 
+    map(fixed_header::parse, |fixed_header| PingrespPacket {
+        fix_header: fixed_header,
     })(input)
 }
 
@@ -67,7 +61,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = &[0xD0,0x00];
+        let input = &[0xD0, 0x00];
         let out = parse(input).unwrap();
         assert!(out.1.fix_header.packet_type == PacketType::PINGRESP);
     }
@@ -82,7 +76,7 @@ mod tests {
             remaining_length: 0,
         };
 
-        let pingresp_packet = PingrespPacket{ fix_header };
+        let pingresp_packet = PingrespPacket { fix_header };
 
         let pingresp_packet_bytes = pingresp_packet.to_bytes();
 

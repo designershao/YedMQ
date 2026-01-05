@@ -269,17 +269,22 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         qos,
                         packet_key,
                     } => {
-                        let freed_key = self.data
+                        let freed_key = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_register_rx_packet(tenant_id, client_id, packet_id, qos, packet_key)
+                            .inflight_register_rx_packet(
+                                tenant_id, client_id, packet_id, qos, packet_key,
+                            )
                             .await;
                         if let Some(key) = freed_key {
                             let _ = self.payload_store.delete(&key).await;
                         }
-                        replies.push(SessionStateResponse::InflightRegisterRxPacketResponse(Ok(())));
+                        replies.push(SessionStateResponse::InflightRegisterRxPacketResponse(Ok(
+                            (),
+                        )));
                     }
                     types::SessionStateRequest::InflightRegisterTxPacket {
                         tenant_id,
@@ -288,12 +293,15 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         qos,
                         packet_key,
                     } => {
-                        let r = self.data
+                        let r = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_register_tx_packet(tenant_id, client_id, packet_id, qos, packet_key)
+                            .inflight_register_tx_packet(
+                                tenant_id, client_id, packet_id, qos, packet_key,
+                            )
                             .await;
 
                         match r {
@@ -301,10 +309,14 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 if let Some(key) = freed_key {
                                     let _ = self.payload_store.delete(&key).await;
                                 }
-                                replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())));
+                                replies.push(
+                                    SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())),
+                                );
                             }
                             Err(e) => {
-                                replies.push(SessionStateResponse::InflightRegisterTxPacketResponse(Err(e)));
+                                replies.push(
+                                    SessionStateResponse::InflightRegisterTxPacketResponse(Err(e)),
+                                );
                             }
                         }
                     }
@@ -325,14 +337,17 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 packet_identifier.try_into().unwrap(),
                             )
                             .await;
-                        replies.push(SessionStateResponse::InflightGetCurrentPacketResult(packet_key));
+                        replies.push(SessionStateResponse::InflightGetCurrentPacketResult(
+                            packet_key,
+                        ));
                     }
                     types::SessionStateRequest::InflightNextState {
                         tenant_id,
                         client_id,
                         packet_identifier,
                     } => {
-                        let freed_key = self.data
+                        let freed_key = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
@@ -352,7 +367,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                     } => {
-                        let freed_keys = self.data
+                        let freed_keys = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
@@ -390,7 +406,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .await
                             .pop_from_pending_queue(tenant_id, client_id)
                             .await;
-                        
+
                         let mut payload_data = None;
                         if let Some(key) = freed_key {
                             if let Ok(Some(bytes)) = self.payload_store.get(&key).await {
@@ -398,7 +414,10 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             }
                             let _ = self.payload_store.delete(&key).await;
                         }
-                        replies.push(SessionStateResponse::PopFromPendingQueueResult(packet_key, payload_data));
+                        replies.push(SessionStateResponse::PopFromPendingQueueResult(
+                            packet_key,
+                            payload_data,
+                        ));
                     }
                     types::SessionStateRequest::SubscribeTopic {
                         tenant_id,
@@ -432,14 +451,18 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                     types::SessionStateRequest::CreateSessionState {
                         tenant_id,
                         client_id,
-                        inflight_duration_secs
+                        inflight_duration_secs,
                     } => {
                         self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .create_session_state(&tenant_id, &client_id, Duration::from_secs(inflight_duration_secs))
+                            .create_session_state(
+                                &tenant_id,
+                                &client_id,
+                                Duration::from_secs(inflight_duration_secs),
+                            )
                             .await;
                         replies.push(SessionStateResponse::None);
                     }
@@ -447,7 +470,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                     } => {
-                        let freed_keys = self.data
+                        let freed_keys = self
+                            .data
                             .state
                             .session_state_storage
                             .write()
@@ -458,7 +482,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             let _ = self.payload_store.delete(&key).await;
                         }
                         replies.push(SessionStateResponse::None);
-                    },
+                    }
                 },
                 openraft::EntryPayload::Membership(membership) => {
                     self.data.last_membership = StoredMembership::new(Some(ent.log_id), membership);
@@ -485,18 +509,18 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
         snapshot: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
         let snapshot_data = snapshot.into_inner();
-        
+
         // 0. Set is_ready to false during sync
         self.is_ready.store(false, Ordering::SeqCst);
 
         // 1. Parse snapshot data to find all packet keys
         let wrapper: SnapshotWrapper = serde_json::from_slice(&snapshot_data)
             .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        
-        let storage_data: crate::session::session_state_storage::SerializableSessionStateStorage = 
+
+        let storage_data: crate::session::session_state_storage::SerializableSessionStateStorage =
             serde_json::from_slice(&wrapper.session_state_storage_snapshot)
-            .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
-        
+                .map_err(|e| StorageIOError::read_snapshot(Some(meta.signature()), &e))?;
+
         let mut keys_to_sync = std::collections::HashSet::new();
         for tenant_map in storage_data.inner.values() {
             for session_state in tenant_map.values() {
@@ -518,24 +542,31 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
         }
 
         if !missing_keys.is_empty() {
-            log::info!("Snapshot installation: found {} missing payloads, starting BulkSync", missing_keys.len());
-            
+            log::info!(
+                "Snapshot installation: found {} missing payloads, starting BulkSync",
+                missing_keys.len()
+            );
+
             // 3. Try to sync from peers
             let client = crate::raft::payload::PayloadClient::new(self.payload_store.clone());
             let mut synced = false;
-            
+
             // Try all nodes in membership
             for (node_id, node) in meta.last_membership.nodes() {
                 if *node_id == self.settings.cluster.node_id {
                     continue;
                 }
-                
-                log::info!("Trying to sync payloads from node {} at {}", node_id, node.rpc_addr);
-                
+
+                log::info!(
+                    "Trying to sync payloads from node {} at {}",
+                    node_id,
+                    node.rpc_addr
+                );
+
                 // Construct manifest for what we want to fetch
                 // For simplicity, we just ask for the keys we know are missing
                 let manifest = missing_keys.iter().map(|k| (k.clone(), 0, 0)).collect();
-                
+
                 match client.bulk_sync(&node.rpc_addr, manifest).await {
                     Ok(_) => {
                         log::info!("BulkSync from node {} succeed", node_id);
@@ -547,12 +578,20 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                     }
                 }
             }
-            
+
             if !synced {
-                log::error!("Failed to sync missing payloads for snapshot. Data integrity compromised.");
+                log::error!(
+                    "Failed to sync missing payloads for snapshot. Data integrity compromised."
+                );
                 // NOTE: We keep is_ready = false here
                 return Err(StorageError::IO {
-                    source: StorageIOError::read_snapshot(Some(meta.signature()), AnyError::new(&std::io::Error::new(std::io::ErrorKind::Other, "Payload sync failed"))),
+                    source: StorageIOError::read_snapshot(
+                        Some(meta.signature()),
+                        AnyError::new(&std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Payload sync failed",
+                        )),
+                    ),
                 });
             }
         }
@@ -793,12 +832,14 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
             // 1. Any entry with index > last_persisted_index (New append)
             // 2. Any entry that OVERWRITES an existing entry (index <= last_persisted_index)
             //    unless it's exactly the same entry (same term).
-            
+
             let mut need_payload_check = entry.log_id.index > last_persisted_index;
-            
+
             if !need_payload_check {
                 // Check if it's an overwrite with a different term
-                let existing = self.try_get_log_entries(entry.log_id.index..=entry.log_id.index).await?;
+                let existing = self
+                    .try_get_log_entries(entry.log_id.index..=entry.log_id.index)
+                    .await?;
                 if let Some(existing_entry) = existing.first() {
                     if existing_entry.log_id.leader_id.term != entry.log_id.leader_id.term {
                         need_payload_check = true;
@@ -812,9 +853,15 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
             if need_payload_check {
                 if let openraft::EntryPayload::Normal(req) = &entry.payload {
                     let key = match req {
-                        types::SessionStateRequest::InflightRegisterRxPacket { packet_key, .. } => Some(packet_key),
-                        types::SessionStateRequest::InflightRegisterTxPacket { packet_key, .. } => Some(packet_key),
-                        types::SessionStateRequest::AppendToPendingQueue { packet_key, .. } => Some(packet_key),
+                        types::SessionStateRequest::InflightRegisterRxPacket {
+                            packet_key, ..
+                        } => Some(packet_key),
+                        types::SessionStateRequest::InflightRegisterTxPacket {
+                            packet_key, ..
+                        } => Some(packet_key),
+                        types::SessionStateRequest::AppendToPendingQueue { packet_key, .. } => {
+                            Some(packet_key)
+                        }
                         _ => None,
                     };
                     if let Some(k) = key {
@@ -825,7 +872,7 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
                                 Ok(true) => {
                                     found = true;
                                     break;
-                                },
+                                }
                                 _ => {
                                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
                                 }
@@ -834,15 +881,19 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
 
                         if !found {
                             // Critical Safety Failure
-                            let msg = format!("Payload missing for key: {} (Index: {}, Term: {})", k, entry.log_id.index, entry.log_id.leader_id.term);
+                            let msg = format!(
+                                "Payload missing for key: {} (Index: {}, Term: {})",
+                                k, entry.log_id.index, entry.log_id.leader_id.term
+                            );
                             // log::error!("{}", msg);
                             // Attempt to list keys or debug info?
                             // For now just log strictly
                             log::error!("Consistency Check Failed: {}", msg);
-                            
-                            let err_cb = std::io::Error::new(std::io::ErrorKind::NotFound, msg.clone());
+
+                            let err_cb =
+                                std::io::Error::new(std::io::ErrorKind::NotFound, msg.clone());
                             let err_ret = std::io::Error::new(std::io::ErrorKind::NotFound, msg);
-                            
+
                             callback.log_io_completed(Err(err_cb));
                             return Err(StorageIOError::write_logs(&err_ret).into());
                         }
@@ -910,8 +961,13 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
 
-    let log_store = LogStore { db: db.clone(), payload_store: payload_store.clone() };
-    let sm_store = StateMachineStore::new(db, topic_storage, payload_store, settings).await.unwrap();
+    let log_store = LogStore {
+        db: db.clone(),
+        payload_store: payload_store.clone(),
+    };
+    let sm_store = StateMachineStore::new(db, topic_storage, payload_store, settings)
+        .await
+        .unwrap();
     let is_ready = sm_store.is_ready.clone();
 
     (log_store, sm_store, is_ready)

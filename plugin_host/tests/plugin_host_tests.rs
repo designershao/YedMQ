@@ -234,7 +234,6 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
     {
         let running_plugins = plugin_manager.get_running_plugins();
 
-
         println!(
             "Plugin States: {:?}",
             running_plugins.get("mock_plugin_harness").unwrap().state

@@ -1,20 +1,21 @@
 use clap::Parser;
+use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
-    tokio::{prelude::*, Stream}, GenericFilePath
+    tokio::{prelude::*, Stream},
+    GenericFilePath,
 };
 use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use tokio_util::codec::Framed;
 use std::{collections::HashMap, time::Duration};
 use tokio::time::timeout;
+use tokio_util::codec::Framed;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
         AuthenticateResponse, Hook, InitializeResponse, MessageType, Method, ProtocolMessage,
     },
     protocol_frame::ProtocolFrameCodec,
 };
-use futures::{SinkExt, StreamExt};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct MockConfig {
@@ -89,7 +90,6 @@ struct SubscribeConfig {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AuthorizeConfig {
-
     /// whether to authorize successfully or not
     pub authorized: bool,
 
@@ -197,7 +197,10 @@ async fn handle_initialize_request(
     real_auth_code: &str,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling initialize request");
-    info!("Initialization fail mode: {:?}", config.initialize.initialization_fail_mode);
+    info!(
+        "Initialization fail mode: {:?}",
+        config.initialize.initialization_fail_mode
+    );
     match config.initialize.initialization_fail_mode {
         InitFailMode::None => {}
         InitFailMode::Delay(ms) => {
@@ -210,7 +213,9 @@ async fn handle_initialize_request(
         }
         InitFailMode::SkipResponse => {
             info!("Skipping initialization response as per configuration");
-            return Err(anyhow::anyhow!("Skipping initialization response as per configuration")); 
+            return Err(anyhow::anyhow!(
+                "Skipping initialization response as per configuration"
+            ));
         }
     }
     let hooks: Vec<Hook> = config
@@ -282,12 +287,10 @@ async fn handle_authenticate_request(
         target: "plugin_host".to_string(),
         method: None,
         params: None,
-        result: Some(
-            prost_types::Any {
-                type_url: yedmq_plugin_host::protocol::AUTHENTICATE_RESPONSE_TYPE_URL.to_string(),
-                value: response.encode_to_vec(),
-            }
-        ),
+        result: Some(prost_types::Any {
+            type_url: yedmq_plugin_host::protocol::AUTHENTICATE_RESPONSE_TYPE_URL.to_string(),
+            value: response.encode_to_vec(),
+        }),
         error: None,
         metadata: HashMap::new(),
     })
@@ -336,12 +339,14 @@ async fn handle_on_message_subscribe_request(
     info!("Handling on_message_subscribe request");
     let mut results = vec![];
     for (topic, allowed, qos) in &config.subscribe.results {
-        results.push(yedmq_plugin_host::protocol::plugin_protocol::SubscribeResult {
-            topic: topic.clone(),
-            allowed: *allowed,
-            granted_qos: *qos,
-            reason: None,
-        });
+        results.push(
+            yedmq_plugin_host::protocol::plugin_protocol::SubscribeResult {
+                topic: topic.clone(),
+                allowed: *allowed,
+                granted_qos: *qos,
+                reason: None,
+            },
+        );
     }
 
     Ok(ProtocolMessage {
@@ -379,7 +384,9 @@ async fn handle_on_message_publish_request(
                 any_msg.type_url
             ));
         }
-        yedmq_plugin_host::protocol::plugin_protocol::MessagePublishRequest::decode(&*any_msg.value)?
+        yedmq_plugin_host::protocol::plugin_protocol::MessagePublishRequest::decode(
+            &*any_msg.value,
+        )?
     } else {
         return Err(anyhow::anyhow!("Missing params in publish request"));
     };
@@ -396,7 +403,9 @@ async fn handle_on_message_publish_request(
             .unwrap()
             .modified_message
             .as_ref()
-            .unwrap().clone().into_bytes();
+            .unwrap()
+            .clone()
+            .into_bytes();
     }
 
     let response = yedmq_plugin_host::protocol::plugin_protocol::MessagePublishResponse {
@@ -416,7 +425,8 @@ async fn handle_on_message_publish_request(
         method: None,
         params: None,
         result: Some(prost_types::Any {
-            type_url: yedmq_plugin_host::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL.to_string(),
+            type_url: yedmq_plugin_host::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL
+                .to_string(),
             value: response.encode_to_vec(),
         }),
         error: None,
@@ -480,10 +490,10 @@ async fn main() {
     info!("Mock Plugin started with auth_code: {}", args.auth_code);
     info!("Socket path: {}", args.socket_path);
     info!("Using config: {:?}", config);
-    
+
     let socket_name = args.socket_path.to_fs_name::<GenericFilePath>().unwrap();
 
-    let stream =  match timeout(Duration::from_secs(5), Stream::connect(socket_name)).await {
+    let stream = match timeout(Duration::from_secs(5), Stream::connect(socket_name)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             error!("Failed to connect to socket: {}", e);
@@ -509,7 +519,9 @@ async fn main() {
                 info!("Received a frame: {:?}", msg);
                 let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
 
-                if let Err(e) = handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await {
+                if let Err(e) =
+                    handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await
+                {
                     error!("Error handling request: {}", e);
                 }
             }
@@ -523,5 +535,4 @@ async fn main() {
             }
         }
     }
-
 }

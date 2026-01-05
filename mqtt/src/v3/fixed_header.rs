@@ -1,10 +1,10 @@
+use crate::PacketType;
+use ::bytes::{BufMut, BytesMut};
 use nom::bits::{bits, streaming::take};
 use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;
-use nom::{IResult, error::Error};
-use ::bytes::{BytesMut, BufMut};
+use nom::{error::Error, IResult};
 use serde::{Deserialize, Serialize};
-use crate::PacketType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FixHeader {
@@ -15,8 +15,7 @@ pub struct FixHeader {
     pub remaining_length: usize,
 }
 
-
-pub fn has_next(i:u8) -> bool {
+pub fn has_next(i: u8) -> bool {
     i & 128 != 0
 }
 
@@ -25,7 +24,7 @@ pub fn remaining_length(input: &[u8]) -> IResult<&[u8], usize> {
     match r {
         Err(e) => Err(e),
         Ok((i, length)) => {
-            let mut v:i32 = 0;
+            let mut v: i32 = 0;
             let mut multiplier = 1;
             for u in length.iter() {
                 v += ((*u & 127) as i32) * multiplier;
@@ -45,10 +44,15 @@ pub fn remaining_length(input: &[u8]) -> IResult<&[u8], usize> {
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
-    let r = bits::<&[u8],(i32,i32,i32,i32),Error<(&[u8], usize)>,_,_>(tuple((take(4usize), take(1usize),take(2usize),take(1usize))))(input);
+    let r = bits::<&[u8], (i32, i32, i32, i32), Error<(&[u8], usize)>, _, _>(tuple((
+        take(4usize),
+        take(1usize),
+        take(2usize),
+        take(1usize),
+    )))(input);
     match r {
-        Err(e) => Err(e) ,
-        Ok((i,(packet_type_u, dup_u,qos_u,retain_u))) => {
+        Err(e) => Err(e),
+        Ok((i, (packet_type_u, dup_u, qos_u, retain_u))) => {
             let packet_type = match packet_type_u {
                 1 => PacketType::CONNECT,
                 2 => PacketType::CONNACK,
@@ -66,35 +70,36 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
                 14 => PacketType::DISCONNECT,
                 _ => panic!("Unknown packet type"),
             };
-            let qos = if packet_type == PacketType::PUBLISH { Some(qos_u) } else { None };
-            let retain = if packet_type == PacketType::PUBLISH  { Some(retain_u == 1) } else { None };
+            let qos = if packet_type == PacketType::PUBLISH {
+                Some(qos_u)
+            } else {
+                None
+            };
+            let retain = if packet_type == PacketType::PUBLISH {
+                Some(retain_u == 1)
+            } else {
+                None
+            };
             let dup = match packet_type {
-                PacketType::PUBLISH => {
-                    Some(dup_u)
-                }
-                PacketType::PUBREC => {
-                    Some(dup_u)
-                }
-                PacketType::PUBACK => {
-                    Some(dup_u)
-                }
-                PacketType::PUBREL => {
-                    Some(dup_u)
-                }
-                PacketType::PUBCOMP => {
-                    Some(dup_u)
-                }
-                _ => None
+                PacketType::PUBLISH => Some(dup_u),
+                PacketType::PUBREC => Some(dup_u),
+                PacketType::PUBACK => Some(dup_u),
+                PacketType::PUBREL => Some(dup_u),
+                PacketType::PUBCOMP => Some(dup_u),
+                _ => None,
             };
             match remaining_length(i) {
                 Err(e) => Err(e),
-                Ok((i, remaining_length)) => Ok((i, FixHeader {
-                packet_type,
-                qos,
-                retain,
-                dup,
-                remaining_length
-                }))
+                Ok((i, remaining_length)) => Ok((
+                    i,
+                    FixHeader {
+                        packet_type,
+                        qos,
+                        retain,
+                        dup,
+                        remaining_length,
+                    },
+                )),
             }
         }
     }
@@ -102,7 +107,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], FixHeader> {
 
 impl FixHeader {
     pub fn ecnode(&self, buf: &mut BytesMut) {
-        let packet_type_u8:u8 = match self.packet_type {
+        let packet_type_u8: u8 = match self.packet_type {
             PacketType::CONNECT => 1,
             PacketType::CONNACK => 2,
             PacketType::PUBLISH => 3,
@@ -119,12 +124,13 @@ impl FixHeader {
             PacketType::DISCONNECT => 14,
         };
 
-        if self.packet_type == PacketType::PUBLISH ||
-            self.packet_type == PacketType::PUBREL ||
-            self.packet_type == PacketType::PUBACK ||
-            self.packet_type == PacketType::PUBCOMP ||
-            self.packet_type == PacketType::PUBREC {
-            let mut r:u8 = packet_type_u8 << 4;
+        if self.packet_type == PacketType::PUBLISH
+            || self.packet_type == PacketType::PUBREL
+            || self.packet_type == PacketType::PUBACK
+            || self.packet_type == PacketType::PUBCOMP
+            || self.packet_type == PacketType::PUBREC
+        {
+            let mut r: u8 = packet_type_u8 << 4;
             if self.dup.is_some() {
                 r += (self.dup.unwrap_or_default() as u8) << 3;
             }
@@ -133,8 +139,7 @@ impl FixHeader {
                 r += (self.qos.unwrap_or_default() as u8) << 1
             }
 
-            if self.retain.is_some()
-                && self.retain.unwrap() {
+            if self.retain.is_some() && self.retain.unwrap() {
                 r += 1;
             }
             buf.put_u8(r);
@@ -146,8 +151,10 @@ impl FixHeader {
     }
 
     pub fn to_bytes(&self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(2 + FixHeader::get_variable_length_encoding_bytes_size(self.remaining_length));
-        let packet_type_u8:u8 = match self.packet_type {
+        let mut buf = BytesMut::with_capacity(
+            2 + FixHeader::get_variable_length_encoding_bytes_size(self.remaining_length),
+        );
+        let packet_type_u8: u8 = match self.packet_type {
             PacketType::CONNECT => 1,
             PacketType::CONNACK => 2,
             PacketType::PUBLISH => 3,
@@ -164,12 +171,13 @@ impl FixHeader {
             PacketType::DISCONNECT => 14,
         };
 
-        if self.packet_type == PacketType::PUBLISH || 
-            self.packet_type == PacketType::PUBREL || 
-            self.packet_type == PacketType::PUBACK ||
-            self.packet_type == PacketType::PUBCOMP ||
-            self.packet_type == PacketType::PUBREC {
-            let mut r:u8 = packet_type_u8 << 4;
+        if self.packet_type == PacketType::PUBLISH
+            || self.packet_type == PacketType::PUBREL
+            || self.packet_type == PacketType::PUBACK
+            || self.packet_type == PacketType::PUBCOMP
+            || self.packet_type == PacketType::PUBREC
+        {
+            let mut r: u8 = packet_type_u8 << 4;
             if self.dup.is_some() {
                 r += (self.dup.unwrap_or_default() as u8) << 3;
             }
@@ -178,19 +186,19 @@ impl FixHeader {
                 r += (self.qos.unwrap_or_default() as u8) << 1
             }
 
-            if self.retain.is_some()
-                && self.retain.unwrap() {
-                    r += 1;
-                }
+            if self.retain.is_some() && self.retain.unwrap() {
+                r += 1;
+            }
             buf.put_u8(r);
         } else {
             buf.put_u8(packet_type_u8 << 4);
         }
 
-        buf.put(FixHeader::get_variable_length_encoding(self.remaining_length));
+        buf.put(FixHeader::get_variable_length_encoding(
+            self.remaining_length,
+        ));
 
         buf
-
     }
 
     fn get_variable_length_encoding_bytes_size(size: usize) -> usize {
@@ -201,7 +209,7 @@ impl FixHeader {
             length += 1;
             if size == 0 {
                 return length;
-            }        
+            }
         }
     }
 
@@ -218,10 +226,11 @@ impl FixHeader {
             }
         }
     }
-    
+
     fn get_variable_length_encoding(size: usize) -> BytesMut {
         let mut size = size;
-        let mut buf = BytesMut::with_capacity(FixHeader::get_variable_length_encoding_bytes_size(size)); // variable length encoding scheme max size is 4 bytes 
+        let mut buf =
+            BytesMut::with_capacity(FixHeader::get_variable_length_encoding_bytes_size(size)); // variable length encoding scheme max size is 4 bytes
         loop {
             let byte = size % 128;
             size /= 128;
@@ -235,8 +244,6 @@ impl FixHeader {
         buf
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -256,7 +263,7 @@ mod tests {
         let length = output.1;
         assert_eq!(length, 127);
 
-        let input = &[0xFF,0x7F];
+        let input = &[0xFF, 0x7F];
         let output = remaining_length(input).unwrap();
         let length = output.1;
         assert_eq!(length, 16383);
@@ -273,7 +280,7 @@ mod tests {
     #[test]
     fn test_to_bytes() {
         let fix_header = FixHeader {
-            packet_type: PacketType::DISCONNECT, 
+            packet_type: PacketType::DISCONNECT,
             dup: None,
             qos: None,
             retain: None,
@@ -281,14 +288,14 @@ mod tests {
         };
 
         let bytes = fix_header.to_bytes();
-        let i =  &[0xE0, 0x00];
+        let i = &[0xE0, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
 
     #[test]
     fn test_to_bytes_with_retain_set_false() {
         let fix_header = FixHeader {
-            packet_type: PacketType::PUBLISH, 
+            packet_type: PacketType::PUBLISH,
             dup: None,
             qos: None,
             retain: Some(false),
@@ -296,14 +303,14 @@ mod tests {
         };
 
         let bytes = fix_header.to_bytes();
-        let i =  &[0x30, 0x00];
+        let i = &[0x30, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
 
     #[test]
     fn test_to_bytes_with_retain_set_true() {
         let fix_header = FixHeader {
-            packet_type: PacketType::PUBLISH, 
+            packet_type: PacketType::PUBLISH,
             dup: None,
             qos: None,
             retain: Some(true),
@@ -311,14 +318,14 @@ mod tests {
         };
 
         let bytes = fix_header.to_bytes();
-        let i =  &[0x31, 0x00];
+        let i = &[0x31, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
 
     #[test]
     fn test_publish_fix_header_qos_2_dup_set_to_bytes() {
         let fix_header = FixHeader {
-            packet_type: PacketType::PUBLISH, 
+            packet_type: PacketType::PUBLISH,
             dup: Some(1),
             qos: Some(2),
             retain: None,
@@ -326,7 +333,7 @@ mod tests {
         };
 
         let bytes = fix_header.to_bytes();
-        let i =  &[0x3C, 0x00];
+        let i = &[0x3C, 0x00];
         assert_eq!(bytes.as_bytes(), i);
     }
 
@@ -341,7 +348,7 @@ mod tests {
     fn test_variable_length_encoding() {
         let size = 268435455;
         let bytes = FixHeader::get_variable_length_encoding(size);
-        let i =  &[0xFF, 0xFF, 0xFF, 0x7F];
+        let i = &[0xFF, 0xFF, 0xFF, 0x7F];
         assert_eq!(bytes.as_bytes(), i);
     }
 }

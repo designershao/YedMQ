@@ -4,7 +4,10 @@ use super::{Pagination, PaginationListResult, PaginationMeta};
 use crate::{
     app::YedMQApp,
     session::{
-        session_actor::ActivityState, session_manager_actor::{self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError}
+        session_actor::ActivityState,
+        session_manager_actor::{
+            self, ForceDisconnect, GetSessionInfoListWithPagination, SessionManagerError,
+        },
     },
 };
 use actix::SystemService;
@@ -82,12 +85,13 @@ pub async fn client_list(
 
     let session_manager_actor_addr = session_manager_actor::SessionManagerActor::from_registry();
     let session_list_result = session_manager_actor_addr
-    .send(GetSessionInfoListWithPagination {
-        tenant_id: tenant_id.clone(),
-        offset_param,
-        limit_param,
-    })
-        .await.unwrap();
+        .send(GetSessionInfoListWithPagination {
+            tenant_id: tenant_id.clone(),
+            offset_param,
+            limit_param,
+        })
+        .await
+        .unwrap();
     if let Ok(session_list) = session_list_result {
         let mut result = Vec::<Client>::new();
 

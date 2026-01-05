@@ -9,7 +9,7 @@ use yedmq::{app::YedMQApp, settings::Settings};
 async fn main() {
     env_logger::init();
 
-    // init setting 
+    // init setting
     let settings = match Settings::new() {
         Ok(s) => Arc::new(s),
         Err(e) => {
@@ -32,5 +32,4 @@ async fn main() {
             System::current().stop();
         }
     };
-    
 }

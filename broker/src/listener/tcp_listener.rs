@@ -28,7 +28,7 @@ impl MqttTcpListener {
                         peer_addr,
                         plugin_manager,
                         None,
-                        metric
+                        metric,
                     );
                 }
                 Err(_) => {

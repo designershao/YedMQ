@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::hook::Hook;
+use std::collections::HashMap;
 
 pub struct HookManager {
     hooks: HashMap<Hook, Vec<RegisteredHook>>,
@@ -17,7 +17,6 @@ impl Default for HookManager {
 }
 
 impl HookManager {
-
     pub fn new() -> Self {
         HookManager {
             hooks: HashMap::new(),
@@ -44,5 +43,4 @@ impl HookManager {
     pub fn get_hooks(&self, hook: &Hook) -> Option<&Vec<RegisteredHook>> {
         self.hooks.get(hook)
     }
-
 }

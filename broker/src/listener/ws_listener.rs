@@ -5,7 +5,6 @@ use log::warn;
 use tokio::net::TcpListener;
 use tokio_util::io::StreamReader;
 
-
 use crate::connection::ConnectionActor;
 
 use super::{
@@ -25,7 +24,8 @@ impl MqttWsListener {
 
             match stream.peer_addr() {
                 Ok(remote_addr) => {
-                    let ws_stream = tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
+                    let ws_stream =
+                        tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
 
                     if let Ok(ws_stream) = ws_stream {
                         let websocket_tunnel = WebsocketTunnel {
@@ -42,7 +42,7 @@ impl MqttWsListener {
                             remote_addr,
                             plugin_manager_clone,
                             None,
-                            metric
+                            metric,
                         );
                     } else {
                         warn!(
@@ -56,7 +56,6 @@ impl MqttWsListener {
                     warn!("failed to get peer address, close the connection");
                 }
             }
-
         }
     }
 }

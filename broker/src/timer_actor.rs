@@ -1,10 +1,10 @@
+use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_actor::SessionActorMessage::{InflightRetry, KeepAliveExpired};
-use crate::session::session_actor::{SessionActorMessage};
 use actix::{Actor, AsyncContext, Context, Handler, Message, Recipient};
 use std::collections::HashMap;
 use std::task::Poll;
 use std::time::Duration;
-use tokio_util::time::delay_queue::{Key};
+use tokio_util::time::delay_queue::Key;
 use tokio_util::time::DelayQueue;
 
 #[derive(Message)]

@@ -1,19 +1,27 @@
 use actix::dev::MessageResponse;
 use actix::prelude::*;
 use log::{info, warn};
-use tonic::Request;
-use yedmq_mqtt::MqttPacketV3;
+use parking_lot::RwLock;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tonic::Request;
+use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::NodeId, session::{session_registry::SessionRegistry, session_manager_actor::{self}}, settings::Node};
+use crate::metric::Metric;
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
 use crate::topic::topic_storage::TopicStorage;
-use crate::metric::Metric;
+use crate::{
+    protobuf::cluster_service_client::ClusterServiceClient,
+    raft::NodeId,
+    session::{
+        session_manager_actor::{self},
+        session_registry::SessionRegistry,
+    },
+    settings::Node,
+};
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum RouterActorError {
@@ -86,7 +94,7 @@ impl Actor for RouterActor {
     fn started(&mut self, ctx: &mut Self::Context) {
         ctx.set_mailbox_capacity(10000);
         log::info!("RouterActor started with node id: {}", self.current_node_id);
-        
+
         // Start dead letter queue retry timer
         ctx.run_interval(
             Duration::from_secs(self.dead_letter_config.retry_interval_seconds),
@@ -110,7 +118,6 @@ impl Actor for RouterActor {
 }
 
 impl RouterActor {
-
     pub fn new(
         settings: Arc<Settings>,
         session_manager_actor: Addr<SessionManagerActor>,
@@ -144,46 +151,53 @@ impl RouterActor {
         local_topic_storage: Arc<RwLock<TopicStorage>>,
         local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
         session_registry: SessionRegistry,
-        metric: Arc<Metric>
+        metric: Arc<Metric>,
     ) -> Result<(), RouterActorError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
 
             let subscriptions = {
-                let local_topic_storage= local_topic_storage.read();
+                let local_topic_storage = local_topic_storage.read();
 
-                local_topic_storage.get_subscriptions(
-                    tenant_id.clone(),
-                    topic.clone(),
-                )?
+                local_topic_storage.get_subscriptions(tenant_id.clone(), topic.clone())?
             };
 
             if subscriptions.is_empty() {
                 metric.increase_messages_dropped();
             }
 
-            let local_session_actor_map_storage =  local_session_actor_map_storage.read();
+            let local_session_actor_map_storage = local_session_actor_map_storage.read();
 
             for item in subscriptions {
-                let session_actor_map = local_session_actor_map_storage.get_session_actor_map(tenant_id, &item.client_identifier);
+                let session_actor_map = local_session_actor_map_storage
+                    .get_session_actor_map(tenant_id, &item.client_identifier);
                 if let Some(session_actor_addr) = session_actor_map {
                     if session_actor_addr.node_id != *current_node_id {
                         // Route to other nodes
                         let dest_node_id = session_actor_addr.node_id;
-                        let nodes = cluster_nodes.iter().filter(|n| n.id == dest_node_id).collect::<Vec<_>>();
+                        let nodes = cluster_nodes
+                            .iter()
+                            .filter(|n| n.id == dest_node_id)
+                            .collect::<Vec<_>>();
                         info!("route packet to node {}", dest_node_id);
                         if nodes.is_empty() {
                             warn!("No node found with id: {}", dest_node_id);
                             continue;
                         }
                         let dest_addr = nodes[0].rpc_address.clone();
-                        
+
                         let tenant_id_clone = tenant_id.clone();
                         let packet_clone = packet.clone();
                         let router_actor_clone = router_actor.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = Self::route_to_other_nodes(&dest_addr, &tenant_id_clone, &packet_clone).await {
+                            if let Err(e) = Self::route_to_other_nodes(
+                                &dest_addr,
+                                &tenant_id_clone,
+                                &packet_clone,
+                            )
+                            .await
+                            {
                                 warn!("Failed to route packet to {}: {}", dest_addr, e);
 
                                 // Check if the packet should be added to the dead letter queue
@@ -196,15 +210,18 @@ impl RouterActor {
                                 }
                             }
                         });
-                        
+
                         continue;
                     } else {
                         let mut publish_packet = publish_packet.clone();
                         if publish_packet.fix_header.qos.unwrap_or_default() >= item.qos.into() {
-                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
+                            if item.qos == 0
+                                && publish_packet.fix_header.qos.unwrap_or_default() > 0
+                            {
                                 publish_packet.fix_header.qos = Some(0);
                                 publish_packet.variable_header.packet_identifier = None;
-                                publish_packet.fix_header.remaining_length -= 2; // Remove 2 bytes for packet identifier
+                                publish_packet.fix_header.remaining_length -= 2;
+                            // Remove 2 bytes for packet identifier
                             } else {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
@@ -214,10 +231,12 @@ impl RouterActor {
                             &item.client_identifier,
                             MqttPacketV3::Publish(publish_packet),
                             session_manager_actor.clone(),
-                            session_registry.clone()
-                        )
-                        {
-                            warn!("Failed to route packet in local node for tenant {}: {}", tenant_id, e);
+                            session_registry.clone(),
+                        ) {
+                            warn!(
+                                "Failed to route packet in local node for tenant {}: {}",
+                                tenant_id, e
+                            );
                         }
                     }
                 }
@@ -228,11 +247,21 @@ impl RouterActor {
         }
     }
 
-    async fn route_to_other_nodes(dest_addr: &String, tenant_id: &String, packet: &MqttPacketV3) -> Result<(), RouterActorError> {
-        let mut cluster_client = ClusterServiceClient::connect(format!("http://{}", dest_addr.clone())).await.map_err(|e| {
-            warn!("Failed to connect to cluster service at {}: {}", dest_addr, e);
-            RouterActorError::GRPC(e.to_string())
-        })?;
+    async fn route_to_other_nodes(
+        dest_addr: &String,
+        tenant_id: &String,
+        packet: &MqttPacketV3,
+    ) -> Result<(), RouterActorError> {
+        let mut cluster_client =
+            ClusterServiceClient::connect(format!("http://{}", dest_addr.clone()))
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "Failed to connect to cluster service at {}: {}",
+                        dest_addr, e
+                    );
+                    RouterActorError::GRPC(e.to_string())
+                })?;
         let request = crate::protobuf::RoutePacketRequest {
             tenant_id: tenant_id.clone(),
             payload: serde_json::to_string(packet).map_err(|e| {
@@ -240,18 +269,36 @@ impl RouterActor {
                 RouterActorError::SerializationError(e.to_string())
             })?,
         };
-        cluster_client.route_packet(Request::new(request)).await.map_err(|e| {
-            warn!("Failed to route packet to {}: {}", dest_addr, e);
-            RouterActorError::GRPC(e.to_string())
-        })?;
+        cluster_client
+            .route_packet(Request::new(request))
+            .await
+            .map_err(|e| {
+                warn!("Failed to route packet to {}: {}", dest_addr, e);
+                RouterActorError::GRPC(e.to_string())
+            })?;
         Ok(())
     }
 
-    fn route_to_local_session(tenant_id: &String, client_id: &String, packet: MqttPacketV3, _session_manager_actor_addr: Addr<SessionManagerActor>, session_registry: SessionRegistry) -> Result<(), RouterActorError> {
-        log::debug!("Route to  local node session {} {} : {:?}",tenant_id, client_id, packet);
+    fn route_to_local_session(
+        tenant_id: &String,
+        client_id: &String,
+        packet: MqttPacketV3,
+        _session_manager_actor_addr: Addr<SessionManagerActor>,
+        session_registry: SessionRegistry,
+    ) -> Result<(), RouterActorError> {
+        log::debug!(
+            "Route to  local node session {} {} : {:?}",
+            tenant_id,
+            client_id,
+            packet
+        );
         if let MqttPacketV3::Publish(publish_packet) = packet {
             if let Some(recipient) = session_registry.get_session(&tenant_id, &client_id) {
-                recipient.do_send(crate::session::session_actor::SessionActorMessage::OutboundMessage(MqttPacketV3::Publish(publish_packet)));
+                recipient.do_send(
+                    crate::session::session_actor::SessionActorMessage::OutboundMessage(
+                        MqttPacketV3::Publish(publish_packet),
+                    ),
+                );
             }
         }
         Ok(())
@@ -265,24 +312,33 @@ impl RouterActor {
         topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
-        log::debug!("In route in local node: Routing packet for tenant {}: {:?}", tenant_id, packet);
+        log::debug!(
+            "In route in local node: Routing packet for tenant {}: {:?}",
+            tenant_id,
+            packet
+        );
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
 
-            let res = topic_raft_actor_addr.send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
-                tenant_id: tenant_id.clone(),
-                topic: topic.clone(),
-            }).await?;
+            let res = topic_raft_actor_addr
+                .send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
+                    tenant_id: tenant_id.clone(),
+                    topic: topic.clone(),
+                })
+                .await?;
 
             match res {
                 Ok(subscriptions) => {
                     for item in subscriptions.subscriptions {
                         let mut publish_packet = publish_packet.clone();
                         if publish_packet.fix_header.qos.unwrap_or_default() >= item.qos.into() {
-                            if item.qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
+                            if item.qos == 0
+                                && publish_packet.fix_header.qos.unwrap_or_default() > 0
+                            {
                                 publish_packet.fix_header.qos = Some(0);
                                 publish_packet.variable_header.packet_identifier = None;
-                                publish_packet.fix_header.remaining_length -= 2; // Remove 2 bytes for packet identifier
+                                publish_packet.fix_header.remaining_length -= 2;
+                            // Remove 2 bytes for packet identifier
                             } else {
                                 publish_packet.fix_header.qos = Some(item.qos.into());
                             }
@@ -293,18 +349,21 @@ impl RouterActor {
                             &item.client_identifier,
                             MqttPacketV3::Publish(publish_packet),
                             session_manager_actor_addr.clone(),
-                            session_registry.clone()
+                            session_registry.clone(),
                         )?;
                     }
                     Ok(())
-                },
+                }
                 Err(e) => {
                     log::error!("Failed to get subscriptions for topic {}: {}", topic, e);
                     Err(RouterActorError::TopicRaftError(e))
                 }
             }
         } else {
-            warn!("Only Publish packets are supported for routing in local node, got: {:?}, drop it.", packet);
+            warn!(
+                "Only Publish packets are supported for routing in local node, got: {:?}, drop it.",
+                packet
+            );
             Ok(())
         }
     }
@@ -320,7 +379,12 @@ impl RouterActor {
     }
 
     // Add the packet to the dead letter queue
-    fn add_to_dead_letter_queue(&mut self, tenant_id: String, packet: MqttPacketV3, dest_addr: String) -> Result<(), RouterActorError> {
+    fn add_to_dead_letter_queue(
+        &mut self,
+        tenant_id: String,
+        packet: MqttPacketV3,
+        dest_addr: String,
+    ) -> Result<(), RouterActorError> {
         // check if the dead letter queue is full
         if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
             warn!("Dead letter queue is full, dropping oldest message");
@@ -343,8 +407,11 @@ impl RouterActor {
         };
 
         self.dead_letter_queue.push_back(dead_letter_item);
-        log::debug!("Added message to dead letter queue, current queue size: {}", self.dead_letter_queue.len());
-        
+        log::debug!(
+            "Added message to dead letter queue, current queue size: {}",
+            self.dead_letter_queue.len()
+        );
+
         Ok(())
     }
 
@@ -361,8 +428,10 @@ impl RouterActor {
         // Split the messages that need to be retried and the messages that need to be kept
         while let Some(mut item) = self.dead_letter_queue.pop_front() {
             if item.retry_count >= self.dead_letter_config.max_retry_count {
-                warn!("Message exceeded max retry count, dropping: tenant={}, dest={}", 
-                      item.tenant_id, item.dest_addr);
+                warn!(
+                    "Message exceeded max retry count, dropping: tenant={}, dest={}",
+                    item.tenant_id, item.dest_addr
+                );
                 self.metric.increase_messages_dropped();
                 continue;
             }
@@ -394,11 +463,12 @@ impl RouterActor {
                     Err(e) => {
                         warn!("Failed to retry message from dead letter queue: tenant={}, dest={}, error={}", 
                               tenant_id, dest_addr, e);
-                        
+
                         // Readd message to dead letter queue
-                        if let Err(dlq_err) = router_actor.send(ReaddToDeadLetterQueue {
-                            item: item_clone,
-                        }).await {
+                        if let Err(dlq_err) = router_actor
+                            .send(ReaddToDeadLetterQueue { item: item_clone })
+                            .await
+                        {
                             warn!("Failed to readd message to dead letter queue: {}", dlq_err);
                         }
                     }
@@ -415,16 +485,18 @@ impl RouterActor {
             .as_secs();
 
         let initial_size = self.dead_letter_queue.len();
-        self.dead_letter_queue.retain(|item| {
-            now - item.created_at < self.dead_letter_config.message_ttl_seconds
-        });
+        self.dead_letter_queue
+            .retain(|item| now - item.created_at < self.dead_letter_config.message_ttl_seconds);
 
         let removed_count = initial_size - self.dead_letter_queue.len();
         if removed_count > 0 {
             for _ in 0..removed_count {
                 self.metric.increase_messages_dropped();
             }
-            log::info!("Cleaned up {} expired messages from dead letter queue", removed_count);
+            log::info!(
+                "Cleaned up {} expired messages from dead letter queue",
+                removed_count
+            );
         }
     }
 
@@ -435,21 +507,24 @@ impl RouterActor {
             max_queue_size: self.dead_letter_config.max_queue_size,
         }
     }
-
 }
 
 #[derive(Message)]
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RoutePacket {
     pub tenant_id: String,
-    pub packet: MqttPacketV3
+    pub packet: MqttPacketV3,
 }
 
 impl Handler<RoutePacket> for RouterActor {
-    type Result = ResponseActFuture<Self, Result<(),RouterActorError>>;
+    type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
 
     fn handle(&mut self, msg: RoutePacket, _ctx: &mut Self::Context) -> Self::Result {
-        log::debug!("In handler Routing packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
+        log::debug!(
+            "In handler Routing packet for tenant {}: {:?}",
+            msg.tenant_id,
+            msg.packet
+        );
         let current_node_id = self.current_node_id;
         let cluster_nodes = self.settings.cluster.nodes.clone();
         let router_actor = _ctx.address();
@@ -458,10 +533,25 @@ impl Handler<RoutePacket> for RouterActor {
         let session_actor_map_storage = self.local_session_actor_map_storage.clone();
         let session_registry = self.session_registry.clone();
         let metric = self.metric.clone();
-        Box::pin(async move {
-            Self::route(session_manager_actor, router_actor, &current_node_id, &cluster_nodes,&msg.tenant_id, &msg.packet, topic_storage, session_actor_map_storage, session_registry, metric).await?;
-            Ok(())
-        }.into_actor(self))
+        Box::pin(
+            async move {
+                Self::route(
+                    session_manager_actor,
+                    router_actor,
+                    &current_node_id,
+                    &cluster_nodes,
+                    &msg.tenant_id,
+                    &msg.packet,
+                    topic_storage,
+                    session_actor_map_storage,
+                    session_registry,
+                    metric,
+                )
+                .await?;
+                Ok(())
+            }
+            .into_actor(self),
+        )
     }
 }
 
@@ -469,34 +559,46 @@ impl Handler<RoutePacket> for RouterActor {
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RouteFromOtherNode {
     pub tenant_id: String,
-    pub packet: MqttPacketV3
+    pub packet: MqttPacketV3,
 }
 
 impl Handler<RouteFromOtherNode> for RouterActor {
     type Result = ResponseActFuture<Self, Result<(), RouterActorError>>;
 
     fn handle(&mut self, msg: RouteFromOtherNode, _ctx: &mut Self::Context) -> Self::Result {
-        log::debug!("In handler from other nodeRouting packet for tenant {}: {:?}", msg.tenant_id, msg.packet);
+        log::debug!(
+            "In handler from other nodeRouting packet for tenant {}: {:?}",
+            msg.tenant_id,
+            msg.packet
+        );
         let session_manager_actor = self.session_manager_actor.clone();
-        let topic_raft_actor = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
+        let topic_raft_actor = self
+            .topic_raft_actor
+            .as_ref()
+            .expect("topic raft actor not set")
+            .clone();
         let session_registry = self.session_registry.clone();
-        Box::pin(async move {
-            Self::publish_to_local_subscribers(
-                &msg.tenant_id,
-                &msg.packet,
-                session_manager_actor,
-                topic_raft_actor,
-                session_registry
-            ).await?;
-            Ok(())
-        }.into_actor(self))
+        Box::pin(
+            async move {
+                Self::publish_to_local_subscribers(
+                    &msg.tenant_id,
+                    &msg.packet,
+                    session_manager_actor,
+                    topic_raft_actor,
+                    session_registry,
+                )
+                .await?;
+                Ok(())
+            }
+            .into_actor(self),
+        )
     }
 }
 
 #[derive(Message)]
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RoutePacketToAllTenants {
-    pub packet: MqttPacketV3
+    pub packet: MqttPacketV3,
 }
 
 impl Handler<RoutePacketToAllTenants> for RouterActor {
@@ -504,16 +606,33 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
 
     fn handle(&mut self, msg: RoutePacketToAllTenants, _ctx: &mut Self::Context) -> Self::Result {
         let session_manager_actor_addr = self.session_manager_actor.clone();
-        let topic_raft_actor_addr = self.topic_raft_actor.as_ref().expect("topic raft actor not set").clone();
+        let topic_raft_actor_addr = self
+            .topic_raft_actor
+            .as_ref()
+            .expect("topic raft actor not set")
+            .clone();
         let session_registry = self.session_registry.clone();
 
-        Box::pin(async move {
-            let tenant_ids = session_manager_actor_addr.send(session_manager_actor::GetAllTenantIds {}).await.unwrap();
-            for tenant_id in tenant_ids {
-                Self::publish_to_local_subscribers(&tenant_id, &msg.packet, session_manager_actor_addr.clone(), topic_raft_actor_addr.clone(), session_registry.clone()).await?;
+        Box::pin(
+            async move {
+                let tenant_ids = session_manager_actor_addr
+                    .send(session_manager_actor::GetAllTenantIds {})
+                    .await
+                    .unwrap();
+                for tenant_id in tenant_ids {
+                    Self::publish_to_local_subscribers(
+                        &tenant_id,
+                        &msg.packet,
+                        session_manager_actor_addr.clone(),
+                        topic_raft_actor_addr.clone(),
+                        session_registry.clone(),
+                    )
+                    .await?;
+                }
+                Ok(())
             }
-            Ok(())
-        }.into_actor(self))
+            .into_actor(self),
+        )
     }
 }
 
@@ -546,7 +665,7 @@ impl Handler<ReaddToDeadLetterQueue> for RouterActor {
         if self.dead_letter_queue.len() >= self.dead_letter_config.max_queue_size {
             return Err(RouterActorError::DeadLetterQueueFull);
         }
-        
+
         self.dead_letter_queue.push_back(msg.item);
         Ok(())
     }

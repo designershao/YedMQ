@@ -1,10 +1,13 @@
-use actix::{dev::{ContextFutureSpawner, MessageResponse}, fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError, Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture};
+use actix::{
+    dev::{ContextFutureSpawner, MessageResponse},
+    fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError,
+    Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture,
+};
+use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use yedmq_plugin_host::{plugin_manager::PluginManager, protocol::plugin_protocol::{AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage}};
 use std::{cmp, net::SocketAddr, sync::Arc, time::Duration};
-use bytes::Bytes;
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -26,41 +29,46 @@ use yedmq_mqtt::{
     },
     MqttPacketV3,
 };
+use yedmq_plugin_host::{
+    plugin_manager::PluginManager,
+    protocol::plugin_protocol::{
+        AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage,
+    },
+};
 
 use crate::{
     inflight::{InflightError, InflightState},
     raft::{
-        session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor
-    }, router_actor::RouterActor
+        session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor,
+    },
+    router_actor::RouterActor,
 };
 
 use super::{
-    session_manager_actor::SessionLifecycleMessage,
-    session_state_storage::SessionState,
-    session_actor_map_storage::SessionVersion,
-    WillMessage,
+    session_actor_map_storage::SessionVersion, session_manager_actor::SessionLifecycleMessage,
+    session_state_storage::SessionState, WillMessage,
 };
 
 use crate::connection::{ConnectionActorMessage, DisconnectReason};
+use crate::metric::Metric;
+use crate::raft::payload::PayloadStore;
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
-use crate::raft::payload::PayloadStore;
-use crate::timer_actor::{RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType};
-use crate::metric::Metric;
+use crate::timer_actor::{
+    RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType,
+};
 
 pub struct Client {
-
     pub tenant_id: String,
 
     pub client_identifier: String,
 
     pub properties: ClientProperties,
 
-    pub socket_addr: std::net::SocketAddr
+    pub socket_addr: std::net::SocketAddr,
 }
 
 pub struct ClientProperties {
-
     pub username: Option<String>,
 
     pub clean_session: bool,
@@ -70,7 +78,6 @@ pub struct ClientProperties {
     pub will_topic: Option<String>,
 
     pub will_message: Option<Vec<u8>>,
-
 }
 
 fn get_protobuf_now_timestamp() -> Timestamp {
@@ -193,7 +200,6 @@ pub enum ActivityState {
 }
 
 pub struct SessionActor {
-
     tenant_id: String,
 
     client_id: String,
@@ -235,14 +241,12 @@ pub struct SessionActor {
     metric: Arc<Metric>,
 
     session_version: SessionVersion,
-
 }
 
 impl Actor for SessionActor {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-
         self.start_inflight_and_keep_alive_timer(ctx);
 
         let state = self.state.clone();
@@ -257,7 +261,6 @@ impl Actor for SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
-
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
                 error!("send session started message to session manager error: {}, force stop the current session actor", e);
                 self_addr.send(SessionActorMessage::ForceStop).await.unwrap();
@@ -312,7 +315,7 @@ impl Actor for SessionActor {
                 ).await.unwrap() {
                     Ok((Some(key), payload_opt)) => {
                         let data = if let Some(payload) = payload_opt {
-                             Some(bytes::Bytes::from(payload))
+                            Some(bytes::Bytes::from(payload))
                         } else if let Some(store) = &payload_store {
                             match store.get(&key).await {
                                 Ok(res) => res,
@@ -326,30 +329,29 @@ impl Actor for SessionActor {
                         };
 
                         if let Some(data) = data {
-                             if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                  session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                             }
+                            if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
+                                session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                            }
                         } else {
-                             warn!("Payload missing during recovery for key: {}", key);
+                            warn!("Payload missing during recovery for key: {}", key);
                         }
-                    },
+                    }
                     Ok((None, _)) => {
                         info!("recovery from pending messages finished");
-                        break
-                    },
+                        break;
+                    }
                     Err(e) => {
                         warn!("session state raft client pop from pending queue error, {}", e);
-                        break
-                    },
+                        break;
+                    }
                 }
-
             }
             //
 
-            self_addr.do_send(AllInflightRetryImmediate{});
+            self_addr.do_send(AllInflightRetryImmediate {});
         }
-        .into_actor(self)
-        .wait(ctx);
+            .into_actor(self)
+            .wait(ctx);
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
@@ -378,7 +380,7 @@ struct HandlePublishResult {
 async fn do_handle_unsubscribe(
     unsubscribe_packet: UnsubscribePacket,
     client_info: &Client,
-    topic_raft_actor_addr: Addr<TopicRaftActor>
+    topic_raft_actor_addr: Addr<TopicRaftActor>,
 ) -> HandleUnSubscribeResult {
     let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
     let mut succeed_unsubscriptions = vec![];
@@ -386,13 +388,14 @@ async fn do_handle_unsubscribe(
         for topic in unsub_topic_filters {
             let tenant_id = client_info.tenant_id.clone();
             let client_id = client_info.client_identifier.clone();
-            let res = topic_raft_actor_addr.send(
-                topic_raft_actor::Unsubscribe {
+            let res = topic_raft_actor_addr
+                .send(topic_raft_actor::Unsubscribe {
                     tenant_id: tenant_id.clone(),
                     client_identifier: client_id.clone(),
                     topic: topic.topic_name.clone(),
-                },
-            ).await.unwrap();
+                })
+                .await
+                .unwrap();
             if let Err(e) = res {
                 error!(
                     "session {} unsubscribe topic {} error: {}",
@@ -422,11 +425,14 @@ async fn do_handle_publish(
     topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
     payload_store: Option<Arc<dyn PayloadStore>>,
 ) -> HandlePublishResult {
-
-    let authorize_request =AuthorizeRequest {
+    let authorize_request = AuthorizeRequest {
         tenant_id: client_info.tenant_id.clone(),
         client_id: client_info.client_identifier.clone(),
-        username: client_info.properties.username.clone().unwrap_or("".to_string()),
+        username: client_info
+            .properties
+            .username
+            .clone()
+            .unwrap_or("".to_string()),
         action: AuthAction::Publish.into(),
         topic: publish_packet.variable_header.topic_name.clone(),
         qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
@@ -448,9 +454,8 @@ async fn do_handle_publish(
     };
 
     if publish_authorization {
-
         let message_publish_request = MessagePublishRequest {
-            message: Some(MqttMessage{
+            message: Some(MqttMessage {
                 tenant_id: client_info.tenant_id.clone(),
                 client_id: client_info.client_identifier.clone(),
                 topic: publish_packet.variable_header.topic_name.clone(),
@@ -458,31 +463,40 @@ async fn do_handle_publish(
                 qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
                 retain: publish_packet.fix_header.retain.unwrap_or(false),
                 dup: publish_packet.fix_header.dup.unwrap_or(0) == 1,
-                publish_time:None,
+                publish_time: None,
                 properties: None,
                 message_id: None,
             }),
             context: None,
         };
 
-        plugin_manager.call_message_published_hook(message_publish_request).await;
+        plugin_manager
+            .call_message_published_hook(message_publish_request)
+            .await;
 
         let mut session_state_guard = session_state.write().await;
 
         if publish_packet.fix_header.qos > Some(0) {
-            debug!("client {} start process packet {:?} ", client_info.client_identifier, publish_packet.clone());
-            
+            debug!(
+                "client {} start process packet {:?} ",
+                client_info.client_identifier,
+                publish_packet.clone()
+            );
+
             let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
             let qos = publish_packet.fix_header.qos.unwrap() as u8;
-            
+
             let key = if let Some(store) = &payload_store {
-                 let k = uuid::Uuid::new_v4().to_string();
-                 let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
-                 store.put(&k, bytes::Bytes::from(data)).await.unwrap();
-                 k
+                let k = uuid::Uuid::new_v4().to_string();
+                let data =
+                    serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
+                store.put(&k, bytes::Bytes::from(data)).await.unwrap();
+                k
             } else {
-                 warn!("Payload store not available in do_handle_publish");
-                 return HandlePublishResult { inflight_packet: None };
+                warn!("Payload store not available in do_handle_publish");
+                return HandlePublishResult {
+                    inflight_packet: None,
+                };
             };
 
             session_state_guard
@@ -503,7 +517,7 @@ async fn do_handle_publish(
                 if res.is_err() {
                     warn!("inflight register rx packet error, {}", res.unwrap_err());
                     return HandlePublishResult {
-                        inflight_packet: None
+                        inflight_packet: None,
                     };
                 }
             }
@@ -522,34 +536,42 @@ async fn do_handle_publish(
 
             // if publish packet paloyd is empty , clean retained publish packet
             if publish_packet.payload.payload.is_empty() {
-                match topic_raft_actor.send(
-                    topic_raft_actor::CleanRetainPublishPacket {
+                match topic_raft_actor
+                    .send(topic_raft_actor::CleanRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         topic_filter: publish_packet.variable_header.topic_name.clone(),
-                    },
-                ).await {
+                    })
+                    .await
+                {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
                         error!("clean retain publish packet error: {}", e);
                     }
                     Err(e) => {
-                        error!("Failed to send clean retain publish packet to topic raft actor: {}", e);
+                        error!(
+                            "Failed to send clean retain publish packet to topic raft actor: {}",
+                            e
+                        );
                     }
                 }
             } else {
-                match topic_raft_actor.send(
-                    topic_raft_actor::RegisterRetainPublishPacket {
+                match topic_raft_actor
+                    .send(topic_raft_actor::RegisterRetainPublishPacket {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
                         publish_packet: MqttPacketV3::Publish(publish_packet.clone()),
-                    },
-                ).await {
+                    })
+                    .await
+                {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => {
                         error!("register retain publish packet error: {}", e);
                     }
                     Err(e) => {
-                        error!("Failed to send register retain publish packet to topic raft actor: {}", e);
+                        error!(
+                            "Failed to send register retain publish packet to topic raft actor: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -562,7 +584,7 @@ async fn do_handle_publish(
         let hash = std::hash::Hasher::finish(&hasher);
         let router_actor = &router_actors[hash as usize % router_actors.len()];
 
-        router_actor.do_send(crate::router_actor::RoutePacket{
+        router_actor.do_send(crate::router_actor::RoutePacket {
             tenant_id: client_info.tenant_id.clone(),
             packet: MqttPacketV3::Publish(publish_packet.clone()),
         });
@@ -593,7 +615,11 @@ async fn do_handle_subscribe(
         let authorize_request = AuthorizeRequest {
             tenant_id: tenant_id.clone(),
             client_id: client_id.clone(),
-            username: client_info.properties.username.clone().unwrap_or("".to_string()),
+            username: client_info
+                .properties
+                .username
+                .clone()
+                .unwrap_or("".to_string()),
             action: AuthAction::Subscribe.into(),
             topic: topic.topic_name.clone(),
             qos: topic.qos.into(),
@@ -607,14 +633,15 @@ async fn do_handle_subscribe(
 
         if topic_authorizate_result.authorized {
             let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
-            let sub_result = topic_raft_actor_addr.send(
-                topic_raft_actor::Subscribe {
+            let sub_result = topic_raft_actor_addr
+                .send(topic_raft_actor::Subscribe {
                     tenant_id: tenant_id.clone(),
                     client_identifier: client_id.clone(),
                     topic: topic.topic_name.clone(),
                     qos: topic.qos,
-                },
-            ).await.unwrap();
+                })
+                .await
+                .unwrap();
             if sub_result.is_ok() {
                 succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
                 match topic.qos {
@@ -634,12 +661,13 @@ async fn do_handle_subscribe(
 
                 let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
 
-                let packets = topic_raft_actor_addr.send(
-                    topic_raft_actor::GetRetainPublishPacket {
+                let packets = topic_raft_actor_addr
+                    .send(topic_raft_actor::GetRetainPublishPacket {
                         tenant_id: tenant_id.clone(),
                         topic: topic.topic_name.clone(),
-                    },
-                ).await.unwrap();
+                    })
+                    .await
+                    .unwrap();
 
                 if let Ok(packets) = packets {
                     for packet in packets {
@@ -759,7 +787,6 @@ impl SessionActor {
         });
 
         self.register_inflight_retry_timer(ctx);
-
     }
 
     fn stop_inflight_and_keep_alive_timer(&self) {
@@ -780,10 +807,8 @@ impl SessionActor {
         match state {
             ActivityState::Inactive => {
                 self.stop_inflight_and_keep_alive_timer();
-            },
-            ActivityState::Active => {
-
             }
+            ActivityState::Active => {}
         }
         self.activity_state = state;
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
@@ -851,52 +876,52 @@ impl SessionActor {
         let payload_store = self.payload_store.clone();
 
         ctx.spawn(
-        async move {
-            do_handle_publish(
-                publish_packet,
-                client_info,
-                plugin_manager,
-                session_state,
-                clean_session,
-                router_actors,
-                session_state_raft_actor,
-                topic_raft_actor,
-                payload_store,
-            )
-            .await
+            async move {
+                do_handle_publish(
+                    publish_packet,
+                    client_info,
+                    plugin_manager,
+                    session_state,
+                    clean_session,
+                    router_actors,
+                    session_state_raft_actor,
+                    topic_raft_actor,
+                    payload_store,
+                )
+                    .await
             }
-            .into_actor(self)
-            .map(|res, act, _ctx| {
-                if let Some(packet) = res.inflight_packet {
-                    let conn = act.conn_recipient.clone().unwrap();
-                    let state = act.state.clone();
-                    let payload_store = act.payload_store.clone();
-                    let clean_session = act.clean_session;
-                    let session_state_raft_actor = act.session_state_raft_actor.clone();
-                    let tenant_id = act.tenant_id.clone();
-                    let client_id = act.client_id.clone();
+                .into_actor(self)
+                .map(|res, act, _ctx| {
+                    if let Some(packet) = res.inflight_packet {
+                        let conn = act.conn_recipient.clone().unwrap();
+                        let state = act.state.clone();
+                        let payload_store = act.payload_store.clone();
+                        let clean_session = act.clean_session;
+                        let session_state_raft_actor = act.session_state_raft_actor.clone();
+                        let tenant_id = act.tenant_id.clone();
+                        let client_id = act.client_id.clone();
 
-                    conn.do_send(ConnectionActorMessage::WritePacketToClient(packet.clone()));
+                        conn.do_send(ConnectionActorMessage::WritePacketToClient(packet.clone()));
 
-                    // If it was a Puback (QoS 1 Receiver completion), trigger cleanup
-                    if matches!(packet, MqttPacketV3::Puback(_)) {
-                        if clean_session {
-                            actix::spawn(async move {
-                                Self::cleanup_local_finished_items(state, payload_store).await;
-                            });
-                        } else {
-                            actix::spawn(async move {
-                                let _ = session_state_raft_actor.send(
-                                    crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-                                        tenant_id,
-                                        client_id,
-                                    }
-                                ).await;
-                            });
+                        // If it was a Puback (QoS 1 Receiver completion), trigger cleanup
+                        if matches!(packet, MqttPacketV3::Puback(_)) {
+                            if clean_session {
+                                actix::spawn(async move {
+                                    Self::cleanup_local_finished_items(state, payload_store).await;
+                                });
+                            } else {
+                                actix::spawn(async move {
+                                    let _ = session_state_raft_actor.send(
+                                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
+                                            tenant_id,
+                                            client_id,
+                                        }
+                                    ).await;
+                                });
+                            }
                         }
                     }
-                }
-            })
+                })
         );
     }
 
@@ -918,7 +943,7 @@ impl SessionActor {
                 &client_info,
                 plugin_manager,
             )
-            .await;
+                .await;
             for (i, packet) in res.retain_messages.into_iter().enumerate() {
                 let packet = (*packet).clone();
                 if let MqttPacketV3::Publish(mut p) = packet {
@@ -975,7 +1000,7 @@ impl SessionActor {
                             res.unwrap_err()
                         );
                     }
-                    
+
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                     let res = session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::SubscribeTopic {
@@ -994,17 +1019,17 @@ impl SessionActor {
                     }
                 }
             } else {
-                 for (topic, qos) in res.succeed_subscriptions {
+                for (topic, qos) in res.succeed_subscriptions {
                     session_state
                         .write()
                         .await
                         .subscriptions
                         .insert(topic.clone(), qos);
-                 }
+                }
             }
         }
-        .into_actor(self)
-        .wait(ctx);
+            .into_actor(self)
+            .wait(ctx);
     }
 
     fn handle_pingreq(&mut self) {
@@ -1035,7 +1060,6 @@ impl SessionActor {
                     session_state.write().await.subscriptions.remove(&topic);
                 }
                 if !clean_session {
-
                     let res = topic_raft_actor.send(
                         crate::raft::topic::topic_raft_actor::Unsubscribe {
                             tenant_id: client_info.tenant_id.clone(),
@@ -1073,8 +1097,8 @@ impl SessionActor {
                 yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
             ));
         }
-        .into_actor(self)
-        .wait(ctx);
+            .into_actor(self)
+            .wait(ctx);
     }
 
     fn handle_pubrel(
@@ -1092,7 +1116,7 @@ impl SessionActor {
         async move {
             let mut session_state_guard = session_state.write().await;
             let packet_id = pubrel_packet.variable_header.packet_identifier;
-            
+
             // Generate Pubcomp response
             let pubcomp = MqttPacketV3::Pubcomp(PubCompPacket::new(packet_id));
 
@@ -1119,12 +1143,12 @@ impl SessionActor {
                         packet_id: packet_id.into(),
                     },
                 ).await.unwrap();
-                
+
                 if res.is_ok() {
                     session_state_guard
                         .inflight
                         .next_state(packet_id);
-                    
+
                     // Trigger Raft cleanup
                     let _ = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
@@ -1138,8 +1162,8 @@ impl SessionActor {
                 }
             }
         }
-        .into_actor(self)
-        .wait(ctx);
+            .into_actor(self)
+            .wait(ctx);
     }
 
     fn handle_pubrec(
@@ -1156,7 +1180,7 @@ impl SessionActor {
         async move {
             let mut session_state_guard = session_state.write().await;
             let packet_id = pubrec_packet.variable_header.packet_identifier;
-            
+
             // Generate Pubrel command
             let pubrel = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
 
@@ -1166,9 +1190,7 @@ impl SessionActor {
             {
                 warn!("handle pubrec write pubrel to client error: {}", e);
             } else if clean_session {
-                session_state_guard
-                    .inflight
-                    .next_state(packet_id);
+                session_state_guard.inflight.next_state(packet_id);
             } else {
                 let res = session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
@@ -1179,11 +1201,12 @@ impl SessionActor {
                 ).await.unwrap();
 
                 if res.is_ok() {
-                    session_state_guard
-                        .inflight
-                        .next_state(packet_id);
+                    session_state_guard.inflight.next_state(packet_id);
                 } else {
-                    warn!("handle pubrec raft advance state error {}", res.unwrap_err());
+                    warn!(
+                        "handle pubrec raft advance state error {}",
+                        res.unwrap_err()
+                    );
                 }
             }
         }
@@ -1228,7 +1251,7 @@ impl SessionActor {
                     session_state_guard
                         .inflight
                         .next_state(packet_id);
-                    
+
                     let _ = session_state_raft_actor.send(
                         crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
@@ -1239,111 +1262,86 @@ impl SessionActor {
                 }
             }
         }
-        .into_actor(self)
-        .wait(ctx);
+            .into_actor(self)
+            .wait(ctx);
     }
 
-            fn handle_pubcomp(
+    fn handle_pubcomp(
+        &mut self,
 
-                &mut self,
+        pubcomp_packet: PubCompPacket,
 
-                pubcomp_packet: PubCompPacket,
+        ctx: &mut <SessionActor as Actor>::Context,
+    ) {
+        let session_state = self.state.clone();
 
-                ctx: &mut <SessionActor as Actor>::Context,
+        let clean_session = self.clean_session;
 
-            ) {
+        let client_info = self.get_plugin_client_info();
 
-                let session_state = self.state.clone();
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
 
-                let clean_session = self.clean_session;
+        let payload_store = self.payload_store.clone();
 
-                let client_info = self.get_plugin_client_info();
+        async move {
+            let mut session_state_guard = session_state.write().await;
 
-                let session_state_raft_actor = self.session_state_raft_actor.clone();
+            let packet_id = pubcomp_packet.variable_header.packet_identifier;
 
-                let payload_store = self.payload_store.clone();
 
-        
+            if clean_session {
+                session_state_guard
 
-                async move {
+                    .inflight
 
-                    let mut session_state_guard = session_state.write().await;
+                    .next_state(packet_id);
 
-                    let packet_id = pubcomp_packet.variable_header.packet_identifier;
+                let state = session_state.clone();
 
-        
+                let store = payload_store.clone();
 
-                    if clean_session {
+                actix::spawn(async move {
+                    Self::cleanup_local_finished_items(state, store).await;
+                });
+            } else {
+                let res = session_state_raft_actor.send(
+                    crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
+                        tenant_id: client_info.tenant_id.clone(),
 
-                        session_state_guard
+                        client_id: client_info.client_identifier.clone(),
 
-                            .inflight
+                        packet_id: packet_id.into(),
 
-                            .next_state(packet_id);
+                    },
+                ).await.unwrap();
 
-                        let state = session_state.clone();
 
-                        let store = payload_store.clone();
+                if res.is_ok() {
+                    session_state_guard
 
-                        actix::spawn(async move {
+                        .inflight
 
-                            Self::cleanup_local_finished_items(state, store).await;
+                        .next_state(packet_id);
 
-                        });
 
-                    } else {
-
-                    let res = session_state_raft_actor.send(
-
-                        crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
-
+                    let _ = session_state_raft_actor.send(
+                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
                             tenant_id: client_info.tenant_id.clone(),
 
                             client_id: client_info.client_identifier.clone(),
 
-                            packet_id: packet_id.into(),
-
                         },
+                    ).await;
 
-                    ).await.unwrap();
-
-    
-
-                    if res.is_ok() {
-
-                        session_state_guard
-
-                            .inflight
-
-                            .next_state(packet_id);
-
-                        
-
-                        let _ = session_state_raft_actor.send(
-
-                            crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-
-                                tenant_id: client_info.tenant_id.clone(),
-
-                                client_id: client_info.client_identifier.clone(),
-
-                            },
-
-                        ).await;
-
-                        session_state_guard.inflight.clean_finished_items();
-
-                    }
-
+                    session_state_guard.inflight.clean_finished_items();
                 }
-
             }
+        }
 
             .into_actor(self)
 
             .wait(ctx);
-
-        }
+    }
 
     fn handle_disconnect(
         &mut self,
@@ -1367,8 +1365,11 @@ impl SessionActor {
                 disconnect_time: Some(get_protobuf_now_timestamp()),
                 session_info: None,
             };
-            plugin_manager.call_client_disconnected_hook(client_disconnected_event).await;
-        }.into_actor(self)
+            plugin_manager
+                .call_client_disconnected_hook(client_disconnected_event)
+                .await;
+        }
+        .into_actor(self)
         .wait(ctx);
 
         if !self.clean_session {
@@ -1401,7 +1402,11 @@ impl SessionActor {
         self.will_message = None;
     }
 
-    fn send_will_message(&mut self, ctx: &mut <SessionActor as Actor>::Context, callback_fn: ThenCallback<SessionActor, ()>) {
+    fn send_will_message(
+        &mut self,
+        ctx: &mut <SessionActor as Actor>::Context,
+        callback_fn: ThenCallback<SessionActor, ()>,
+    ) {
         let tenant_id = self.tenant_id.clone();
         let will_message = self.will_message.take();
         let router_actors = self.router_actors.clone();
@@ -1415,16 +1420,15 @@ impl SessionActor {
                 .retain(will_message.will_retain)
                 .qos(will_message.will_qos)
                 .build();
-                
+
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 std::hash::Hash::hash(&will_message.will_topic, &mut hasher);
                 let hash = std::hash::Hasher::finish(&hasher);
                 let router_actor = &router_actors[hash as usize % router_actors.len()];
-                router_actor
-                    .do_send(crate::router_actor::RoutePacket {
-                        tenant_id,
-                        packet: MqttPacketV3::Publish(publish_packet),
-                    });
+                router_actor.do_send(crate::router_actor::RoutePacket {
+                    tenant_id,
+                    packet: MqttPacketV3::Publish(publish_packet),
+                });
             }
         }
         .into_actor(self)
@@ -1489,7 +1493,9 @@ impl Handler<SessionActorMessage> for SessionActor {
                     if matches!(self.activity_state, ActivityState::Active) && conn.is_some() {
                         let conn = conn.unwrap();
                         if publish_packet.fix_header.qos.unwrap_or(0) == 0 {
-                            conn.do_send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet)));
+                            conn.do_send(ConnectionActorMessage::WritePacketToClient(
+                                MqttPacketV3::Publish(publish_packet),
+                            ));
                         } else {
                             ctx.spawn(async move {
                                 let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
@@ -1516,7 +1522,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                                 publish_packet.variable_header.packet_identifier = Some(new_id);
                                                 session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();
                                             } else {
-                                                 return; 
+                                                return;
                                             }
                                         }
                                     }
@@ -1545,7 +1551,10 @@ impl Handler<SessionActorMessage> for SessionActor {
                                                     packet_key: key.clone(),
                                                 }).await;
                                             }
-                                        } else { error!("Raft error: {}", e); return; }
+                                        } else {
+                                            error!("Raft error: {}", e);
+                                            return;
+                                        }
                                     }
                                 }
                                 let _ = conn.send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet))).await;
@@ -1563,8 +1572,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                                     return;
                                 }
                                 k
-                            } else { 
-                                return; 
+                            } else {
+                                return;
                             };
 
                             session_state_guard.pending_messages.push(key.clone());
@@ -1583,8 +1592,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                 // send will message and clean up
                 self.send_will_message(ctx, |_, actor, ctx| {
                     if let Some(recipient) = &actor.conn_recipient {
-                        info!("keep alive expired, stop session {} connection", actor.client_id);
-                        recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::KeepAliveExpired));
+                        info!(
+                            "keep alive expired, stop session {} connection",
+                            actor.client_id
+                        );
+                        recipient.do_send(ConnectionActorMessage::Disconnect(
+                            DisconnectReason::KeepAliveExpired,
+                        ));
                         if !actor.clean_session {
                             actor.set_state(ctx, ActivityState::Inactive);
                         } else {
@@ -1601,39 +1615,48 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.register_inflight_retry_timer(ctx);
                 ctx.spawn(
                     async move {
-                      let mut session_state_guard = session_state.write().await;
-                      let packets = session_state_guard
-                        .inflight
-                        .get_all_expired_packet_keys_and_refresh_expired_time();
+                        let mut session_state_guard = session_state.write().await;
+                        let packets = session_state_guard
+                            .inflight
+                            .get_all_expired_packet_keys_and_refresh_expired_time();
 
-                      if let Some(store) = &payload_store {
-                          for (packet_id, key) in packets {
-                              let state = session_state_guard.inflight.get_inflight_current_state(packet_id);
-                              
-                              match state {
-                                  Some(InflightState::WaitPubcomp) => {
-                                      let packet = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
-                                      session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                                  },
-                                  Some(InflightState::WaitPubrel) => {
-                                      let packet = MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
-                                      session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                                  },
-                                  _ => {
-                                      match store.get(&key).await {
-                                          Ok(Some(data)) => {
-                                              if let Ok(mut packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                                  packet.set_dup(1);
-                                                  session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                                              }
-                                          }
-                                          _ => {}
-                                      }
-                                  }
-                              }
-                          }
-                      }
-                    }.into_actor(self)
+                        if let Some(store) = &payload_store {
+                            for (packet_id, key) in packets {
+                                let state = session_state_guard
+                                    .inflight
+                                    .get_inflight_current_state(packet_id);
+
+                                match state {
+                                    Some(InflightState::WaitPubcomp) => {
+                                        let packet =
+                                            MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
+                                        session_actor_addr
+                                            .do_send(SessionActorMessage::OutboundMessage(packet));
+                                    }
+                                    Some(InflightState::WaitPubrel) => {
+                                        let packet =
+                                            MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
+                                        session_actor_addr
+                                            .do_send(SessionActorMessage::OutboundMessage(packet));
+                                    }
+                                    _ => match store.get(&key).await {
+                                        Ok(Some(data)) => {
+                                            if let Ok(mut packet) =
+                                                serde_json::from_slice::<MqttPacketV3>(&data)
+                                            {
+                                                packet.set_dup(1);
+                                                session_actor_addr.do_send(
+                                                    SessionActorMessage::OutboundMessage(packet),
+                                                );
+                                            }
+                                        }
+                                        _ => {}
+                                    },
+                                }
+                            }
+                        }
+                    }
+                    .into_actor(self),
                 );
             }
             SessionActorMessage::ForceDisconnect => {
@@ -1642,34 +1665,34 @@ impl Handler<SessionActorMessage> for SessionActor {
                     async move {
                         conn.send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal)).await
                     }
-                    .into_actor(self)
-                    .then(|res, act, ctx| {
-                        let connection_already_stopped = match res {
-                            Err(e) => {
-                                match e {
-                                    MailboxError::Closed => {
-                                        // connection already closed
-                                        true
-                                    }
-                                    MailboxError::Timeout => {
-                                        warn!("force disconnect send disconnect to connection time out: {}", e);
-                                        false
+                        .into_actor(self)
+                        .then(|res, act, ctx| {
+                            let connection_already_stopped = match res {
+                                Err(e) => {
+                                    match e {
+                                        MailboxError::Closed => {
+                                            // connection already closed
+                                            true
+                                        }
+                                        MailboxError::Timeout => {
+                                            warn!("force disconnect send disconnect to connection time out: {}", e);
+                                            false
+                                        }
                                     }
                                 }
+                                Ok(_) => true
+                            };
+                            if connection_already_stopped {
+                                if !act.clean_session {
+                                    act.set_state(ctx, ActivityState::Inactive);
+                                } else {
+                                    info!("force disconnect, force stop session {}", act.client_id);
+                                    act.force_stop(ctx);
+                                }
                             }
-                            Ok(_) => true
-                        };
-                        if connection_already_stopped {
-                            if !act.clean_session {
-                                act.set_state(ctx, ActivityState::Inactive);
-                            } else {
-                                info!("force disconnect, force stop session {}", act.client_id);
-                                act.force_stop(ctx);
-                            }
-                        }
-                        actix::fut::ready(())
-                    })
-                    .wait(ctx);
+                            actix::fut::ready(())
+                        })
+                        .wait(ctx);
                 }
             }
             SessionActorMessage::UnexpectClientDisconnected => {
@@ -1710,8 +1733,11 @@ impl Handler<SessionActorMessage> for SessionActor {
                         if let Some(store) = &payload_store {
                             match store.get(&key).await {
                                 Ok(Some(data)) => {
-                                    if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                        session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                                    if let Ok(packet) =
+                                        serde_json::from_slice::<MqttPacketV3>(&data)
+                                    {
+                                        session_actor_addr
+                                            .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
                                 }
                                 _ => {
@@ -1784,7 +1810,9 @@ impl Handler<GetSessionInfo> for SessionActor {
                 subscription_topics: session_state
                     .read()
                     .await
-                    .subscriptions.keys().cloned()
+                    .subscriptions
+                    .keys()
+                    .cloned()
                     .collect(),
                 session_state: activity_state,
             }
@@ -1793,7 +1821,6 @@ impl Handler<GetSessionInfo> for SessionActor {
         Box::pin(future)
     }
 }
-
 
 impl Handler<AllInflightRetryImmediate> for SessionActor {
     type Result = ();
@@ -1804,39 +1831,45 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
         let payload_store = self.payload_store.clone();
         ctx.spawn(
             async move {
-              let mut session_state_guard = session_state.write().await;
-              let packets = session_state_guard
-                .inflight
-                .get_all_packet_keys_and_refresh_expired_time();
+                let mut session_state_guard = session_state.write().await;
+                let packets = session_state_guard
+                    .inflight
+                    .get_all_packet_keys_and_refresh_expired_time();
 
-              if let Some(store) = &payload_store {
-                  for (packet_id, key) in packets {
-                      let state = session_state_guard.inflight.get_inflight_current_state(packet_id);
-                      
-                      match state {
-                          Some(InflightState::WaitPubcomp) => {
-                              let packet = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
-                              session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                          },
-                          Some(InflightState::WaitPubrel) => {
-                              let packet = MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
-                              session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                          },
-                          _ => {
-                              match store.get(&key).await {
-                                  Ok(Some(data)) => {
-                                      if let Ok(mut packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                          packet.set_dup(1);
-                                          session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                                      }
-                                  }
-                                  _ => {}
-                              }
-                          }
-                      }
-                  }
-              }
-            }.into_actor(self)
+                if let Some(store) = &payload_store {
+                    for (packet_id, key) in packets {
+                        let state = session_state_guard
+                            .inflight
+                            .get_inflight_current_state(packet_id);
+
+                        match state {
+                            Some(InflightState::WaitPubcomp) => {
+                                let packet = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
+                                session_actor_addr
+                                    .do_send(SessionActorMessage::OutboundMessage(packet));
+                            }
+                            Some(InflightState::WaitPubrel) => {
+                                let packet = MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
+                                session_actor_addr
+                                    .do_send(SessionActorMessage::OutboundMessage(packet));
+                            }
+                            _ => match store.get(&key).await {
+                                Ok(Some(data)) => {
+                                    if let Ok(mut packet) =
+                                        serde_json::from_slice::<MqttPacketV3>(&data)
+                                    {
+                                        packet.set_dup(1);
+                                        session_actor_addr
+                                            .do_send(SessionActorMessage::OutboundMessage(packet));
+                                    }
+                                }
+                                _ => {}
+                            },
+                        }
+                    }
+                }
+            }
+            .into_actor(self),
         );
     }
 }

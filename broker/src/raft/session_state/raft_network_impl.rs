@@ -14,8 +14,8 @@ use crate::raft::{Node, NodeId};
 
 use super::types::SessionStateTypeConfig;
 
-use std::sync::Arc;
 use crate::raft::payload::PayloadStore;
+use std::sync::Arc;
 
 pub struct Network {
     payload_store: Arc<dyn PayloadStore>,
@@ -30,7 +30,6 @@ impl Network {
 impl RaftNetworkFactory<SessionStateTypeConfig> for Network {
     type Network = NetworkConnection;
     async fn new_client(&mut self, _target: NodeId, node: &Node) -> Self::Network {
-
         NetworkConnection::new(node, self.payload_store.clone())
     }
 }
@@ -39,7 +38,6 @@ pub struct NetworkConnection {
     node: Node,
     payload_store: Arc<dyn PayloadStore>,
 }
-
 
 impl NetworkConnection {
     pub fn new(node: &Node, payload_store: Arc<dyn PayloadStore>) -> Self {
@@ -55,16 +53,14 @@ impl NetworkConnection {
         let addr = format!("http://{}", self.node.rpc_addr);
 
         match Channel::builder(addr.parse().unwrap()).connect().await {
-            Ok(channel) => Ok(RaftServiceClient::new(channel)), 
-            Err(e) => {
-                Err(RPCError::Unreachable(Unreachable::new(&e)))
-            }
+            Ok(channel) => Ok(RaftServiceClient::new(channel)),
+            Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
         }
     }
 }
 
 use crate::protobuf::raft_payload::payload_service_client::PayloadServiceClient;
-use crate::protobuf::raft_payload::{ReplicateRequest, ReplicateBatchRequest};
+use crate::protobuf::raft_payload::{ReplicateBatchRequest, ReplicateRequest};
 
 impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
     async fn append_entries(
@@ -72,7 +68,6 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         req: AppendEntriesRequest<SessionStateTypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        
         // 1. Heartbeat Fast-Path: Non-blocking
         if req.entries.is_empty() {
             let mut c = self.c().await?;
@@ -111,11 +106,15 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
                         Ok(None) => {
                             let msg = format!("Critical: Leader missing payload for key: {}", k);
                             log::error!("{}", msg);
-                            return Err(RPCError::Network(NetworkError::new(&std::io::Error::new(std::io::ErrorKind::NotFound, msg))));
+                            return Err(RPCError::Network(NetworkError::new(
+                                &std::io::Error::new(std::io::ErrorKind::NotFound, msg),
+                            )));
                         }
                         Err(e) => {
                             log::error!("Error reading payload store: {}", e);
-                            return Err(RPCError::Network(NetworkError::new(&std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))));
+                            return Err(RPCError::Network(NetworkError::new(
+                                &std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                            )));
                         }
                     }
                 }
@@ -128,25 +127,42 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
             let addr = format!("http://{}", self.node.rpc_addr);
             // Connect and Replicate
             let payload_result = async {
-                let mut client = PayloadServiceClient::connect(addr).await
+                let mut client = PayloadServiceClient::connect(addr)
+                    .await
                     .map_err(|e| NetworkError::new(&e))?;
-                
-                log::info!("Sending ReplicateBatchRequest with {} entries to {}", batch_entries.len(), self.node.rpc_addr);
 
-                let batch_req = ReplicateBatchRequest { entries: batch_entries };
-                
+                log::info!(
+                    "Sending ReplicateBatchRequest with {} entries to {}",
+                    batch_entries.len(),
+                    self.node.rpc_addr
+                );
+
+                let batch_req = ReplicateBatchRequest {
+                    entries: batch_entries,
+                };
+
                 // Dynamic Timeout
                 let size_mb = (total_size as f64) / (1024.0 * 1024.0);
-                let additional_timeout = (size_mb * 100.0) as u64; 
+                let additional_timeout = (size_mb * 100.0) as u64;
                 let timeout_duration = std::time::Duration::from_millis(100 + additional_timeout);
-                
-                tokio::time::timeout(timeout_duration, client.replicate_batch(batch_req)).await
-                    .map_err(|_| NetworkError::new(&std::io::Error::new(std::io::ErrorKind::TimedOut, format!("Payload push timed out (size: {} bytes)", total_size))))?
+
+                tokio::time::timeout(timeout_duration, client.replicate_batch(batch_req))
+                    .await
+                    .map_err(|_| {
+                        NetworkError::new(&std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("Payload push timed out (size: {} bytes)", total_size),
+                        ))
+                    })?
                     .map_err(|status| NetworkError::new(&status))
-            }.await;
+            }
+            .await;
 
             if let Err(e) = payload_result {
-                log::error!("Payload push failed: {}. Aborting Log Append to maintain consistency.", e);
+                log::error!(
+                    "Payload push failed: {}. Aborting Log Append to maintain consistency.",
+                    e
+                );
                 return Err(RPCError::Network(e));
             }
         }
@@ -157,8 +173,8 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         let mes = resp.into_inner();
         let resp = serde_json::from_str::<AppendEntriesResponse<NodeId>>(&mes.data)
-                .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        
+            .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+
         Ok(resp)
     }
 

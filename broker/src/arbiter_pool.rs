@@ -1,7 +1,7 @@
 use actix::prelude::*;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use log::info;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// Arbiter Pool - Manages a fixed number of worker threads.
 pub struct ArbiterPool {

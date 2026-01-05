@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
+use crate::app::YedMQApp;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
 };
 use serde::Serialize;
-use crate::app::YedMQApp;
 
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
@@ -29,7 +29,8 @@ pub async fn plugin_list(
     let limit_param = pagination.limit.unwrap_or(10);
     let plugin_metadata_list = app_state
         .plugin_manager
-        .get_plugin_metadata_list_with_pagination(offset_param, limit_param).await;
+        .get_plugin_metadata_list_with_pagination(offset_param, limit_param)
+        .await;
     let mut result = Vec::<Plugin>::new();
 
     for plugin_metadata in plugin_metadata_list.1 {

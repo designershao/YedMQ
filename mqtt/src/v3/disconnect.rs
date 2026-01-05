@@ -1,12 +1,10 @@
-
 use bytes::BytesMut;
-use nom::{IResult, combinator::map};
+use nom::{combinator::map, IResult};
 use serde::{Deserialize, Serialize};
 
 use crate::MqttPacket;
 
-use super::fixed_header::{FixHeader, self};
-
+use super::fixed_header::{self, FixHeader};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisconnectPacket {
@@ -14,18 +12,12 @@ pub struct DisconnectPacket {
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], DisconnectPacket> {
-    map(
-    fixed_header::parse,
-    |fixed_header| {
-        DisconnectPacket {
-            fix_header: fixed_header,
-        } 
+    map(fixed_header::parse, |fixed_header| DisconnectPacket {
+        fix_header: fixed_header,
     })(input)
 }
 
 impl MqttPacket for DisconnectPacket {
-
-
     fn to_bytes(&self) -> BytesMut {
         self.fix_header.to_bytes()
     }
@@ -49,7 +41,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let input = &[0xE0,0x00];
+        let input = &[0xE0, 0x00];
         let out = parse(input).unwrap();
         assert!(out.1.fix_header.packet_type == PacketType::DISCONNECT);
     }
@@ -63,7 +55,7 @@ mod tests {
             dup: None,
             remaining_length: 0,
         };
-        let disconnect_packet = DisconnectPacket{ fix_header };
+        let disconnect_packet = DisconnectPacket { fix_header };
         let disconnect_packet_bytes = disconnect_packet.to_bytes();
         assert_eq!(disconnect_packet_bytes.as_bytes(), &[0xE0, 0x00]);
     }

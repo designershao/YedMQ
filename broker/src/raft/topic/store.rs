@@ -29,6 +29,7 @@ use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::StoredMembership;
 use openraft::Vote;
+use parking_lot::RwLock;
 use rocksdb::ColumnFamily;
 use rocksdb::ColumnFamilyDescriptor;
 use rocksdb::Direction;
@@ -36,15 +37,13 @@ use rocksdb::Options;
 use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
-use parking_lot::RwLock;
 
 use super::types;
-use super::types::{Response,Request};
 use super::types::TypeConfig;
+use super::types::{Request, Response};
 use crate::raft::{Node, NodeId};
 
 type StorageResult<T> = Result<T, StorageError<NodeId>>;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredSnapshot {
@@ -231,7 +230,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             match ent.payload {
                 EntryPayload::Blank => {
                     replies.push(Response::None);
-                },
+                }
                 EntryPayload::Normal(req) => match req {
                     Request::SubscribeTopic {
                         tenant_id,
@@ -258,11 +257,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     } => {
                         let topic_storage = self.data.state.topic_storage.read();
 
-                        let _ = topic_storage.unsubscribe(
-                            &tenant_id,
-                            &client_identifier,
-                            &topic,
-                        );
+                        let _ = topic_storage.unsubscribe(&tenant_id, &client_identifier, &topic);
                         replies.push(Response::None);
                     }
                     Request::RegisterRetainPublishPacket {
@@ -272,13 +267,15 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                     } => {
                         let topic_storage = self.data.state.topic_storage.read();
 
-                        topic_storage.register_retain_publish_packet(
-                            tenant_id,
-                            source_client_identifier,
-                            &publish_packet,
-                        ).unwrap();
+                        topic_storage
+                            .register_retain_publish_packet(
+                                tenant_id,
+                                source_client_identifier,
+                                &publish_packet,
+                            )
+                            .unwrap();
                         replies.push(Response::None);
-                    },
+                    }
                     Request::CleanRetainPublishPacket {
                         tenant_id,
                         topic_filter,
@@ -286,7 +283,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         let topic_storage = self.data.state.topic_storage.read();
                         let _ = topic_storage.clean_retain_publish_packet(tenant_id, &topic_filter);
                         replies.push(Response::None);
-                    },
+                    }
                     Request::CreateTenant { tenant_id } => {
                         let topic_storage = self.data.state.topic_storage.read();
                         topic_storage.create_tenant(&tenant_id);

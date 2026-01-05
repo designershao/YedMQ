@@ -8,10 +8,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Workspace directory: {}", workspace_dir);
     let protocol_crate_dir = format!("{}/../plugin_protocol", workspace_dir);
     let proto_root = format!("{}/../plugin_protocol/proto", workspace_dir);
-    let proto_files = &[format!("{}/proto/yedmq_plugin_protocol.proto", protocol_crate_dir)];
+    let proto_files = &[format!(
+        "{}/proto/yedmq_plugin_protocol.proto",
+        protocol_crate_dir
+    )];
     let out_dir = format!("{}/src/protocol", workspace_dir);
     println!("Output directory: {}", out_dir);
-    
+
     let mut config = Config::new();
     config
         .out_dir(PathBuf::from(&out_dir))

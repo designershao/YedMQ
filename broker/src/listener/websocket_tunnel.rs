@@ -1,9 +1,16 @@
-use std::{pin::Pin, task::{Context, Poll}, io::Error};
+use std::{
+    io::Error,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use bytes::Bytes;
-use futures::{Stream, Sink};
-use tokio::{net::TcpStream, io::{AsyncRead, AsyncWrite, ReadBuf, AsyncBufRead}};
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+use futures::{Sink, Stream};
+use tokio::{
+    io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
+};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 use tokio_util::io::StreamReader;
 
 #[derive(Debug)]
@@ -30,9 +37,7 @@ impl Stream for StreamWrapper {
                     Poll::Ready(Some(Err(Error::other("invalid message"))))
                 }
             }
-            Poll::Ready(Some(Err(err))) => {
-                Poll::Ready(Some(Err(Error::other(err))))
-            }
+            Poll::Ready(Some(Err(err))) => Poll::Ready(Some(Err(Error::other(err)))),
         }
     }
 
@@ -67,7 +72,9 @@ impl AsyncWrite for WebsocketTunnel {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, std::io::Error>> {
-        match Pin::new(&mut self.get_mut().inner.get_mut().inner).start_send(Message::Binary(buf.to_vec())) {
+        match Pin::new(&mut self.get_mut().inner.get_mut().inner)
+            .start_send(Message::Binary(buf.to_vec()))
+        {
             Ok(()) => Poll::Ready(Ok(buf.len())),
             Err(e) => Poll::Ready(Err(Error::other(e))),
         }

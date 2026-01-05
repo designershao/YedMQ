@@ -3,11 +3,14 @@ use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
 use actix::dev::MessageResponse;
 use actix::prelude::*;
 use openraft::{
-    error::{ClientWriteError, Fatal, InitializeError, RaftError}, raft::ClientWriteResponse, Config, RaftMetrics
+    error::{ClientWriteError, Fatal, InitializeError, RaftError},
+    raft::ClientWriteResponse,
+    Config, RaftMetrics,
 };
-use yedmq_mqtt::MqttPacketV3;
 use parking_lot::RwLock;
+use yedmq_mqtt::MqttPacketV3;
 
+use crate::protobuf::cluster_service_client::ClusterServiceClient;
 use crate::{
     protobuf::{raft_service_client::RaftServiceClient, RaftType, WriteRequest},
     raft::{
@@ -16,7 +19,6 @@ use crate::{
     },
     topic::{topic_storage::TopicStorage, TopicError},
 };
-use crate::protobuf::cluster_service_client::ClusterServiceClient;
 
 #[derive(Debug, Clone)]
 pub enum ActorState {
@@ -143,13 +145,13 @@ impl TopicRaftActor {
         }
     }
 
-    async fn try_local_linearizable_read(
-        raft: &TopicRaft,
-    ) -> Result<(), TopicRaftError> {
+    async fn try_local_linearizable_read(raft: &TopicRaft) -> Result<(), TopicRaftError> {
         raft.ensure_linearizable().await.map_err(|e| {
             log::error!("Failed to ensure linearizable read: {}", e);
             if let Some(leader) = e.forward_to_leader() {
-                TopicRaftError::NotLeader { leader: leader.leader_node.clone() }
+                TopicRaftError::NotLeader {
+                    leader: leader.leader_node.clone(),
+                }
             } else {
                 TopicRaftError::NotLeader { leader: None }
             }
@@ -209,10 +211,12 @@ impl TopicRaftActor {
         leader_addr: String,
         msg: crate::raft::topic::types::Request,
     ) -> Result<(), TopicRaftError> {
-        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr)).await.map_err(|e| {
-            log::error!("Failed to connect to leader {}", e);
-            TopicRaftError::GRPC(e.to_string())
-        })?;
+        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
+            .await
+            .map_err(|e| {
+                log::error!("Failed to connect to leader {}", e);
+                TopicRaftError::GRPC(e.to_string())
+            })?;
 
         let data = serde_json::to_string(&msg).unwrap();
 
@@ -261,17 +265,13 @@ impl Handler<Initialize> for TopicRaftActor {
                 let raft_instance = Self::initialize_raft(settings).await;
                 addr.do_send(InitializationComplete(raft_instance));
             }
-                .into_actor(self),
+            .into_actor(self),
         );
     }
 }
 
-
-
-
 impl SystemService for TopicRaftActor {
-    fn service_started(&mut self, _ctx: &mut Context<Self>) {
-    }
+    fn service_started(&mut self, _ctx: &mut Context<Self>) {}
 }
 
 impl Supervised for TopicRaftActor {}
@@ -304,9 +304,8 @@ where
     }
 }
 
-
 impl Handler<GetTopicStorage> for TopicRaftActor {
-    type Result =GetTopicStorageResponse;
+    type Result = GetTopicStorageResponse;
 
     fn handle(&mut self, _msg: GetTopicStorage, _ctx: &mut Self::Context) -> Self::Result {
         GetTopicStorageResponse {
@@ -388,12 +387,10 @@ impl Handler<Subscribe> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -445,12 +442,10 @@ impl Handler<Unsubscribe> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -503,12 +498,10 @@ impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -559,12 +552,10 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -655,12 +646,10 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -672,11 +661,14 @@ pub struct GetSubscriptionsEnsureLinearizable {
     topic: String,
 }
 
-
 impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<GetSubscriptionsResponse, TopicRaftError>>;
 
-    fn handle(&mut self, msg: GetSubscriptionsEnsureLinearizable, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: GetSubscriptionsEnsureLinearizable,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -715,7 +707,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                     } else {
                                         Err(TopicRaftError::NotInitialized)
                                     }
-                                },
+                                }
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
@@ -737,7 +729,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                     } else {
                                         Err(TopicRaftError::NoLeaderAvailable)
                                     }
-                                },
+                                }
                                 Err(e) => {
                                     log::error!("Failed to ensure linearizable read: {}", e);
                                     Err(e)
@@ -756,19 +748,16 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
 
-
 #[derive(Message)]
-#[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+#[rtype(result = "Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
 pub struct GetRetainPublishPacket {
     pub tenant_id: String,
     pub topic: String,
@@ -815,18 +804,16 @@ impl Handler<GetRetainPublishPacket> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
 
 #[derive(Message)]
-#[rtype(result="Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+#[rtype(result = "Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
 pub struct GetRetainPublishPacketEnsureLinearizable {
     pub tenant_id: String,
     pub topic: String,
@@ -835,7 +822,11 @@ pub struct GetRetainPublishPacketEnsureLinearizable {
 impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>>;
 
-    fn handle(&mut self, msg: GetRetainPublishPacketEnsureLinearizable, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: GetRetainPublishPacketEnsureLinearizable,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
@@ -861,7 +852,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                     } else {
                                         Err(TopicRaftError::NotInitialized)
                                     }
-                                },
+                                }
                                 Err(TopicRaftError::NotLeader { leader }) => {
                                     log::error!("Failed to ensure linearizable read, current node is not leader");
                                     if let Some(leader) = leader {
@@ -872,7 +863,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                             topic: msg.topic,
                                         }).await
                                             .map_err(|e| TopicRaftError::GRPC(e.to_string()))?;
-                                        
+
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(payload) = inner.payload {
@@ -889,7 +880,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                     } else {
                                         Err(TopicRaftError::NoLeaderAvailable)
                                     }
-                                },
+                                }
                                 Err(e) => {
                                     log::error!("Failed to ensure linear read: {}", e);
                                     Err(e)
@@ -908,12 +899,10 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                         .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(
-                    async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
-                        .into_actor(self),
-                )
-            }
+            ActorState::Stopped => Box::pin(
+                async { Err(TopicRaftError::NotReady("Actor is stopped".to_string())) }
+                    .into_actor(self),
+            ),
         }
     }
 }
@@ -921,18 +910,24 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
 #[derive(Message, Clone)]
 #[rtype(result = "Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>")]
 pub struct AppendEntriesRequestMessage {
-    pub payload: openraft::raft::AppendEntriesRequest<super::types::TypeConfig>
+    pub payload: openraft::raft::AppendEntriesRequest<super::types::TypeConfig>,
 }
 
 impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>>;
+    type Result = ResponseActFuture<
+        Self,
+        Result<openraft::raft::AppendEntriesResponse<NodeId>, TopicRaftError>,
+    >;
 
     fn handle(&mut self, msg: AppendEntriesRequestMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -948,9 +943,10 @@ impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -962,18 +958,28 @@ impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
 #[derive(Message, Clone)]
 #[rtype(result = "Result<openraft::raft::InstallSnapshotResponse<NodeId>, TopicRaftError>")]
 pub struct InstallSnapshotRequestMessage {
-    pub payload: openraft::raft::InstallSnapshotRequest<super::types::TypeConfig>
+    pub payload: openraft::raft::InstallSnapshotRequest<super::types::TypeConfig>,
 }
 
 impl Handler<InstallSnapshotRequestMessage> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<openraft::raft::InstallSnapshotResponse<NodeId>, TopicRaftError>>; 
+    type Result = ResponseActFuture<
+        Self,
+        Result<openraft::raft::InstallSnapshotResponse<NodeId>, TopicRaftError>,
+    >;
 
-    fn handle(&mut self, msg: InstallSnapshotRequestMessage, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: InstallSnapshotRequestMessage,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -989,9 +995,10 @@ impl Handler<InstallSnapshotRequestMessage> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1000,22 +1007,25 @@ impl Handler<InstallSnapshotRequestMessage> for TopicRaftActor {
     }
 }
 
-
 #[derive(Message, Clone)]
 #[rtype(result = "Result<openraft::raft::VoteResponse<NodeId>, TopicRaftError>")]
 pub struct VoteRequestMessage {
-    pub payload: openraft::raft::VoteRequest<NodeId>
+    pub payload: openraft::raft::VoteRequest<NodeId>,
 }
 
 impl Handler<VoteRequestMessage> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<openraft::raft::VoteResponse<NodeId>, TopicRaftError>>;
+    type Result =
+        ResponseActFuture<Self, Result<openraft::raft::VoteResponse<NodeId>, TopicRaftError>>;
 
     fn handle(&mut self, msg: VoteRequestMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1031,9 +1041,10 @@ impl Handler<VoteRequestMessage> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1062,14 +1073,22 @@ pub struct GetRetainMessageListWithPagination {
 }
 
 impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<GetRetainMessageListWithPaginationResponse, TopicRaftError>>;
+    type Result =
+        ResponseActFuture<Self, Result<GetRetainMessageListWithPaginationResponse, TopicRaftError>>;
 
-    fn handle(&mut self, msg: GetRetainMessageListWithPagination, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: GetRetainMessageListWithPagination,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1080,20 +1099,28 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                             if let Some(topic_storage) = topic_storage.get() {
                                 let storage = topic_storage.read();
                                 let res = storage.get_retain_message_list_with_pagination(
-                                    &msg.tenant_id, msg.offset, msg.limit
+                                    &msg.tenant_id,
+                                    msg.offset,
+                                    msg.limit,
                                 );
                                 match res {
-                                    Ok(res)  =>  {
-                                        Ok(GetRetainMessageListWithPaginationResponse { total: res.0, data: res.1.iter().map(|(topic, client_id, qos)| {
-                                            RetainMessage { topic: topic.clone(), client_id: client_id.clone(), qos: *qos }
-                                        }).collect()})
-                                    },
-                                    Err(e) =>  {
+                                    Ok(res) => Ok(GetRetainMessageListWithPaginationResponse {
+                                        total: res.0,
+                                        data: res
+                                            .1
+                                            .iter()
+                                            .map(|(topic, client_id, qos)| RetainMessage {
+                                                topic: topic.clone(),
+                                                client_id: client_id.clone(),
+                                                qos: *qos,
+                                            })
+                                            .collect(),
+                                    }),
+                                    Err(e) => {
                                         let topic_err = e.downcast_ref::<TopicError>().unwrap();
                                         Err(TopicRaftError::TopicError(topic_err.clone()))
                                     }
                                 }
-
                             } else {
                                 Err(TopicRaftError::NotReady("Initializing".to_string()))
                             }
@@ -1104,9 +1131,10 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1135,13 +1163,17 @@ pub struct GetTopicListWithPagination {
 }
 
 impl Handler<GetTopicListWithPagination> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<GetTopicListWithPaginationResponse, TopicRaftError>>;
+    type Result =
+        ResponseActFuture<Self, Result<GetTopicListWithPaginationResponse, TopicRaftError>>;
 
     fn handle(&mut self, msg: GetTopicListWithPagination, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1152,20 +1184,28 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                             if let Some(topic_storage) = topic_storage.get() {
                                 let storage = topic_storage.read();
                                 let res = storage.get_topic_list_with_pagination(
-                                    &msg.tenant_id, msg.offset, msg.limit
+                                    &msg.tenant_id,
+                                    msg.offset,
+                                    msg.limit,
                                 );
                                 match res {
-                                    Ok(res)  =>  {
-                                        Ok(GetTopicListWithPaginationResponse { total: res.0, data: res.1.iter().map(|(topic, client_id, qos)| {
-                                            TopicInfo { topic: topic.clone(), client_id: client_id.clone(), qos: *qos }
-                                        }).collect()})
-                                    },
-                                    Err(e) =>  {
+                                    Ok(res) => Ok(GetTopicListWithPaginationResponse {
+                                        total: res.0,
+                                        data: res
+                                            .1
+                                            .iter()
+                                            .map(|(topic, client_id, qos)| TopicInfo {
+                                                topic: topic.clone(),
+                                                client_id: client_id.clone(),
+                                                qos: *qos,
+                                            })
+                                            .collect(),
+                                    }),
+                                    Err(e) => {
                                         let topic_err = e.downcast_ref::<TopicError>().unwrap();
                                         Err(TopicRaftError::TopicError(topic_err.clone()))
                                     }
                                 }
-
                             } else {
                                 Err(TopicRaftError::NotReady("Initializing".to_string()))
                             }
@@ -1176,22 +1216,21 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
-            }   
+            }
         }
     }
 }
 
-
 #[derive(Message)]
 #[rtype(result = "Result<(), TopicRaftError>")]
 pub struct InitRaftClusterMessage {}
-
 
 impl Handler<InitRaftClusterMessage> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<(), TopicRaftError>>;
@@ -1200,12 +1239,22 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
-                if let Some(raft_instance) = self.raft.get(){
+                if let Some(raft_instance) = self.raft.get() {
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self.settings.as_ref().expect("settings should not be none").cluster.nodes.iter() {
+                    for item in self
+                        .settings
+                        .as_ref()
+                        .expect("settings should not be none")
+                        .cluster
+                        .nodes
+                        .iter()
+                    {
                         cluster_nodes.insert(
                             item.id,
                             Node {
@@ -1215,17 +1264,24 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
                         );
                     }
                     let raft = raft_instance.clone();
-                    Box::pin(async move {
-                        raft.initialize(cluster_nodes).await?;
-                        Ok(())
-                    }.into_actor(self))
+                    Box::pin(
+                        async move {
+                            raft.initialize(cluster_nodes).await?;
+                            Ok(())
+                        }
+                        .into_actor(self),
+                    )
                 } else {
-                    Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                    Box::pin(
+                        async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                            .into_actor(self),
+                    )
                 }
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1233,7 +1289,6 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
         }
     }
 }
-
 
 #[derive(Message)]
 #[rtype(result = "Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>")]
@@ -1243,21 +1298,29 @@ pub struct AddLearnerMessage {
 }
 
 impl Handler<AddLearnerMessage> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
+    type Result = ResponseActFuture<
+        Self,
+        Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>,
+    >;
 
     fn handle(&mut self, msg: AddLearnerMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
                 Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
-                            let res = raft_instance.add_learner(msg.node_id, msg.node, true).await?;
+                            let res = raft_instance
+                                .add_learner(msg.node_id, msg.node, true)
+                                .await?;
                             Ok(res)
                         } else {
                             Err(TopicRaftError::NotReady("Initializing".to_string()))
@@ -1266,9 +1329,10 @@ impl Handler<AddLearnerMessage> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1280,18 +1344,24 @@ impl Handler<AddLearnerMessage> for TopicRaftActor {
 #[derive(Message)]
 #[rtype(result = "Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>")]
 pub struct ChangeMembershipMessage {
-    pub members: Vec<NodeId>
+    pub members: Vec<NodeId>,
 }
 
 impl Handler<ChangeMembershipMessage> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
+    type Result = ResponseActFuture<
+        Self,
+        Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>,
+    >;
 
     fn handle(&mut self, msg: ChangeMembershipMessage, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1307,9 +1377,10 @@ impl Handler<ChangeMembershipMessage> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1318,11 +1389,10 @@ impl Handler<ChangeMembershipMessage> for TopicRaftActor {
     }
 }
 
-
 #[derive(Message)]
 #[rtype(result = "Result<Option<Node>, TopicRaftError>")]
 
-pub struct GetLeader{}
+pub struct GetLeader {}
 
 impl Handler<GetLeader> for TopicRaftActor {
     type Result = ResponseActFuture<Self, Result<Option<Node>, TopicRaftError>>;
@@ -1331,7 +1401,10 @@ impl Handler<GetLeader> for TopicRaftActor {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1339,11 +1412,12 @@ impl Handler<GetLeader> for TopicRaftActor {
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let current_leader_node_id = raft_instance.current_leader().await;
-                            if let Some(current_leader_node_id) =  current_leader_node_id {
+                            if let Some(current_leader_node_id) = current_leader_node_id {
                                 let metrics_ref = raft_instance.metrics();
                                 let metrics = metrics_ref.borrow();
                                 let mut nodes_iter = metrics.membership_config.nodes();
-                                let node = nodes_iter.find(|node| *node.0 == current_leader_node_id);
+                                let node =
+                                    nodes_iter.find(|node| *node.0 == current_leader_node_id);
                                 if let Some(node) = node {
                                     Ok(Some(node.1.clone()))
                                 } else {
@@ -1359,9 +1433,10 @@ impl Handler<GetLeader> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1377,14 +1452,20 @@ pub struct DirectWriteToRaft {
 }
 
 impl Handler<DirectWriteToRaft> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>>;
+    type Result = ResponseActFuture<
+        Self,
+        Result<ClientWriteResponse<super::types::TypeConfig>, TopicRaftError>,
+    >;
 
     fn handle(&mut self, msg: DirectWriteToRaft, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
                 self.pending_messages.push(Box::new(msg));
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1400,9 +1481,10 @@ impl Handler<DirectWriteToRaft> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1411,19 +1493,21 @@ impl Handler<DirectWriteToRaft> for TopicRaftActor {
     }
 }
 
-
 #[derive(Message)]
 #[rtype(result = "Result<RaftMetrics<NodeId,Node>, TopicRaftError>")]
 pub struct GetRaftMetrics {}
 
 impl Handler<GetRaftMetrics> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId,Node>, TopicRaftError>>;
+    type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId, Node>, TopicRaftError>>;
 
     fn handle(&mut self, _msg: GetRaftMetrics, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
-                Box::pin(async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }.into_actor(self))
+                Box::pin(
+                    async move { Err(TopicRaftError::NotReady("Initializing".to_string())) }
+                        .into_actor(self),
+                )
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1440,9 +1524,10 @@ impl Handler<GetRaftMetrics> for TopicRaftActor {
                     .into_actor(self),
                 )
             }
-            ActorState::Stopped => {
-                Box::pin(async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }.into_actor(self))
-            }
+            ActorState::Stopped => Box::pin(
+                async move { Err(TopicRaftError::NotReady("Stopped".to_string())) }
+                    .into_actor(self),
+            ),
             ActorState::Failed(e) => {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
@@ -1450,4 +1535,3 @@ impl Handler<GetRaftMetrics> for TopicRaftActor {
         }
     }
 }
-

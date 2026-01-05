@@ -63,7 +63,7 @@ impl ServiceRegistry {
             session_registry: session_registry.clone(),
             payload_store: payload_store.clone(),
             timer_actor,
-            metric:metric.clone(),
+            metric: metric.clone(),
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
@@ -122,7 +122,7 @@ impl ServiceRegistry {
                     topic_storage,
                     session_actor_map_storage,
                     session_registry_clone,
-                    metric_clone
+                    metric_clone,
                 )
             });
             router_actors.push(router);

@@ -1,24 +1,33 @@
-use bytes::{BytesMut, BufMut};
-use nom::{IResult, number::streaming::be_u16, combinator::{map_res, flat_map, map}, sequence::tuple, multi::many0};
-use serde::{Deserialize, Serialize};
+use super::{
+    common::parse_utf8_complete,
+    fixed_header::{self, FixHeader},
+};
 use crate::{MqttPacket, PacketType};
-use super::{fixed_header::{FixHeader, self}, common::parse_utf8_complete};
+use bytes::{BufMut, BytesMut};
+use nom::{
+    combinator::{flat_map, map, map_res},
+    multi::many0,
+    number::streaming::be_u16,
+    sequence::tuple,
+    IResult,
+};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsubscribePacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
-    pub payload: Payload
+    pub payload: Payload,
 }
 
 #[derive(Default)]
 pub struct UnsubscribePacketBuilder {
     topic_filters: Vec<TopicFilter>,
-    packet_identifier: u16
+    packet_identifier: u16,
 }
 
 impl UnsubscribePacketBuilder {
-    pub fn new (packet_identifier: u16) -> Self {
+    pub fn new(packet_identifier: u16) -> Self {
         UnsubscribePacketBuilder {
             topic_filters: Vec::new(),
             packet_identifier,
@@ -31,13 +40,12 @@ impl UnsubscribePacketBuilder {
     }
 
     pub fn build(self) -> UnsubscribePacket {
-
         let variable_header = VariableHeader {
-            packet_identifier: self.packet_identifier
+            packet_identifier: self.packet_identifier,
         };
 
         let payload = Payload {
-            topic_filters: self.topic_filters
+            topic_filters: self.topic_filters,
         };
 
         let fixed_header = FixHeader {
@@ -47,8 +55,6 @@ impl UnsubscribePacketBuilder {
             dup: None,
             remaining_length: 2 + payload.get_length(),
         };
-
-        
 
         UnsubscribePacket {
             fix_header: fixed_header,
@@ -69,12 +75,11 @@ impl VariableHeader {
     }
 
     pub fn to_bytes(&self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(2); 
+        let mut buf = BytesMut::with_capacity(2);
         buf.put_u16(self.packet_identifier);
         buf
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TopicFilter {
@@ -139,19 +144,12 @@ impl Payload {
 // +---------------+--------------+---+---+---+---+---+---+---+
 
 fn topic_filter(input: &[u8]) -> IResult<&[u8], TopicFilter> {
-    
-    map(parse_utf8_complete, |topic_name| {
-        TopicFilter{
-            topic_name,
-        }
-    })(input)
+    map(parse_utf8_complete, |topic_name| TopicFilter { topic_name })(input)
 }
 
 fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
-    map(be_u16, |packet_identifier| {
-        VariableHeader{
-            packet_identifier
-        }
+    map(be_u16, |packet_identifier| VariableHeader {
+        packet_identifier,
     })(input)
 }
 
@@ -160,44 +158,44 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnsubscribePacket> {
         map(
             map_res(
                 nom::bytes::streaming::take(fixed_header.remaining_length),
-                tuple((variable_header,many0(topic_filter)))
+                tuple((variable_header, many0(topic_filter))),
             ),
             move |v| {
                 let cloned_fixed_header = fixed_header.clone();
-                UnsubscribePacket { 
+                UnsubscribePacket {
                     fix_header: cloned_fixed_header,
-                    variable_header: v.1.0,
-                    payload: Payload { topic_filters: v.1.1 }
+                    variable_header: v.1 .0,
+                    payload: Payload {
+                        topic_filters: v.1 .1,
+                    },
                 }
-            }
+            },
         )
     })(input)
 }
 
-
 impl UnsubscribePacket {
-
     fn get_fix_header_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
         buf.put_u8((10 << 4) + (1 << 1));
         buf.put_u8(self.fix_header.remaining_length.try_into().unwrap());
         buf
     }
-
 }
 
 impl MqttPacket for UnsubscribePacket {
-
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.get_fix_header_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
         let payload_bytes = self.payload.to_bytes();
 
-        let mut buf: BytesMut = BytesMut::with_capacity(fix_header_bytes.len() + variable_header_bytes.len() + payload_bytes.len());
+        let mut buf: BytesMut = BytesMut::with_capacity(
+            fix_header_bytes.len() + variable_header_bytes.len() + payload_bytes.len(),
+        );
         buf.put(fix_header_bytes);
         buf.put(variable_header_bytes);
         buf.put(payload_bytes);
-        
+
         buf
     }
 
@@ -212,9 +210,8 @@ impl MqttPacket for UnsubscribePacket {
     }
 }
 
-
 #[cfg(test)]
-mod tests{
+mod tests {
     use nom::AsBytes;
 
     use crate::PacketType;
@@ -223,14 +220,14 @@ mod tests{
 
     #[test]
     fn test_payload() {
-        let input = &[0x00,0x03,0x61,0x2F,0x62];
+        let input = &[0x00, 0x03, 0x61, 0x2F, 0x62];
         let out = topic_filter(input).unwrap();
         assert_eq!(out.1.topic_name, "a/b".to_string());
     }
 
     #[test]
     fn test_parse() {
-        let input = &[0xA2,0x07,0x00,0x10,0x00,0x03,0x61,0x2F,0x62];
+        let input = &[0xA2, 0x07, 0x00, 0x10, 0x00, 0x03, 0x61, 0x2F, 0x62];
         let fixed_header = fixed_header::parse(input).unwrap();
         assert_eq!(fixed_header.1.remaining_length, 7);
         assert_eq!(fixed_header.1.packet_type, PacketType::UNSUBSCRIBE);
@@ -253,11 +250,9 @@ mod tests{
         };
 
         let payload = Payload {
-            topic_filters: vec![
-                TopicFilter {
-                    topic_name: "a/b".to_string(),
-                }
-            ]
+            topic_filters: vec![TopicFilter {
+                topic_name: "a/b".to_string(),
+            }],
         };
 
         let unsubscribe_packet = UnsubscribePacket {
@@ -266,6 +261,9 @@ mod tests{
             payload,
         };
 
-        assert_eq!(unsubscribe_packet.to_bytes().as_bytes(), &[0xA2,0x07,0x00,0x10,0x00,0x03,0x61,0x2F,0x62]);
+        assert_eq!(
+            unsubscribe_packet.to_bytes().as_bytes(),
+            &[0xA2, 0x07, 0x00, 0x10, 0x00, 0x03, 0x61, 0x2F, 0x62]
+        );
     }
 }
