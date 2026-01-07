@@ -259,6 +259,7 @@ impl Actor for SessionActor {
         let topic_raft_actor = self.topic_raft_actor.clone();
         let session_state_raft_actor = self.session_state_raft_actor.clone();
         let payload_store = self.payload_store.clone();
+        let clean_session = self.clean_session;
 
         async move {
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
@@ -272,78 +273,84 @@ impl Actor for SessionActor {
                     .map(|(topic, qos)| (topic.clone(), qos.clone()))
                     .collect()
             };
-            for (topic, qos) in subscriptions {
-                info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
-                let qos_v = match qos {
-                    QoS::AtMostOnce => 0,
-                    QoS::AtLeastOnce => 1,
-                    QoS::ExactlyOnce => 2,
-                };
-                match topic_raft_actor.send(
-                    crate::raft::topic::topic_raft_actor::Subscribe {
-                        tenant_id: tenant_id.clone(),
-                        client_identifier: client_id.clone(),
-                        topic: topic.clone(),
-                        qos: qos_v,
-                    },
-                ).await {
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => {
-                        warn!(
-                            "persistent session recover subscribe topic {} error, {}",
-                            topic.clone(),
-                            e
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "persistent session recover subscribe topic {} send message to topic raft actor error, {}",
-                            topic.clone(),
-                            e
-                        );
+            // Only recover subscriptions if NOT clean session
+            if !clean_session {
+                for (topic, qos) in subscriptions {
+                    info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
+                    let qos_v = match qos {
+                        QoS::AtMostOnce => 0,
+                        QoS::AtLeastOnce => 1,
+                        QoS::ExactlyOnce => 2,
+                    };
+                    match topic_raft_actor.send(
+                        crate::raft::topic::topic_raft_actor::Subscribe {
+                            tenant_id: tenant_id.clone(),
+                            client_identifier: client_id.clone(),
+                            topic: topic.clone(),
+                            qos: qos_v,
+                        },
+                    ).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "persistent session recover subscribe topic {} error, {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "persistent session recover subscribe topic {} send message to topic raft actor error, {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
                     }
                 }
             }
 
             //
-            loop {
-                match session_state_raft_actor.send(
-                    crate::raft::session_state::session_state_raft_actor::PopOfflineMessage {
-                        tenant_id: tenant_id.clone(),
-                        client_id: client_id.clone(),
-                    }
-                ).await.unwrap() {
-                    Ok((Some(key), payload_opt)) => {
-                        let data = if let Some(payload) = payload_opt {
-                            Some(bytes::Bytes::from(payload))
-                        } else if let Some(store) = &payload_store {
-                            match store.get(&key).await {
-                                Ok(res) => res,
-                                Err(e) => {
-                                    error!("Store error during recovery: {}", e);
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        };
-
-                        if let Some(data) = data {
-                            if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
-                                session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
-                            }
-                        } else {
-                            warn!("Payload missing during recovery for key: {}", key);
+            if !clean_session {
+                loop {
+                    match session_state_raft_actor.send(
+                        crate::raft::session_state::session_state_raft_actor::PopOfflineMessage {
+                            tenant_id: tenant_id.clone(),
+                            client_id: client_id.clone(),
                         }
+                    ).await.unwrap() {
+                        Ok((Some(key), payload_opt)) => {
+                            let data = if let Some(payload) = payload_opt {
+                                 Some(bytes::Bytes::from(payload))
+                            } else if let Some(store) = &payload_store {
+                                match store.get(&key).await {
+                                    Ok(res) => res,
+                                    Err(e) => {
+                                        error!("Store error during recovery: {}", e);
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+    
+                            if let Some(data) = data {
+                                 if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
+                                      session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                                 }
+                            } else {
+                                 warn!("Payload missing during recovery for key: {}", key);
+                            }
+                        },
+                        Ok((None, _)) => {
+                            info!("recovery from pending messages finished");
+                            break
+                        },
+                        Err(e) => {
+                            warn!("session state raft client pop from pending queue error, {}", e);
+                            break
+                        },
                     }
-                    Ok((None, _)) => {
-                        info!("recovery from pending messages finished");
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("session state raft client pop from pending queue error, {}", e);
-                        break;
-                    }
+    
                 }
             }
             //

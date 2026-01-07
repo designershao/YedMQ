@@ -868,6 +868,18 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
                     session_present = true;
                 }
+
+            } else {
+                 info!(
+                    "session {} is clean session, delete previous session state if exists",
+                    msg.client_id
+                );
+                let _ = session_state_raft_actor_addr.send(
+                    crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
+                        tenant_id: msg.tenant_id.clone(),
+                        client_id: msg.client_id.clone(),
+                    },
+                ).await;
             }
             let plugin_manager_clone = plugin_manager.clone();
             let msg_client_id = msg.client_id.clone();

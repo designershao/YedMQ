@@ -177,3 +177,106 @@ async fn test_persistent_session_switch_node() {
         .unwrap();
     println!("Test passed!");
 }
+
+#[actix::test]
+async fn test_cluster_persistent_session_cleared_by_clean_session() {
+    let context = setup_cluster().await;
+    let node1 = &context.nodes[0];
+    let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
+    let node2 = &context.nodes[1];
+    let addr2: SocketAddr = node2.listener.tcp.external.as_str().parse().unwrap();
+
+    let client_id = "clean-session-cluster-test";
+    let topic = "test/cluster/clean_session_clear";
+    let payload = b"should be discarded in cluster";
+
+    // 1. Connect Client to Node 1 with clean_session = false
+    let mut opts1 = MqttOptions::new(client_id, addr1.ip().to_string(), addr1.port());
+    opts1.set_keep_alive(Duration::from_secs(30));
+    opts1.set_clean_session(false);
+    let (client1, mut eventloop1) = AsyncClient::new(opts1, 10);
+
+    let setup_task = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match eventloop1.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    client1.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::SubAck(_))) => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    client1.disconnect().await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                    if connected { return }
+                    panic!("Setup Error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), setup_task).await.expect("Setup timed out").unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // 2. Publish to Node 2
+    let mut pub_opts = MqttOptions::new("publisher-node2", addr2.ip().to_string(), addr2.port());
+    let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
+    
+    let pub_task = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match pub_eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    connected = true;
+                    pub_client.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::PubAck(_))) => {
+                    pub_client.disconnect().await.unwrap();
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                     if connected { return }
+                     panic!("Pub Error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(30), pub_task).await.expect("Pub timed out").unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // 3. Reconnect to Node 1 with clean_session = true
+    let mut opts2 = MqttOptions::new(client_id, addr1.ip().to_string(), addr1.port());
+    opts2.set_keep_alive(Duration::from_secs(30));
+    opts2.set_clean_session(true); // Must clear session
+    let (client2, mut eventloop2) = AsyncClient::new(opts2, 10);
+
+    let verify_task = tokio::spawn(async move {
+        let mut connected = false;
+        loop {
+            match eventloop2.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                    connected = true;
+                    assert!(!ack.session_present, "Session should NOT be present");
+                }
+                Ok(Event::Incoming(Packet::Publish(_))) => {
+                    panic!("Should NOT receive message");
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => return,
+                Err(e) => {
+                    if connected { return }
+                    panic!("Verify Error: {:?}", e)
+                },
+                _ => {}
+            }
+        }
+    });
+    
+    let res = tokio::time::timeout(Duration::from_secs(5), verify_task).await;
+    assert!(res.is_err(), "Should timeout waiting for message (none expected)");
+    client2.disconnect().await.unwrap();
+}
