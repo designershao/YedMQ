@@ -811,11 +811,43 @@ impl SessionActor {
 
     fn set_state(&mut self, ctx: &mut <SessionActor as Actor>::Context, state: ActivityState) {
         info!("set session {} state to {:?}", self.client_id, state);
+        let session_state_raft_actor = self.session_state_raft_actor.clone();
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+        let clean_session = self.clean_session;
+        
         match state {
             ActivityState::Inactive => {
                 self.stop_inflight_and_keep_alive_timer();
+                if !clean_session {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    ctx.spawn(async move {
+                        let _ = session_state_raft_actor.send(
+                            crate::raft::session_state::session_state_raft_actor::UpdateSessionConnectionState {
+                                tenant_id,
+                                client_id,
+                                disconnected_at: Some(now),
+                            }
+                        ).await;
+                    }.into_actor(self));
+                }
             }
-            ActivityState::Active => {}
+            ActivityState::Active => {
+                if !clean_session {
+                    ctx.spawn(async move {
+                        let _ = session_state_raft_actor.send(
+                            crate::raft::session_state::session_state_raft_actor::UpdateSessionConnectionState {
+                                tenant_id,
+                                client_id,
+                                disconnected_at: None,
+                            }
+                        ).await;
+                    }.into_actor(self));
+                }
+            }
         }
         self.activity_state = state;
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();

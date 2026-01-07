@@ -231,11 +231,25 @@ impl Actor for SessionManagerActor {
         };
         ctx.spawn(future.into_actor(self));
 
-        // Renew session lease every 10 seconds
-        ctx.run_interval(Duration::from_secs(10), |_, ctx| {
-            ctx.address().do_send(RenewSessionLease {});
-        });
-    }
+                // Renew session lease every 10 seconds
+
+                ctx.run_interval(Duration::from_secs(10), |_, ctx| {
+
+                    ctx.address().do_send(RenewSessionLease {});
+
+                });
+
+        
+
+                // Check expired sessions every 30 seconds
+
+                ctx.run_interval(Duration::from_secs(30), |_, ctx| {
+
+                    ctx.address().do_send(CheckExpiredSessions {});
+
+                });
+
+            }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("session manager stopped");
@@ -276,6 +290,79 @@ impl Handler<SetRouterActors> for SessionManagerActor {
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct RenewSessionLease {}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct CheckExpiredSessions {}
+
+impl Handler<CheckExpiredSessions> for SessionManagerActor {
+    type Result = ();
+
+    fn handle(&mut self, _msg: CheckExpiredSessions, ctx: &mut Self::Context) -> Self::Result {
+        let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
+        let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+        let settings = self.settings.as_ref().unwrap().clone();
+        let ttl = settings.cluster.session_ttl;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        ctx.spawn(
+            async move {
+                let expired_res = session_state_raft_actor_addr
+                    .send(crate::raft::session_state::session_state_raft_actor::ScanExpiredSessions {
+                        now,
+                        ttl,
+                    })
+                    .await;
+
+                match expired_res {
+                    Ok(Ok(expired_list)) => {
+                        for (tenant_id, client_id, disconnected_at) in expired_list {
+                            info!("cleaning up expired persistent session: {}/{} (disconnected at {})", tenant_id, client_id, disconnected_at);
+                            
+                            let map_entry_res = session_actor_map_raft_actor_addr.send(
+                                crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMap {
+                                    tenant_id: tenant_id.clone(),
+                                    client_id: client_id.clone(),
+                                }
+                            ).await;
+
+                            if let Ok(Ok(Some(entry))) = map_entry_res {
+                                if let Err(e) = call_force_disconnect(
+                                    entry.node_id,
+                                    &settings.cluster.nodes,
+                                    tenant_id.clone(),
+                                    client_id.clone(),
+                                ).await {
+                                    warn!("failed to force disconnect expired session {}/{} on node {}: {}", tenant_id, client_id, entry.node_id, e);
+                                }
+                            }
+
+                            let _ = session_state_raft_actor_addr.send(
+                                crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
+                                    tenant_id: tenant_id.clone(),
+                                    client_id: client_id.clone(),
+                                    expected_disconnected_at: Some(disconnected_at),
+                                }
+                            ).await;
+                        }
+                    }
+                    Ok(Err(crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotLeader { .. })) => {
+                    }
+                    Ok(Err(e)) => {
+                        error!("failed to scan expired sessions: {}", e);
+                    }
+                    Err(e) => {
+                        error!("mailbox error when scanning expired sessions: {}", e);
+                    }
+                }
+            }
+            .into_actor(self),
+        );
+    }
+}
 
 impl Handler<RenewSessionLease> for SessionManagerActor {
     type Result = ();
@@ -878,6 +965,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
                         tenant_id: msg.tenant_id.clone(),
                         client_id: msg.client_id.clone(),
+                        expected_disconnected_at: None,
                     },
                 ).await;
             }

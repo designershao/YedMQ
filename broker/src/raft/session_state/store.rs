@@ -469,18 +469,46 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                     types::SessionStateRequest::DeleteSessionState {
                         tenant_id,
                         client_id,
+                        expected_disconnected_at,
                     } => {
-                        let freed_keys = self
-                            .data
+                        let should_delete = if let Some(expected) = expected_disconnected_at {
+                            let storage = self.data.state.session_state_storage.read().await;
+                            if let Some(session_arc) = storage.get_session_state(&tenant_id, &client_id).await {
+                                session_arc.read().await.disconnected_at == Some(expected)
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        };
+
+                        if should_delete {
+                            let freed_keys = self
+                                .data
+                                .state
+                                .session_state_storage
+                                .write()
+                                .await
+                                .delete_session_state(&tenant_id, &client_id)
+                                .await;
+                            for key in freed_keys {
+                                let _ = self.payload_store.delete(&key).await;
+                            }
+                        }
+                        replies.push(SessionStateResponse::None);
+                    }
+                    types::SessionStateRequest::UpdateSessionConnectionState {
+                        tenant_id,
+                        client_id,
+                        disconnected_at,
+                    } => {
+                        self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .delete_session_state(&tenant_id, &client_id)
+                            .update_connection_state(tenant_id, client_id, disconnected_at)
                             .await;
-                        for key in freed_keys {
-                            let _ = self.payload_store.delete(&key).await;
-                        }
                         replies.push(SessionStateResponse::None);
                     }
                 },

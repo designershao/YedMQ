@@ -13,6 +13,7 @@ pub enum SessionStateRequest {
     DeleteSessionState {
         tenant_id: String,
         client_id: String,
+        expected_disconnected_at: Option<u64>,
     },
     InflightRegisterRxPacket {
         tenant_id: String,
@@ -61,6 +62,11 @@ pub enum SessionStateRequest {
         tenant_id: String,
         client_id: String,
         topic: String,
+    },
+    UpdateSessionConnectionState {
+        tenant_id: String,
+        client_id: String,
+        disconnected_at: Option<u64>,
     },
 }
 

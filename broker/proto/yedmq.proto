@@ -114,6 +114,7 @@ message GetSessionStateResponse {
     bool success = 1;
     ErrorDetail error = 2;
     optional string payload = 3; // Session state data
+    optional uint64 disconnected_at = 4; // Timestamp when the session was disconnected
 }
 
 // Request to create a session state for a client.
@@ -121,6 +122,7 @@ message CreateSessionStateRequest {
     string tenant_id = 1;
     string client_id = 2;
     string payload = 3; // Session state data
+    optional uint64 disconnected_at = 4; // Timestamp when the session was disconnected
 }
 
 // Response for creating a session state.

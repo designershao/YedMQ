@@ -105,6 +105,7 @@ impl ClusterService for ClusterServiceImpl {
             success: true,
             error: None,
             payload: Some(res_payload),
+            disconnected_at: None,
         }))
     }
 
@@ -140,6 +141,7 @@ impl ClusterService for ClusterServiceImpl {
         let delete_session_state_actor = session_state_raft_actor::DeleteSessionState {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
+            expected_disconnected_at: None,
         };
         session_state_raft_actor_addr
             .send(delete_session_state_actor)

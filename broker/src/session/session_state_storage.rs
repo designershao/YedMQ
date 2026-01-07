@@ -24,6 +24,8 @@ pub struct SessionState {
     pub inflight: Inflight,
 
     pub subscriptions: HashMap<String, QoS>,
+    
+    pub disconnected_at: Option<u64>,
 }
 
 impl SessionState {
@@ -32,6 +34,7 @@ impl SessionState {
             pending_messages: Vec::new(),
             inflight: Inflight::new(inflight_duration),
             subscriptions: HashMap::new(),
+            disconnected_at: None,
         }
     }
 }
@@ -384,6 +387,35 @@ impl SessionStateStorage {
                 .await
                 .subscriptions
                 .remove(&topic);
+        }
+    }
+
+    pub async fn scan_expired_sessions(&self, now: u64, ttl: u64) -> Vec<(String, String, u64)> {
+        let mut expired_sessions = Vec::new();
+        for (tenant_id, sessions) in self.inner.iter() {
+            for (client_id, session_arc) in sessions.iter() {
+                let session = session_arc.read().await;
+                if let Some(disconnected_at) = session.disconnected_at {
+                    if now.saturating_sub(disconnected_at) > ttl {
+                        expired_sessions.push((tenant_id.clone(), client_id.clone(), disconnected_at));
+                    }
+                }
+            }
+        }
+        expired_sessions
+    }
+
+    pub async fn update_connection_state(
+        &mut self,
+        tenant_id: String,
+        client_id: String,
+        disconnected_at: Option<u64>,
+    ) {
+        if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
+            if let Some(session_arc) = tenant_sessions.get(&client_id) {
+                let mut session = session_arc.write().await;
+                session.disconnected_at = disconnected_at;
+            }
         }
     }
 
