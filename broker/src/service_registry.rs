@@ -8,7 +8,7 @@ use crate::router_actor::RouterActor;
 use crate::rpc::rpc_actor::RpcActor;
 use crate::session::session_actor_map_storage::SessionClock;
 use crate::session::session_manager_actor::{
-    Initialize as InitializeSessionManager, SessionManagerActor, SetArbiterPool, SetRouterActors,
+    Initialize as InitializeSessionManager, SessionManagerActor, SetRouterActors,
 };
 use crate::settings::Settings;
 use actix::{Addr, SystemService};
@@ -64,15 +64,12 @@ impl ServiceRegistry {
             payload_store: payload_store.clone(),
             timer_actor,
             metric: metric.clone(),
+            arbiter_pool: pools.clone(),
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
             settings: settings.clone(),
             session_clock,
-        });
-
-        session_manager.do_send(SetArbiterPool {
-            arbiter_pool: pools.clone(),
         });
 
         topic_raft.do_send(crate::raft::topic::topic_raft_actor::Initialize {

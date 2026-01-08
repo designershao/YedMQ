@@ -135,6 +135,7 @@ pub struct Initialize {
     pub timer_actor: Addr<TimerActor>,
     pub payload_store: Arc<dyn PayloadStore>,
     pub metric: Arc<Metric>,
+    pub arbiter_pool: Arc<crate::arbiter_pool::ArbiterPool>,
 }
 
 impl Handler<Initialize> for SessionManagerActor {
@@ -149,6 +150,7 @@ impl Handler<Initialize> for SessionManagerActor {
         self.payload_store = Some(msg.payload_store);
         self.timer_actor = Some(msg.timer_actor);
         self.metric = Some(msg.metric);
+        self.arbiter_pool = Some(msg.arbiter_pool);
     }
 }
 
@@ -253,20 +255,6 @@ impl Actor for SessionManagerActor {
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("session manager stopped");
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct SetArbiterPool {
-    pub arbiter_pool: Arc<crate::arbiter_pool::ArbiterPool>,
-}
-
-impl Handler<SetArbiterPool> for SessionManagerActor {
-    type Result = ();
-
-    fn handle(&mut self, msg: SetArbiterPool, _ctx: &mut Self::Context) -> Self::Result {
-        self.arbiter_pool = Some(msg.arbiter_pool);
     }
 }
 
