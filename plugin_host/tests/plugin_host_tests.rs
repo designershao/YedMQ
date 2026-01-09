@@ -1631,3 +1631,58 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
         "Plugin mock_plugin_harness_1 response timeout"
     );
 }
+
+#[tokio::test]
+async fn when_plugin_start_failed_plugin_state_should_be_failed() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+
+    // Create a plugin directory but with a non-existent executable in the manifest
+    let plugin_name = "failed_plugin";
+    let plugin_dir = temp_dir.path().join(plugin_name);
+    std::fs::create_dir(&plugin_dir).expect("Failed to create plugin dir");
+
+    let plugin_manifest = r#"[plugin]
+name = "failed_plugin"
+version = "0.1.0"
+description = "A failing plugin"
+author = "Test Author"
+
+[runtime]
+type = "process"
+executable = "non_existent_executable"
+"#;
+
+    std::fs::write(plugin_dir.join("plugin.toml"), plugin_manifest)
+        .expect("Failed to write plugin manifest");
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        &temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    );
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    // start_plugin will return Err because spawn fails
+    let _ = plugin_manager.start_plugin(plugin_name).await;
+
+    let running_plugins = plugin_manager.get_running_plugins();
+    assert!(running_plugins.contains_key(plugin_name));
+    assert_eq!(
+        running_plugins.get(plugin_name).unwrap().state,
+        yedmq_plugin_host::plugin_manager::PluginState::Failed
+    );
+}

@@ -17,13 +17,9 @@ use crate::{
     loader::PluginManifest,
     plugin_host_config::PluginHostConfig,
     protocol::{
-        plugin_protocol::{
-            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse,
-            ClientDisconnectedEvent, InitializeRequest, InitializeResponse, MessagePublishRequest,
-            MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest,
-            SubscribeResponse,
-        },
-        ProtocolMessageBuilder,
+        ProtocolMessageBuilder, plugin_protocol::{
+            AuthenticateRequest, AuthenticateResponse, AuthorizeRequest, AuthorizeResponse, ClientConnectedEvent, ClientDisconnectedEvent, InitializeRequest, InitializeResponse, MessagePublishRequest, MessagePublishResponse, MessageType, Method, ProtocolMessage, SubscribeRequest, SubscribeResponse
+        }
     },
 };
 
@@ -522,28 +518,69 @@ impl PluginManager {
         }
     }
 
-    pub async fn call_client_disconnected_hook(
+    pub async fn call_client_connected_hook(
         &self,
-        client_disconnected_event: ClientDisconnectedEvent,
+        client_connected_event: ClientConnectedEvent
     ) {
         let hook_manager = self.hook_manager.read().await;
-        let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeAdded);
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::ClientConnected);
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
                 let running_plugin = self.running_plugins.get(&plugin.plugin_name);
                 if let Some(running_plugin) = running_plugin {
                     if matches!(running_plugin.state, PluginState::Running) {
-                        let subscribe_request_any_wrapper = prost_types::Any {
+                        let client_connected_event_any_wrapper = prost_types::Any {
+                            type_url: crate::protocol::CLIENT_CONNECTED_EVENT_TYPE_URL
+                                .to_string(),
+                            value: client_connected_event.encode_to_vec(),
+                        };
+
+                        let protocol_message = ProtocolMessageBuilder::new()
+                            .with_method(Method::ClientConnected)
+                            .with_type(MessageType::Event)
+                            .with_params(client_connected_event_any_wrapper)
+                            .build();
+
+                        match running_plugin.ipc_sender.as_ref() {
+                            Some(ipc_sender) => {
+                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                            }
+                            None => {
+                                warn!(
+                                    "Plugin {} ipc sender not found when calling client connected hook",
+                                    running_plugin.name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn call_client_disconnected_hook(
+        &self,
+        client_disconnected_event: ClientDisconnectedEvent,
+    ) {
+        let hook_manager = self.hook_manager.read().await;
+        let plugins = hook_manager.get_hooks(&crate::hook::Hook::ClientDisconnected);
+
+        if let Some(plugins) = plugins {
+            for plugin in plugins {
+                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
+                if let Some(running_plugin) = running_plugin {
+                    if matches!(running_plugin.state, PluginState::Running) {
+                        let client_disconnected_event_any_wrapper = prost_types::Any {
                             type_url: crate::protocol::CLIENT_DISCONNECTED_EVENT_TYPE_URL
                                 .to_string(),
                             value: client_disconnected_event.encode_to_vec(),
                         };
 
                         let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::SubscriptionAdded)
+                            .with_method(Method::ClientDisconnected)
                             .with_type(MessageType::Event)
-                            .with_params(subscribe_request_any_wrapper)
+                            .with_params(client_disconnected_event_any_wrapper)
                             .build();
 
                         match running_plugin.ipc_sender.as_ref() {
@@ -1233,10 +1270,41 @@ impl PluginManager {
             .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
             .ok_or_else(|| anyhow::anyhow!("plugin {} start command not exsited", name))?;
 
-        let mut process = command
+        let mut process = match command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn() {
+            Err(e) => {
+                warn!("failed to start plugin '{}': {}", name, e);
+
+                let running_plugin = RunningPlugin {
+                    name: name.to_string(),
+                    manifest,
+                    state: PluginState::Failed,
+                    plugin_abort_tx: None,
+                    plugin_log_collector_quit_tx: None,
+                    start_time: Some(std::time::Instant::now()),
+                    process_log_handle: None,
+                    process_wait_handle: None,
+                    restart_count: 0,
+                    last_health_check: None,
+                    ipc_sender: None,
+                    auth_code,
+                    logs: Arc::new(RwLock::new(Vec::new())),
+                };
+                
+                {
+                    self.running_plugins
+                        .insert(name.to_string(), running_plugin);
+                }
+                return Err(anyhow::anyhow!(
+                    "failed to start plugin '{}': {}",
+                    name,
+                    e
+                ));
+            },
+            std::result::Result::Ok(p) => p,
+        };
 
         let stdout = process
             .stderr
