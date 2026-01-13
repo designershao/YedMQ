@@ -75,7 +75,6 @@ enum Method {
     // Monitoring (60-69)
     METHOD_GET_STATS = 60; 
     METHOD_RESET_STATS = 61;
-    METHOD_HEALTH_CHECK = 62;	
 }
 
 // Plugin initialization
@@ -238,23 +237,8 @@ message MetricValue {
         google.protobuf.Struct struct_value = 4; 
     } 
 } 
-// Health check 
-message HealthCheckRequest { 
-    optional string service = 1; 
-} 
 
-message HealthCheckResponse { 
-    HealthStatus status = 1; 
-    map<string, string> details = 2; 
-    google.protobuf.Timestamp check_time = 3; 
-} 
-
-enum HealthStatus { 
-    HEALTH_STATUS_UNSPECIFIED = 0; 
-    HEALTH_STATUS_HEALTHY = 1; 
-    HEALTH_STATUS_UNHEALTHY = 2; 
-    HEALTH_STATUS_DEGRADED = 3; 
-}
+message Pong { }
 
 message BatchRequest {
     repeated ProtocolMessage messages = 1;

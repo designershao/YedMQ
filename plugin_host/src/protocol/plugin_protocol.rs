@@ -343,24 +343,8 @@ pub mod metric_value {
         StructValue(::prost_types::Struct),
     }
 }
-/// Health check
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct HealthCheckRequest {
-    #[prost(string, optional, tag = "1")]
-    pub service: ::core::option::Option<::prost::alloc::string::String>,
-}
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct HealthCheckResponse {
-    #[prost(enumeration = "HealthStatus", tag = "1")]
-    pub status: i32,
-    #[prost(map = "string, string", tag = "2")]
-    pub details: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        ::prost::alloc::string::String,
-    >,
-    #[prost(message, optional, tag = "3")]
-    pub check_time: ::core::option::Option<::prost_types::Timestamp>,
-}
+#[derive(Clone, Copy, PartialEq, ::prost::Message)]
+pub struct Pong {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BatchRequest {
     #[prost(message, repeated, tag = "1")]
@@ -477,7 +461,6 @@ pub enum Method {
     /// Monitoring (60-69)
     GetStats = 60,
     ResetStats = 61,
-    HealthCheck = 62,
 }
 impl Method {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -505,7 +488,6 @@ impl Method {
             Self::SubscriptionRemoved => "METHOD_SUBSCRIPTION_REMOVED",
             Self::GetStats => "METHOD_GET_STATS",
             Self::ResetStats => "METHOD_RESET_STATS",
-            Self::HealthCheck => "METHOD_HEALTH_CHECK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -530,7 +512,6 @@ impl Method {
             "METHOD_SUBSCRIPTION_REMOVED" => Some(Self::SubscriptionRemoved),
             "METHOD_GET_STATS" => Some(Self::GetStats),
             "METHOD_RESET_STATS" => Some(Self::ResetStats),
-            "METHOD_HEALTH_CHECK" => Some(Self::HealthCheck),
             _ => None,
         }
     }
@@ -566,38 +547,6 @@ impl AuthAction {
             "AUTH_ACTION_PUBLISH" => Some(Self::Publish),
             "AUTH_ACTION_SUBSCRIBE" => Some(Self::Subscribe),
             "AUTH_ACTION_UNSUBSCRIBE" => Some(Self::Unsubscribe),
-            _ => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum HealthStatus {
-    Unspecified = 0,
-    Healthy = 1,
-    Unhealthy = 2,
-    Degraded = 3,
-}
-impl HealthStatus {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "HEALTH_STATUS_UNSPECIFIED",
-            Self::Healthy => "HEALTH_STATUS_HEALTHY",
-            Self::Unhealthy => "HEALTH_STATUS_UNHEALTHY",
-            Self::Degraded => "HEALTH_STATUS_DEGRADED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "HEALTH_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
-            "HEALTH_STATUS_HEALTHY" => Some(Self::Healthy),
-            "HEALTH_STATUS_UNHEALTHY" => Some(Self::Unhealthy),
-            "HEALTH_STATUS_DEGRADED" => Some(Self::Degraded),
             _ => None,
         }
     }
