@@ -273,9 +273,10 @@ impl PluginManager {
     pub async fn start_heartbeat_check_task(&self) {
         let running_plugins = self.running_plugins.clone();
         let inflight_manager = self.inflight_manager.clone();
+        let interval_secs = self.config.health_check_interval_secs;
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
             loop {
                 interval.tick().await;
@@ -317,14 +318,13 @@ impl PluginManager {
                             }
                             Err(e) => {
                                 inflight_manager.clean_up(&msg_id);
-                                warn!("Plugin {} heartbeat check failed: {}", plugin.name, e);
+                                println!("Plugin {} heartbeat check failed: {}", plugin.name, e);
                                 plugin.increment_health_check_failure();
                             }
                         }
                         if !plugin.is_healthy() {
                             warn!("Plugin {} failed heartbeat check 3 times, marking as Failed", plugin.name);
                             plugin.state = PluginState::Failed;
-                            todo!("Handle plugin failure, e.g., restart or notify");
                         }
                     }
                 }

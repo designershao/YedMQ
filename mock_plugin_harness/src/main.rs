@@ -33,6 +33,16 @@ struct MockConfig {
 
     #[serde(default = "default_authorize_config")]
     pub authorize: AuthorizeConfig,
+
+    #[serde(default = "default_ping_config")]
+    pub ping: PingConfig,
+}
+
+fn default_ping_config() -> PingConfig {
+    PingConfig {
+        respond: true,
+        delay_secs: None,
+    }
 }
 
 fn default_authorize_config() -> AuthorizeConfig {
@@ -118,6 +128,12 @@ struct AuthenticateConfig {
     pub continue_chain: bool,
 
     /// delay in seconds before responding
+    pub delay_secs: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PingConfig {
+    pub respond: bool,
     pub delay_secs: Option<u64>,
 }
 
@@ -457,6 +473,37 @@ async fn handle_request(
         Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config).await,
         Method::OnMessagePublish => handle_on_message_publish_request(request, config).await,
         Method::MessagePublished => handle_message_published_request(request, config).await,
+        Method::Ping => {
+            info!("Handling ping request");
+            if config.ping.respond == false {
+                info!("Not responding to ping as per configuration");
+                return Err(anyhow::anyhow!(
+                    "Not responding to ping as per configuration"
+                ));
+            }
+            // For simplicity, we just respond to ping immediately
+            if config.ping.delay_secs.is_some() {
+                let delay = config.ping.delay_secs.unwrap();
+                info!("Delaying ping response by {} seconds", delay);
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+            }
+            Ok(ProtocolMessage {
+                version: request.version.clone(),
+                r#type: MessageType::Response as i32,
+                id: request.id.clone(),
+                timestamp: Some(yedmq_plugin_host::create_timestamp()),
+                source: "mock_plugin".to_string(),
+                target: "plugin_host".to_string(),
+                method: None,
+                params: None,
+                result: Some(prost_types::Any {
+                    type_url: yedmq_plugin_host::protocol::PING_RESPONSE_TYPE_URL.to_string(),
+                    value: vec![],
+                }),
+                error: None,
+                metadata: HashMap::new(),
+            })
+        },
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 

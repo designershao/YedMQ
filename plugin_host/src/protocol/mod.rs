@@ -45,6 +45,10 @@ pub const BATCH_REQUEST_TYPE_URL: &str = "type.yedmq.com/plugin_protocol.BatchRe
 
 pub const BATCH_RESPONSE_TYPE_URL: &str = "type.yedmq.com/plugin_protocol.BatchResponse";
 
+pub const PING_REQUEST_TYPE_URL: &str = "type.yedmq.com/plugin_protocol.PingRequest";
+
+pub const PING_RESPONSE_TYPE_URL: &str = "type.yedmq.com/plugin_protocol.PingResponse";
+
 impl InitializeRequest {
     pub fn new_from_plugin_host_config(
         config: &crate::plugin_host_config::PluginHostConfig,

@@ -11,6 +11,7 @@ impl Default for MockConfig {
             subscribe: default_subscribe_config(),
             on_message_publish: default_on_message_publish_config(),
             authorize: default_authorize_config(),
+            ping: default_ping_config(),
         }
     }
 }
@@ -31,6 +32,16 @@ pub struct MockConfig {
 
     #[serde(default = "default_authorize_config")]
     pub authorize: AuthorizeConfig,
+
+    #[serde(default = "default_ping_config")]
+    pub ping: PingConfig,
+}
+
+fn default_ping_config() -> PingConfig {
+    PingConfig {
+        respond: true,
+        delay_secs: None,
+    }
 }
 
 fn default_authorize_config() -> AuthorizeConfig {
@@ -77,6 +88,12 @@ fn default_subscribe_config() -> SubscribeConfig {
         results: vec![],
         continue_chain: false,
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct PingConfig {
+    pub respond: bool,
+    pub delay_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

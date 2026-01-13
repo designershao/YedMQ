@@ -13,7 +13,7 @@ use crate::common::{HookConfig, InitFailMode, MockConfig};
 pub mod common;
 
 pub fn get_plugin_host_test_config(
-    sender: tokio::sync::broadcast::Sender<()>,
+    sender: tokio::sync::broadcast::Sender<()>, 
     temp_dir: &tempfile::TempDir,
     local_socket_path: &str,
 ) -> plugin_host_config::PluginHostConfig {
@@ -75,7 +75,7 @@ pub async fn test_plugin_host_start_plugin() {
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -118,7 +118,7 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -161,7 +161,7 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -207,7 +207,7 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -276,7 +276,7 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -331,7 +331,7 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -384,7 +384,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -447,7 +447,7 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -520,7 +520,7 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -598,7 +598,7 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -679,7 +679,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -778,7 +778,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -911,7 +911,7 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -993,7 +993,8 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 }
 
 #[tokio::test]
-pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access()
+pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access(
+)
 {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -1038,7 +1039,7 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1119,7 +1120,8 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 
 #[tokio::test]
 pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_host_should_stop_chain_and_deny_access(
-) {
+)
+{
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
     let mut mock_plugin_config_1 = MockConfig::default();
@@ -1164,7 +1166,7 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1295,7 +1297,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1374,10 +1376,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
     assert_eq!(res.as_ref().unwrap().authenticated, false);
     assert_eq!(
         res.as_ref().unwrap().error_reason,
-        Some(format!(
-            "Plugin {} response timeout",
-            "mock_plugin_harness_1"
-        ))
+        Some(format!("Plugin {} response timeout", "mock_plugin_harness_1"))
     );
 }
 
@@ -1426,7 +1425,7 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1551,7 +1550,7 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1667,7 +1666,7 @@ executable = "non_existent_executable"
             .to_string(),
     );
 
-    let mut plugin_manager =
+    let mut plugin_manager = 
         yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
             .await
             .unwrap();
@@ -1685,4 +1684,159 @@ executable = "non_existent_executable"
         running_plugins.get(plugin_name).unwrap().state,
         yedmq_plugin_host::plugin_manager::PluginState::Failed
     );
+}
+
+#[tokio::test]
+pub async fn test_plugin_responds_to_ping_correctly() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    common::setup_test_plugins(&temp_dir, MockConfig::default());
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let mut plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        &temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    );
+    // Set a short health check interval for testing
+    plugin_host_config.health_check_interval_secs = 1;
+
+    let mut plugin_manager = 
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    // Start heartbeat check
+    plugin_manager.start_heartbeat_check_task().await;
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(20)).await; // wait for a few ping cycles
+
+    let running_plugins = plugin_manager.get_running_plugins();
+    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
+
+    // Plugin should still be running
+    assert_eq!(
+        plugin_process.state,
+        yedmq_plugin_host::plugin_manager::PluginState::Running
+    );
+
+    // Verify logs to see if ping was handled (optional, but good for confirmation)
+    let logs = plugin_process.logs.read().await;
+    let full_logs = logs.join("\n");
+    println!("Plugin Logs:\n{}", full_logs);
+    assert!(full_logs.contains("Handling ping request"));
+}
+
+#[tokio::test]
+pub async fn test_plugin_state_changed_when_ping_timeout() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    // Configure plugin to NOT respond to ping
+    mock_config.ping.respond = false;
+
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let mut plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        &temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .to_string(),
+    );
+    // Set a short health check interval for testing
+    plugin_host_config.health_check_interval_secs = 1;
+
+    let mut plugin_manager = 
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+
+    // Start heartbeat check
+    plugin_manager.start_heartbeat_check_task().await;
+
+    // Wait for > 3 * interval. 
+    // Interval 1s. Timeout 3 counts. so at least 3 seconds.
+    // Also ping request timeout is 5s (hardcoded in PluginManager).
+    // So for each ping, it waits 5s if it times out?
+    // Let's check PluginManager::start_heartbeat_check_task again.
+    // send_and_wait timeout is 5s.
+    // if respond = false, mock plugin might return error immediately or just hang?
+    // In mock_plugin_harness:
+    // if config.ping.respond == false { return Err(...) }
+    // If it returns Err, `handle_request` logs error and continues loop. It does NOT send response.
+    // So `plugin_host` will timeout after 5s.
+    // So 1st ping: starts at 1s, timeouts at 6s. Count = 1.
+    // 2nd ping: starts at 7s (approx), timeouts at 12s. Count = 2.
+    // 3rd ping: starts at 13s, timeouts at 18s. Count = 3 -> Failed.
+    // This is too long for a unit test (18s).
+
+    // Optimization: Configure mock plugin to delay response slightly (e.g., 6s) so it timeouts?
+    // Or just let it not respond.
+    // If I want to make it faster, I need to reduce the timeout in `PluginManager` but that is hardcoded to 5s.
+    // 
+    // However, `PluginManager::start_heartbeat_check_task` loop:
+    // interval.tick().await; // first tick finishes immediately? No, "The first tick completes immediately".
+    // So:
+    // T=0: Tick. Send Ping 1.
+    // If mock plugin returns Err internally, it doesn't send response frame.
+    // Host waits 5s. T=5: Timeout. Count=1.
+    // Loop continues. interval was 1s. We are already past that.
+    // Next tick will happen immediately? "If the task is behind, the next tick will happen immediately".
+    // T=5: Tick. Send Ping 2.
+    // T=10: Timeout. Count=2.
+    // T=10: Tick. Send Ping 3.
+    // T=15: Timeout. Count=3. State -> Failed.
+    // So expected wait time is around 15 seconds. This is acceptable for a test, but maybe I can make it faster if I mock the delay?
+    // 
+    // Actually, if `mock_plugin` returns error to `framed.send(response)`, `plugin_host` just timeouts.
+    // 
+    // If I want to speed this up, I would need to change the 5s timeout in `PluginManager` to be configurable or smaller.
+    // But I shouldn't change too much production code just for tests if not necessary.
+    // I will wait 20s to be safe.
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+
+    let running_plugins = plugin_manager.get_running_plugins();
+    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
+
+    // Plugin should be Failed
+    assert_eq!(
+        plugin_process.state,
+        yedmq_plugin_host::plugin_manager::PluginState::Failed
+    );
+    
+    // Check logs to confirm pings were received (even if not responded to)
+    let logs = plugin_process.logs.read().await;
+    let full_logs = logs.join("\n");
+    assert!(full_logs.contains("Not responding to ping as per configuration"));
 }
