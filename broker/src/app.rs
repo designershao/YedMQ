@@ -1,5 +1,4 @@
 use std::sync::Arc;
-
 use log::{info, warn};
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
@@ -20,6 +19,8 @@ use crate::{
 pub struct YedMQApp {
     pub plugin_manager: Arc<PluginManager>,
 
+    pub service_registry: Arc<ServiceRegistry>,
+
     pub metric: Arc<metric::Metric>,
 
     pub settings: Arc<Settings>,
@@ -27,31 +28,19 @@ pub struct YedMQApp {
     pub session_clock: Arc<SessionClock>,
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
+
+    arbiter_pool: Arc<ArbiterPool>
 }
 
 impl YedMQApp {
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
 
-        //
-
-        // start system service
-        let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
-        let service_registry = ServiceRegistry::start(
-            arbiter_pool.clone(),
-            settings.clone(),
-            app.plugin_manager.clone(),
-            app.session_clock.clone(),
-            app.metric.clone(),
-        )
-        .await;
-        //
-
         // sys topic task
         info!("start sys topic task");
         let mut sys_topic_task =
             metric::SysTopicTask::new(app.metric.clone(), settings.mqtt.sys_topic_interval_secs);
-        if let Some(router) = service_registry.routers.first() {
+        if let Some(router) = app.service_registry.routers.first() {
             sys_topic_task.set_router_actor(router.clone());
         }
         let sys_topic_task_join_handle = actix::spawn(async move {
@@ -78,7 +67,7 @@ impl YedMQApp {
 
         let listener = MqttTcpListener {
             app: app.clone(),
-            arbiter_pool: arbiter_pool.clone(),
+            arbiter_pool: app.arbiter_pool.clone(),
         };
 
         let settings_clone = settings.clone();
@@ -95,7 +84,7 @@ impl YedMQApp {
 
         let mut tcp_tls_listener = MqttTcpTlsListener {
             app: app.clone(),
-            arbiter_pool: arbiter_pool.clone(),
+            arbiter_pool: app.arbiter_pool.clone(),
         };
 
         let settings_clone = settings.clone();
@@ -113,7 +102,7 @@ impl YedMQApp {
 
         let ws_listener = MqttWsListener {
             app: app.clone(),
-            arbiter_pool: arbiter_pool.clone(),
+            arbiter_pool: app.arbiter_pool.clone(),
         };
         let settings_clone = settings.clone();
         let mqtt_ws_listener_join = actix::spawn(async move {
@@ -127,7 +116,7 @@ impl YedMQApp {
 
         let wss_listener = MqttWssListener {
             app: app.clone(),
-            arbiter_pool: arbiter_pool.clone(),
+            arbiter_pool: app.arbiter_pool.clone(),
         };
         let settings_clone = settings.clone();
         let mqtt_wss_listener_join = actix::spawn(async move {
@@ -167,13 +156,16 @@ impl YedMQApp {
             default_authenticate_result: settings.plugin.default_authenticate_result,
         };
 
-        let mut plugin_manager = PluginManager::new(plugin_host_config).await.unwrap();
-        info!("plugin manager load succeed");
+        let mut plugin_manager = PluginManager::new(plugin_host_config).await.expect("plugin manager init failed");
 
         match plugin_manager.start_listener().await {
             Ok(_) => info!("plugin manager listener start succeed"),
             Err(e) => panic!("plugin manager listener start failed: {}", e),
         }
+
+        plugin_manager.start_heartbeat_check_task().await;
+
+        info!("plugin manager load succeed");
 
         let plugin_manager = Arc::new(plugin_manager);
 
@@ -193,6 +185,18 @@ impl YedMQApp {
 
         let join_handles = Mutex::new(vec![]);
 
+        // start system service
+        let arbiter_pool = ArbiterPool::new("app", num_cpus::get());
+        let service_registry = ServiceRegistry::start(
+            arbiter_pool.clone(),
+            settings.clone(),
+            plugin_manager.clone(),
+            session_clock.clone(),
+            metric.clone(),
+        ).await;
+        //
+
+
         // init raft manager
         YedMQApp {
             plugin_manager,
@@ -200,6 +204,8 @@ impl YedMQApp {
             metric,
             session_clock,
             join_handles,
+            service_registry,
+            arbiter_pool: arbiter_pool.clone(),
         }
     }
 }

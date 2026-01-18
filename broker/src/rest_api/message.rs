@@ -8,10 +8,23 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use bytes::Bytes;
 use log::error;
 use serde::Serialize;
-
+use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+use crate::rest_api::cluster::ChangeMembersRequest;
+use crate::router_actor::RoutePacket;
 use super::{Pagination, PaginationListResult, PaginationMeta};
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishMessage {
+    topic: String,
+    payload: String,
+    qos: u8,
+    retain: bool,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,4 +130,23 @@ pub async fn retain_message_list(
         let result = PaginationListResult { meta, data: result };
         (StatusCode::OK, Json(result)).into_response()
     }
+}
+
+pub async fn publish_message(
+    State(app): State<Arc<YedMQApp>>,
+    Path(tenant_id): Path<String>,
+    Json(payload): Json<PublishMessage>,
+) -> impl IntoResponse {
+    let router = app.service_registry.routers.first();
+    let publish_packet =  PublishPacketBuilder::new(
+        payload.topic,
+        Bytes::from(payload.payload),
+    ).qos(payload.qos).build();
+    router.expect("router actor not found").do_send(
+        RoutePacket {
+            tenant_id,
+            packet: MqttPacketV3::Publish(publish_packet),
+        }
+    );
+    StatusCode::OK.into_response()
 }

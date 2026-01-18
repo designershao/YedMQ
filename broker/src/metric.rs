@@ -5,7 +5,6 @@ use std::{
 
 use actix::Addr;
 use bytes::Bytes;
-use log::warn;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 
 use crate::router_actor::{self, RouterActor};
@@ -259,15 +258,9 @@ impl SysTopicTask {
             ];
 
             for packet in packets {
-                if let Err(e) = router_actor_addr
-                    .send(router_actor::RoutePacketToAllTenants {
-                        packet: yedmq_mqtt::MqttPacketV3::Publish(packet),
-                    })
-                    .await
-                    .unwrap()
-                {
-                    warn!("Failed to send packet to all tenants, error: {}", e);
-                }
+                 router_actor_addr.do_send(router_actor::RoutePacketToAllTenants {
+                     packet: yedmq_mqtt::MqttPacketV3::Publish(packet),
+                 });
             }
         }
     }
