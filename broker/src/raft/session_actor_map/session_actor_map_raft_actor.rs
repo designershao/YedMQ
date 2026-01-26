@@ -1,8 +1,8 @@
-use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
 
 use crate::{
-    protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest},
-    session::session_actor_map_storage::SessionActorMapEntry,
+    protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient},
+    session::{session_actor::SessionActor, session_actor_map_storage::SessionActorMapEntry},
 };
 use actix::dev::MessageResponse;
 use actix::{
@@ -1354,3 +1354,42 @@ impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
         }
     }
 }
+
+
+#[derive(Message)]
+#[rtype(result = "Result<HashMap<NodeId, Node>, SessionActorMapRaftError>")]
+pub struct GetClusterNodes;
+
+impl Handler<GetClusterNodes> for SessionActorMapRaftActor {
+    type Result =  Result<HashMap<NodeId, Node>, SessionActorMapRaftError>;
+
+    fn handle(&mut self, _msg: GetClusterNodes, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionActorMapRaftActor is initializing, message will be queued.");
+                Ok(HashMap::new())
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                if let Some(raft_instance) = raft.get() {
+                    let metrics_ref = raft_instance.metrics();
+                    let metrics = metrics_ref.borrow();
+                    let nodes = metrics.membership_config.membership().nodes().map(|node| (node.0.clone(), node.1.clone())).collect();
+                    Ok(nodes)
+                } else {
+                    Ok(HashMap::new())
+                }
+            }
+            ActorState::Failed(e) => {
+                Err(SessionActorMapRaftError::ServiceUnavailable(
+                    e.to_string()))
+            },
+            ActorState::Stopped => {
+                Err(SessionActorMapRaftError::NotReady(
+                    "Actor is stopped".to_string(),
+                ))
+            },
+        }
+    }
+}
+

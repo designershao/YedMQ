@@ -1,9 +1,11 @@
 use std::sync::Arc;
-use log::{info, warn};
+use log::{error, info, warn};
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::arbiter_pool::ArbiterPool;
+use crate::protobuf::cluster_service_client::ClusterServiceClient;
+use crate::raft::NodeId;
 use crate::service_registry::ServiceRegistry;
 use crate::{
     listener::{
@@ -33,6 +35,41 @@ pub struct YedMQApp {
 }
 
 impl YedMQApp {
+
+    pub async fn get_cluster_service_rpc_client(&self, node_id: &NodeId) -> Option<ClusterServiceClient<tonic::transport::Channel>> {
+        let nodes = self
+            .service_registry
+            .session_map_raft
+            .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetClusterNodes)
+            .await.expect("Session actor map is not ready");
+
+        if let Ok(nodes) = nodes {
+            match nodes.get(&node_id) {
+                Some(node) => {
+                    let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", node.rpc_addr.clone()))
+                        .expect("invalid rpc address")
+                        .connect_timeout(std::time::Duration::from_secs(5));
+
+                    match endpoint.connect().await {
+                        Ok(channel) => Some(ClusterServiceClient::new(channel)),
+                        Err(e) => {
+                            warn!("failed to connect to rpc client {}: {}", node_id, e);
+                            None
+                        }
+                    }
+                }
+                None => {
+                    warn!("node id {} not found in cluster nodes", node_id);
+                    None
+                }
+            }
+        } else {
+            error!("Session acotor map get cluster nodes error: {:?}", nodes.err());
+            None
+        }
+
+    }
+
     pub async fn start(app: Arc<YedMQApp>) {
         let settings = app.settings.clone();
 

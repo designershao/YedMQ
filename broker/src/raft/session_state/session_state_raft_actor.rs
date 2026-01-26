@@ -2455,3 +2455,40 @@ impl Handler<GetRaftMetrics> for SessionStateRaftActor {
         }
     }
 }
+
+#[derive(Message)]
+#[rtype(result = "Result<Vec<NodeId>, SessionStateRaftError>")]
+pub struct GetClusterNodes;
+
+impl Handler<GetClusterNodes> for SessionStateRaftActor {
+    type Result =  Result<Vec<NodeId>, SessionStateRaftError>;
+
+    fn handle(&mut self, _msg: GetClusterNodes, _: &mut Self::Context) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                Ok(Vec::new())
+            }
+            ActorState::Running => {
+                let raft = self.raft.clone();
+                if let Some(raft_instance) = raft.get() {
+                    let metrics_ref = raft_instance.metrics();
+                    let metrics = metrics_ref.borrow();
+                    let nodes = metrics.membership_config.membership().nodes().map(|node| node.0.clone()).collect();
+                    Ok(nodes)
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            ActorState::Failed(e) => {
+                Err(SessionStateRaftError::ServiceUnavailable(
+                    e.to_string()))
+            },
+            ActorState::Stopped => {
+                Err(SessionStateRaftError::NotReady(
+                    "Actor is stopped".to_string(),
+                ))
+            },
+        }
+    }
+}
