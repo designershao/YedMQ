@@ -86,6 +86,11 @@ pub enum SessionActorMapRaftError {
         current_version: SessionVersion,
         existing_version: SessionVersion,
     },
+
+    #[error("Tenant not found: {tenant_id}")]
+    TenantNotFound {
+        tenant_id: String,
+    },
 }
 
 pub struct SessionActorMapRaftActor {
@@ -1263,6 +1268,89 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
                 let e = e.clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(
+    result = "Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>"
+)]
+pub struct GetClientListWithPagination {
+    pub tenant_id: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+pub struct GetClientListWithPaginationResponse {
+    pub client_list: Vec<(String, NodeId)>,
+    pub total: usize,
+}
+
+impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
+    type Result =
+        ResponseActFuture<Self, Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>>;
+
+    fn handle(
+        &mut self,
+        msg: GetClientListWithPagination,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        match &self.state {
+            ActorState::Initializing => {
+                log::warn!("SessionStateRaftActor is initializing, message will be queued.");
+                Box::pin(
+                    async move {
+                        Err(SessionActorMapRaftError::NotReady(
+                            "Initializing".to_string(),
+                        ))
+                    }
+                    .into_actor(self),
+                )
+            }
+            ActorState::Running => {
+                let session_actor_map_storage = self.session_actor_map_storage.clone();
+                Box::pin(
+                    async move {
+                        if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
+                            let storage = session_actor_map_storage.read();
+                            let entries = storage.get_client_id_list_with_pagination(
+                                &msg.tenant_id,
+                                msg.offset,
+                                msg.limit,
+                            );
+
+                            if let Some(entries) = entries {
+                                Ok(GetClientListWithPaginationResponse {
+                                    client_list: entries.client_list,
+                                    total: entries.total,
+                                })
+                            } else {
+                                Err(SessionActorMapRaftError::TenantNotFound { tenant_id: msg.tenant_id.clone() })
+                            }
+
+                        } else {
+                            Err(SessionActorMapRaftError::NotInitialized)
+                        }
+                    }
+                    .into_actor(self),
+                )
+            }
+            ActorState::Failed(e) => {
+                let e = e.clone();
+                Box::pin(
+                    async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
+                        .into_actor(self),
+                )
+            }
+            ActorState::Stopped => Box::pin(
+                async {
+                    Err(SessionActorMapRaftError::NotReady(
+                        "Actor is stopped".to_string(),
+                    ))
+                }
+                .into_actor(self),
+            ),
         }
     }
 }

@@ -657,4 +657,52 @@ impl ClusterService for ClusterServiceImpl {
             error: None,
         }))
     }
+
+    async fn get_session_info(
+        &self,
+        request: Request<crate::protobuf::GetSessionInfoRequest>,
+    ) -> Result<Response<crate::protobuf::GetSessionInfoResponse>, Status> {
+        let session_manager_actor_addr = SessionManagerActor::from_registry();
+        let inner = request.into_inner();
+
+        let result = session_manager_actor_addr
+            .send(crate::session::session_manager_actor::GetSessionInfo {
+                tenant_id: inner.tenant_id.clone(),
+                client_id: inner.client_id.clone(),
+            })
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get session info: {}", e)))?
+            .map_err(|e| match e {
+                crate::session::session_manager_actor::SessionManagerError::SessionNotExisted(
+                    client_id,
+                ) => Status::not_found(format!("Session not existed: {}", client_id)),
+                _ => Status::internal(format!("Error in getting session info: {}", e)),
+            })?;
+
+        let session_state = match result.session_state {
+            crate::session::session_actor::ActivityState::Active => crate::protobuf::ActivityState::Active,
+            crate::session::session_actor::ActivityState::Inactive => crate::protobuf::ActivityState::Inactive,
+        };
+
+        let payload = crate::protobuf::SessionInfo {
+            tenant_identifier: result.tenant_identifier,
+            client_identifier: result.client_identifier,
+            subscription_topics: result.subscription_topics,
+            session_state: session_state.into(),
+            ip_address: result.ip_address,
+            connected: result.connected,
+            connected_at: result.connected_at,
+            created_at: result.created_at,
+            disconnected_at: result.disconnected_at,
+            messages_received: result.messages_received,
+            messages_sent: result.messages_sent,
+        };
+
+        Ok(Response::new(crate::protobuf::GetSessionInfoResponse {
+            success: true,
+            error: None,
+            payload: Some(payload),
+        }))
+
+    }
 }

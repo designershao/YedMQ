@@ -117,6 +117,10 @@ pub async fn run_rest_api_task(
             axum::routing::delete(message::clean_retain_message),
         )
         .route(
+            "/api/v1/:tenant_id/messages",
+            axum::routing::post(message::publish_message),
+        )
+        .route(
             "/api/v1/:tenant_id/clients",
             axum::routing::get(client::client_list),
         )

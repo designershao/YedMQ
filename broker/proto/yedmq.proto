@@ -74,6 +74,9 @@ service ClusterService {
     // Force stop session actor
     rpc ForceStopSessionActor(ForceStopSessionActorRequest) returns (ForceStopSessionActorResponse);
 
+    // Get session info
+    rpc GetSessionInfo(GetSessionInfoRequest) returns (GetSessionInfoResponse);
+
 }
 
 // Request to store an offline message for a client.
@@ -375,4 +378,49 @@ message ForceStopSessionActorRequest {
 message ForceStopSessionActorResponse {
     bool success = 1; // Operation success flag
     ErrorDetail error = 2; // Error details if any
+}
+
+message GetSessionInfoRequest {
+    string tenant_id = 1; // Tenant identifier
+    string client_id = 2; // Client identifier
+}
+
+// Session activity state
+enum ActivityState {
+    ACTIVITY_STATE_UNSPECIFIED = 0;
+    ACTIVITY_STATE_ACTIVE = 1;
+    ACTIVITY_STATE_INACTIVE = 2;
+    ACTIVITY_STATE_DISCONNECTED = 3;
+}
+
+message SessionInfo {
+
+    string tenant_identifier = 1; // tenant identifier
+    
+    string client_identifier = 2; // client identifier
+    
+    repeated string subscription_topics = 3; // subscription topics
+    
+    ActivityState session_state = 4; // session activity state
+
+    optional string ip_address = 5; // client ip address
+    
+    bool connected = 6; // is client connected
+    
+    optional uint64 connected_at = 7; // latest client connected timestamp in milliseconds
+    
+    uint64 created_at = 8; // session created timestamp in milliseconds
+    
+    optional uint64 disconnected_at = 9; // latest client disconnected timestamp in milliseconds
+    
+    uint64 messages_received = 10; // total mqtt messages received
+    
+    uint64 messages_sent = 11; // total mqtt messages sent
+
+}
+
+message GetSessionInfoResponse {
+    bool success = 1; // Operation success flag
+    ErrorDetail error = 2; // Error details if any
+    optional SessionInfo payload = 3; // Session metrics data
 }

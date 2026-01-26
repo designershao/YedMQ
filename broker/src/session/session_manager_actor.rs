@@ -27,7 +27,7 @@ use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
-    session_actor::{GetSessionInfo, SessionActorMessage, SessionInfo},
+    session_actor::{SessionActorMessage, SessionInfo},
     session_actor_map_storage::{SessionClock, SessionVersion},
     session_state_storage::SessionState,
     WillMessage,
@@ -533,6 +533,38 @@ impl Handler<SendMessageToSession> for SessionManagerActor {
 }
 
 #[derive(Message)]
+#[rtype(result = "Result<SessionInfo, SessionManagerError>")]
+pub struct GetSessionInfo {
+    pub tenant_id: String,
+    pub client_id: String,
+}
+
+impl Handler<GetSessionInfo> for SessionManagerActor {
+    type Result = ResponseFuture<Result<SessionInfo, SessionManagerError>>;
+    fn handle(
+        &mut self,
+        msg: GetSessionInfo,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let sessions = self.sessions.get_inner().clone();
+        Box::pin(async move {
+            match sessions.get(msg.tenant_id.as_str()) {
+                None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
+                Some(tenant_sessions) => {
+                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
+                        let session_info_recipient = session.get_session_info_recipient.clone();
+                        let session_info = session_info_recipient.send(crate::session::session_actor::GetSessionInfo {}).await?;
+                        Ok(session_info)
+                    } else {
+                        Err(SessionManagerError::SessionNotExisted(msg.client_id))
+                    }
+                }
+            }
+        })
+    }
+}
+
+#[derive(Message)]
 #[rtype(result = "Result<(u64,Vec<SessionInfo>), SessionManagerError>")]
 pub struct GetSessionInfoListWithPagination {
     pub tenant_id: String,
@@ -560,7 +592,7 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
                         .take(msg.limit_param as usize);
                     for session in iter {
                         let session_info_recipient = session.get_session_info_recipient.clone();
-                        let session_info = session_info_recipient.send(GetSessionInfo {}).await?;
+                        let session_info = session_info_recipient.send(crate::session::session_actor::GetSessionInfo {}).await?;
                         session_infos.push(session_info);
                     }
                     Ok((total_len as u64, session_infos))

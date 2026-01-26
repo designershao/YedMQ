@@ -85,6 +85,11 @@ impl SessionClock {
     }
 }
 
+pub struct ClientListWithPagination {
+    pub client_list: Vec<(String, NodeId)>,
+    pub total: usize,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionVersion {
     pub counter: u64,
@@ -266,6 +271,34 @@ impl SessionActorMapStorage {
         let serializable: SerializableSessionActorMapStorage =
             serde_json::from_slice(&snapshot).unwrap();
         Self::from_serializable(serializable)
+    }
+
+    pub fn get_client_id_list_with_pagination(
+        &self,
+        tenant_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Option<ClientListWithPagination> {
+        if let Some(tenant_map) = self.inner.get(tenant_id) {
+            let total = tenant_map.len();
+            let clients: Vec<String> = tenant_map.keys().cloned().collect();
+            let paginated_clients = clients
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .map(|client_id| {
+                    let node_id = tenant_map.get(&client_id).unwrap().node_id;
+                    (client_id, node_id)
+                }).collect::<Vec<(String, NodeId)>>();
+            Some(
+                ClientListWithPagination {
+                    client_list: paginated_clients,
+                    total
+                }
+            )
+        } else {
+            None
+        }
     }
 }
 

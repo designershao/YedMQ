@@ -8,16 +8,16 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use axum_macros::debug_handler;
 use bytes::Bytes;
 use log::error;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
-use crate::rest_api::cluster::ChangeMembersRequest;
 use crate::router_actor::RoutePacket;
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PublishMessage {
     topic: String,
@@ -132,6 +132,7 @@ pub async fn retain_message_list(
     }
 }
 
+#[debug_handler]
 pub async fn publish_message(
     State(app): State<Arc<YedMQApp>>,
     Path(tenant_id): Path<String>,

@@ -29,6 +29,7 @@ yedmq-mqtt = { version = "0.1.0", path = "../mqtt" }
 yedmq-plugin-host = { version = "0.1.0", path = "../plugin_host" }
 libloading = "0.8.5"
 axum = "0.7.9"
+axum-macros = "0.5.0"
 base64 = "0.22.1"
 openraft = { version = "0.9.20", features = ["serde", "storage-v2"] }
 rocksdb = "0.22.0"

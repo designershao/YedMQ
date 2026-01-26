@@ -1,13 +1,13 @@
 use actix::{
     dev::{ContextFutureSpawner, MessageResponse},
     fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError,
-    Message, Recipient, ResponseFuture, SpawnHandle, SystemService, WrapFuture,
+    Message, Recipient, ResponseFuture, SystemService, WrapFuture,
 };
 use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::{cmp, net::SocketAddr, sync::Arc, time::Duration};
+use std::{cmp, net::SocketAddr, sync::{Arc, atomic::AtomicU64}, time::Duration};
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -58,6 +58,85 @@ use crate::timer_actor::{
     RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType,
 };
 
+pub struct SessionMetrics {
+
+    pub ip_address: Option<String>, // client ip address
+
+    pub connected: bool, // is client connected
+
+    pub connected_at: Option<u64>, // latest client connected timestamp in milliseconds
+
+    pub created_at: u64, // session created timestamp in milliseconds
+
+    pub disconnected_at: Option<u64>, // latest client disconnected timestamp in milliseconds
+
+    pub messages_received: AtomicU64, // total mqtt messages received
+
+    pub messages_sent: AtomicU64, // total mqtt messages sent
+
+}
+
+impl SessionMetrics {
+
+    pub fn new() -> SessionMetrics {
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        SessionMetrics {
+
+            ip_address: None,
+
+            connected: true,
+
+            connected_at: Some(now),
+
+            created_at: now,
+
+            disconnected_at: None,
+
+            messages_received: AtomicU64::new(0),
+
+            messages_sent: AtomicU64::new(0),
+
+        }
+
+    }
+
+    pub fn set_connected(&mut self, ip_address: String) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.connected = true;
+        self.connected_at = Some(now);
+        self.disconnected_at = None;
+        self.ip_address = Some(ip_address);
+    }
+
+    pub fn set_disconnected(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        self.connected = false;
+        self.connected_at = None;
+        self.disconnected_at = Some(now);
+        self.ip_address = None;
+    }
+
+    pub fn increase_messages_received(&self) {
+        self.messages_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn increase_messages_sent(&self) {
+        self.messages_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+}
+
 pub struct Client {
     pub tenant_id: String,
 
@@ -91,6 +170,7 @@ fn get_protobuf_now_timestamp() -> Timestamp {
 }
 
 pub struct SessionInfo {
+
     pub tenant_identifier: String,
 
     pub client_identifier: String,
@@ -98,6 +178,21 @@ pub struct SessionInfo {
     pub subscription_topics: Vec<String>,
 
     pub session_state: ActivityState,
+
+    pub created_at: u64,
+
+    pub connected_at: Option<u64>,
+
+    pub disconnected_at: Option<u64>,
+
+    pub messages_received: u64,
+
+    pub messages_sent: u64,
+
+    pub connected: bool,
+
+    pub ip_address: Option<String>,
+
 }
 
 impl<A, M> MessageResponse<A, M> for SessionInfo
@@ -241,6 +336,9 @@ pub struct SessionActor {
     metric: Arc<Metric>,
 
     session_version: SessionVersion,
+
+    session_metrics: Arc<SessionMetrics>,
+
 }
 
 impl Actor for SessionActor {
@@ -722,6 +820,9 @@ impl SessionActor {
         metric: Arc<Metric>,
         session_version: SessionVersion,
     ) -> Self {
+        let mut session_metrics = SessionMetrics::new();
+        session_metrics.set_connected(peer_addr.ip().to_string());
+
         SessionActor {
             plugin_manager,
             conn_recipient: Some(connection_actor_addr),
@@ -744,6 +845,7 @@ impl SessionActor {
             timer_actor,
             metric,
             session_version,
+            session_metrics: Arc::new(session_metrics),
         }
     }
 
@@ -905,6 +1007,7 @@ impl SessionActor {
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.metric.increase_messages_received();
+        self.session_metrics.increase_messages_received();
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
@@ -1521,6 +1624,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             SessionActorMessage::OutboundMessage(packet) => {
                 if let MqttPacketV3::Publish(mut publish_packet) = packet {
                     self.metric.increase_messages_sent();
+                    self.session_metrics.increase_messages_sent();
                     let tenant_id = self.tenant_id.clone();
                     let client_id = self.client_id.clone();
                     let clean_session = self.clean_session;
@@ -1841,6 +1945,7 @@ impl Handler<GetSessionInfo> for SessionActor {
         let activity_state = self.activity_state;
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
+        let session_metric = self.session_metrics.clone();
 
         let future = async move {
             SessionInfo {
@@ -1854,6 +1959,13 @@ impl Handler<GetSessionInfo> for SessionActor {
                     .cloned()
                     .collect(),
                 session_state: activity_state,
+                created_at: session_metric.created_at,
+                connected_at: session_metric.connected_at,
+                disconnected_at: session_metric.disconnected_at,
+                messages_received: session_metric.messages_received.load(std::sync::atomic::Ordering::Relaxed),
+                messages_sent: session_metric.messages_sent.load(std::sync::atomic::Ordering::Relaxed),
+                connected: session_metric.connected,
+                ip_address: session_metric.ip_address.clone(),
             }
         };
 
