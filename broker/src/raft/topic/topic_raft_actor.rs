@@ -1194,7 +1194,7 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                                         data: res
                                             .1
                                             .iter()
-                                            .map(|(topic, client_id, qos)| TopicInfo {
+                                            .map(|(client_id, topic, qos)| TopicInfo {
                                                 topic: topic.clone(),
                                                 client_id: client_id.clone(),
                                                 qos: *qos,

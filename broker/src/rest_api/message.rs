@@ -11,10 +11,12 @@ use axum::{
 use axum_macros::debug_handler;
 use bytes::Bytes;
 use log::error;
+use openraft::entry::payload;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
 use crate::router_actor::RoutePacket;
+use base64::{engine::general_purpose, Engine as _};
 use super::{Pagination, PaginationListResult, PaginationMeta};
 
 #[derive(Serialize, Deserialize)]
@@ -24,6 +26,7 @@ pub struct PublishMessage {
     payload: String,
     qos: u8,
     retain: bool,
+    payload_encoding: Option<String>, // e.g., "base64" "plain" , if not present, plain is assumed
 }
 
 #[derive(Serialize)]
@@ -138,10 +141,34 @@ pub async fn publish_message(
     Path(tenant_id): Path<String>,
     Json(payload): Json<PublishMessage>,
 ) -> impl IntoResponse {
+    println!("Received publish request: tenant_id={}, topic={}, qos={}, retain={}, payload_encoding={:?}", tenant_id, payload.topic, payload.qos, payload.retain, payload.payload_encoding);
+    let playload_encoding = payload.payload_encoding.unwrap_or("plain".to_string());
+
+    let payload_bytes = if playload_encoding == "base64" {
+        match general_purpose::STANDARD.decode(&payload.payload) {
+            Ok(bytes) => Bytes::from(bytes),
+            Err(_) => {
+                let error_response = super::ErrorResponse {
+                    code: 4,
+                    message: "invalid base64 payload".to_string(),
+                };
+                return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+            }
+        }
+    } else if playload_encoding == "plain" {
+        Bytes::from(payload.payload)
+    } else {
+        let error_response = super::ErrorResponse {
+            code: 5,
+            message: "unsupported payload encoding".to_string(),
+        };
+        return (StatusCode::BAD_REQUEST, Json(error_response)).into_response();
+    };
+
     let router = app.service_registry.routers.first();
     let publish_packet =  PublishPacketBuilder::new(
         payload.topic,
-        Bytes::from(payload.payload),
+        payload_bytes,
     ).qos(payload.qos).build();
     router.expect("router actor not found").do_send(
         RoutePacket {
