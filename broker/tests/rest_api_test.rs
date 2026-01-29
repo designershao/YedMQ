@@ -400,6 +400,7 @@ async fn test_api_publish_message_with_base64_payload() {
     assert_eq!(received_payload.to_vec(), expected_payload.as_ref());
 }
 
+
 #[actix::test]
 async fn test_api_topics_list() {
     let context = setup_instance().await;
@@ -448,4 +449,60 @@ async fn test_api_topics_list() {
     assert!(found, "warmup-client-topics not found in topic list");
 
     m_client.disconnect().await.unwrap();
+}
+
+#[actix::test]
+async fn test_api_client_kickoff() {
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+
+    ensure_cluster_initialized(api_addr).await;
+
+    let client_id = "kickoff-test-client";
+    let broker_tcp_addr = &context.settings.listener.tcp.external;
+    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let mut mqtt_options = rumqttc::MqttOptions::new(client_id, "127.0.0.1", port);
+    mqtt_options.set_keep_alive(Duration::from_secs(5));
+    let (_m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
+
+    // Channel to detect disconnection
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+    tokio::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(event) => {
+                    log::info!("Event: {:?}", event);
+                },
+                Err(e) => {
+                    let _ = tx.send(e).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    // Wait for connection to be established
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let client_http = reqwest::Client::new();
+    // Path: /api/v1/:tenant_id/clients/:client_id/kickoff
+    let url = format!("http://{}/api/v1/public/clients/{}/kickoff", api_addr, client_id);
+
+    let resp = client_http
+        .post(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify MQTT client is disconnected
+    let disconnect_err = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        .await
+        .expect("Timeout waiting for client disconnection")
+        .expect("Channel closed");
+
+    log::info!("Client disconnected as expected: {:?}", disconnect_err);
 }

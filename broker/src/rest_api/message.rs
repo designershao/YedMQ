@@ -11,7 +11,6 @@ use axum::{
 use axum_macros::debug_handler;
 use bytes::Bytes;
 use log::error;
-use openraft::entry::payload;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
