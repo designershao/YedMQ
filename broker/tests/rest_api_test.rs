@@ -259,6 +259,59 @@ async fn test_api_clients_list() {
 }
 
 #[actix::test]
+async fn test_api_clients_list_persistent_session() {
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+
+    ensure_cluster_initialized(api_addr).await;
+
+    // Warm up: connect an MQTT client to ensure 'public' tenant exists
+    let broker_tcp_addr = &context.settings.listener.tcp.external;
+    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-clients", "127.0.0.1", port);
+    mqtt_options.set_keep_alive(Duration::from_secs(5));
+    mqtt_options.set_clean_session(false);
+    let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
+    tokio::spawn(async move { while let Ok(_) = eventloop.poll().await {} });
+
+    // Wait for connection and session registration
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    m_client.disconnect().await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let client = reqwest::Client::new();
+    // Use 'public' tenant as connection.rs defaults to it
+    let url = format!("http://{}/api/v1/public/clients", api_addr);
+
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("data").is_some());
+
+    let data = body.get("data").unwrap().as_array().unwrap();
+    let client_info = data[0].as_object().unwrap();
+    println!("Client Info: {:?}", client_info);
+    assert_eq!(
+        client_info.get("clientIdentifier").unwrap().as_str().unwrap(),
+        "warmup-client-clients"
+    );
+    assert_eq!(
+        client_info.get("connected").unwrap().as_bool().unwrap(),
+        false
+    );
+    assert!(client_info.get("disconnectedAt").unwrap().as_f64().unwrap() > 0.0);
+
+}
+
+#[actix::test]
 async fn test_api_publish_message_with_plain_payload() {
     let context = setup_instance().await;
     let api_addr = &context.settings.listener.api.external;

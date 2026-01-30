@@ -7,7 +7,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::{cmp, net::SocketAddr, sync::{Arc, atomic::AtomicU64}, time::Duration};
+use std::{cmp, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, AtomicU64}}, time::Duration};
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -60,15 +60,15 @@ use crate::timer_actor::{
 
 pub struct SessionMetrics {
 
-    pub ip_address: Option<String>, // client ip address
+    pub ip_address: std::sync::RwLock<Option<String>>, // client ip address
 
-    pub connected: bool, // is client connected
+    pub connected: AtomicBool, // is client connected
 
-    pub connected_at: Option<u64>, // latest client connected timestamp in milliseconds
+    pub connected_at: AtomicU64, // latest client connected timestamp in milliseconds, 0 means never connected
 
     pub created_at: u64, // session created timestamp in milliseconds
 
-    pub disconnected_at: Option<u64>, // latest client disconnected timestamp in milliseconds
+    pub disconnected_at: AtomicU64, // latest client disconnected timestamp in milliseconds, 0 means never disconnected
 
     pub messages_received: AtomicU64, // total mqtt messages received
 
@@ -77,6 +77,35 @@ pub struct SessionMetrics {
 }
 
 impl SessionMetrics {
+
+    pub fn get_ipaddress(&self) -> Option<String> {
+        match self.ip_address.read() {
+            Ok(guard) => guard.clone(),
+            Err(_) => None,
+        }
+    }
+
+    pub fn get_connected(&self) -> bool {
+        self.connected.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn get_connected_at(&self) -> Option<u64> {
+        let connected_at =self.connected_at.load(std::sync::atomic::Ordering::Relaxed);
+        if connected_at == 0 {
+            None
+        } else {
+            Some(connected_at)
+        }
+    }
+
+    pub fn get_disconnected_at(&self) -> Option<u64> {
+        let disconnected_at =self.disconnected_at.load(std::sync::atomic::Ordering::Relaxed);
+        if disconnected_at == 0 {
+            None
+        } else {
+            Some(disconnected_at)
+        }
+    }
 
     pub fn new() -> SessionMetrics {
 
@@ -87,15 +116,15 @@ impl SessionMetrics {
 
         SessionMetrics {
 
-            ip_address: None,
+            ip_address: std::sync::RwLock::new(None),
 
-            connected: true,
+            connected: AtomicBool::new(true),
 
-            connected_at: Some(now),
+            connected_at: AtomicU64::new(0),
 
             created_at: now,
 
-            disconnected_at: None,
+            disconnected_at: AtomicU64::new(0),
 
             messages_received: AtomicU64::new(0),
 
@@ -105,26 +134,26 @@ impl SessionMetrics {
 
     }
 
-    pub fn set_connected(&mut self, ip_address: String) {
+    pub fn set_connected(&self, ip_address: String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        self.connected = true;
-        self.connected_at = Some(now);
-        self.disconnected_at = None;
-        self.ip_address = Some(ip_address);
+        self.connected.store(true, std::sync::atomic::Ordering::Release);
+        self.connected_at.store(now, std::sync::atomic::Ordering::Release);
+        self.disconnected_at.store(0, std::sync::atomic::Ordering::Release);
+        *self.ip_address.write().unwrap() = Some(ip_address);
     }
 
-    pub fn set_disconnected(&mut self) {
+    pub fn set_disconnected(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        self.connected = false;
-        self.connected_at = None;
-        self.disconnected_at = Some(now);
-        self.ip_address = None;
+        self.connected.store(false, std::sync::atomic::Ordering::Release);
+        self.connected_at.store(0, std::sync::atomic::Ordering::Release);
+        self.disconnected_at.store(now, std::sync::atomic::Ordering::Release);
+        *self.ip_address.write().unwrap() = None;
     }
 
     pub fn increase_messages_received(&self) {
@@ -1516,6 +1545,7 @@ impl SessionActor {
 
         if !self.clean_session {
             self.set_state(ctx, ActivityState::Inactive);
+            self.session_metrics.set_disconnected();
         } else {
             self.force_stop(ctx);
         }
@@ -1744,6 +1774,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         ));
                         if !actor.clean_session {
                             actor.set_state(ctx, ActivityState::Inactive);
+                            actor.session_metrics.set_disconnected();
                         } else {
                             actor.force_stop(ctx);
                         }
@@ -1828,6 +1859,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                             if connection_already_stopped {
                                 if !act.clean_session {
                                     act.set_state(ctx, ActivityState::Inactive);
+                                    act.session_metrics.set_disconnected();
                                 } else {
                                     info!("force disconnect, force stop session {}", act.client_id);
                                     act.force_stop(ctx);
@@ -1842,6 +1874,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.send_will_message(ctx, |_, actor, ctx| {
                     if !actor.clean_session {
                         actor.set_state(ctx, ActivityState::Inactive);
+                        actor.session_metrics.set_disconnected();
                     } else {
                         actor.force_stop(ctx);
                     }
@@ -1854,7 +1887,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 clean_session,
                 username,
                 will_message,
-                ..
+                socket_addr
             } => {
                 self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);
@@ -1862,6 +1895,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.clean_session = clean_session;
                 self.keep_alive = keep_alive;
                 self.username = username;
+
+                self.session_metrics.set_connected(socket_addr.to_string());
 
                 // start consume pending messages
                 let session_state = self.state.clone();
@@ -1925,6 +1960,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             SessionActorMessage::ClientDisconnected => {
                 if !self.clean_session {
                     self.set_state(ctx, ActivityState::Inactive);
+                    self.session_metrics.set_disconnected();
                 } else {
                     self.force_stop(ctx);
                 }
@@ -1960,12 +1996,12 @@ impl Handler<GetSessionInfo> for SessionActor {
                     .collect(),
                 session_state: activity_state,
                 created_at: session_metric.created_at,
-                connected_at: session_metric.connected_at,
-                disconnected_at: session_metric.disconnected_at,
+                connected_at: session_metric.get_connected_at(),
+                disconnected_at: session_metric.get_disconnected_at(),
                 messages_received: session_metric.messages_received.load(std::sync::atomic::Ordering::Relaxed),
                 messages_sent: session_metric.messages_sent.load(std::sync::atomic::Ordering::Relaxed),
-                connected: session_metric.connected,
-                ip_address: session_metric.ip_address.clone(),
+                connected: session_metric.get_connected(),
+                ip_address: session_metric.get_ipaddress(),
             }
         };
 
