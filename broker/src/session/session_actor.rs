@@ -402,6 +402,16 @@ impl Actor for SessionActor {
             };
             // Only recover subscriptions if NOT clean session
             if !clean_session {
+                // send update session state message to raft actor
+                let _ = session_state_raft_actor.send(
+                    crate::raft::session_state::session_state_raft_actor::UpdateSessionConnectionState {
+                        tenant_id: tenant_id.clone(),
+                        client_id: client_id.clone(),
+                        disconnected_at: None,
+                    }
+                ).await;
+                // 
+
                 for (topic, qos) in subscriptions {
                     info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
                     let qos_v = match qos {
@@ -849,7 +859,7 @@ impl SessionActor {
         metric: Arc<Metric>,
         session_version: SessionVersion,
     ) -> Self {
-        let mut session_metrics = SessionMetrics::new();
+        let session_metrics = SessionMetrics::new();
         session_metrics.set_connected(peer_addr.ip().to_string());
 
         SessionActor {
