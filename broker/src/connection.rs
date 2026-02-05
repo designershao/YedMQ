@@ -145,7 +145,7 @@ impl NetworkSender {
         }
 
         let len = batch.len();
-        writer.write_all(&batch).await?;
+        writer.write_all(batch).await?;
         writer.flush().await?;
 
         metric.increase_bytes_sent(len as u64);
@@ -454,13 +454,11 @@ where
                                         error!("send connack packet error: {}", e);
                                     }
                                     read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("handle initial connect error".to_string())));
-                                    return;
                                 }
                             }
                         }
                         _ => {
                             error!("client first packet is not connect packet");
-                            return;
                         }
                     }
                 }
@@ -817,11 +815,8 @@ where
                 Ok(())
             }
             ConnectionActorMessage::Disconnect(reason) => {
-                match reason {
-                    DisconnectReason::Normal => {
-                        self.disconnected_normally = true;
-                    }
-                    _ => {}
+                if let DisconnectReason::Normal = reason {
+                    self.disconnected_normally = true;
                 }
 
                 self.flush_batch();

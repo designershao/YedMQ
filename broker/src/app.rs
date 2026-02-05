@@ -44,7 +44,7 @@ impl YedMQApp {
             .await.expect("Session actor map is not ready");
 
         if let Ok(nodes) = nodes {
-            match nodes.get(&node_id) {
+            match nodes.get(node_id) {
                 Some(node) => {
                     let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", node.rpc_addr.clone()))
                         .expect("invalid rpc address")

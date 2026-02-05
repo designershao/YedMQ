@@ -101,6 +101,7 @@ use crate::metric::Metric;
 use crate::raft::payload::PayloadStore;
 use crate::timer_actor::TimerActor;
 
+#[derive(Default)]
 pub struct SessionManagerActor {
     sessions: SessionRegistry,
 
@@ -154,23 +155,6 @@ impl Handler<Initialize> for SessionManagerActor {
     }
 }
 
-impl Default for SessionManagerActor {
-    fn default() -> Self {
-        Self {
-            sessions: SessionRegistry::default(),
-            plugin_manager: None,
-            session_lifecycle_tx: None,
-            settings: None,
-            session_clock: None,
-            current_node_id: 0,
-            router_actors: None,
-            arbiter_pool: None,
-            payload_store: None,
-            timer_actor: None,
-            metric: None,
-        }
-    }
-}
 
 impl Actor for SessionManagerActor {
     type Context = Context<Self>;
@@ -1083,7 +1067,7 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
                     Ok(())
                 }
                 None => {
-                    return Err(SessionManagerError::TenantNotExisted(msg.tenant_id));
+                    Err(SessionManagerError::TenantNotExisted(msg.tenant_id))
                 }
             }
         };

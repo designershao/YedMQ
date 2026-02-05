@@ -183,8 +183,8 @@ impl SessionStateStorage {
                 .inflight
                 .register_with_rx_packet(packet_id, qos, packet_key);
             drop(state);
-            let freed_key = old_key.and_then(|k| self.dec_ref(&k));
-            freed_key
+            
+            old_key.and_then(|k| self.dec_ref(&k))
         } else {
             None
         }

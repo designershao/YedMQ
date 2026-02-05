@@ -161,7 +161,7 @@ pub async fn client_list(
                         code: 3,
                         message: format!("tenant {} not existed", tenant_id),
                     };
-                    return (StatusCode::NOT_FOUND, Json(error_response)).into_response();
+                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
                 }
                 _ => {
                     let error_response = super::ErrorResponse {

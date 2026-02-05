@@ -293,7 +293,7 @@ impl RouterActor {
             packet
         );
         if let MqttPacketV3::Publish(publish_packet) = packet {
-            if let Some(recipient) = session_registry.get_session(&tenant_id, &client_id) {
+            if let Some(recipient) = session_registry.get_session(tenant_id, client_id) {
                 recipient.do_send(
                     crate::session::session_actor::SessionActorMessage::OutboundMessage(
                         MqttPacketV3::Publish(publish_packet),

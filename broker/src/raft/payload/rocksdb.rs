@@ -43,7 +43,7 @@ impl PayloadStore for RocksDBPayloadStore {
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
-        .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| PayloadError::Io(std::io::Error::other(e)))??;
 
         Ok(())
     }
@@ -57,7 +57,7 @@ impl PayloadStore for RocksDBPayloadStore {
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
-        .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| PayloadError::Io(std::io::Error::other(e)))??;
 
         Ok(result.map(Bytes::from))
     }
@@ -71,7 +71,7 @@ impl PayloadStore for RocksDBPayloadStore {
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
-        .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| PayloadError::Io(std::io::Error::other(e)))??;
 
         Ok(())
     }
@@ -85,7 +85,7 @@ impl PayloadStore for RocksDBPayloadStore {
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
-        .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| PayloadError::Io(std::io::Error::other(e)))??;
 
         Ok(result.is_some())
     }
@@ -102,7 +102,7 @@ impl PayloadStore for RocksDBPayloadStore {
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
-        .map_err(|e| PayloadError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))??;
+        .map_err(|e| PayloadError::Io(std::io::Error::other(e)))??;
 
         Ok(())
     }

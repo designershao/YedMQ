@@ -615,8 +615,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                 return Err(StorageError::IO {
                     source: StorageIOError::read_snapshot(
                         Some(meta.signature()),
-                        AnyError::new(&std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        AnyError::new(&std::io::Error::other(
                             "Payload sync failed",
                         )),
                     ),

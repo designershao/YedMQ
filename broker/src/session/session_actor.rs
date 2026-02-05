@@ -76,6 +76,12 @@ pub struct SessionMetrics {
 
 }
 
+impl Default for SessionMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionMetrics {
 
     pub fn get_ipaddress(&self) -> Option<String> {
@@ -1823,18 +1829,15 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         session_actor_addr
                                             .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
-                                    _ => match store.get(&key).await {
-                                        Ok(Some(data)) => {
-                                            if let Ok(mut packet) =
-                                                serde_json::from_slice::<MqttPacketV3>(&data)
-                                            {
-                                                packet.set_dup(1);
-                                                session_actor_addr.do_send(
-                                                    SessionActorMessage::OutboundMessage(packet),
-                                                );
-                                            }
+                                    _ => if let Ok(Some(data)) = store.get(&key).await {
+                                        if let Ok(mut packet) =
+                                            serde_json::from_slice::<MqttPacketV3>(&data)
+                                        {
+                                            packet.set_dup(1);
+                                            session_actor_addr.do_send(
+                                                SessionActorMessage::OutboundMessage(packet),
+                                            );
                                         }
-                                        _ => {}
                                     },
                                 }
                             }
@@ -2050,17 +2053,14 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
                                 session_actor_addr
                                     .do_send(SessionActorMessage::OutboundMessage(packet));
                             }
-                            _ => match store.get(&key).await {
-                                Ok(Some(data)) => {
-                                    if let Ok(mut packet) =
-                                        serde_json::from_slice::<MqttPacketV3>(&data)
-                                    {
-                                        packet.set_dup(1);
-                                        session_actor_addr
-                                            .do_send(SessionActorMessage::OutboundMessage(packet));
-                                    }
+                            _ => if let Ok(Some(data)) = store.get(&key).await {
+                                if let Ok(mut packet) =
+                                    serde_json::from_slice::<MqttPacketV3>(&data)
+                                {
+                                    packet.set_dup(1);
+                                    session_actor_addr
+                                        .do_send(SessionActorMessage::OutboundMessage(packet));
                                 }
-                                _ => {}
                             },
                         }
                     }

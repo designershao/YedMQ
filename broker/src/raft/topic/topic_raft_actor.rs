@@ -1554,7 +1554,7 @@ impl Handler<GetClusterNodes> for TopicRaftActor {
                 if let Some(raft_instance) = raft.get() {
                     let metrics_ref = raft_instance.metrics();
                     let metrics = metrics_ref.borrow();
-                    let nodes = metrics.membership_config.membership().nodes().map(|node| node.0.clone()).collect();
+                    let nodes = metrics.membership_config.membership().nodes().map(|node| *node.0).collect();
                     Ok(nodes)
                 } else {
                     Ok(Vec::new())

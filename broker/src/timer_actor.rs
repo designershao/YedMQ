@@ -131,6 +131,12 @@ impl Actor for TimerActor {
     }
 }
 
+impl Default for TimerActor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimerActor {
     pub fn new() -> Self {
         Self {

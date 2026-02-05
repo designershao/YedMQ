@@ -52,7 +52,7 @@ impl ServiceRegistry {
         let session_state_raft = SessionStateRaftActor::from_registry();
         let session_manager = SessionManagerActor::from_registry();
 
-        let timer_actor = pools.start_actor(move || TimerActor::new());
+        let timer_actor = pools.start_actor(TimerActor::new);
 
         let session_registry = SessionRegistry::new();
 

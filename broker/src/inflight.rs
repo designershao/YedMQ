@@ -164,12 +164,7 @@ impl Inflight {
     }
 
     pub fn allocate_packet_id(&mut self) -> Option<u16> {
-        for id in 1..=65535 {
-            if !self.inner.contains_key(&id) {
-                return Some(id);
-            }
-        }
-        None
+        (1..=65535).find(|&id| !self.inner.contains_key(&id))
     }
 
     pub fn get_current_packet_key(&self, packet_identifier: u16) -> Option<String> {
