@@ -152,52 +152,26 @@ pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8], Mqtt
         Ok((_, fix_header)) => {
             let packet_type = fix_header.packet_type;
             match packet_type {
-                PacketType::CONNECT => {
-                    consumed(map(v3::connect::parse, |p| MqttPacketV3::Connect(p)))(input)
-                }
-                PacketType::CONNACK => {
-                    consumed(map(v3::connack::parse, |p| MqttPacketV3::Connack(p)))(input)
-                }
+                PacketType::CONNECT => consumed(map(v3::connect::parse,  MqttPacketV3::Connect))(input),
+                PacketType::CONNACK => consumed(map(v3::connack::parse,  MqttPacketV3::Connack))(input),
                 PacketType::PUBLISH => {
                     let dest_parse = |input| {
                         let max_message_size = max_message_size as usize;
                         v3::publish::parse_with_max_message_size_limit(input, max_message_size)
                     };
-                    consumed(map(dest_parse, |p| MqttPacketV3::Publish(p)))(input)
+                    consumed(map(dest_parse, MqttPacketV3::Publish))(input)
                 }
-                PacketType::PUBACK => {
-                    consumed(map(v3::puback::parse, |p| MqttPacketV3::Puback(p)))(input)
-                }
-                PacketType::PUBREC => {
-                    consumed(map(v3::pubrec::parse, |p| MqttPacketV3::Pubrec(p)))(input)
-                }
-                PacketType::PUBREL => {
-                    consumed(map(v3::pubrel::parse, |p| MqttPacketV3::Pubrel(p)))(input)
-                }
-                PacketType::PUBCOMP => {
-                    consumed(map(v3::pubcomp::parse, |p| MqttPacketV3::Pubcomp(p)))(input)
-                }
-                PacketType::SUBSCRIBE => {
-                    consumed(map(v3::subscribe::parse, |p| MqttPacketV3::Subscribe(p)))(input)
-                }
-                PacketType::SUBACK => {
-                    consumed(map(v3::suback::parse, |p| MqttPacketV3::Suback(p)))(input)
-                }
-                PacketType::UNSUBSCRIBE => consumed(map(v3::unsubscribe::parse, |p| {
-                    MqttPacketV3::Unsubscribe(p)
-                }))(input),
-                PacketType::UNSUBACK => {
-                    consumed(map(v3::unsuback::parse, |p| MqttPacketV3::Unsuback(p)))(input)
-                }
-                PacketType::PINGREQ => {
-                    consumed(map(v3::pingreq::parse, |p| MqttPacketV3::Pingreq(p)))(input)
-                }
-                PacketType::PINGRESP => {
-                    consumed(map(v3::pingresp::parse, |p| MqttPacketV3::Pingresp(p)))(input)
-                }
-                PacketType::DISCONNECT => {
-                    consumed(map(v3::disconnect::parse, |p| MqttPacketV3::Disconnect(p)))(input)
-                }
+                PacketType::PUBACK => consumed(map(v3::puback::parse,  MqttPacketV3::Puback))(input),
+                PacketType::PUBREC => consumed(map(v3::pubrec::parse,  MqttPacketV3::Pubrec))(input),
+                PacketType::PUBREL => consumed(map(v3::pubrel::parse,  MqttPacketV3::Pubrel))(input),
+                PacketType::PUBCOMP => consumed(map(v3::pubcomp::parse,  MqttPacketV3::Pubcomp))(input),
+                PacketType::SUBSCRIBE => consumed(map(v3::subscribe::parse,  MqttPacketV3::Subscribe))(input),
+                PacketType::SUBACK => consumed(map(v3::suback::parse,  MqttPacketV3::Suback))(input),
+                PacketType::UNSUBSCRIBE => consumed(map(v3::unsubscribe::parse,  MqttPacketV3::Unsubscribe))(input),
+                PacketType::UNSUBACK => consumed(map(v3::unsuback::parse, MqttPacketV3::Unsuback))(input),
+                PacketType::PINGREQ => consumed(map(v3::pingreq::parse,  MqttPacketV3::Pingreq))(input),
+                PacketType::PINGRESP => consumed(map(v3::pingresp::parse,  MqttPacketV3::Pingresp))(input),
+                PacketType::DISCONNECT => consumed(map(v3::disconnect::parse,  MqttPacketV3::Disconnect))(input)
             }
         }
         Err(e) => Err(e),

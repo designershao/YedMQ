@@ -164,7 +164,7 @@ pub struct RunningPlugin {
 impl RunningPlugin {
 
     pub fn is_healthy(&self) -> bool {
-        return self.ping_response_timeout_count < 3;
+        self.ping_response_timeout_count < 3
     }
 
     pub fn reset_health_check(&mut self) {

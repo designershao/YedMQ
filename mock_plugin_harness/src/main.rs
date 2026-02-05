@@ -475,7 +475,7 @@ async fn handle_request(
         Method::MessagePublished => handle_message_published_request(request, config).await,
         Method::Ping => {
             info!("Handling ping request");
-            if config.ping.respond == false {
+            if !config.ping.respond {
                 info!("Not responding to ping as per configuration");
                 return Err(anyhow::anyhow!(
                     "Not responding to ping as per configuration"
@@ -512,13 +512,11 @@ async fn handle_request(
         framed.send(response_msg?).await?;
     }
 
-    if method == Method::Initialize {
-        if let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
-            info!("Exiting after {} seconds as per configuration", delay_secs);
-            tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
-            info!("Exiting now");
-            std::process::exit(0);
-        }
+    if method == Method::Initialize && let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
+        info!("Exiting after {} seconds as per configuration", delay_secs);
+        tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+        info!("Exiting now");
+        std::process::exit(0);
     }
 
     Ok(())

@@ -13,6 +13,16 @@ use nom::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectFlags {
+    pub username_flag: bool,
+    pub password_flag: bool,
+    pub will_retain: bool,
+    pub will_qos: u8,
+    pub will_flag: bool,
+    pub clean_session: bool,    
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectPacket {
     pub fix_header: FixHeader,
     pub variable_header: VariableHeader,
@@ -182,7 +192,7 @@ fn protocol_level(input: &[u8]) -> IResult<&[u8], u8> {
 // +-------+----------------+---------------+-------------+----------+---+-----------+---------------+----------+--+
 // | byte8 | X              | X             | X           | X        | X | X         | X             | 0        |  |
 // +-------+----------------+---------------+-------------+----------+---+-----------+---------------+----------+--+
-fn connect_flags(input: &[u8]) -> IResult<&[u8], (bool, bool, bool, u8, bool, bool)> {
+fn connect_flags(input: &[u8]) -> IResult<&[u8], ConnectFlags> {
     map(
         bits::<&[u8], (u8, u8, u8, u8, u8, u8, u8), Error<(&[u8], usize)>, _, _>(tuple((
             take(1usize),
@@ -194,14 +204,14 @@ fn connect_flags(input: &[u8]) -> IResult<&[u8], (bool, bool, bool, u8, bool, bo
             take(1usize),
         ))),
         |flags| {
-            (
-                flags.0 == 1,
-                flags.1 == 1,
-                flags.2 == 1,
-                flags.3,
-                flags.4 == 1,
-                flags.5 == 1,
-            )
+            ConnectFlags {
+                username_flag: flags.0 == 1,
+                password_flag: flags.1 == 1,
+                will_retain: flags.2 == 1,
+                will_qos: flags.3,
+                will_flag: flags.4 == 1,
+                clean_session: flags.5 == 1,
+            }
         },
     )(input)
 }
@@ -229,12 +239,12 @@ fn variable_header(input: &[u8]) -> IResult<&[u8], VariableHeader> {
             VariableHeader {
                 protocol_name,
                 protocol_level,
-                username_flag: connect_flags.0,
-                password_flag: connect_flags.1,
-                will_retain: connect_flags.2,
-                will_qos: connect_flags.3,
-                will_flag: connect_flags.4,
-                clean_session: connect_flags.5,
+                username_flag: connect_flags.username_flag,
+                password_flag: connect_flags.password_flag,
+                will_retain: connect_flags.will_retain,
+                will_qos: connect_flags.will_qos,
+                will_flag: connect_flags.will_flag,
+                clean_session: connect_flags.clean_session,
                 keep_alive,
             }
         },
@@ -618,12 +628,12 @@ mod tests {
     fn test_connect_flag() {
         let input = &[0xF6];
         let (_, flags) = connect_flags(input).unwrap();
-        assert_eq!(flags.0, true);
-        assert_eq!(flags.1, true);
-        assert_eq!(flags.2, true);
-        assert_eq!(flags.3, 2);
-        assert_eq!(flags.4, true);
-        assert_eq!(flags.5, true);
+        assert_eq!(flags.username_flag, true);
+        assert_eq!(flags.password_flag, true);
+        assert_eq!(flags.will_retain, true);
+        assert_eq!(flags.will_qos, 2);
+        assert_eq!(flags.will_flag, true);
+        assert_eq!(flags.clean_session, true);
     }
 
     #[test]
