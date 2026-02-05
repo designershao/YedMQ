@@ -619,12 +619,9 @@ impl TopicStorage {
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
-        if tenant_topic_root_optional.is_none() {
-            Err(TopicError::TenantNotFound(tenant_id))
-        } else {
-            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+        if let Some(tenant_topic_root) = tenant_topic_root_optional {
             let result =
-                Self::recursion_clean_retain_publish_packet(tenant_topic_root, topic_patterns);
+                Self::recursion_clean_retain_publish_packet(tenant_topic_root.clone(), topic_patterns);
             if let Err(err) = result {
                 warn!(
                     "clean retain publish packet from the topic tree error: {}",
@@ -634,11 +631,13 @@ impl TopicStorage {
             } else {
                 let mut retain_message_recorder = self.retain_message_recorder.write();
                 let retain_message_recorder_optional = retain_message_recorder.get_mut(&tenant_id);
-                retain_message_recorder_optional
-                    .unwrap()
-                    .remove(topic_filter);
+                if let Some(retain_message_recorder) = retain_message_recorder_optional {
+                    retain_message_recorder.remove(topic_filter);
+                }
                 Ok(())
             }
+        } else {
+            Err(TopicError::TenantNotFound(tenant_id))
         }
     }
 
@@ -659,10 +658,10 @@ impl TopicStorage {
                 }
             } else {
                 let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
-                if topic_node_next.is_some() {
+                if let Some(topic_node_next) = topic_node_next {
                     let topic_patterns_rest = topic_patterns.drain(1..).collect();
                     result.append(&mut Self::recursion_get_retain_packet(
-                        topic_node_next.unwrap(),
+                        topic_node_next,
                         topic_patterns_rest,
                     ));
                 }
@@ -730,12 +729,13 @@ impl TopicStorage {
                     let mut retain_message_recorder = self.retain_message_recorder.write();
                     let retain_message_recorder_optional =
                         retain_message_recorder.get_mut(&tenant_id);
-                    let retain_message_recorder_item = retain_message_recorder_optional.unwrap();
-                    let qos = publish_packet.fix_header.qos.unwrap_or(0);
-                    retain_message_recorder_item.insert(
-                        publish_packet.variable_header.topic_name.clone(),
-                        (source_client_identifier, qos as u8),
-                    );
+                    if let Some(retain_message_recorder_item) = retain_message_recorder_optional {
+                        let qos = publish_packet.fix_header.qos.unwrap_or(0);
+                        retain_message_recorder_item.insert(
+                            publish_packet.variable_header.topic_name.clone(),
+                            (source_client_identifier, qos as u8),
+                        );
+                    }
                     //
                     Ok(())
                 }
