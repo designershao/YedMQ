@@ -565,11 +565,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
                     }
 
                     if 0 == n {
-                        if buffer.is_empty() {
-                            return Err(ConnectionError::ConnectionClosed);
-                        } else {
-                            return Err(ConnectionError::ConnectionClosed);
-                        }
+                        return Err(ConnectionError::ConnectionClosed);
                     }
                 }
                 nom::Err::Error(err_inner) => {

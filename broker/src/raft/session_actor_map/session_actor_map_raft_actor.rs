@@ -108,11 +108,13 @@ impl SessionActorMapRaftActor {
         session_clock: Arc<SessionClock>,
     ) -> Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError>
     {
-        let mut raft_config = Config::default();
-        raft_config.cluster_name = "yedmq_session_actor_map_raft_cluster".to_string();
-        raft_config.heartbeat_interval = settings.cluster.heartbeat_interval as u64;
-        raft_config.election_timeout_min = (settings.cluster.heartbeat_interval * 5) as u64;
-        raft_config.election_timeout_max = (settings.cluster.heartbeat_interval * 10) as u64;
+        let raft_config = Config {
+            cluster_name: "yedmq_session_actor_map_raft_cluster".to_string(),
+            heartbeat_interval: settings.cluster.heartbeat_interval as u64,
+            election_timeout_min: (settings.cluster.heartbeat_interval * 5) as u64,
+            election_timeout_max: (settings.cluster.heartbeat_interval * 10) as u64,
+            ..Default::default()
+        };
 
         let dir = Path::new(&settings.cluster.store_dir);
 
@@ -1103,7 +1105,6 @@ impl Handler<ChangeMembershipMessage> for SessionActorMapRaftActor {
 
 #[derive(Message)]
 #[rtype(result = "Result<Option<Node>, SessionActorMapRaftError>")]
-
 pub struct GetLeader {}
 
 impl Handler<GetLeader> for SessionActorMapRaftActor {
