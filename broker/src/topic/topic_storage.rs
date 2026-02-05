@@ -689,14 +689,14 @@ impl TopicStorage {
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
-        if tenant_topic_root_optional.is_none() {
-            Err(TopicError::TenantNotFound(tenant_id))
-        } else {
-            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            Ok(Self::recursion_get_retain_packet(
-                tenant_topic_root,
+        if let Some(tenant_topic_root) = tenant_topic_root_optional {
+            let retain_packets = Self::recursion_get_retain_packet(
+                tenant_topic_root.clone(),
                 topic_patterns,
-            ))
+            );
+            Ok(retain_packets)
+        } else {
+            Err(TopicError::TenantNotFound(tenant_id))
         }
     }
 
@@ -717,12 +717,9 @@ impl TopicStorage {
             let map = self.topic_tree.clone();
             let tenant_topic_root_rwlock = map.read();
             let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
-            if tenant_topic_root_optional.is_none() {
-                Err(TopicError::TenantNotFound(tenant_id))
-            } else {
-                let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+            if let Some(tenant_topic_root) = tenant_topic_root_optional {
                 let result = Self::recursion_retain_publish_packet(
-                    tenant_topic_root,
+                    tenant_topic_root.clone(),
                     topic_patterns,
                     MqttPacketV3::Publish(publish_packet.clone()),
                 );
@@ -742,6 +739,9 @@ impl TopicStorage {
                     //
                     Ok(())
                 }
+
+            } else {
+                Err(TopicError::TenantNotFound(tenant_id))
             }
         } else {
             Ok(())
