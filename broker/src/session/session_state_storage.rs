@@ -129,59 +129,59 @@ impl SessionStateStorage {
 
     pub async fn inflight_register_tx_packet(
         &mut self,
-        tenant_id: String,
-        client_id: String,
+        tenant_id: &str,
+        client_id: &str,
         packet_id: u16,
         qos: u8,
-        packet_key: String,
+        packet_key: &str,
     ) -> Result<Option<String>, SessionStateStorageError> {
-        if self.inner.get(&tenant_id).is_none() {
-            self.inner.insert(tenant_id.clone(), HashMap::new());
+        if !self.inner.contains_key(tenant_id) {
+            self.inner.insert(tenant_id.to_string(), HashMap::new());
         }
 
-        let state_arc = if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
-            tenant_sessions.get(&client_id).cloned()
+        let state_arc = if let Some(tenant_sessions) = self.inner.get(tenant_id) {
+            tenant_sessions.get(client_id).cloned()
         } else {
             None
         };
 
         if let Some(state_arc) = state_arc {
-            self.inc_ref(&packet_key);
+            self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
             let old_key = state
                 .inflight
-                .register_with_tx_packet(packet_id, qos, packet_key)?;
+                .register_with_tx_packet(packet_id, qos, packet_key.to_string())?;
             drop(state);
             let freed_key = old_key.and_then(|k| self.dec_ref(&k));
             Ok(freed_key)
         } else {
-            Err(SessionStateStorageError::SessionStateNotExisted { client_id })
+            Err(SessionStateStorageError::SessionStateNotExisted { client_id: client_id.to_string() } )
         }
     }
     pub async fn inflight_register_rx_packet(
         &mut self,
-        tenant_id: String,
-        client_id: String,
+        tenant_id: &str,
+        client_id: &str,
         packet_id: u16,
         qos: u8,
-        packet_key: String,
+        packet_key: &str,
     ) -> Option<String> {
-        if self.inner.get(&tenant_id).is_none() {
-            self.inner.insert(tenant_id.clone(), HashMap::new());
+        if !self.inner.contains_key(tenant_id) {
+            self.inner.insert(tenant_id.to_string(), HashMap::new());
         }
 
-        let state_arc = if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
-            tenant_sessions.get(&client_id).cloned()
+        let state_arc = if let Some(tenant_sessions) = self.inner.get(tenant_id) {
+            tenant_sessions.get(client_id).cloned()
         } else {
             None
         };
 
         if let Some(state_arc) = state_arc {
-            self.inc_ref(&packet_key);
+            self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
             let old_key = state
                 .inflight
-                .register_with_rx_packet(packet_id, qos, packet_key);
+                .register_with_rx_packet(packet_id, qos, packet_key.to_string());
             drop(state);
             
             old_key.and_then(|k| self.dec_ref(&k))
@@ -290,34 +290,34 @@ impl SessionStateStorage {
     }
     pub async fn append_to_pending_queue(
         &mut self,
-        tenant_id: String,
-        client_id: String,
-        packet_key: String,
+        tenant_id: &str,
+        client_id: &str,
+        packet_key: &str,
     ) {
-        if self.inner.get(&tenant_id).is_none() {
-            self.inner.insert(tenant_id.clone(), HashMap::new());
+        if !self.inner.contains_key(tenant_id) {
+            self.inner.insert(tenant_id.to_string(), HashMap::new());
         }
 
-        let state_arc = if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
-            tenant_sessions.get(&client_id).cloned()
+        let state_arc = if let Some(tenant_sessions) = self.inner.get(tenant_id) {
+            tenant_sessions.get(client_id).cloned()
         } else {
             None
         };
 
         if let Some(state_arc) = state_arc {
-            self.inc_ref(&packet_key);
+            self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
-            state.pending_messages.push(packet_key);
+            state.pending_messages.push(packet_key.to_string());
         }
     }
 
     pub async fn pop_from_pending_queue(
         &mut self,
-        tenant_id: String,
-        client_id: String,
+        tenant_id: &str,
+        client_id: &str,
     ) -> (Option<String>, Option<String>) {
-        let state_arc = if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
-            tenant_sessions.get(&client_id).cloned()
+        let state_arc = if let Some(tenant_sessions) = self.inner.get(tenant_id) {
+            tenant_sessions.get(client_id).cloned()
         } else {
             None
         };
@@ -336,58 +336,32 @@ impl SessionStateStorage {
 
         (None, None)
     }
+
     pub async fn subscribe_topic(
         &mut self,
-        tenant_id: String,
-        client_id: String,
-        topic: String,
+        tenant_id: &str,
+        client_id: &str,
+        topic: &str,
         qos: QoS,
     ) {
-        if self.inner.get(&tenant_id).is_none() {
-            self.inner.insert(tenant_id.clone(), HashMap::new());
+        if !self.inner.contains_key(tenant_id) {
+            self.inner.insert(tenant_id.to_string(), HashMap::new());
         }
 
-        if self
-            .inner
-            .get(&tenant_id)
-            .unwrap()
-            .get(&client_id)
-            .is_some()
-        {
-            self.inner
-                .get_mut(&tenant_id)
-                .unwrap()
-                .get_mut(&client_id)
-                .unwrap()
-                .write()
-                .await
-                .subscriptions
-                .insert(topic, qos);
+        if let Some(tenant_sessions) = self.inner.get(tenant_id) {
+            if let Some(session_arc) = tenant_sessions.get(client_id) {
+                session_arc.write().await.subscriptions.insert(topic.to_string(), qos);
+            }  
         }
     }
 
     pub async fn unsubscribe_topic(&mut self, tenant_id: String, client_id: String, topic: String) {
-        if self.inner.get(&tenant_id).is_none() {
-            return;
-        }
-
-        if self
-            .inner
-            .get(&tenant_id)
-            .unwrap()
-            .get(&client_id)
-            .is_some()
-        {
-            self.inner
-                .get_mut(&tenant_id)
-                .unwrap()
-                .get_mut(&client_id)
-                .unwrap()
-                .write()
-                .await
-                .subscriptions
-                .remove(&topic);
-        }
+        if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
+            if let Some(session_arc) = tenant_sessions.get(&client_id) {
+                let mut session = session_arc.write().await;
+                session.subscriptions.remove(&topic);
+            } 
+        } 
     }
 
     pub async fn scan_expired_sessions(&self, now: u64, ttl: u64) -> Vec<(String, String, u64)> {

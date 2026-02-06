@@ -276,7 +276,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .write()
                             .await
                             .inflight_register_rx_packet(
-                                tenant_id, client_id, packet_id, qos, packet_key,
+                                &tenant_id, &client_id, packet_id, qos, &packet_key,
                             )
                             .await;
                         if let Some(key) = freed_key {
@@ -300,7 +300,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .write()
                             .await
                             .inflight_register_tx_packet(
-                                tenant_id, client_id, packet_id, qos, packet_key,
+                                &tenant_id, &client_id, packet_id, qos, &packet_key,
                             )
                             .await;
 
@@ -390,7 +390,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .session_state_storage
                             .write()
                             .await
-                            .append_to_pending_queue(tenant_id, client_id, packet_key)
+                            .append_to_pending_queue(&tenant_id, &client_id, &packet_key)
                             .await;
                         replies.push(SessionStateResponse::None);
                     }
@@ -404,7 +404,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .session_state_storage
                             .write()
                             .await
-                            .pop_from_pending_queue(tenant_id, client_id)
+                            .pop_from_pending_queue(&tenant_id, &client_id)
                             .await;
 
                         let mut payload_data = None;
@@ -430,7 +430,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .session_state_storage
                             .write()
                             .await
-                            .subscribe_topic(tenant_id, client_id, topic, qos.into())
+                            .subscribe_topic(&tenant_id, &client_id, &topic, qos.into())
                             .await;
                         replies.push(SessionStateResponse::None);
                     }

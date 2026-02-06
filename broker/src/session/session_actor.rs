@@ -1680,74 +1680,75 @@ impl Handler<SessionActorMessage> for SessionActor {
                     let conn = self.conn_recipient.clone();
 
                     if matches!(self.activity_state, ActivityState::Active) && conn.is_some() {
-                        let conn = conn.unwrap();
-                        if publish_packet.fix_header.qos.unwrap_or(0) == 0 {
-                            conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                                MqttPacketV3::Publish(publish_packet),
-                            ));
-                        } else {
-                            ctx.spawn(async move {
-                                let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
-                                let qos = publish_packet.fix_header.qos.unwrap() as u8;
+                        if let Some(conn) = conn {
+                            if publish_packet.fix_header.qos.unwrap_or(0) == 0 {
+                                conn.do_send(ConnectionActorMessage::WritePacketToClient(
+                                    MqttPacketV3::Publish(publish_packet),
+                                ));
+                            } else {
+                                ctx.spawn(async move {
+                                    let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
+                                    let qos = publish_packet.fix_header.qos.unwrap() as u8;
 
-                                let key = if let Some(store) = &payload_store {
-                                    let k = uuid::Uuid::new_v4().to_string();
-                                    let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
-                                    if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
-                                        error!("Failed to store payload: {}", e);
+                                    let key = if let Some(store) = &payload_store {
+                                        let k = uuid::Uuid::new_v4().to_string();
+                                        let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
+                                        if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
+                                            error!("Failed to store payload: {}", e);
+                                            return;
+                                        }
+                                        k
+                                    } else {
+                                        warn!("Payload store missing");
                                         return;
-                                    }
-                                    k
-                                } else {
-                                    warn!("Payload store missing");
-                                    return;
-                                };
+                                    };
 
-                                if clean_session {
-                                    let mut session_state_guard = session_state.write().await;
-                                    if let Err(e) = session_state_guard.inflight.register_with_tx_packet(packet_id, qos, key.clone()) {
-                                        if matches!(e, InflightError::PacketIdentifierHasExisted) {
-                                            if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
-                                                publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();
+                                    if clean_session {
+                                        let mut session_state_guard = session_state.write().await;
+                                        if let Err(e) = session_state_guard.inflight.register_with_tx_packet(packet_id, qos, key.clone()) {
+                                            if matches!(e, InflightError::PacketIdentifierHasExisted) {
+                                                if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
+                                                    publish_packet.variable_header.packet_identifier = Some(new_id);
+                                                    session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();
+                                                } else {
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        let res = session_state_raft_actor.send(RegisterInflightTxPacket {
+                                            tenant_id: tenant_id.clone(),
+                                            client_id: client_id.clone(),
+                                            packet_id,
+                                            qos,
+                                            packet_key: key.clone(),
+                                        }).await.unwrap();
+
+                                        if let Err(e) = res {
+                                            if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
+                                                let new_id = {
+                                                    let mut session_state_guard = session_state.write().await;
+                                                    session_state_guard.inflight.allocate_packet_id()
+                                                };
+                                                if let Some(new_id) = new_id {
+                                                    publish_packet.variable_header.packet_identifier = Some(new_id);
+                                                    let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
+                                                        tenant_id,
+                                                        client_id,
+                                                        packet_id: new_id,
+                                                        qos,
+                                                        packet_key: key.clone(),
+                                                    }).await;
+                                                }
                                             } else {
+                                                error!("Raft error: {}", e);
                                                 return;
                                             }
                                         }
                                     }
-                                } else {
-                                    let res = session_state_raft_actor.send(RegisterInflightTxPacket {
-                                        tenant_id: tenant_id.clone(),
-                                        client_id: client_id.clone(),
-                                        packet_id,
-                                        qos,
-                                        packet_key: key.clone(),
-                                    }).await.unwrap();
-
-                                    if let Err(e) = res {
-                                        if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
-                                            let new_id = {
-                                                let mut session_state_guard = session_state.write().await;
-                                                session_state_guard.inflight.allocate_packet_id()
-                                            };
-                                            if let Some(new_id) = new_id {
-                                                publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
-                                                    tenant_id,
-                                                    client_id,
-                                                    packet_id: new_id,
-                                                    qos,
-                                                    packet_key: key.clone(),
-                                                }).await;
-                                            }
-                                        } else {
-                                            error!("Raft error: {}", e);
-                                            return;
-                                        }
-                                    }
-                                }
-                                let _ = conn.send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet))).await;
-                            }.into_actor(self));
+                                    let _ = conn.send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet))).await;
+                                }.into_actor(self));
+                            }
                         }
                     } else if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
                         let client_info = self.get_plugin_client_info();
