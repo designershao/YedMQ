@@ -40,7 +40,7 @@ use crate::{
 pub enum ActorState {
     Initializing,
     Running,
-    Failed(SessionStateRaftError),
+    Failed(Box<SessionStateRaftError>),
     Stopped,
 }
 
@@ -509,7 +509,7 @@ impl Handler<InitializationComplete> for SessionStateRaftActor {
             }
             Err(e) => {
                 log::error!("Failed to initialize SessionStateRaftActor: {}", e);
-                self.state = ActorState::Failed(e);
+                self.state = ActorState::Failed(Box::new(e));
             }
         }
     }
@@ -557,7 +557,7 @@ impl Handler<StoreOfflineMessage> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -625,7 +625,7 @@ impl Handler<PopOfflineMessage> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -690,7 +690,7 @@ impl Handler<GetSessionState> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -803,7 +803,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -868,7 +868,7 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -953,7 +953,7 @@ impl Handler<SubscribeTopic> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1013,7 +1013,7 @@ impl Handler<UnsubscribeTopic> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1065,7 +1065,7 @@ impl Handler<UpdateSessionConnectionState> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1136,7 +1136,7 @@ impl Handler<ScanExpiredSessions> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1188,7 +1188,7 @@ impl Handler<DeleteSessionState> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1252,7 +1252,7 @@ impl Handler<RegisterInflightRxPacket> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1316,7 +1316,7 @@ impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1377,7 +1377,7 @@ impl Handler<AdvanceInflightState> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1509,7 +1509,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1649,7 +1649,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1780,7 +1780,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1920,7 +1920,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1976,7 +1976,7 @@ impl Handler<InflightCleanFinishedItems> for SessionStateRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionStateRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -2035,7 +2035,7 @@ impl Handler<AppendEntriesRequestMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2087,7 +2087,7 @@ impl Handler<InstallSnapshotRequestMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2145,7 +2145,7 @@ impl Handler<VoteRequestMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2204,7 +2204,7 @@ impl Handler<InitRaftClusterMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2255,7 +2255,7 @@ impl Handler<AddLearnerMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2303,7 +2303,7 @@ impl Handler<ChangeMembershipMessage> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2358,7 +2358,7 @@ impl Handler<GetLeader> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2409,7 +2409,7 @@ impl Handler<DirectWriteToRaft> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -2450,7 +2450,7 @@ impl Handler<GetRaftMetrics> for SessionStateRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }

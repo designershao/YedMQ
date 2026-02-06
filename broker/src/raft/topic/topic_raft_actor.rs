@@ -24,7 +24,7 @@ use crate::{
 pub enum ActorState {
     Initializing,
     Running,
-    Failed(TopicRaftError),
+    Failed(Box<TopicRaftError>),
     Stopped,
 }
 
@@ -334,7 +334,7 @@ impl Handler<InitializationComplete> for TopicRaftActor {
             }
             Err(e) => {
                 log::error!("Failed to initialize TopicRaftActor: {}", e);
-                self.state = ActorState::Failed(e);
+                self.state = ActorState::Failed(Box::new(e));
             }
         }
     }
@@ -383,7 +383,7 @@ impl Handler<Subscribe> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -438,7 +438,7 @@ impl Handler<Unsubscribe> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -494,7 +494,7 @@ impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -548,7 +548,7 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -642,7 +642,7 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -744,7 +744,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -800,7 +800,7 @@ impl Handler<GetRetainPublishPacket> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -895,7 +895,7 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(TopicRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -950,7 +950,7 @@ impl Handler<AppendEntriesRequestMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1002,7 +1002,7 @@ impl Handler<InstallSnapshotRequestMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1048,7 +1048,7 @@ impl Handler<VoteRequestMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1138,7 +1138,7 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1223,7 +1223,7 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1285,7 +1285,7 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1336,7 +1336,7 @@ impl Handler<AddLearnerMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1384,7 +1384,7 @@ impl Handler<ChangeMembershipMessage> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1439,7 +1439,7 @@ impl Handler<GetLeader> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1487,7 +1487,7 @@ impl Handler<DirectWriteToRaft> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1530,7 +1530,7 @@ impl Handler<GetRaftMetrics> for TopicRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }

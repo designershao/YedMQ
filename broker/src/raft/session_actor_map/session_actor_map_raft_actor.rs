@@ -33,7 +33,7 @@ use crate::{
 pub enum ActorState {
     Initializing,
     Running,
-    Failed(SessionActorMapRaftError),
+    Failed(Box<SessionActorMapRaftError>),
     Stopped,
 }
 
@@ -355,7 +355,7 @@ impl Handler<InitializationComplete> for SessionActorMapRaftActor {
             }
             Err(e) => {
                 log::error!("Failed to initialize SessionActorMapActor: {}", e);
-                self.state = ActorState::Failed(e);
+                self.state = ActorState::Failed(Box::new(e));
             }
         }
     }
@@ -408,7 +408,7 @@ impl Handler<AppendEntriesRequestMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -461,7 +461,7 @@ impl Handler<RenewSession> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -563,7 +563,7 @@ impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -626,7 +626,7 @@ impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -691,7 +691,7 @@ impl Handler<GetSessionActorMap> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -794,7 +794,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -865,7 +865,7 @@ impl Handler<InstallSnapshotRequestMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -919,7 +919,7 @@ impl Handler<VoteRequestMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -982,7 +982,7 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1041,7 +1041,7 @@ impl Handler<AddLearnerMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1096,7 +1096,7 @@ impl Handler<ChangeMembershipMessage> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1157,7 +1157,7 @@ impl Handler<GetLeader> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1207,7 +1207,7 @@ impl Handler<DirectWriteToRaft> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),
@@ -1266,7 +1266,7 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
                     .into_actor(self),
             ),
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(async move { Err(e) }.into_actor(self))
             }
         }
@@ -1338,7 +1338,7 @@ impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
                 )
             }
             ActorState::Failed(e) => {
-                let e = e.clone();
+                let e = (**e).clone();
                 Box::pin(
                     async move { Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string())) }
                         .into_actor(self),

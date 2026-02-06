@@ -179,7 +179,7 @@ impl TopicStorageNode {
         self.retain_publish_packet = None;
     }
 
-    pub fn remove_subscription(&self, client_identifier: &String) {
+    pub fn remove_subscription(&self, client_identifier: &str) {
         let client_existed = self.subscriptions.read().contains_key(client_identifier);
 
         if client_existed {
@@ -443,8 +443,8 @@ impl TopicStorage {
 
     pub fn unsubscribe(
         &self,
-        tenant_id: &String,
-        client_identifier: &String,
+        tenant_id: &str,
+        client_identifier: &str,
         topic_filter: &str,
     ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -466,14 +466,14 @@ impl TopicStorage {
                 Ok(())
             }
         } else {
-            Err(TopicError::TenantNotFound(tenant_id.clone()))
+            Err(TopicError::TenantNotFound(tenant_id.to_string()))
         }
     }
 
     fn recursion_unsubscription(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
-        client_identifier: &String,
+        client_identifier: &str,
     ) -> Result<(), TopicError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -880,20 +880,19 @@ mod tests {
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 1);
 
-        assert_eq!(
+        assert!(
             topic_info_recorder
                 .get("hello")
                 .unwrap()
-                .contains_key(&generate_key(&"clientA".to_string(), "a/b/c")),
-            true
+                .contains_key(&generate_key("clientA", "a/b/c")),
         );
         assert_eq!(
             topic_info_recorder
                 .get("hello")
                 .unwrap()
-                .get(&generate_key(&"clientA".to_string(), "a/b/c"))
+                .get(&generate_key("clientA", "a/b/c"))
                 .unwrap(),
-            &(0 as u8)
+            &0_u8
         );
     }
 
@@ -909,19 +908,18 @@ mod tests {
             0,
         );
         let _ =
-            topic_storage.unsubscribe(&tenant_name, &"clientA".to_string(), &"a/b/c".to_string());
+            topic_storage.unsubscribe(&tenant_name, "clientA", "a/b/c");
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);
 
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 1);
 
-        assert_eq!(
-            topic_info_recorder
+        assert!(
+            !topic_info_recorder
                 .get("hello")
                 .unwrap()
-                .contains_key(&generate_key(&"clientA".to_string(), "a/b/c")),
-            false
+                .contains_key(&generate_key("clientA", "a/b/c")),
         );
     }
 
@@ -1051,13 +1049,11 @@ mod tests {
 
         match result.unwrap_err() {
             TopicError::InvalidTopicFilter(msg) => {
-                if msg != "sport+".to_string() {
-                    assert!(false);
-                } else {
-                    assert!(true)
+                if msg != "sport+" {
+                    panic!("Unexpected error message: {}", msg);
                 }
             }
-            _ => assert!(false),
+            _ => panic!("Expected InvalidTopicFilter error"),
         }
 
         let result = topic_storage.subscribe(
@@ -1069,13 +1065,11 @@ mod tests {
 
         match result.unwrap_err() {
             TopicError::InvalidTopicFilter(msg) => {
-                if msg != "sport+".to_string() {
-                    assert!(false);
-                } else {
-                    assert!(true)
+                if msg != "sport+" {
+                    panic!("Unexpected error message: {}", msg);
                 }
             }
-            _ => assert!(false),
+            _ => panic!("Expected InvalidTopicFilter error"),
         }
     }
 
