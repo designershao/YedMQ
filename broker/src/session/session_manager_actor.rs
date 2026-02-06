@@ -718,7 +718,7 @@ pub struct CreateSessionMessage {
 // force disconnect
 async fn call_force_disconnect(
     node_id: NodeId,
-    nodes: &Vec<crate::settings::Node>,
+    nodes: &[crate::settings::Node],
     tenant_id: String,
     client_id: String,
 ) -> Result<bool, SessionManagerError> {
@@ -906,44 +906,39 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 ).await?;
 
                 if let Ok(res) = res {
-                    if res.is_some() {
-                        // check session in current node
-                        if sessions_guard.contains_key(&msg.client_id) {
+                    if let Some(session_state_from_raft) = res {
+
+                        if let Some(session_recipient_wrapper) = sessions_guard.get(&msg.client_id) {
                             info!(
                                 "session {} exists in current node, start reconnect",
                                 msg.client_id
                             );
-                            sessions_guard
-                                .get(&msg.client_id)
-                                .unwrap()
+
+                            // Persistent session still run in current node, send reconnect
+                            session_recipient_wrapper
                                 .session_actor_message_recipient
-                                .send(SessionActorMessage::Reconnect {
+                                .do_send(SessionActorMessage::Reconnect {
                                     conn: msg.connection_addr.clone(),
                                     keep_alive: msg.keep_alive,
                                     clean_session: msg.clean_session,
                                     username: msg.username.clone(),
                                     will_message: msg.will_message.clone(),
                                     socket_addr: msg.peer_addr,
-                                })
-                                .await
-                                .unwrap();
-                            let session_recipient = sessions_guard.get(&msg.client_id).unwrap();
+                                });
                             return Ok(CreateSessionMessageResponse {
-                                session_actor_recipient: session_recipient
+                                session_actor_recipient: session_recipient_wrapper
                                     .session_actor_message_recipient
                                     .clone(),
                                 session_present: true,
                             });
-                            // in current node, send reconnect
                         } else {
                             info!(
                                 "session {} not exists in current node, recover from raft",
                                 msg.client_id
                             );
                             // not in current node, recover from raft
-                            session_state = Arc::new(RwLock::new(res.unwrap()));
+                            session_state = Arc::new(RwLock::new(session_state_from_raft));
                         }
-                        //
                     } else {
                         info!(
                             "session {} not exists in cluster, create new session state",

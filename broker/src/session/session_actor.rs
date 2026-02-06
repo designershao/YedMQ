@@ -1599,8 +1599,7 @@ impl SessionActor {
         let will_message = self.will_message.take();
         let router_actors = self.router_actors.clone();
         async move {
-            if will_message.is_some() {
-                let will_message = will_message.as_ref().unwrap();
+            if let Some(will_message) = will_message {
                 let publish_packet = PublishPacketBuilder::new(
                     will_message.will_topic.clone(),
                     Bytes::copy_from_slice(will_message.will_message.as_slice()),
@@ -1617,6 +1616,7 @@ impl SessionActor {
                     tenant_id,
                     packet: MqttPacketV3::Publish(publish_packet),
                 });
+
             }
         }
         .into_actor(self)

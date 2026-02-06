@@ -145,8 +145,8 @@ impl RouterActor {
         session_manager_actor: Addr<SessionManagerActor>,
         router_actor: Addr<RouterActor>,
         current_node_id: &NodeId,
-        cluster_nodes: &Vec<Node>,
-        tenant_id: &String,
+        cluster_nodes: &[Node],
+        tenant_id: &str,
         packet: &MqttPacketV3,
         local_topic_storage: Arc<RwLock<TopicStorage>>,
         local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
@@ -159,7 +159,7 @@ impl RouterActor {
             let subscriptions = {
                 let local_topic_storage = local_topic_storage.read();
 
-                local_topic_storage.get_subscriptions(tenant_id.clone(), topic.clone())?
+                local_topic_storage.get_subscriptions(tenant_id.to_string(), topic.clone())?
             };
 
             if subscriptions.is_empty() {
@@ -186,7 +186,7 @@ impl RouterActor {
                         }
                         let dest_addr = nodes[0].rpc_address.clone();
 
-                        let tenant_id_clone = tenant_id.clone();
+                        let tenant_id_clone = tenant_id.to_string();
                         let packet_clone = packet.clone();
                         let router_actor_clone = router_actor.clone();
 
@@ -249,7 +249,7 @@ impl RouterActor {
 
     async fn route_to_other_nodes(
         dest_addr: &String,
-        tenant_id: &String,
+        tenant_id: &str,
         packet: &MqttPacketV3,
     ) -> Result<(), RouterActorError> {
         let mut cluster_client =
@@ -263,7 +263,7 @@ impl RouterActor {
                     RouterActorError::GRPC(e.to_string())
                 })?;
         let request = crate::protobuf::RoutePacketRequest {
-            tenant_id: tenant_id.clone(),
+            tenant_id: tenant_id.to_owned(),
             payload: serde_json::to_string(packet).map_err(|e| {
                 warn!("Failed to serialize packet: {}", e);
                 RouterActorError::SerializationError(e.to_string())
@@ -280,8 +280,8 @@ impl RouterActor {
     }
 
     fn route_to_local_session(
-        tenant_id: &String,
-        client_id: &String,
+        tenant_id: &str,
+        client_id: &str,
         packet: MqttPacketV3,
         _session_manager_actor_addr: Addr<SessionManagerActor>,
         session_registry: SessionRegistry,

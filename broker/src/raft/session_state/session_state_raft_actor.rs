@@ -1616,7 +1616,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                             crate::protobuf::GetCurrentInflightPacketRequest {
                                                 tenant_id: msg.tenant_id,
                                                 client_id: msg.client_id,
-                                                packet_id: msg.packet_id.try_into().unwrap(),
+                                                packet_id: msg.packet_id,
                                             }
                                         ).await.map_err(|e| {
                                             log::error!("Failed to get current inflight packet from leader: {}", e);
