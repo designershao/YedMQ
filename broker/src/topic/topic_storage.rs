@@ -9,6 +9,11 @@ use yedmq_mqtt::MqttPacketV3;
 
 use crate::topic::TopicError;
 
+pub type TopicPaginationResult = (u64, Vec<(String, String, u8)>);
+
+type RetainMessageMap = HashMap<String, (String, u8)>;
+type RetainMessageRecorder = HashMap<String, RetainMessageMap>;
+
 /// Generates a key string that can be used to store subscriptions in a `SubscriptionMap`.
 ///
 /// The key is formatted as "encoded_client_id:encoded_topic:qos", where:
@@ -213,14 +218,14 @@ impl TopicStorageNode {
 
 #[derive(Debug)]
 pub struct TopicStorage {
-    retain_message_recorder: RwLock<HashMap<String, HashMap<String, (String, u8)>>>,
+    retain_message_recorder: RwLock<RetainMessageRecorder>,
 
     topic_info_recorder: RwLock<HashMap<String, HashMap<String, u8>>>,
 
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicStorageNode>>>>>,
 }
 
-fn test_topic(topic: &String) -> bool {
+fn test_topic(topic: &str) -> bool {
     let i = topic.split("/");
     let mut index = 0;
     let length = i.clone().count();
@@ -249,7 +254,7 @@ impl TopicStorage {
         tenant_identifier: &str,
         offset: u64,
         limit: u64,
-    ) -> anyhow::Result<(u64, Vec<(String, String, u8)>)> {
+    ) -> anyhow::Result<TopicPaginationResult> {
         if !self
             .retain_message_recorder
             .read()
@@ -276,10 +281,10 @@ impl TopicStorage {
 
     pub fn get_topic_list_with_pagination(
         &self,
-        tenant_id: &String,
+        tenant_id: &str,
         offset: u64,
         limit: u64,
-    ) -> anyhow::Result<(u64, Vec<(String, String, u8)>)> {
+    ) -> anyhow::Result<TopicPaginationResult> {
         let topic_info_recorder = self.topic_info_recorder.read();
         if topic_info_recorder.contains_key(tenant_id) {
             let items = topic_info_recorder.get(tenant_id).unwrap();
@@ -389,32 +394,28 @@ impl TopicStorage {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
-        let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
-        if tenant_topic_root_optional.is_none() {
-            Err(TopicError::TenantNotFound(tenant_id))
-        } else {
-            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+        if let Some(tenant_topic_root) = tenant_topic_root_rwlock.get(&tenant_id) {
             let result = Self::recursion_subscribe(
-                tenant_topic_root,
+                tenant_topic_root.clone(),
                 topic_patterns,
                 client_identifier.clone(),
                 qos,
             );
-            if result.is_err() {
-                Err(result.err().unwrap())
+            if let Err(err) = result {
+                Err(err)
             } else {
                 // Update the topic_info_recorder
                 let mut topic_info_recorder = self.topic_info_recorder.write();
-                let topic_info_recorder_optional = topic_info_recorder.get_mut(&tenant_id);
-
-                let key = generate_key(&client_identifier, &topic_filter);
-
-                let topic_info_state_item = topic_info_recorder_optional.unwrap();
-                topic_info_state_item.entry(key).or_insert(qos);
+                if let Some(topic_info_state_item) = topic_info_recorder.get_mut(&tenant_id) {
+                    let key = generate_key(&client_identifier, &topic_filter);
+                    topic_info_state_item.entry(key).or_insert(qos);
+                }
                 //
 
                 Ok(())
             }
+        } else {
+            Err(TopicError::TenantNotFound(tenant_id))
         }
     }
 
@@ -444,36 +445,28 @@ impl TopicStorage {
         &self,
         tenant_id: &String,
         client_identifier: &String,
-        topic_filter: &String,
+        topic_filter: &str,
     ) -> Result<(), TopicError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
-        let tenant_topic_root_optional = tenant_topic_root_rwlock.get(tenant_id);
-        if tenant_topic_root_optional.is_none() {
-            Err(TopicError::TenantNotFound(tenant_id.clone()))
-        } else {
-            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
-            let result = Self::recursion_unsubscription(
-                tenant_topic_root,
-                topic_patterns,
-                client_identifier,
-            );
-            if result.is_err() {
-                Err(result.err().unwrap())
+        if let Some(tenant_topic_root) = tenant_topic_root_rwlock.get(tenant_id) {
+            let result =
+                Self::recursion_unsubscription(tenant_topic_root.clone(), topic_patterns, client_identifier);
+            if let Err(err) = result {
+                Err(err)
             } else {
                 // Update the topic_info_recorder
                 let mut topic_info_recorder = self.topic_info_recorder.write();
-                let topic_info_state_optional = topic_info_recorder.get_mut(tenant_id);
-                let key = generate_key(client_identifier, topic_filter);
-                let topic_info_state_item = topic_info_state_optional.unwrap();
-                if topic_info_state_item.contains_key(&key) {
+                if let Some(topic_info_state_item) = topic_info_recorder.get_mut(tenant_id) {
+                    let key = generate_key(client_identifier, topic_filter);
                     topic_info_state_item.remove(&key);
                 }
                 //
-
                 Ok(())
             }
+        } else {
+            Err(TopicError::TenantNotFound(tenant_id.clone()))
         }
     }
 
@@ -485,15 +478,15 @@ impl TopicStorage {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
-            if topic_node_next.is_none() {
-                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
-            } else {
+            if let Some(topic_node_next) = topic_node_next {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 Self::recursion_unsubscription(
-                    topic_node_next.unwrap(),
+                    topic_node_next,
                     topic_patterns_rest,
                     client_identifier,
                 )
+            } else {
+                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             }
         } else {
             topic_node.write().remove_subscription(client_identifier);
@@ -510,14 +503,13 @@ impl TopicStorage {
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
-        if tenant_topic_root_optional.is_none() {
-            Err(TopicError::TenantNotFound(tenant_id))
-        } else {
-            let tenant_topic_root = tenant_topic_root_optional.unwrap().clone();
+        if let Some(tenant_topic_root) = tenant_topic_root_optional {
             Ok(Self::recursion_get_subscriptions(
-                tenant_topic_root,
+                tenant_topic_root.clone(),
                 topic_patterns,
             ))
+        } else {
+            Err(TopicError::TenantNotFound(tenant_id))
         }
     }
 
@@ -529,19 +521,16 @@ impl TopicStorage {
             let mut result = vec![];
             // Get # wildcard subscriptions
             let topic_sharp_wildcard_option = topic_node.read().get_leaf("#".to_string());
-            if topic_sharp_wildcard_option.is_some() {
-                let sharp_wildcard_subscriptions = topic_sharp_wildcard_option
-                    .unwrap()
-                    .read()
-                    .get_subscriptions();
+            if let Some(topic_sharp_wildcard) = topic_sharp_wildcard_option {
+                let sharp_wildcard_subscriptions = topic_sharp_wildcard.read().get_subscriptions();
                 result.extend(sharp_wildcard_subscriptions);
             }
             // Get + wildcard subscriptions
             let topic_plus_wildcard_option = topic_node.read().get_leaf("+".to_string());
-            if topic_plus_wildcard_option.is_some() {
+            if let Some(topic_plus_wildcard) = topic_plus_wildcard_option {
                 let mut topic_plus_left = topic_partterns.clone();
                 let topic_plus_patterns_rest = topic_plus_left.drain(1..).collect();
-                let topic_node_clone = topic_plus_wildcard_option.unwrap().clone();
+                let topic_node_clone = topic_plus_wildcard.clone();
                 let plus_wildcard_subscriptions =
                     Self::recursion_get_subscriptions(topic_node_clone, topic_plus_patterns_rest);
                 result.extend(plus_wildcard_subscriptions);
@@ -549,10 +538,10 @@ impl TopicStorage {
 
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.read().get_leaf(topic_pattern.to_string());
-            if topic_node_next.is_some() {
+            if let Some(topic_node_next) = topic_node_next {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 let subscriptions = Self::recursion_get_subscriptions(
-                    topic_node_next.unwrap(),
+                    topic_node_next,
                     topic_patterns_rest,
                 );
                 result.extend(subscriptions);
@@ -594,14 +583,14 @@ impl TopicStorage {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
-            if topic_node_next.is_none() {
-                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
-            } else {
+            if let Some(topic_node_next) = topic_node_next {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 Self::recursion_clean_retain_publish_packet(
-                    topic_node_next.unwrap(),
+                    topic_node_next,
                     topic_patterns_rest,
                 )
+            } else {
+                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             }
         } else {
             topic_node.write().clean_retain_publish_message();
