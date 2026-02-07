@@ -27,12 +27,13 @@ impl Handler<RefreshTimer> for TimerActor {
     type Result = ();
 
     fn handle(&mut self, msg: RefreshTimer, _ctx: &mut Self::Context) -> Self::Result {
-        if let Some((_, key, duration, _)) = self.sessions.get_mut(&(
-            msg.tenant_id.clone(),
-            msg.session_id.clone(),
-            msg.timer_type,
-        )) {
-            self.queue.reset(key, *duration);
+        let session_key = SessionKey {
+            tenant_id: msg.tenant_id.clone(),
+            session_id: msg.session_id.clone(),
+            timer_type: msg.timer_type,
+        };
+        if let Some(wrapper) = self.sessions.get_mut(&session_key) {
+            self.queue.reset(&wrapper.key, wrapper.duration);
         }
     }
 }
@@ -41,12 +42,13 @@ impl Handler<RemoveTimer> for TimerActor {
     type Result = ();
 
     fn handle(&mut self, msg: RemoveTimer, _ctx: &mut Self::Context) -> Self::Result {
-        if let Some((_, key, _, _)) = self.sessions.remove(&(
-            msg.tenant_id.clone(),
-            msg.session_id.clone(),
-            msg.timer_type,
-        )) {
-            self.queue.remove(&key);
+        let session_key = SessionKey {
+            tenant_id: msg.tenant_id.clone(),
+            session_id: msg.session_id.clone(),
+            timer_type: msg.timer_type,
+        };
+        if let Some(wrapper) = self.sessions.remove(&session_key) {
+            self.queue.remove(&wrapper.key);
         }
     }
 }
@@ -65,17 +67,23 @@ impl Handler<RegisterKeepAlive> for TimerActor {
 
     fn handle(&mut self, msg: RegisterKeepAlive, _ctx: &mut Self::Context) -> Self::Result {
         let timeout = msg.keep_alive;
+        let session_key = SessionKey {
+            tenant_id: msg.tenant_id.clone(),
+            session_id: msg.session_id.clone(),
+            timer_type: TimerType::KeepAlive,
+        };
         let key = self.queue.insert(
-            (
-                msg.tenant_id.clone(),
-                msg.session_id.clone(),
-                TimerType::KeepAlive,
-            ),
+            session_key.clone(),
             timeout,
         );
         self.sessions.insert(
-            (msg.tenant_id, msg.session_id, TimerType::KeepAlive),
-            (msg.addr, key, timeout, TimerType::KeepAlive),
+            session_key,
+            SessionTimerWrapper {
+                recipient: msg.addr,
+                duration: timeout,
+                timer_type: TimerType::KeepAlive,
+                key,
+            },
         );
     }
 }
@@ -94,17 +102,23 @@ impl Handler<RegisterInflight> for TimerActor {
 
     fn handle(&mut self, msg: RegisterInflight, _ctx: &mut Self::Context) -> Self::Result {
         let timeout = msg.inflight_retry_duration;
+        let session_key = SessionKey {
+            tenant_id: msg.tenant_id,
+            session_id: msg.session_id,
+            timer_type: TimerType::Inflight,
+        };
         let key = self.queue.insert(
-            (
-                msg.tenant_id.clone(),
-                msg.session_id.clone(),
-                TimerType::Inflight,
-            ),
+            session_key.clone(),
             timeout,
         );
         self.sessions.insert(
-            (msg.tenant_id, msg.session_id, TimerType::Inflight),
-            (msg.addr, key, timeout, TimerType::KeepAlive),
+            session_key,
+            SessionTimerWrapper {
+                recipient: msg.addr,
+                duration: timeout,
+                timer_type: TimerType::Inflight,
+                key,
+            },
         );
     }
 }
@@ -115,12 +129,26 @@ pub enum TimerType {
     KeepAlive,
 }
 
+#[derive(Eq, PartialOrd, PartialEq, Hash, Clone, Debug)]
+pub struct SessionKey {
+    pub tenant_id: String,
+    pub session_id: String,
+    pub timer_type: TimerType,
+}
+
+pub struct SessionTimerWrapper {
+    pub recipient: Recipient<SessionActorMessage>,
+    pub duration: Duration,
+    pub timer_type: TimerType,
+    pub key: Key,
+}
+
 pub struct TimerActor {
-    queue: DelayQueue<(String, String, TimerType)>, // (tenant_id, client_id, timer_type)
+    queue: DelayQueue<SessionKey>, // (tenant_id, client_id, timer_type)
 
     sessions: HashMap<
-        (String, String, TimerType),
-        (Recipient<SessionActorMessage>, Key, Duration, TimerType),
+        SessionKey,
+        SessionTimerWrapper,
     >,
 }
 
@@ -158,12 +186,12 @@ impl TimerActor {
 
                 match queue_pin.as_mut().poll_expired(&mut cx) {
                     Poll::Ready(Some(expired)) => {
-                        let (tenant_id, session_id, timer_type) = expired.into_inner();
+                        let session_key = expired.into_inner();
 
-                        if let Some((addr, _, _, _)) =
-                            act.sessions
-                                .get(&(tenant_id.clone(), session_id.clone(), timer_type))
-                        {
+                        if let Some(wrapper) = act.sessions.get(&session_key) {
+                            let SessionTimerWrapper { recipient: addr, timer_type, .. } = wrapper;
+                            let tenant_id = session_key.tenant_id;
+                            let session_id = session_key.session_id;
                             match timer_type {
                                 TimerType::KeepAlive => {
                                     println!(
@@ -183,7 +211,7 @@ impl TimerActor {
                         } else {
                             println!(
                                 "Session not found: {}/{} {:?}",
-                                tenant_id, session_id, timer_type
+                                session_key.tenant_id, session_key.session_id, session_key.timer_type
                             );
                         }
                     }

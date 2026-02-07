@@ -65,7 +65,7 @@ impl InflightManager {
         self.inflight.insert(msg.id.clone(), resp_sender);
 
         plugin_ipc_sender
-            .send(TxCmd::SendMessage(msg))
+            .send(TxCmd::SendMessage(Box::new(msg)))
             .await?;
 
         match timeout(timeout_duration, resp_receiver).await {
@@ -189,7 +189,7 @@ pub struct PluginManager {
 }
 
 pub enum TxCmd {
-    SendMessage(ProtocolMessage),
+    SendMessage(Box<ProtocolMessage>),
     Shutdown,
 }
 
@@ -442,7 +442,7 @@ impl PluginManager {
                         match tx_cmd {
                             Some(TxCmd::SendMessage(msg)) => {
                                 println!("Send message to plugin");
-                                if let Err(e) = framed.send(msg).await {
+                                if let Err(e) = framed.send(*msg).await {
                                     warn!("Failed to send message to plugin: {}", e);
                                     break;
                                 }
@@ -644,7 +644,7 @@ impl PluginManager {
 
                         match running_plugin.ipc_sender.as_ref() {
                             Some(ipc_sender) => {
-                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                                let _ = ipc_sender.send(TxCmd::SendMessage(Box::new(protocol_message))).await;
                             }
                             None => {
                                 warn!(
@@ -685,7 +685,7 @@ impl PluginManager {
 
                         match running_plugin.ipc_sender.as_ref() {
                             Some(ipc_sender) => {
-                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                                let _ = ipc_sender.send(TxCmd::SendMessage(Box::new(protocol_message))).await;
                             }
                             None => {
                                 warn!(
@@ -726,7 +726,7 @@ impl PluginManager {
 
                         match running_plugin.ipc_sender.as_ref() {
                             Some(ipc_sender) => {
-                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                                let _ = ipc_sender.send(TxCmd::SendMessage(Box::new(protocol_message))).await;
                             }
                             None => {
                                 warn!(
@@ -763,7 +763,7 @@ impl PluginManager {
 
                         match running_plugin.ipc_sender.as_ref() {
                             Some(ipc_sender) => {
-                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                                let _ = ipc_sender.send(TxCmd::SendMessage(Box::new(protocol_message))).await;
                             }
                             None => {
                                 warn!(
@@ -804,7 +804,7 @@ impl PluginManager {
 
                         match running_plugin.ipc_sender.as_ref() {
                             Some(ipc_sender) => {
-                                let _ = ipc_sender.send(TxCmd::SendMessage(protocol_message)).await;
+                                let _ = ipc_sender.send(TxCmd::SendMessage(Box::new(protocol_message))).await;
                             }
                             None => {
                                 warn!(
