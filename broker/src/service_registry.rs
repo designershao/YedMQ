@@ -99,7 +99,7 @@ impl ServiceRegistry {
 
         let num_cpus = num_cpus::get();
         let num_routers = std::cmp::max(1, num_cpus.saturating_sub(2));
-        info!("Starting {} router actors", num_routers);
+
 
         let mut router_actors = Vec::new();
         for _ in 0..num_routers {
@@ -124,6 +124,8 @@ impl ServiceRegistry {
             });
             router_actors.push(router);
         }
+
+        info!("started {} router actors", num_routers);
 
         let router_actors_clone = router_actors.clone();
 

@@ -74,7 +74,6 @@ impl YedMQApp {
         let settings = app.settings.clone();
 
         // sys topic task
-        info!("start sys topic task");
         let mut sys_topic_task =
             metric::SysTopicTask::new(app.metric.clone(), settings.mqtt.sys_topic_interval_secs);
         if let Some(router) = app.service_registry.routers.first() {
@@ -84,13 +83,11 @@ impl YedMQApp {
             sys_topic_task.run().await;
             Ok(())
         });
-        info!("start sys topic task succeed");
         //
 
         // start api task
         let api_listen_external = settings.listener.api.external.clone();
 
-        info!("start api task");
         let app_cloned = app.clone();
         actix::spawn(async move {
             if let Err(e) =
@@ -99,7 +96,6 @@ impl YedMQApp {
                 warn!("start api task error: {}", e);
             }
         });
-        info!("start api task succeed");
         //
 
         let listener = MqttTcpListener {
@@ -178,7 +174,6 @@ impl YedMQApp {
 
     pub async fn new(settings: Arc<Settings>) -> Self {
         // init plugin manager
-        info!("start load plugin manager");
 
         let plugin_host_config = yedmq_plugin_host::plugin_host_config::PluginHostConfig {
             broker_version: "0.1.0".to_string(),
@@ -215,7 +210,8 @@ impl YedMQApp {
             settings.cluster.node_id,
             settings.session.session_clock_path.clone(),
         );
-        session_clock.restore().await.unwrap();
+        session_clock.restore().await.expect("Session clock restore failed");
+
         let session_clock = Arc::new(session_clock);
 
         let metric = Arc::new(metric::Metric::new());

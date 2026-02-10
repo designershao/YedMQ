@@ -93,7 +93,7 @@ impl Actor for RouterActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         ctx.set_mailbox_capacity(10000);
-        log::info!("RouterActor started with node id: {}", self.current_node_id);
+        log::debug!("RouterActor started with node id: {}", self.current_node_id);
 
         // Start dead letter queue retry timer
         ctx.run_interval(

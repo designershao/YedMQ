@@ -13,13 +13,12 @@ impl ArbiterPool {
     /// Creates an Arbiter pool of a specified size.
     pub fn new(name: &str, size: usize) -> Arc<Self> {
         let arbiters: Vec<_> = (0..size)
-            .map(|i| {
-                info!("Creating arbiter {} for pool '{}'", i, name);
+            .map(|_| {
                 Arbiter::new()
             })
             .collect();
 
-        info!("Arbiter pool '{}' created with {} arbiters", name, size);
+        info!("arbiter pool '{}' created with {} arbiters", name, size);
 
         Arc::new(Self {
             arbiters,

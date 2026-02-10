@@ -251,10 +251,6 @@ pub struct SetRouterActors {
 impl Handler<SetRouterActors> for SessionManagerActor {
     type Result = ();
     fn handle(&mut self, msg: SetRouterActors, _ctx: &mut Self::Context) -> Self::Result {
-        println!(
-            "set router actors in session manager, count: {}",
-            msg.router_actors.len()
-        );
         self.router_actors = Some(msg.router_actors);
     }
 }

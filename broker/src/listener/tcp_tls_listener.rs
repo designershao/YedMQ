@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use log::warn;
 use tokio::net::TcpListener;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
@@ -14,8 +14,15 @@ pub struct MqttTcpTlsListener {
 
 impl MqttTcpTlsListener {
     pub async fn run(&mut self) -> Result<()> {
-        let certs = CertificateDer::pem_file_iter(&self.app.settings.listener.tcp_tls.cert_file)?
-            .collect::<Result<Vec<_>, _>>()?;
+
+        let certs = match CertificateDer::pem_file_iter(&self.app.settings.listener.tcp_tls.cert_file) {
+            Ok(iter) => iter.collect::<Result<Vec<_>, _>>()?,
+            Err(e) => match e {
+                rustls::pki_types::pem::Error::Io(error) => return Err(anyhow!("failed to read TLS certificate file: {}", error)),
+                _ => return Err(anyhow!("failed to load TLS certificate: {}", e)),
+            }
+        };
+
         let key = PrivateKeyDer::from_pem_file(&self.app.settings.listener.tcp_tls.key_file)?;
 
         let config = rustls::ServerConfig::builder()
