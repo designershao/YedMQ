@@ -13,6 +13,8 @@
 
 **YedMQ** is a high-performance, distributed MQTT broker written in **Rust**, specifically designed for modern IoT infrastructure. It is built for scalability, security, and extreme efficiency.
 
+**This project is still under development and is not yet suitable for production use.**
+
 ## Key Features
 
 - **MQTT v3.1.1 Support**: Fully compliant with the MQTT v3.1.1 protocol, including all QoS levels (0, 1, 2), retained messages, last will, and persistent sessions.
