@@ -878,7 +878,7 @@ mod tests {
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 1);
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
-        assert_eq!(topic_info_recorder.len(), 1);
+        assert_eq!(topic_info_recorder.len(), 2); // default tenant + created tenant
 
         assert!(
             topic_info_recorder
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(clients.unwrap().len(), 0);
 
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
-        assert_eq!(topic_info_recorder.len(), 1);
+        assert_eq!(topic_info_recorder.len(), 2); // default tenant + created tenant
 
         assert!(
             !topic_info_recorder
