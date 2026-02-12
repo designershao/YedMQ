@@ -7,6 +7,7 @@ use actix::prelude::*;
 use actix::{Actor, Addr, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use governor::clock::{Clock, DefaultClock};
+use governor::state::{direct::NotKeyed, InMemoryState};
 use governor::{Quota, RateLimiter};
 use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -22,6 +23,26 @@ use crate::metric::Metric;
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
 use crate::session::{session_actor, WillMessage};
+use crate::settings::RateLimit;
+
+type ConnectionRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+
+fn build_rate_limiter(rate_limit: &RateLimit) -> Option<ConnectionRateLimiter> {
+    if rate_limit.messages_rate <= 0 || rate_limit.messages_burst <= 0 {
+        warn!(
+            "rate limit disabled due to invalid config: messages_rate={}, messages_burst={}",
+            rate_limit.messages_rate, rate_limit.messages_burst
+        );
+        return None;
+    }
+
+    let rate = NonZeroU32::new(rate_limit.messages_rate as u32)?;
+    let burst = NonZeroU32::new(rate_limit.messages_burst as u32)?;
+
+    Some(
+        RateLimiter::direct(Quota::per_second(rate).allow_burst(burst))
+    )
+}
 
 #[derive(Message)]
 #[rtype(result = "()")]
@@ -221,6 +242,7 @@ pub enum ConnectionError {
 pub enum DisconnectReason {
     Normal,
     KeepAliveExpired,
+    RateLimited,
     InternalError(String),
 }
 
@@ -285,6 +307,7 @@ where
         plugin_service: Arc<PluginManager>,
         client_certificate: Option<Vec<u8>>,
         metric: Arc<Metric>,
+        rate_limit: RateLimit,
     ) -> Addr<Self> {
         let addr = ConnectionActor::create(move |ctx| {
             let (mut actor, mut reader, mut event_rx) = Self::new(
@@ -316,6 +339,7 @@ where
             let peer = peer_addr;
             let cert = client_certificate.clone();
             let metric_clone = metric.clone();
+            let rate_limiter = build_rate_limiter(&rate_limit);
 
             let handle = ctx.spawn(
                 async move {
@@ -363,11 +387,6 @@ where
                                         read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("Failed to send UpdateSession message to self. The actor is likely shutting down.".to_string())));
                                         return;
                                     }
-                                    let rate_limiter = RateLimiter::direct(
-                                        Quota::per_second(NonZeroU32::new(1000).unwrap())
-                                            .allow_burst(NonZeroU32::new(100).unwrap())
-                                    );
-
                                     loop {
                                         match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
                                             Ok(packet) => {
@@ -381,19 +400,35 @@ where
                                                     error!("Failed to send NotifyUpdateDisconnectedNormally message to self. The actor is likely shutting down.");
                                                 }
 
-                                                match rate_limiter.check() {
-                                                    Ok(_) => {
-                                                        result.session_recipient.do_send(
-                                                            session_actor::SessionActorMessage::InboundPacket(
-                                                                packet,
-                                                            ),
-                                                        );
+                                                if let Some(limiter) = rate_limiter.as_ref() {
+                                                    match limiter.check() {
+                                                        Ok(_) => {
+                                                            result.session_recipient.do_send(
+                                                                session_actor::SessionActorMessage::InboundPacket(
+                                                                    packet,
+                                                                ),
+                                                            );
+                                                        }
+                                                        Err(not_ready) => {
+                                                            let wait_time = not_ready.wait_time_from(DefaultClock::default().now());
+                                                            warn!(
+                                                                "rate limited: disconnecting client after wait_time={:?}",
+                                                                wait_time
+                                                            );
+                                                            read_addr.do_send(
+                                                                ConnectionActorMessage::Disconnect(
+                                                                    DisconnectReason::RateLimited,
+                                                                ),
+                                                            );
+                                                            break;
+                                                        }
                                                     }
-                                                    Err(not_ready) => {
-                                                        let wait_time = not_ready.wait_time_from(DefaultClock::default().now());
-                                                        tokio::time::sleep(wait_time).await;
-                                                        info!("rate limited")
-                                                    }
+                                                } else {
+                                                    result.session_recipient.do_send(
+                                                        session_actor::SessionActorMessage::InboundPacket(
+                                                            packet,
+                                                        ),
+                                                    );
                                                 }
                                             }
                                             Err(ConnectionError::ConnectionClosed) => {

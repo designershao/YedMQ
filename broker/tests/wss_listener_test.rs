@@ -118,9 +118,11 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                     .to_str()
                     .unwrap()
                     .to_string(),
+                rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
                 external: format!("0.0.0.0:{}", tcp_port + 2).to_string(),
+                rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
                 external: format!("0.0.0.0:{}", wss_port).to_string(),
@@ -134,6 +136,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                     .to_str()
                     .unwrap()
                     .to_string(),
+                rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
                 external: format!("0.0.0.0:{}", api_port).to_string(),

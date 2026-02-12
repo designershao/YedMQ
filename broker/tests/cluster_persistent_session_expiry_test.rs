@@ -176,14 +176,17 @@ async fn start_node(
                 external: format!("0.0.0.0:{}", tcp_tls),
                 cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
                 key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
+                rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
                 external: format!("0.0.0.0:{}", ws),
+                rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
                 external: format!("0.0.0.0:{}", wss),
                 cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
                 key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
+                rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
                 external: format!("0.0.0.0:{}", api),

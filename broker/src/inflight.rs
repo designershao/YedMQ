@@ -44,7 +44,7 @@ impl Inflight {
                 packet_key: Some(packet_key.clone()),
                 last_modified: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs(),
             };
             if let Some(old_item) = self.inner.insert(packet_identifier, item) {
@@ -58,7 +58,7 @@ impl Inflight {
                 packet_key: Some(packet_key),
                 last_modified: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs(),
             };
             if let Some(old_item) = self.inner.insert(packet_identifier, item) {
@@ -92,7 +92,7 @@ impl Inflight {
                 packet_key: Some(packet_key.clone()),
                 last_modified: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs(),
             };
             if let Some(old_item) = self.inner.insert(packet_identifier, item) {
@@ -106,7 +106,7 @@ impl Inflight {
                 packet_key: Some(packet_key),
                 last_modified: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs(),
             };
             if let Some(old_item) = self.inner.insert(packet_identifier, item) {
@@ -125,7 +125,7 @@ impl Inflight {
             }
             item.last_modified = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("system time is before unix epoch")
                 .as_secs();
         }
         result_vec
@@ -139,7 +139,7 @@ impl Inflight {
             if item.last_modified + self.expired_duration.as_secs()
                 < std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs()
             {
                 if let Some(packet_key) = &item.packet_key {
@@ -147,7 +147,7 @@ impl Inflight {
                 }
                 item.last_modified = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
+                    .expect("system time is before unix epoch")
                     .as_secs();
             }
         }
@@ -239,14 +239,7 @@ impl InflightItem {
         self.state = next_state;
         self.last_modified = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time is before unix epoch")
             .as_secs();
     }
 }
-
-/*
-#[cfg(test)]
-mod tests {
-    // Tests commented out
-}
-*/

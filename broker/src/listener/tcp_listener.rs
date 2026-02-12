@@ -29,6 +29,7 @@ impl MqttTcpListener {
                         plugin_manager,
                         None,
                         metric,
+                        settings.listener.tcp.rate_limit.clone(),
                     );
                 }
                 Err(_) => {

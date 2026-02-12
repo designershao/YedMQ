@@ -43,6 +43,7 @@ impl MqttWsListener {
                             plugin_manager_clone,
                             None,
                             metric,
+                            settings.listener.ws.rate_limit.clone(),
                         );
                     } else {
                         warn!(

@@ -27,7 +27,8 @@ external = "0.0.0.0:3456"
 external = "0.0.0.0:1883"
 
 [listener.tcp.rate_limit]
-messages = 1000
+messages_rate = 1000
+messages_burst = 100
 
 [listener.tcp_tls]
 external = "0.0.0.0:8883"

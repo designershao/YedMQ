@@ -71,6 +71,7 @@ impl MqttTcpTlsListener {
                             plugin_manager_clone,
                             client_certificate_vec,
                             metric,
+                            settings.listener.tcp_tls.rate_limit.clone(),
                         );
                     }
                 },

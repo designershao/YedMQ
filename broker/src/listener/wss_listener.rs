@@ -82,6 +82,7 @@ impl MqttWssListener {
                                 plugin_manager_clone,
                                 client_certificate_vec,
                                 metric,
+                                settings.listener.wss.rate_limit.clone(),
                             );
                         } else {
                             warn!(

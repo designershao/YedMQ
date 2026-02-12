@@ -107,9 +107,11 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                                 .to_str()
                                 .unwrap()
                                 .to_string(),
+                            rate_limit: Default::default(),
                         },
                         ws: yedmq::settings::Ws {
                             external: format!("0.0.0.0:{}", ws),
+                            rate_limit: Default::default(),
                         },
                         wss: yedmq::settings::Wss {
                             external: format!("0.0.0.0:{}", wss),
@@ -123,6 +125,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                                 .to_str()
                                 .unwrap()
                                 .to_string(),
+                            rate_limit: Default::default(),
                         },
                         api: yedmq::settings::Api {
                             external: format!("0.0.0.0:{}", api),

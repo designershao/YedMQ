@@ -112,9 +112,12 @@ impl Default for Plugin {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct RateLimit {
+    #[serde(alias = "messages")]
     pub messages_rate: i32,
+    #[serde(alias = "burst")]
     pub messages_burst: i32,
 }
 
@@ -137,10 +140,12 @@ pub struct Listener {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct TcpTls {
     pub external: String,
     pub cert_file: String,
     pub key_file: String,
+    pub rate_limit: RateLimit,
 }
 
 impl Default for TcpTls {
@@ -149,28 +154,34 @@ impl Default for TcpTls {
             external: "0.0.0.0:8883".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            rate_limit: RateLimit::default(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct Ws {
     pub external: String,
+    pub rate_limit: RateLimit,
 }
 
 impl Default for Ws {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:8083".to_string(),
+            rate_limit: RateLimit::default(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct Wss {
     pub external: String,
     pub cert_file: String,
     pub key_file: String,
+    pub rate_limit: RateLimit,
 }
 
 impl Default for Wss {
@@ -179,11 +190,13 @@ impl Default for Wss {
             external: "0.0.0.0:8084".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            rate_limit: RateLimit::default(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 pub struct Tcp {
     pub external: String,
     pub rate_limit: RateLimit,
