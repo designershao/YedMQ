@@ -276,7 +276,11 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .write()
                             .await
                             .inflight_register_rx_packet(
-                                &tenant_id, &client_id, packet_id, qos, &packet_key,
+                                &tenant_id,
+                                &client_id,
+                                packet_id,
+                                qos,
+                                &packet_key,
                             )
                             .await;
                         if let Some(key) = freed_key {
@@ -300,7 +304,11 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .write()
                             .await
                             .inflight_register_tx_packet(
-                                &tenant_id, &client_id, packet_id, qos, &packet_key,
+                                &tenant_id,
+                                &client_id,
+                                packet_id,
+                                qos,
+                                &packet_key,
                             )
                             .await;
 
@@ -473,7 +481,9 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                     } => {
                         let should_delete = if let Some(expected) = expected_disconnected_at {
                             let storage = self.data.state.session_state_storage.read().await;
-                            if let Some(session_arc) = storage.get_session_state(&tenant_id, &client_id).await {
+                            if let Some(session_arc) =
+                                storage.get_session_state(&tenant_id, &client_id).await
+                            {
                                 session_arc.read().await.disconnected_at == Some(expected)
                             } else {
                                 false
@@ -615,9 +625,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                 return Err(StorageError::IO {
                     source: StorageIOError::read_snapshot(
                         Some(meta.signature()),
-                        AnyError::new(&std::io::Error::other(
-                            "Payload sync failed",
-                        )),
+                        AnyError::new(&std::io::Error::other("Payload sync failed")),
                     ),
                 });
             }

@@ -289,13 +289,12 @@ impl SessionActorMapStorage {
                 .map(|client_id| {
                     let node_id = tenant_map.get(&client_id).unwrap().node_id;
                     (client_id, node_id)
-                }).collect::<Vec<(String, NodeId)>>();
-            Some(
-                ClientListWithPagination {
-                    client_list: paginated_clients,
-                    total
-                }
-            )
+                })
+                .collect::<Vec<(String, NodeId)>>();
+            Some(ClientListWithPagination {
+                client_list: paginated_clients,
+                total,
+            })
         } else {
             None
         }

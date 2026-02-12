@@ -451,8 +451,11 @@ impl TopicStorage {
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         if let Some(tenant_topic_root) = tenant_topic_root_rwlock.get(tenant_id) {
-            let result =
-                Self::recursion_unsubscription(tenant_topic_root.clone(), topic_patterns, client_identifier);
+            let result = Self::recursion_unsubscription(
+                tenant_topic_root.clone(),
+                topic_patterns,
+                client_identifier,
+            );
             if let Err(err) = result {
                 Err(err)
             } else {
@@ -540,10 +543,8 @@ impl TopicStorage {
             let topic_node_next = topic_node.read().get_leaf(topic_pattern.to_string());
             if let Some(topic_node_next) = topic_node_next {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
-                let subscriptions = Self::recursion_get_subscriptions(
-                    topic_node_next,
-                    topic_patterns_rest,
-                );
+                let subscriptions =
+                    Self::recursion_get_subscriptions(topic_node_next, topic_patterns_rest);
                 result.extend(subscriptions);
             }
             result
@@ -585,10 +586,7 @@ impl TopicStorage {
             let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
             if let Some(topic_node_next) = topic_node_next {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
-                Self::recursion_clean_retain_publish_packet(
-                    topic_node_next,
-                    topic_patterns_rest,
-                )
+                Self::recursion_clean_retain_publish_packet(topic_node_next, topic_patterns_rest)
             } else {
                 Err(TopicError::TopicNotFound(topic_pattern.to_string()))
             }
@@ -609,8 +607,10 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if let Some(tenant_topic_root) = tenant_topic_root_optional {
-            let result =
-                Self::recursion_clean_retain_publish_packet(tenant_topic_root.clone(), topic_patterns);
+            let result = Self::recursion_clean_retain_publish_packet(
+                tenant_topic_root.clone(),
+                topic_patterns,
+            );
             if let Err(err) = result {
                 warn!(
                     "clean retain publish packet from the topic tree error: {}",
@@ -678,10 +678,8 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if let Some(tenant_topic_root) = tenant_topic_root_optional {
-            let retain_packets = Self::recursion_get_retain_packet(
-                tenant_topic_root.clone(),
-                topic_patterns,
-            );
+            let retain_packets =
+                Self::recursion_get_retain_packet(tenant_topic_root.clone(), topic_patterns);
             Ok(retain_packets)
         } else {
             Err(TopicError::TenantNotFound(tenant_id))
@@ -728,7 +726,6 @@ impl TopicStorage {
                     //
                     Ok(())
                 }
-
             } else {
                 Err(TopicError::TenantNotFound(tenant_id))
             }
@@ -880,12 +877,10 @@ mod tests {
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 2); // default tenant + created tenant
 
-        assert!(
-            topic_info_recorder
-                .get("hello")
-                .unwrap()
-                .contains_key(&generate_key("clientA", "a/b/c")),
-        );
+        assert!(topic_info_recorder
+            .get("hello")
+            .unwrap()
+            .contains_key(&generate_key("clientA", "a/b/c")),);
         assert_eq!(
             topic_info_recorder
                 .get("hello")
@@ -907,20 +902,17 @@ mod tests {
             "a/b/c".to_string(),
             0,
         );
-        let _ =
-            topic_storage.unsubscribe(&tenant_name, "clientA", "a/b/c");
+        let _ = topic_storage.unsubscribe(&tenant_name, "clientA", "a/b/c");
         let clients = topic_storage.get_subscriptions("hello".to_string(), "a/b/c".to_string());
         assert_eq!(clients.unwrap().len(), 0);
 
         let topic_info_recorder = topic_storage.topic_info_recorder.read();
         assert_eq!(topic_info_recorder.len(), 2); // default tenant + created tenant
 
-        assert!(
-            !topic_info_recorder
-                .get("hello")
-                .unwrap()
-                .contains_key(&generate_key("clientA", "a/b/c")),
-        );
+        assert!(!topic_info_recorder
+            .get("hello")
+            .unwrap()
+            .contains_key(&generate_key("clientA", "a/b/c")),);
     }
 
     #[test]

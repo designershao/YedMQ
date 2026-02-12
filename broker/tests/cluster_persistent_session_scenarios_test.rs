@@ -29,6 +29,33 @@ async fn wait_for_disconnect(eventloop: &mut rumqttc::EventLoop) {
     assert!(timeout.is_ok(), "Timed out waiting for disconnect");
 }
 
+async fn publish_and_wait_ack(
+    addr: SocketAddr,
+    client_id: &str,
+    topic: &str,
+    qos: QoS,
+    payload: &[u8],
+) {
+    let pub_opts = MqttOptions::new(client_id, addr.ip().to_string(), addr.port());
+    let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
+    wait_for_connect(&mut pub_eventloop).await;
+    pub_client
+        .publish(topic, qos, false, payload.to_vec())
+        .await
+        .unwrap();
+
+    loop {
+        match pub_eventloop.poll().await {
+            Ok(Event::Incoming(Packet::PubAck(_))) if qos == QoS::AtLeastOnce => break,
+            Ok(Event::Incoming(Packet::PubComp(_))) if qos == QoS::ExactlyOnce => break,
+            Ok(_) => continue,
+            Err(e) => panic!("Publisher failed: {:?}", e),
+        }
+    }
+
+    let _ = pub_client.disconnect().await;
+}
+
 #[actix::test]
 async fn test_persistent_session_takeover() {
     let context = setup_cluster().await;
@@ -405,6 +432,172 @@ async fn test_offline_message_qos_behavior() {
     assert!(!received_qos0, "Should NOT receive QoS 0 offline message");
 
     let _ = client2.disconnect().await;
+}
+
+#[actix::test]
+async fn test_persistent_session_qos1_receive_resume_after_unclean_disconnect_cross_node() {
+    let context = setup_cluster().await;
+    let node1 = &context.nodes[0];
+    let node2 = &context.nodes[1];
+    let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
+    let addr2: SocketAddr = node2.listener.tcp.external.as_str().parse().unwrap();
+
+    let client_id = "persist-qos1-recv-roam";
+    let topic = "test/cluster/persistent/qos1/recv_resume";
+    let payload = b"qos1-resume";
+
+    // 1. Persistent client connects to Node 1 and subscribes.
+    let mut sub_opts = MqttOptions::new(client_id, addr1.ip().to_string(), addr1.port());
+    sub_opts.set_clean_session(false);
+    sub_opts.set_keep_alive(Duration::from_secs(30));
+    let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_opts, 10);
+    wait_for_connect(&mut sub_eventloop).await;
+    sub_client.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = sub_eventloop.poll().await {
+            break;
+        }
+    }
+
+    // 2. Publish QoS1 while subscriber is online but not polling.
+    publish_and_wait_ack(
+        addr1,
+        "persist-qos1-recv-roam-pub",
+        topic,
+        QoS::AtLeastOnce,
+        payload,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 3. Simulate unexpected disconnect during QoS flow.
+    drop(sub_client);
+    drop(sub_eventloop);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // 4. Reconnect to a different node and ensure pending QoS1 publish can finish.
+    let mut reconnect_opts = MqttOptions::new(client_id, addr2.ip().to_string(), addr2.port());
+    reconnect_opts.set_clean_session(false);
+    reconnect_opts.set_keep_alive(Duration::from_secs(30));
+    let (re_client, mut re_eventloop) = AsyncClient::new(reconnect_opts, 10);
+
+    let mut seen_connack = false;
+    let mut received_publish = false;
+    let timeout = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match re_eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                    seen_connack = true;
+                    assert!(
+                        ack.session_present,
+                        "persistent session should be present after cross-node reconnect"
+                    );
+                }
+                Ok(Event::Incoming(Packet::Publish(p))) => {
+                    assert_eq!(p.topic, topic);
+                    assert_eq!(p.payload.as_ref(), payload);
+                    assert_eq!(p.qos, QoS::AtLeastOnce);
+                    received_publish = true;
+                    return;
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("Reconnect poll failed: {:?}", e),
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        timeout.is_ok(),
+        "timed out waiting for resumed QoS1 delivery"
+    );
+    assert!(seen_connack, "should receive connack when reconnecting");
+    assert!(received_publish, "should receive pending QoS1 publish");
+    let _ = re_client.disconnect().await;
+}
+
+#[actix::test]
+async fn test_persistent_session_qos2_receive_resume_after_unclean_disconnect_cross_node() {
+    let context = setup_cluster().await;
+    let node1 = &context.nodes[0];
+    let node2 = &context.nodes[1];
+    let addr1: SocketAddr = node1.listener.tcp.external.as_str().parse().unwrap();
+    let addr2: SocketAddr = node2.listener.tcp.external.as_str().parse().unwrap();
+
+    let client_id = "persist-qos2-recv-roam";
+    let topic = "test/cluster/persistent/qos2/recv_resume";
+    let payload = b"qos2-resume";
+
+    // 1. Persistent client connects to Node 1 and subscribes.
+    let mut sub_opts = MqttOptions::new(client_id, addr1.ip().to_string(), addr1.port());
+    sub_opts.set_clean_session(false);
+    sub_opts.set_keep_alive(Duration::from_secs(30));
+    let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_opts, 10);
+    wait_for_connect(&mut sub_eventloop).await;
+    sub_client.subscribe(topic, QoS::ExactlyOnce).await.unwrap();
+    loop {
+        if let Ok(Event::Incoming(Packet::SubAck(_))) = sub_eventloop.poll().await {
+            break;
+        }
+    }
+
+    // 2. Publish QoS2 while subscriber is online but not polling.
+    publish_and_wait_ack(
+        addr1,
+        "persist-qos2-recv-roam-pub",
+        topic,
+        QoS::ExactlyOnce,
+        payload,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 3. Simulate unexpected disconnect during QoS flow.
+    drop(sub_client);
+    drop(sub_eventloop);
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // 4. Reconnect to a different node and ensure pending QoS2 publish can finish.
+    let mut reconnect_opts = MqttOptions::new(client_id, addr2.ip().to_string(), addr2.port());
+    reconnect_opts.set_clean_session(false);
+    reconnect_opts.set_keep_alive(Duration::from_secs(30));
+    let (re_client, mut re_eventloop) = AsyncClient::new(reconnect_opts, 10);
+
+    let mut seen_connack = false;
+    let mut received_publish = false;
+    let timeout = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match re_eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                    seen_connack = true;
+                    assert!(
+                        ack.session_present,
+                        "persistent session should be present after cross-node reconnect"
+                    );
+                }
+                Ok(Event::Incoming(Packet::Publish(p))) => {
+                    assert_eq!(p.topic, topic);
+                    assert_eq!(p.payload.as_ref(), payload);
+                    assert_eq!(p.qos, QoS::ExactlyOnce);
+                    received_publish = true;
+                    return;
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("Reconnect poll failed: {:?}", e),
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        timeout.is_ok(),
+        "timed out waiting for resumed QoS2 delivery"
+    );
+    assert!(seen_connack, "should receive connack when reconnecting");
+    assert!(received_publish, "should receive pending QoS2 publish");
+    let _ = re_client.disconnect().await;
 }
 
 // Session Expiry Test (Depends on setup_cluster having 10s TTL)

@@ -39,9 +39,9 @@ fn build_rate_limiter(rate_limit: &RateLimit) -> Option<ConnectionRateLimiter> {
     let rate = NonZeroU32::new(rate_limit.messages_rate as u32)?;
     let burst = NonZeroU32::new(rate_limit.messages_burst as u32)?;
 
-    Some(
-        RateLimiter::direct(Quota::per_second(rate).allow_burst(burst))
-    )
+    Some(RateLimiter::direct(
+        Quota::per_second(rate).allow_burst(burst),
+    ))
 }
 
 #[derive(Message)]

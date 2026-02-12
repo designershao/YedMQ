@@ -1,7 +1,12 @@
-use std::{cell::OnceCell, collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::Arc,
+};
 
 use crate::{
-    protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient},
+    protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest},
     session::session_actor_map_storage::SessionActorMapEntry,
 };
 use actix::dev::MessageResponse;
@@ -88,9 +93,7 @@ pub enum SessionActorMapRaftError {
     },
 
     #[error("Tenant not found: {tenant_id}")]
-    TenantNotFound {
-        tenant_id: String,
-    },
+    TenantNotFound { tenant_id: String },
 }
 
 pub struct SessionActorMapRaftActor {
@@ -1274,9 +1277,7 @@ impl Handler<GetRaftMetrics> for SessionActorMapRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(
-    result = "Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>"
-)]
+#[rtype(result = "Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>")]
 pub struct GetClientListWithPagination {
     pub tenant_id: String,
     pub offset: usize,
@@ -1289,14 +1290,12 @@ pub struct GetClientListWithPaginationResponse {
 }
 
 impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
-    type Result =
-        ResponseActFuture<Self, Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>>;
+    type Result = ResponseActFuture<
+        Self,
+        Result<GetClientListWithPaginationResponse, SessionActorMapRaftError>,
+    >;
 
-    fn handle(
-        &mut self,
-        msg: GetClientListWithPagination,
-        _: &mut Self::Context,
-    ) -> Self::Result {
+    fn handle(&mut self, msg: GetClientListWithPagination, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
@@ -1327,9 +1326,10 @@ impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
                                     total: entries.total,
                                 })
                             } else {
-                                Err(SessionActorMapRaftError::TenantNotFound { tenant_id: msg.tenant_id.clone() })
+                                Err(SessionActorMapRaftError::TenantNotFound {
+                                    tenant_id: msg.tenant_id.clone(),
+                                })
                             }
-
                         } else {
                             Err(SessionActorMapRaftError::NotInitialized)
                         }
@@ -1356,13 +1356,12 @@ impl Handler<GetClientListWithPagination> for SessionActorMapRaftActor {
     }
 }
 
-
 #[derive(Message)]
 #[rtype(result = "Result<HashMap<NodeId, Node>, SessionActorMapRaftError>")]
 pub struct GetClusterNodes;
 
 impl Handler<GetClusterNodes> for SessionActorMapRaftActor {
-    type Result =  Result<HashMap<NodeId, Node>, SessionActorMapRaftError>;
+    type Result = Result<HashMap<NodeId, Node>, SessionActorMapRaftError>;
 
     fn handle(&mut self, _msg: GetClusterNodes, _: &mut Self::Context) -> Self::Result {
         match &self.state {
@@ -1375,22 +1374,23 @@ impl Handler<GetClusterNodes> for SessionActorMapRaftActor {
                 if let Some(raft_instance) = raft.get() {
                     let metrics_ref = raft_instance.metrics();
                     let metrics = metrics_ref.borrow();
-                    let nodes = metrics.membership_config.membership().nodes().map(|node| (*node.0, node.1.clone())).collect();
+                    let nodes = metrics
+                        .membership_config
+                        .membership()
+                        .nodes()
+                        .map(|node| (*node.0, node.1.clone()))
+                        .collect();
                     Ok(nodes)
                 } else {
                     Ok(HashMap::new())
                 }
             }
             ActorState::Failed(e) => {
-                Err(SessionActorMapRaftError::ServiceUnavailable(
-                    e.to_string()))
-            },
-            ActorState::Stopped => {
-                Err(SessionActorMapRaftError::NotReady(
-                    "Actor is stopped".to_string(),
-                ))
-            },
+                Err(SessionActorMapRaftError::ServiceUnavailable(e.to_string()))
+            }
+            ActorState::Stopped => Err(SessionActorMapRaftError::NotReady(
+                "Actor is stopped".to_string(),
+            )),
         }
     }
 }
-

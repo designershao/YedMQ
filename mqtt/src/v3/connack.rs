@@ -1,5 +1,5 @@
-use bytes::BufMut;
 use ::bytes::BytesMut;
+use bytes::BufMut;
 use nom::bytes::streaming::take;
 use nom::{
     combinator::{flat_map, map, map_res},

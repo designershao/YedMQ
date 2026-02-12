@@ -210,42 +210,55 @@ async fn test_cluster_persistent_session_cleared_by_clean_session() {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Setup Error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(30), setup_task).await.expect("Setup timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), setup_task)
+        .await
+        .expect("Setup timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // 2. Publish to Node 2
     let mut pub_opts = MqttOptions::new("publisher-node2", addr2.ip().to_string(), addr2.port());
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
-    
+
     let pub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
             match pub_eventloop.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    pub_client.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                    pub_client
+                        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
                     pub_client.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                     if connected { return }
-                     panic!("Pub Error: {:?}", e)
-                },
+                    if connected {
+                        return;
+                    }
+                    panic!("Pub Error: {:?}", e)
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(30), pub_task).await.expect("Pub timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), pub_task)
+        .await
+        .expect("Pub timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -268,15 +281,20 @@ async fn test_cluster_persistent_session_cleared_by_clean_session() {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Verify Error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    
+
     let res = tokio::time::timeout(Duration::from_secs(5), verify_task).await;
-    assert!(res.is_err(), "Should timeout waiting for message (none expected)");
+    assert!(
+        res.is_err(),
+        "Should timeout waiting for message (none expected)"
+    );
     client2.disconnect().await.unwrap();
 }

@@ -12,11 +12,7 @@ pub struct ArbiterPool {
 impl ArbiterPool {
     /// Creates an Arbiter pool of a specified size.
     pub fn new(name: &str, size: usize) -> Arc<Self> {
-        let arbiters: Vec<_> = (0..size)
-            .map(|_| {
-                Arbiter::new()
-            })
-            .collect();
+        let arbiters: Vec<_> = (0..size).map(|_| Arbiter::new()).collect();
 
         info!("arbiter pool '{}' created with {} arbiters", name, size);
 

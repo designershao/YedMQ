@@ -1084,7 +1084,8 @@ impl Handler<UpdateSessionConnectionState> for SessionStateRaftActor {
 }
 
 impl Handler<ScanExpiredSessions> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Vec<(String, String, u64)>, SessionStateRaftError>>;
+    type Result =
+        ResponseActFuture<Self, Result<Vec<(String, String, u64)>, SessionStateRaftError>>;
 
     fn handle(&mut self, msg: ScanExpiredSessions, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
@@ -1092,7 +1093,7 @@ impl Handler<ScanExpiredSessions> for SessionStateRaftActor {
                 log::warn!("SessionStateRaftActor is initializing, message will be queued.");
                 // For read operations like scan, we might not want to queue them or maybe we do.
                 // Assuming we can queue them for now.
-                 self.pending_messages.push(Box::new(msg));
+                self.pending_messages.push(Box::new(msg));
                 Box::pin(
                     async move { Err(SessionStateRaftError::NotReady("Initializing".to_string())) }
                         .into_actor(self),
@@ -1103,34 +1104,35 @@ impl Handler<ScanExpiredSessions> for SessionStateRaftActor {
                 let session_state_storage = self.session_state_storage.clone();
                 Box::pin(
                     async move {
-                         if let Some(raft_instance) = raft.get() {
+                        if let Some(raft_instance) = raft.get() {
                             // Ensure linearizability for scan
                             match Self::try_local_linearizable_read(raft_instance).await {
                                 Ok(_) => {
-                                     if let Some(storage_arc) = session_state_storage.get() {
+                                    if let Some(storage_arc) = session_state_storage.get() {
                                         let storage = storage_arc.read().await;
-                                        let expired = storage.scan_expired_sessions(msg.now, msg.ttl).await;
+                                        let expired =
+                                            storage.scan_expired_sessions(msg.now, msg.ttl).await;
                                         Ok(expired)
-                                     } else {
-                                         Err(SessionStateRaftError::NotInitialized)
-                                     }
+                                    } else {
+                                        Err(SessionStateRaftError::NotInitialized)
+                                    }
                                 }
                                 Err(SessionStateRaftError::NotLeader { leader }) => {
-                                     // For now, if not leader, we just return empty or error.
-                                     // The requirement is that ONLY LEADER performs the scan.
-                                     // So if I am not leader, I shouldn't even be called?
-                                     // But if called, I should probably return error so caller knows.
-                                     // Or forward? Forwarding scan is tricky as it returns big data.
-                                     // But wait, the SessionManager checks is_leader() before calling this.
-                                     // So if we are here, we SHOULD be leader.
-                                     // If linearizable read fails (split brain), we return error.
-                                     Err(SessionStateRaftError::NotLeader { leader })
+                                    // For now, if not leader, we just return empty or error.
+                                    // The requirement is that ONLY LEADER performs the scan.
+                                    // So if I am not leader, I shouldn't even be called?
+                                    // But if called, I should probably return error so caller knows.
+                                    // Or forward? Forwarding scan is tricky as it returns big data.
+                                    // But wait, the SessionManager checks is_leader() before calling this.
+                                    // So if we are here, we SHOULD be leader.
+                                    // If linearizable read fails (split brain), we return error.
+                                    Err(SessionStateRaftError::NotLeader { leader })
                                 }
                                 Err(e) => Err(e),
                             }
-                         } else {
-                             Err(SessionStateRaftError::NotInitialized)
-                         }
+                        } else {
+                            Err(SessionStateRaftError::NotInitialized)
+                        }
                     }
                     .into_actor(self),
                 )
@@ -1142,7 +1144,7 @@ impl Handler<ScanExpiredSessions> for SessionStateRaftActor {
                         .into_actor(self),
                 )
             }
-             ActorState::Stopped => Box::pin(
+            ActorState::Stopped => Box::pin(
                 async {
                     Err(SessionStateRaftError::NotReady(
                         "Actor is stopped".to_string(),
@@ -2462,7 +2464,7 @@ impl Handler<GetRaftMetrics> for SessionStateRaftActor {
 pub struct GetClusterNodes;
 
 impl Handler<GetClusterNodes> for SessionStateRaftActor {
-    type Result =  Result<Vec<NodeId>, SessionStateRaftError>;
+    type Result = Result<Vec<NodeId>, SessionStateRaftError>;
 
     fn handle(&mut self, _msg: GetClusterNodes, _: &mut Self::Context) -> Self::Result {
         match &self.state {
@@ -2475,21 +2477,21 @@ impl Handler<GetClusterNodes> for SessionStateRaftActor {
                 if let Some(raft_instance) = raft.get() {
                     let metrics_ref = raft_instance.metrics();
                     let metrics = metrics_ref.borrow();
-                    let nodes = metrics.membership_config.membership().nodes().map(|node| *node.0).collect();
+                    let nodes = metrics
+                        .membership_config
+                        .membership()
+                        .nodes()
+                        .map(|node| *node.0)
+                        .collect();
                     Ok(nodes)
                 } else {
                     Ok(Vec::new())
                 }
             }
-            ActorState::Failed(e) => {
-                Err(SessionStateRaftError::ServiceUnavailable(
-                    e.to_string()))
-            },
-            ActorState::Stopped => {
-                Err(SessionStateRaftError::NotReady(
-                    "Actor is stopped".to_string(),
-                ))
-            },
+            ActorState::Failed(e) => Err(SessionStateRaftError::ServiceUnavailable(e.to_string())),
+            ActorState::Stopped => Err(SessionStateRaftError::NotReady(
+                "Actor is stopped".to_string(),
+            )),
         }
     }
 }

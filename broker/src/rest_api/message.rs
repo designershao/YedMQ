@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use super::{Pagination, PaginationListResult, PaginationMeta};
 use crate::app::YedMQApp;
+use crate::router_actor::RoutePacket;
 use actix::SystemService;
 use axum::{
     extract::{Path, Query, State},
@@ -9,14 +11,12 @@ use axum::{
     Json,
 };
 use axum_macros::debug_handler;
+use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use log::error;
 use serde::{Deserialize, Serialize};
-use yedmq_mqtt::MqttPacketV3;
 use yedmq_mqtt::v3::publish::PublishPacketBuilder;
-use crate::router_actor::RoutePacket;
-use base64::{engine::general_purpose, Engine as _};
-use super::{Pagination, PaginationListResult, PaginationMeta};
+use yedmq_mqtt::MqttPacketV3;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -165,15 +165,14 @@ pub async fn publish_message(
     };
 
     let router = app.service_registry.routers.first();
-    let publish_packet =  PublishPacketBuilder::new(
-        payload.topic,
-        payload_bytes,
-    ).qos(payload.qos).build();
-    router.expect("router actor not found").do_send(
-        RoutePacket {
+    let publish_packet = PublishPacketBuilder::new(payload.topic, payload_bytes)
+        .qos(payload.qos)
+        .build();
+    router
+        .expect("router actor not found")
+        .do_send(RoutePacket {
             tenant_id,
             packet: MqttPacketV3::Publish(publish_packet),
-        }
-    );
+        });
     StatusCode::OK.into_response()
 }

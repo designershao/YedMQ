@@ -680,8 +680,12 @@ impl ClusterService for ClusterServiceImpl {
             })?;
 
         let session_state = match result.session_state {
-            crate::session::session_actor::ActivityState::Active => crate::protobuf::ActivityState::Active,
-            crate::session::session_actor::ActivityState::Inactive => crate::protobuf::ActivityState::Inactive,
+            crate::session::session_actor::ActivityState::Active => {
+                crate::protobuf::ActivityState::Active
+            }
+            crate::session::session_actor::ActivityState::Inactive => {
+                crate::protobuf::ActivityState::Inactive
+            }
         };
 
         let payload = crate::protobuf::SessionInfo {
@@ -703,6 +707,5 @@ impl ClusterService for ClusterServiceImpl {
             error: None,
             payload: Some(payload),
         }))
-
     }
 }

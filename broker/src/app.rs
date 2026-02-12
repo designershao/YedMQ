@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use log::{error, info, warn};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
@@ -31,24 +31,30 @@ pub struct YedMQApp {
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
-    arbiter_pool: Arc<ArbiterPool>
+    arbiter_pool: Arc<ArbiterPool>,
 }
 
 impl YedMQApp {
-
-    pub async fn get_cluster_service_rpc_client(&self, node_id: &NodeId) -> Option<ClusterServiceClient<tonic::transport::Channel>> {
+    pub async fn get_cluster_service_rpc_client(
+        &self,
+        node_id: &NodeId,
+    ) -> Option<ClusterServiceClient<tonic::transport::Channel>> {
         let nodes = self
             .service_registry
             .session_map_raft
             .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetClusterNodes)
-            .await.expect("Session actor map is not ready");
+            .await
+            .expect("Session actor map is not ready");
 
         if let Ok(nodes) = nodes {
             match nodes.get(node_id) {
                 Some(node) => {
-                    let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", node.rpc_addr.clone()))
-                        .expect("invalid rpc address")
-                        .connect_timeout(std::time::Duration::from_secs(5));
+                    let endpoint = tonic::transport::Endpoint::from_shared(format!(
+                        "http://{}",
+                        node.rpc_addr.clone()
+                    ))
+                    .expect("invalid rpc address")
+                    .connect_timeout(std::time::Duration::from_secs(5));
 
                     match endpoint.connect().await {
                         Ok(channel) => Some(ClusterServiceClient::new(channel)),
@@ -64,10 +70,12 @@ impl YedMQApp {
                 }
             }
         } else {
-            error!("Session acotor map get cluster nodes error: {:?}", nodes.err());
+            error!(
+                "Session acotor map get cluster nodes error: {:?}",
+                nodes.err()
+            );
             None
         }
-
     }
 
     pub async fn start(app: Arc<YedMQApp>) {
@@ -188,7 +196,9 @@ impl YedMQApp {
             default_authenticate_result: settings.plugin.default_authenticate_result,
         };
 
-        let mut plugin_manager = PluginManager::new(plugin_host_config).await.expect("plugin manager init failed");
+        let mut plugin_manager = PluginManager::new(plugin_host_config)
+            .await
+            .expect("plugin manager init failed");
 
         match plugin_manager.start_listener().await {
             Ok(_) => info!("plugin manager listener start succeed"),
@@ -210,7 +220,10 @@ impl YedMQApp {
             settings.cluster.node_id,
             settings.session.session_clock_path.clone(),
         );
-        session_clock.restore().await.expect("Session clock restore failed");
+        session_clock
+            .restore()
+            .await
+            .expect("Session clock restore failed");
 
         let session_clock = Arc::new(session_clock);
 
@@ -226,9 +239,9 @@ impl YedMQApp {
             plugin_manager.clone(),
             session_clock.clone(),
             metric.clone(),
-        ).await;
+        )
+        .await;
         //
-
 
         // init raft manager
         YedMQApp {

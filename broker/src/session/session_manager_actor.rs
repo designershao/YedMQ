@@ -155,7 +155,6 @@ impl Handler<Initialize> for SessionManagerActor {
     }
 }
 
-
 impl Actor for SessionManagerActor {
     type Context = Context<Self>;
 
@@ -217,25 +216,18 @@ impl Actor for SessionManagerActor {
         };
         ctx.spawn(future.into_actor(self));
 
-                // Renew session lease every 10 seconds
+        // Renew session lease every 10 seconds
 
-                ctx.run_interval(Duration::from_secs(10), |_, ctx| {
+        ctx.run_interval(Duration::from_secs(10), |_, ctx| {
+            ctx.address().do_send(RenewSessionLease {});
+        });
 
-                    ctx.address().do_send(RenewSessionLease {});
+        // Check expired sessions every 30 seconds
 
-                });
-
-        
-
-                // Check expired sessions every 30 seconds
-
-                ctx.run_interval(Duration::from_secs(30), |_, ctx| {
-
-                    ctx.address().do_send(CheckExpiredSessions {});
-
-                });
-
-            }
+        ctx.run_interval(Duration::from_secs(30), |_, ctx| {
+            ctx.address().do_send(CheckExpiredSessions {});
+        });
+    }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         info!("session manager stopped");
@@ -521,11 +513,7 @@ pub struct GetSessionInfo {
 
 impl Handler<GetSessionInfo> for SessionManagerActor {
     type Result = ResponseFuture<Result<SessionInfo, SessionManagerError>>;
-    fn handle(
-        &mut self,
-        msg: GetSessionInfo,
-        _ctx: &mut Self::Context,
-    ) -> Self::Result {
+    fn handle(&mut self, msg: GetSessionInfo, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner().clone();
         Box::pin(async move {
             match sessions.get(msg.tenant_id.as_str()) {
@@ -533,7 +521,9 @@ impl Handler<GetSessionInfo> for SessionManagerActor {
                 Some(tenant_sessions) => {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
                         let session_info_recipient = session.get_session_info_recipient.clone();
-                        let session_info = session_info_recipient.send(crate::session::session_actor::GetSessionInfo {}).await?;
+                        let session_info = session_info_recipient
+                            .send(crate::session::session_actor::GetSessionInfo {})
+                            .await?;
                         Ok(session_info)
                     } else {
                         Err(SessionManagerError::SessionNotExisted(msg.client_id))
@@ -572,7 +562,9 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
                         .take(msg.limit_param as usize);
                     for session in iter {
                         let session_info_recipient = session.get_session_info_recipient.clone();
-                        let session_info = session_info_recipient.send(crate::session::session_actor::GetSessionInfo {}).await?;
+                        let session_info = session_info_recipient
+                            .send(crate::session::session_actor::GetSessionInfo {})
+                            .await?;
                         session_infos.push(session_info);
                     }
                     Ok((total_len as u64, session_infos))
@@ -903,8 +895,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
                 if let Ok(res) = res {
                     if let Some(session_state_from_raft) = res {
-
-                        if let Some(session_recipient_wrapper) = sessions_guard.get(&msg.client_id) {
+                        if let Some(session_recipient_wrapper) = sessions_guard.get(&msg.client_id)
+                        {
                             info!(
                                 "session {} exists in current node, start reconnect",
                                 msg.client_id
@@ -950,19 +942,20 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
                     session_present = true;
                 }
-
             } else {
-                 info!(
+                info!(
                     "session {} is clean session, delete previous session state if exists",
                     msg.client_id
                 );
-                let _ = session_state_raft_actor_addr.send(
-                    crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
-                        tenant_id: msg.tenant_id.clone(),
-                        client_id: msg.client_id.clone(),
-                        expected_disconnected_at: None,
-                    },
-                ).await;
+                let _ = session_state_raft_actor_addr
+                    .send(
+                        crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
+                            tenant_id: msg.tenant_id.clone(),
+                            client_id: msg.client_id.clone(),
+                            expected_disconnected_at: None,
+                        },
+                    )
+                    .await;
             }
             let plugin_manager_clone = plugin_manager.clone();
             let msg_client_id = msg.client_id.clone();
@@ -1057,9 +1050,7 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
                     );
                     Ok(())
                 }
-                None => {
-                    Err(SessionManagerError::TenantNotExisted(msg.tenant_id))
-                }
+                None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
             }
         };
         Box::pin(future)

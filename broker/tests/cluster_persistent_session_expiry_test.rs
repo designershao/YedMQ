@@ -5,22 +5,24 @@ use tokio::time::sleep;
 
 mod cluster_setup;
 use cluster_setup::setup_cluster;
+use std::env;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
+use tempfile::TempDir;
 use tokio::sync::mpsc;
 use yedmq::app::YedMQApp;
 use yedmq::settings::{Node, Settings};
-use std::path::PathBuf;
-use std::env;
-use std::fs;
-use tempfile::TempDir;
 
 #[tokio::test]
 async fn test_persistent_session_expiry() {
     let ctx = setup_cluster().await;
     let node1 = &ctx.nodes[0];
     let tcp_addr = &node1.listener.tcp.external;
-    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else { panic!("Invalid addr") };
+    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else {
+        panic!("Invalid addr")
+    };
     let port: u16 = port.parse().unwrap();
 
     let client_id = "expiry_test_client";
@@ -31,11 +33,14 @@ async fn test_persistent_session_expiry() {
     // 1. Connect and Subscribe
     {
         let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        client.subscribe("test/expiry", QoS::AtLeastOnce).await.unwrap();
-        
+        client
+            .subscribe("test/expiry", QoS::AtLeastOnce)
+            .await
+            .unwrap();
+
         // Let it process suback
         let _ = eventloop.poll().await.unwrap();
-        
+
         // 2. Disconnect
         drop(client);
     }
@@ -44,13 +49,13 @@ async fn test_persistent_session_expiry() {
 
     // 3. Verify session exists initially (Optional: could check via API if available)
     // For now, we rely on the passage of time.
-    
-    // The default session_ttl in setup_cluster is 60s. 
-    // To speed up tests, I should have modified setup_cluster, 
+
+    // The default session_ttl in setup_cluster is 60s.
+    // To speed up tests, I should have modified setup_cluster,
     // but since it's shared, I'll wait 70s or implement a way to override.
-    // Given I cannot easily change setup_cluster without affecting others, 
+    // Given I cannot easily change setup_cluster without affecting others,
     // I will assume the developer might want to adjust the test-wide TTL.
-    
+
     // Safety check: Let's wait long enough for the 60s TTL + 30s check interval.
     // Note: In a real CI environment, we'd want shorter TTLs.
     sleep(Duration::from_secs(95)).await;
@@ -58,18 +63,20 @@ async fn test_persistent_session_expiry() {
     // 4. Try to reconnect with clean_session=false and check session_present
     mqtt_options.set_clean_session(false);
     let (client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-    
+
     // If the session was cleared, session_present in ConnAck should be false.
     // Rumqttc doesn't easily expose session_present in AsyncClient directly in a simple way,
-    // but we can check if subscriptions are still there by seeing if we receive messages 
+    // but we can check if subscriptions are still there by seeing if we receive messages
     // without re-subscribing, OR check logs.
-    
+
     // A better way: If session was cleared, the cluster should treat this as a NEW session.
     // We can verify this by checking if the session state exists in Raft.
-    
-    let res = client.subscribe("test/expiry/check", QoS::AtLeastOnce).await;
+
+    let res = client
+        .subscribe("test/expiry/check", QoS::AtLeastOnce)
+        .await;
     assert!(res.is_ok(), "Should be able to connect as a new session");
-    
+
     drop(client);
 }
 
@@ -78,7 +85,9 @@ async fn test_persistent_session_no_expiry_on_reconnect() {
     let ctx = setup_cluster().await;
     let node1 = &ctx.nodes[0];
     let tcp_addr = &node1.listener.tcp.external;
-    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else { panic!("Invalid addr") };
+    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else {
+        panic!("Invalid addr")
+    };
     let port: u16 = port.parse().unwrap();
 
     let client_id = "no_expiry_test_client";
@@ -88,13 +97,16 @@ async fn test_persistent_session_no_expiry_on_reconnect() {
     // 1. Connect and Disconnect
     {
         let (client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        client.subscribe("test/no_expiry", QoS::AtLeastOnce).await.unwrap();
+        client
+            .subscribe("test/no_expiry", QoS::AtLeastOnce)
+            .await
+            .unwrap();
         sleep(Duration::from_secs(1)).await;
     }
 
     // 2. Wait a bit, then reconnect
     sleep(Duration::from_secs(30)).await;
-    
+
     {
         println!("Reconnecting client before expiry...");
         let (_client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
@@ -112,7 +124,6 @@ async fn test_persistent_session_no_expiry_on_reconnect() {
     assert!(res.is_ok());
 }
 
-
 fn random_port() -> u16 {
     rand::thread_rng().gen_range(10240..=65535)
 }
@@ -127,9 +138,11 @@ impl NodeHandle {
     async fn stop(mut self) {
         let _ = self.stop_tx.send(()).await;
         if let Some(handle) = self.join_handle.take() {
-             tokio::task::spawn_blocking(move || {
-                 handle.join().unwrap();
-             }).await.unwrap();
+            tokio::task::spawn_blocking(move || {
+                handle.join().unwrap();
+            })
+            .await
+            .unwrap();
         }
     }
 }
@@ -139,10 +152,16 @@ async fn start_node(
     ports: Option<(u16, u16, u16, u16, u16, u16)>,
     base_dir: &std::path::Path,
 ) -> NodeHandle {
-    let (tcp, tcp_tls, ws, wss, api, rpc) = ports.unwrap_or_else(|| (
-        random_port(), random_port(), random_port(),
-        random_port(), random_port(), random_port()
-    ));
+    let (tcp, tcp_tls, ws, wss, api, rpc) = ports.unwrap_or_else(|| {
+        (
+            random_port(),
+            random_port(),
+            random_port(),
+            random_port(),
+            random_port(),
+            random_port(),
+        )
+    });
 
     let node_dir = base_dir.join(format!("node_{}", node_id));
     fs::create_dir_all(&node_dir).unwrap();
@@ -174,8 +193,16 @@ async fn start_node(
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("0.0.0.0:{}", tcp_tls),
-                cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
-                key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
+                cert_file: absolute_certs_path
+                    .join("server.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                key_file: absolute_certs_path
+                    .join("server.key")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -184,8 +211,16 @@ async fn start_node(
             },
             wss: yedmq::settings::Wss {
                 external: format!("0.0.0.0:{}", wss),
-                cert_file: absolute_certs_path.join("server.crt").to_str().unwrap().to_string(),
-                key_file: absolute_certs_path.join("server.key").to_str().unwrap().to_string(),
+                cert_file: absolute_certs_path
+                    .join("server.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+                key_file: absolute_certs_path
+                    .join("server.key")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
@@ -195,7 +230,11 @@ async fn start_node(
         },
         plugin: yedmq::settings::Plugin {
             dir: plugin_path.to_str().unwrap().to_string(),
-            local_socket_path: format!("{}/yedmq_plugin_host_{}.sock", base_dir.to_str().unwrap(), node_id),
+            local_socket_path: format!(
+                "{}/yedmq_plugin_host_{}.sock",
+                base_dir.to_str().unwrap(),
+                node_id
+            ),
             default_authorize_result: true,
             default_authenticate_result: true,
         },
@@ -228,7 +267,7 @@ async fn start_node(
         rt.block_on(async {
             let app = Arc::new(YedMQApp::new(settings_clone).await);
             YedMQApp::start(app.clone()).await;
-            
+
             actix::spawn(async move {
                 stop_rx.recv().await;
                 actix::System::current().stop();
@@ -253,8 +292,12 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
     let temp_dir = TempDir::new().unwrap();
     let node_id = 1;
     let ports = (
-        random_port(), random_port(), random_port(),
-        random_port(), random_port(), random_port()
+        random_port(),
+        random_port(),
+        random_port(),
+        random_port(),
+        random_port(),
+        random_port(),
     );
 
     // 1. Start Broker
@@ -263,7 +306,7 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
     let tcp_port = node.tcp_port;
 
     let client_id = "test_client_restart_bug";
-    
+
     // 2. Connect Persistent Client
     let mut mqtt_options = MqttOptions::new(client_id, "127.0.0.1", tcp_port);
     mqtt_options.set_clean_session(false);
@@ -272,7 +315,10 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
     {
         println!("Connecting client (1st time)...");
         let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        client.subscribe("test/topic", QoS::AtLeastOnce).await.unwrap();
+        client
+            .subscribe("test/topic", QoS::AtLeastOnce)
+            .await
+            .unwrap();
         // Wait for suback
         loop {
             let notification = eventloop.poll().await.unwrap();
@@ -280,27 +326,27 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
                 break;
             }
         }
-        
+
         println!("Disconnecting client (1st time)...");
         client.disconnect().await.unwrap();
     }
-    
+
     sleep(Duration::from_secs(5)).await;
 
     println!("Stopping broker...");
     node.stop().await;
-    
+
     sleep(Duration::from_secs(5)).await;
 
     println!("Restarting broker...");
     let _node = start_node(node_id, Some(ports), temp_dir.path()).await;
-    
+
     sleep(Duration::from_secs(5)).await;
-    
+
     println!("Reconnecting client (check)...");
     let (_client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-    
-    let disconnect_unexpected =  tokio::select! {
+
+    let disconnect_unexpected = tokio::select! {
         result =  async {
             loop {
                 match eventloop.poll().await {
@@ -322,6 +368,8 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
         _ = sleep(Duration::from_secs(30)) => false
     };
 
-    assert!(!disconnect_unexpected, "Client should not disconnect unexpectedly");
-
+    assert!(
+        !disconnect_unexpected,
+        "Client should not disconnect unexpectedly"
+    );
 }

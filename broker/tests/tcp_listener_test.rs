@@ -744,12 +744,23 @@ async fn test_persistent_session() {
 async fn test_persistent_session_cleared_by_clean_session() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let broker_addr: SocketAddr = context.settings.listener.tcp.external.as_str().parse().unwrap();
+    let broker_addr: SocketAddr = context
+        .settings
+        .listener
+        .tcp
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
     let topic = "test/persistent/clear";
     let payload = b"should be discarded";
 
     // 1. Client 1 (Persistent) connects, subscribes, disconnects
-    let mut mqtt_options1 = MqttOptions::new("persistent-to-clean-client", broker_addr.ip().to_string(), broker_addr.port());
+    let mut mqtt_options1 = MqttOptions::new(
+        "persistent-to-clean-client",
+        broker_addr.ip().to_string(),
+        broker_addr.port(),
+    );
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
     mqtt_options1.set_clean_session(false);
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
@@ -767,19 +778,28 @@ async fn test_persistent_session_cleared_by_clean_session() {
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Eventloop 1 error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task1).await.expect("Task 1 timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task1)
+        .await
+        .expect("Task 1 timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // 2. Client 2 (Publisher) publishes a message
-    let mut mqtt_options_pub = MqttOptions::new("persistent-clear-publisher", broker_addr.ip().to_string(), broker_addr.port());
+    let mut mqtt_options_pub = MqttOptions::new(
+        "persistent-clear-publisher",
+        broker_addr.ip().to_string(),
+        broker_addr.port(),
+    );
     mqtt_options_pub.set_keep_alive(Duration::from_secs(5));
     let (client_pub, mut eventloop_pub) = AsyncClient::new(mqtt_options_pub, 10);
 
@@ -789,28 +809,40 @@ async fn test_persistent_session_cleared_by_clean_session() {
             match eventloop_pub.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected = true;
-                    client_pub.publish(topic, QoS::AtLeastOnce, false, payload.to_vec()).await.unwrap();
+                    client_pub
+                        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+                        .await
+                        .unwrap();
                 }
                 Ok(Event::Incoming(Packet::PubAck(_))) => {
                     client_pub.disconnect().await.unwrap();
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
                 Err(e) => {
-                    if connected { return }
+                    if connected {
+                        return;
+                    }
                     panic!("Publisher eventloop error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), task_pub).await.expect("Publisher task timed out").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), task_pub)
+        .await
+        .expect("Publisher task timed out")
+        .unwrap();
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // 3. Client 1 Reconnects with clean_session = true
-    let mut mqtt_options2 = MqttOptions::new("persistent-to-clean-client", broker_addr.ip().to_string(), broker_addr.port());
+    let mut mqtt_options2 = MqttOptions::new(
+        "persistent-to-clean-client",
+        broker_addr.ip().to_string(),
+        broker_addr.port(),
+    );
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
-    mqtt_options2.set_clean_session(true); 
+    mqtt_options2.set_clean_session(true);
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
 
     let task2 = tokio::spawn(async move {
@@ -819,24 +851,32 @@ async fn test_persistent_session_cleared_by_clean_session() {
             match eventloop2.poll().await {
                 Ok(Event::Incoming(Packet::ConnAck(ack))) => {
                     connected = true;
-                    assert!(!ack.session_present, "Session should NOT be present when clean_session=true"); 
+                    assert!(
+                        !ack.session_present,
+                        "Session should NOT be present when clean_session=true"
+                    );
                 }
                 Ok(Event::Incoming(Packet::Publish(_))) => {
-                     panic!("Should NOT receive any message");
+                    panic!("Should NOT receive any message");
                 }
                 Ok(Event::Incoming(Packet::Disconnect)) => return,
-                 Err(e) => {
-                    if connected { return }
+                Err(e) => {
+                    if connected {
+                        return;
+                    }
                     panic!("Eventloop 2 error: {:?}", e)
-                },
+                }
                 _ => {}
             }
         }
     });
-    
+
     // We expect timeout because we should NOT receive the message.
     let res = tokio::time::timeout(Duration::from_secs(2), task2).await;
-    assert!(res.is_err(), "Task 2 should timeout waiting for messages (none expected)");
-    
+    assert!(
+        res.is_err(),
+        "Task 2 should timeout waiting for messages (none expected)"
+    );
+
     client2.disconnect().await.unwrap();
 }

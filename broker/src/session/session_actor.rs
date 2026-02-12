@@ -7,7 +7,15 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::{cmp, net::SocketAddr, sync::{Arc, atomic::{AtomicBool, AtomicU64}}, time::Duration};
+use std::{
+    cmp,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicU64},
+        Arc,
+    },
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -59,7 +67,6 @@ use crate::timer_actor::{
 };
 
 pub struct SessionMetrics {
-
     pub ip_address: std::sync::RwLock<Option<String>>, // client ip address
 
     pub connected: AtomicBool, // is client connected
@@ -73,7 +80,6 @@ pub struct SessionMetrics {
     pub messages_received: AtomicU64, // total mqtt messages received
 
     pub messages_sent: AtomicU64, // total mqtt messages sent
-
 }
 
 impl Default for SessionMetrics {
@@ -83,7 +89,6 @@ impl Default for SessionMetrics {
 }
 
 impl SessionMetrics {
-
     pub fn get_ipaddress(&self) -> Option<String> {
         match self.ip_address.read() {
             Ok(guard) => guard.clone(),
@@ -96,7 +101,7 @@ impl SessionMetrics {
     }
 
     pub fn get_connected_at(&self) -> Option<u64> {
-        let connected_at =self.connected_at.load(std::sync::atomic::Ordering::Relaxed);
+        let connected_at = self.connected_at.load(std::sync::atomic::Ordering::Relaxed);
         if connected_at == 0 {
             None
         } else {
@@ -105,7 +110,9 @@ impl SessionMetrics {
     }
 
     pub fn get_disconnected_at(&self) -> Option<u64> {
-        let disconnected_at =self.disconnected_at.load(std::sync::atomic::Ordering::Relaxed);
+        let disconnected_at = self
+            .disconnected_at
+            .load(std::sync::atomic::Ordering::Relaxed);
         if disconnected_at == 0 {
             None
         } else {
@@ -114,14 +121,12 @@ impl SessionMetrics {
     }
 
     pub fn new() -> SessionMetrics {
-
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         SessionMetrics {
-
             ip_address: std::sync::RwLock::new(None),
 
             connected: AtomicBool::new(true),
@@ -135,9 +140,7 @@ impl SessionMetrics {
             messages_received: AtomicU64::new(0),
 
             messages_sent: AtomicU64::new(0),
-
         }
-
     }
 
     pub fn set_connected(&self, ip_address: String) {
@@ -145,9 +148,12 @@ impl SessionMetrics {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        self.connected.store(true, std::sync::atomic::Ordering::Release);
-        self.connected_at.store(now, std::sync::atomic::Ordering::Release);
-        self.disconnected_at.store(0, std::sync::atomic::Ordering::Release);
+        self.connected
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.connected_at
+            .store(now, std::sync::atomic::Ordering::Release);
+        self.disconnected_at
+            .store(0, std::sync::atomic::Ordering::Release);
         *self.ip_address.write().unwrap() = Some(ip_address);
     }
 
@@ -156,20 +162,24 @@ impl SessionMetrics {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        self.connected.store(false, std::sync::atomic::Ordering::Release);
-        self.connected_at.store(0, std::sync::atomic::Ordering::Release);
-        self.disconnected_at.store(now, std::sync::atomic::Ordering::Release);
+        self.connected
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.connected_at
+            .store(0, std::sync::atomic::Ordering::Release);
+        self.disconnected_at
+            .store(now, std::sync::atomic::Ordering::Release);
         *self.ip_address.write().unwrap() = None;
     }
 
     pub fn increase_messages_received(&self) {
-        self.messages_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.messages_received
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn increase_messages_sent(&self) {
-        self.messages_sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.messages_sent
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-
 }
 
 pub struct Client {
@@ -205,7 +215,6 @@ fn get_protobuf_now_timestamp() -> Timestamp {
 }
 
 pub struct SessionInfo {
-
     pub tenant_identifier: String,
 
     pub client_identifier: String,
@@ -227,7 +236,6 @@ pub struct SessionInfo {
     pub connected: bool,
 
     pub ip_address: Option<String>,
-
 }
 
 impl<A, M> MessageResponse<A, M> for SessionInfo
@@ -373,7 +381,6 @@ pub struct SessionActor {
     session_version: SessionVersion,
 
     session_metrics: Arc<SessionMetrics>,
-
 }
 
 impl Actor for SessionActor {
@@ -962,7 +969,7 @@ impl SessionActor {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let clean_session = self.clean_session;
-        
+
         match state {
             ActivityState::Inactive => {
                 self.stop_inflight_and_keep_alive_timer();
@@ -1616,7 +1623,6 @@ impl SessionActor {
                     tenant_id,
                     packet: MqttPacketV3::Publish(publish_packet),
                 });
-
             }
         }
         .into_actor(self)
@@ -1830,16 +1836,18 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         session_actor_addr
                                             .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
-                                    _ => if let Ok(Some(data)) = store.get(&key).await {
-                                        if let Ok(mut packet) =
-                                            serde_json::from_slice::<MqttPacketV3>(&data)
-                                        {
-                                            packet.set_dup(1);
-                                            session_actor_addr.do_send(
-                                                SessionActorMessage::OutboundMessage(packet),
-                                            );
+                                    _ => {
+                                        if let Ok(Some(data)) = store.get(&key).await {
+                                            if let Ok(mut packet) =
+                                                serde_json::from_slice::<MqttPacketV3>(&data)
+                                            {
+                                                packet.set_dup(1);
+                                                session_actor_addr.do_send(
+                                                    SessionActorMessage::OutboundMessage(packet),
+                                                );
+                                            }
                                         }
-                                    },
+                                    }
                                 }
                             }
                         }
@@ -1901,7 +1909,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 clean_session,
                 username,
                 will_message,
-                socket_addr
+                socket_addr,
             } => {
                 self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);
@@ -2012,8 +2020,12 @@ impl Handler<GetSessionInfo> for SessionActor {
                 created_at: session_metric.created_at,
                 connected_at: session_metric.get_connected_at(),
                 disconnected_at: session_metric.get_disconnected_at(),
-                messages_received: session_metric.messages_received.load(std::sync::atomic::Ordering::Relaxed),
-                messages_sent: session_metric.messages_sent.load(std::sync::atomic::Ordering::Relaxed),
+                messages_received: session_metric
+                    .messages_received
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                messages_sent: session_metric
+                    .messages_sent
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 connected: session_metric.get_connected(),
                 ip_address: session_metric.get_ipaddress(),
             }
@@ -2054,15 +2066,17 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
                                 session_actor_addr
                                     .do_send(SessionActorMessage::OutboundMessage(packet));
                             }
-                            _ => if let Ok(Some(data)) = store.get(&key).await {
-                                if let Ok(mut packet) =
-                                    serde_json::from_slice::<MqttPacketV3>(&data)
-                                {
-                                    packet.set_dup(1);
-                                    session_actor_addr
-                                        .do_send(SessionActorMessage::OutboundMessage(packet));
+                            _ => {
+                                if let Ok(Some(data)) = store.get(&key).await {
+                                    if let Ok(mut packet) =
+                                        serde_json::from_slice::<MqttPacketV3>(&data)
+                                    {
+                                        packet.set_dup(1);
+                                        session_actor_addr
+                                            .do_send(SessionActorMessage::OutboundMessage(packet));
+                                    }
                                 }
-                            },
+                            }
                         }
                     }
                 }

@@ -24,7 +24,7 @@ pub struct SessionState {
     pub inflight: Inflight,
 
     pub subscriptions: HashMap<String, QoS>,
-    
+
     pub disconnected_at: Option<u64>,
 }
 
@@ -148,14 +148,17 @@ impl SessionStateStorage {
         if let Some(state_arc) = state_arc {
             self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
-            let old_key = state
-                .inflight
-                .register_with_tx_packet(packet_id, qos, packet_key.to_string())?;
+            let old_key =
+                state
+                    .inflight
+                    .register_with_tx_packet(packet_id, qos, packet_key.to_string())?;
             drop(state);
             let freed_key = old_key.and_then(|k| self.dec_ref(&k));
             Ok(freed_key)
         } else {
-            Err(SessionStateStorageError::SessionStateNotExisted { client_id: client_id.to_string() } )
+            Err(SessionStateStorageError::SessionStateNotExisted {
+                client_id: client_id.to_string(),
+            })
         }
     }
     pub async fn inflight_register_rx_packet(
@@ -179,11 +182,12 @@ impl SessionStateStorage {
         if let Some(state_arc) = state_arc {
             self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
-            let old_key = state
-                .inflight
-                .register_with_rx_packet(packet_id, qos, packet_key.to_string());
+            let old_key =
+                state
+                    .inflight
+                    .register_with_rx_packet(packet_id, qos, packet_key.to_string());
             drop(state);
-            
+
             old_key.and_then(|k| self.dec_ref(&k))
         } else {
             None
@@ -350,8 +354,12 @@ impl SessionStateStorage {
 
         if let Some(tenant_sessions) = self.inner.get(tenant_id) {
             if let Some(session_arc) = tenant_sessions.get(client_id) {
-                session_arc.write().await.subscriptions.insert(topic.to_string(), qos);
-            }  
+                session_arc
+                    .write()
+                    .await
+                    .subscriptions
+                    .insert(topic.to_string(), qos);
+            }
         }
     }
 
@@ -360,8 +368,8 @@ impl SessionStateStorage {
             if let Some(session_arc) = tenant_sessions.get(&client_id) {
                 let mut session = session_arc.write().await;
                 session.subscriptions.remove(&topic);
-            } 
-        } 
+            }
+        }
     }
 
     pub async fn scan_expired_sessions(&self, now: u64, ttl: u64) -> Vec<(String, String, u64)> {
@@ -371,7 +379,11 @@ impl SessionStateStorage {
                 let session = session_arc.read().await;
                 if let Some(disconnected_at) = session.disconnected_at {
                     if now.saturating_sub(disconnected_at) > ttl {
-                        expired_sessions.push((tenant_id.clone(), client_id.clone(), disconnected_at));
+                        expired_sessions.push((
+                            tenant_id.clone(),
+                            client_id.clone(),
+                            disconnected_at,
+                        ));
                     }
                 }
             }

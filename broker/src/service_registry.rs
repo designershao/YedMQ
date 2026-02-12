@@ -100,7 +100,6 @@ impl ServiceRegistry {
         let num_cpus = num_cpus::get();
         let num_routers = std::cmp::max(1, num_cpus.saturating_sub(2));
 
-
         let mut router_actors = Vec::new();
         for _ in 0..num_routers {
             let settings_clone = settings.clone();

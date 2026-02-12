@@ -303,7 +303,11 @@ async fn test_api_clients_list_persistent_session() {
     let client_info = data[0].as_object().unwrap();
     println!("Client Info: {:?}", client_info);
     assert_eq!(
-        client_info.get("clientIdentifier").unwrap().as_str().unwrap(),
+        client_info
+            .get("clientIdentifier")
+            .unwrap()
+            .as_str()
+            .unwrap(),
         "warmup-client-clients"
     );
     assert_eq!(
@@ -311,7 +315,6 @@ async fn test_api_clients_list_persistent_session() {
         false
     );
     assert!(client_info.get("disconnectedAt").unwrap().as_f64().unwrap() > 0.0);
-
 }
 
 #[actix::test]
@@ -326,7 +329,7 @@ async fn test_api_publish_message_with_plain_payload() {
     let mut mqtt_options = rumqttc::MqttOptions::new("subscriber-api-msg", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (client_mqtt, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    
+
     let topic = "test/api/publish";
     let expected_payload = b"Hello From API";
 
@@ -337,7 +340,10 @@ async fn test_api_publish_message_with_plain_payload() {
         loop {
             match eventloop.poll().await {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
-                    client_mqtt.subscribe(topic, rumqttc::QoS::AtLeastOnce).await.unwrap();
+                    client_mqtt
+                        .subscribe(topic, rumqttc::QoS::AtLeastOnce)
+                        .await
+                        .unwrap();
                 }
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                     if p.topic == topic {
@@ -381,7 +387,7 @@ async fn test_api_publish_message_with_plain_payload() {
         .await
         .expect("Timeout waiting for message")
         .expect("Channel closed");
-    
+
     assert_eq!(received_payload, expected_payload.as_ref());
 }
 
@@ -397,7 +403,7 @@ async fn test_api_publish_message_with_base64_payload() {
     let mut mqtt_options = rumqttc::MqttOptions::new("subscriber-api-msg", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (client_mqtt, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    
+
     let topic = "test/api/publish";
     let expected_payload = b"Hello From API";
 
@@ -408,7 +414,10 @@ async fn test_api_publish_message_with_base64_payload() {
         loop {
             match eventloop.poll().await {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
-                    client_mqtt.subscribe(topic, rumqttc::QoS::AtLeastOnce).await.unwrap();
+                    client_mqtt
+                        .subscribe(topic, rumqttc::QoS::AtLeastOnce)
+                        .await
+                        .unwrap();
                 }
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::Publish(p))) => {
                     if p.topic == topic {
@@ -452,10 +461,9 @@ async fn test_api_publish_message_with_base64_payload() {
         .await
         .expect("Timeout waiting for message")
         .expect("Channel closed");
-    
+
     assert_eq!(received_payload.to_vec(), expected_payload.as_ref());
 }
-
 
 #[actix::test]
 async fn test_api_topics_list() {
@@ -529,7 +537,7 @@ async fn test_api_client_kickoff() {
             match eventloop.poll().await {
                 Ok(event) => {
                     log::info!("Event: {:?}", event);
-                },
+                }
                 Err(e) => {
                     let _ = tx.send(e).await;
                     break;
@@ -543,7 +551,10 @@ async fn test_api_client_kickoff() {
 
     let client_http = reqwest::Client::new();
     // Path: /api/v1/:tenant_id/clients/:client_id/kickoff
-    let url = format!("http://{}/api/v1/public/clients/{}/kickoff", api_addr, client_id);
+    let url = format!(
+        "http://{}/api/v1/public/clients/{}/kickoff",
+        api_addr, client_id
+    );
 
     let resp = client_http
         .post(&url)

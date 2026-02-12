@@ -19,7 +19,7 @@ pub struct ConnectFlags {
     pub will_retain: bool,
     pub will_qos: u8,
     pub will_flag: bool,
-    pub clean_session: bool,    
+    pub clean_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,15 +203,13 @@ fn connect_flags(input: &[u8]) -> IResult<&[u8], ConnectFlags> {
             take(1usize),
             take(1usize),
         ))),
-        |flags| {
-            ConnectFlags {
-                username_flag: flags.0 == 1,
-                password_flag: flags.1 == 1,
-                will_retain: flags.2 == 1,
-                will_qos: flags.3,
-                will_flag: flags.4 == 1,
-                clean_session: flags.5 == 1,
-            }
+        |flags| ConnectFlags {
+            username_flag: flags.0 == 1,
+            password_flag: flags.1 == 1,
+            will_retain: flags.2 == 1,
+            will_qos: flags.3,
+            will_flag: flags.4 == 1,
+            clean_session: flags.5 == 1,
         },
     )(input)
 }

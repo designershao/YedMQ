@@ -258,9 +258,9 @@ impl SysTopicTask {
             ];
 
             for packet in packets {
-                 router_actor_addr.do_send(router_actor::RoutePacketToAllTenants {
-                     packet: yedmq_mqtt::MqttPacketV3::Publish(packet),
-                 });
+                router_actor_addr.do_send(router_actor::RoutePacketToAllTenants {
+                    packet: yedmq_mqtt::MqttPacketV3::Publish(packet),
+                });
             }
         }
     }

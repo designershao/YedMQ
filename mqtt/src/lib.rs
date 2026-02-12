@@ -152,8 +152,12 @@ pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8], Mqtt
         Ok((_, fix_header)) => {
             let packet_type = fix_header.packet_type;
             match packet_type {
-                PacketType::CONNECT => consumed(map(v3::connect::parse,  MqttPacketV3::Connect))(input),
-                PacketType::CONNACK => consumed(map(v3::connack::parse,  MqttPacketV3::Connack))(input),
+                PacketType::CONNECT => {
+                    consumed(map(v3::connect::parse, MqttPacketV3::Connect))(input)
+                }
+                PacketType::CONNACK => {
+                    consumed(map(v3::connack::parse, MqttPacketV3::Connack))(input)
+                }
                 PacketType::PUBLISH => {
                     let dest_parse = |input| {
                         let max_message_size = max_message_size as usize;
@@ -161,17 +165,31 @@ pub fn parse(input: &[u8], max_message_size: u32) -> IResult<&[u8], (&[u8], Mqtt
                     };
                     consumed(map(dest_parse, MqttPacketV3::Publish))(input)
                 }
-                PacketType::PUBACK => consumed(map(v3::puback::parse,  MqttPacketV3::Puback))(input),
-                PacketType::PUBREC => consumed(map(v3::pubrec::parse,  MqttPacketV3::Pubrec))(input),
-                PacketType::PUBREL => consumed(map(v3::pubrel::parse,  MqttPacketV3::Pubrel))(input),
-                PacketType::PUBCOMP => consumed(map(v3::pubcomp::parse,  MqttPacketV3::Pubcomp))(input),
-                PacketType::SUBSCRIBE => consumed(map(v3::subscribe::parse,  MqttPacketV3::Subscribe))(input),
-                PacketType::SUBACK => consumed(map(v3::suback::parse,  MqttPacketV3::Suback))(input),
-                PacketType::UNSUBSCRIBE => consumed(map(v3::unsubscribe::parse,  MqttPacketV3::Unsubscribe))(input),
-                PacketType::UNSUBACK => consumed(map(v3::unsuback::parse, MqttPacketV3::Unsuback))(input),
-                PacketType::PINGREQ => consumed(map(v3::pingreq::parse,  MqttPacketV3::Pingreq))(input),
-                PacketType::PINGRESP => consumed(map(v3::pingresp::parse,  MqttPacketV3::Pingresp))(input),
-                PacketType::DISCONNECT => consumed(map(v3::disconnect::parse,  MqttPacketV3::Disconnect))(input)
+                PacketType::PUBACK => consumed(map(v3::puback::parse, MqttPacketV3::Puback))(input),
+                PacketType::PUBREC => consumed(map(v3::pubrec::parse, MqttPacketV3::Pubrec))(input),
+                PacketType::PUBREL => consumed(map(v3::pubrel::parse, MqttPacketV3::Pubrel))(input),
+                PacketType::PUBCOMP => {
+                    consumed(map(v3::pubcomp::parse, MqttPacketV3::Pubcomp))(input)
+                }
+                PacketType::SUBSCRIBE => {
+                    consumed(map(v3::subscribe::parse, MqttPacketV3::Subscribe))(input)
+                }
+                PacketType::SUBACK => consumed(map(v3::suback::parse, MqttPacketV3::Suback))(input),
+                PacketType::UNSUBSCRIBE => {
+                    consumed(map(v3::unsubscribe::parse, MqttPacketV3::Unsubscribe))(input)
+                }
+                PacketType::UNSUBACK => {
+                    consumed(map(v3::unsuback::parse, MqttPacketV3::Unsuback))(input)
+                }
+                PacketType::PINGREQ => {
+                    consumed(map(v3::pingreq::parse, MqttPacketV3::Pingreq))(input)
+                }
+                PacketType::PINGRESP => {
+                    consumed(map(v3::pingresp::parse, MqttPacketV3::Pingresp))(input)
+                }
+                PacketType::DISCONNECT => {
+                    consumed(map(v3::disconnect::parse, MqttPacketV3::Disconnect))(input)
+                }
             }
         }
         Err(e) => Err(e),

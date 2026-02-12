@@ -72,10 +72,7 @@ impl Handler<RegisterKeepAlive> for TimerActor {
             session_id: msg.session_id.clone(),
             timer_type: TimerType::KeepAlive,
         };
-        let key = self.queue.insert(
-            session_key.clone(),
-            timeout,
-        );
+        let key = self.queue.insert(session_key.clone(), timeout);
         self.sessions.insert(
             session_key,
             SessionTimerWrapper {
@@ -107,10 +104,7 @@ impl Handler<RegisterInflight> for TimerActor {
             session_id: msg.session_id,
             timer_type: TimerType::Inflight,
         };
-        let key = self.queue.insert(
-            session_key.clone(),
-            timeout,
-        );
+        let key = self.queue.insert(session_key.clone(), timeout);
         self.sessions.insert(
             session_key,
             SessionTimerWrapper {
@@ -146,10 +140,7 @@ pub struct SessionTimerWrapper {
 pub struct TimerActor {
     queue: DelayQueue<SessionKey>, // (tenant_id, client_id, timer_type)
 
-    sessions: HashMap<
-        SessionKey,
-        SessionTimerWrapper,
-    >,
+    sessions: HashMap<SessionKey, SessionTimerWrapper>,
 }
 
 impl Actor for TimerActor {
@@ -189,7 +180,11 @@ impl TimerActor {
                         let session_key = expired.into_inner();
 
                         if let Some(wrapper) = act.sessions.get(&session_key) {
-                            let SessionTimerWrapper { recipient: addr, timer_type, .. } = wrapper;
+                            let SessionTimerWrapper {
+                                recipient: addr,
+                                timer_type,
+                                ..
+                            } = wrapper;
                             let tenant_id = session_key.tenant_id;
                             let session_id = session_key.session_id;
                             match timer_type {
@@ -211,7 +206,9 @@ impl TimerActor {
                         } else {
                             println!(
                                 "Session not found: {}/{} {:?}",
-                                session_key.tenant_id, session_key.session_id, session_key.timer_type
+                                session_key.tenant_id,
+                                session_key.session_id,
+                                session_key.timer_type
                             );
                         }
                     }

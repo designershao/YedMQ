@@ -1,8 +1,8 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{
-    tokio::{prelude::*, Stream},
     GenericFilePath,
+    tokio::{Stream, prelude::*},
 };
 use log::{error, info};
 use prost::Message as _;
@@ -503,7 +503,7 @@ async fn handle_request(
                 error: None,
                 metadata: HashMap::new(),
             })
-        },
+        }
         _ => Err(anyhow::anyhow!("Unknown method")),
     };
 
@@ -512,7 +512,9 @@ async fn handle_request(
         framed.send(response_msg?).await?;
     }
 
-    if method == Method::Initialize && let Some(delay_secs) = config.initialize.exit_after_init_delay_secs {
+    if method == Method::Initialize
+        && let Some(delay_secs) = config.initialize.exit_after_init_delay_secs
+    {
         info!("Exiting after {} seconds as per configuration", delay_secs);
         tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
         info!("Exiting now");
