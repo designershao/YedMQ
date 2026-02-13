@@ -400,28 +400,32 @@ where
                                                     error!("Failed to send NotifyUpdateDisconnectedNormally message to self. The actor is likely shutting down.");
                                                 }
 
-                                                if let Some(limiter) = rate_limiter.as_ref() {
-                                                    match limiter.check() {
-                                                        Ok(_) => {
-                                                            result.session_recipient.do_send(
-                                                                session_actor::SessionActorMessage::InboundPacket(
-                                                                    packet,
-                                                                ),
-                                                            );
-                                                        }
+                                                let is_publish = matches!(packet, MqttPacketV3::Publish(_));
+                                                if is_publish {
+                                                    if let Some(limiter) = rate_limiter.as_ref() {
+                                                        match limiter.check() {
+                                                            Ok(_) => {
+                                                                result.session_recipient.do_send(
+                                                                    session_actor::SessionActorMessage::InboundPacket(
+                                                                        packet,
+                                                                    ),
+                                                                );
+                                                            }
                                                         Err(not_ready) => {
                                                             let wait_time = not_ready.wait_time_from(DefaultClock::default().now());
                                                             warn!(
-                                                                "rate limited: disconnecting client after wait_time={:?}",
+                                                                "rate limited: dropping publish after wait_time={:?}",
                                                                 wait_time
                                                             );
-                                                            read_addr.do_send(
-                                                                ConnectionActorMessage::Disconnect(
-                                                                    DisconnectReason::RateLimited,
-                                                                ),
-                                                            );
-                                                            break;
+                                                            continue;
                                                         }
+                                                        }
+                                                    } else {
+                                                        result.session_recipient.do_send(
+                                                            session_actor::SessionActorMessage::InboundPacket(
+                                                                packet,
+                                                            ),
+                                                        );
                                                     }
                                                 } else {
                                                     result.session_recipient.do_send(
