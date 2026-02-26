@@ -226,6 +226,32 @@ pub struct Cluster {
     pub nodes: Vec<Node>,
 
     pub session_ttl: u64,
+
+    pub startup_mode: ClusterStartupMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClusterStartupMode {
+    #[default]
+    Bootstrap,
+    Join,
+}
+
+impl<'de> Deserialize<'de> for ClusterStartupMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "bootstrap" => Ok(ClusterStartupMode::Bootstrap),
+            "join" => Ok(ClusterStartupMode::Join),
+            _ => Err(serde::de::Error::custom(format!(
+                "invalid cluster startup_mode: {}",
+                s
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -246,6 +272,7 @@ impl Default for Cluster {
             rpc: rpc.clone(),
             nodes: vec![],
             session_ttl: 10,
+            startup_mode: ClusterStartupMode::Bootstrap,
         }
     }
 }
@@ -313,6 +340,7 @@ impl Settings {
             .set_default("cluster.heartbeat_interval", 10)?
             .set_default("cluster.rpc.external", "0.0.0.0:3457")?
             .set_default("cluster.session_ttl", 10)?
+            .set_default("cluster.startup_mode", "bootstrap")?
             .add_source(File::with_name("/etc/yedmq/config.toml").required(false))
             .add_source(File::with_name("./yedmq.toml"))
             .build()?;

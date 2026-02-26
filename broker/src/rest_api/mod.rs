@@ -141,6 +141,22 @@ pub async fn run_rest_api_task(
             axum::routing::post(cluster::add_learner),
         )
         .route(
+            "/api/v1/cluster/nodes",
+            axum::routing::post(cluster::add_node),
+        )
+        .route(
+            "/api/v1/cluster/topic/learners",
+            axum::routing::post(cluster::topic_raft_add_learner),
+        )
+        .route(
+            "/api/v1/cluster/session_actor_map/learners",
+            axum::routing::post(cluster::session_actor_map_raft_add_learner),
+        )
+        .route(
+            "/api/v1/cluster/session_state/learners",
+            axum::routing::post(cluster::session_state_raft_add_learner),
+        )
+        .route(
             "/api/v1/cluster/membership",
             axum::routing::post(cluster::change_membership),
         )

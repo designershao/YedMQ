@@ -148,6 +148,7 @@ fn get_test_settings(temp_dir: &Path) -> Settings {
                 api_address: format!("127.0.0.1:{}", api_port).to_string(),
             }],
             session_ttl: 10,
+            startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,
         },
     }
 }

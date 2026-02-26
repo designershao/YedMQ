@@ -159,6 +159,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                         },
                         nodes: cluster_nodes_config.clone(),
                         session_ttl: 60,
+                        startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,
                     },
                 };
 

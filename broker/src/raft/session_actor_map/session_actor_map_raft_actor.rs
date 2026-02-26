@@ -155,7 +155,9 @@ impl SessionActorMapRaftActor {
                 },
             );
         }
-        if !raft.is_initialized().await? {
+        if settings.cluster.startup_mode == crate::settings::ClusterStartupMode::Bootstrap
+            && !raft.is_initialized().await?
+        {
             raft.initialize(cluster_nodes).await?;
         }
         //

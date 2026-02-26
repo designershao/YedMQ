@@ -255,6 +255,7 @@ async fn start_node(
             },
             nodes: vec![cluster_node_config],
             session_ttl: 10,
+            startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,
         },
     };
 

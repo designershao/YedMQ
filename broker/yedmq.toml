@@ -55,6 +55,7 @@ cluster_name = "YedMQ"
 node_id = 1001
 heartbeat_interval = 10
 store_dir = "./store"
+startup_mode = "bootstrap"
 nodes = [
     { id = 1001, rpc_address = "0.0.0.0:3457", api_address = "0.0.0.0:3456" }
 ]
