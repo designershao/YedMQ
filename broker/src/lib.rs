@@ -4,6 +4,7 @@ pub mod connection;
 pub mod inflight;
 pub mod listener;
 pub mod metric;
+pub mod node_resolver;
 pub mod raft;
 pub mod rest_api;
 pub mod router_actor;

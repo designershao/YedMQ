@@ -12,7 +12,7 @@ use crate::session::session_state_storage::SessionStateStorage;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use byteorder::WriteBytesExt;
-use log::debug;
+use log::{debug, warn};
 use openraft::storage::LogFlushed;
 use openraft::storage::RaftLogStorage;
 use openraft::storage::RaftStateMachine;
@@ -72,6 +72,7 @@ pub struct StateMachineStore {
     db: Arc<DB>,
 
     payload_store: Arc<dyn PayloadStore>,
+    payload_gc_queue: Arc<RwLock<Vec<PayloadGcItem>>>,
 
     settings: Arc<crate::settings::Settings>,
 
@@ -88,6 +89,12 @@ pub struct StoredSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotWrapper {
     pub session_state_storage_snapshot: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct PayloadGcItem {
+    delete_after_log_index: u64,
+    key: String,
 }
 
 impl RaftSnapshotBuilder<SessionStateTypeConfig> for StateMachineStore {
@@ -144,6 +151,7 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_state_storage: Arc<RwLock<SessionStateStorage>>,
         payload_store: Arc<dyn PayloadStore>,
+        payload_gc_queue: Arc<RwLock<Vec<PayloadGcItem>>>,
         settings: Arc<crate::settings::Settings>,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
@@ -157,6 +165,7 @@ impl StateMachineStore {
             snapshot_idx: 0,
             db,
             payload_store,
+            payload_gc_queue,
             settings,
             is_ready: Arc::new(AtomicBool::new(true)),
         };
@@ -228,6 +237,13 @@ impl StateMachineStore {
     fn store(&self) -> &ColumnFamily {
         self.db.cf_handle("store").unwrap()
     }
+
+    async fn schedule_payload_gc(&self, log_index: u64, key: String) {
+        self.payload_gc_queue.write().await.push(PayloadGcItem {
+            delete_after_log_index: log_index,
+            key,
+        });
+    }
 }
 
 impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
@@ -255,6 +271,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
 
         for ent in entries {
             self.data.last_applied_log_id = Some(ent.log_id);
+            let current_log_index = ent.log_id.index;
 
             match ent.payload {
                 openraft::EntryPayload::Blank => {
@@ -284,7 +301,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             )
                             .await;
                         if let Some(key) = freed_key {
-                            let _ = self.payload_store.delete(&key).await;
+                            self.schedule_payload_gc(current_log_index, key).await;
                         }
                         replies.push(SessionStateResponse::InflightRegisterRxPacketResponse(Ok(
                             (),
@@ -315,7 +332,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         match r {
                             Ok(freed_key) => {
                                 if let Some(key) = freed_key {
-                                    let _ = self.payload_store.delete(&key).await;
+                                    self.schedule_payload_gc(current_log_index, key).await;
                                 }
                                 replies.push(
                                     SessionStateResponse::InflightRegisterTxPacketResponse(Ok(())),
@@ -367,7 +384,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             )
                             .await;
                         if let Some(key) = freed_key {
-                            let _ = self.payload_store.delete(&key).await;
+                            self.schedule_payload_gc(current_log_index, key).await;
                         }
                         replies.push(SessionStateResponse::None);
                     }
@@ -384,7 +401,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .inflight_clean_finished_items(tenant_id, client_id)
                             .await;
                         for key in freed_keys {
-                            let _ = self.payload_store.delete(&key).await;
+                            self.schedule_payload_gc(current_log_index, key).await;
                         }
                         replies.push(SessionStateResponse::None);
                     }
@@ -420,7 +437,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             if let Ok(Some(bytes)) = self.payload_store.get(&key).await {
                                 payload_data = Some(bytes.to_vec());
                             }
-                            let _ = self.payload_store.delete(&key).await;
+                            self.schedule_payload_gc(current_log_index, key).await;
                         }
                         replies.push(SessionStateResponse::PopFromPendingQueueResult(
                             packet_key,
@@ -502,7 +519,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 .delete_session_state(&tenant_id, &client_id)
                                 .await;
                             for key in freed_keys {
-                                let _ = self.payload_store.delete(&key).await;
+                                self.schedule_payload_gc(current_log_index, key).await;
                             }
                         }
                         replies.push(SessionStateResponse::None);
@@ -661,6 +678,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
 pub struct LogStore {
     db: Arc<DB>,
     payload_store: Arc<dyn PayloadStore>,
+    payload_gc_queue: Arc<RwLock<Vec<PayloadGcItem>>>,
 }
 
 fn id_to_bin(id: u64) -> Vec<u8> {
@@ -969,7 +987,31 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
         let to = id_to_bin(log_id.index + 1);
         self.db
             .delete_range_cf(self.logs(), &from, &to)
-            .map_err(|e| StorageIOError::write_logs(&e).into())
+            .map_err(|e| StorageIOError::write_logs(&e))?;
+
+        let gc_keys = {
+            let mut queue = self.payload_gc_queue.write().await;
+            let mut keep = Vec::with_capacity(queue.len());
+            let mut delete_keys = Vec::new();
+
+            for item in queue.drain(..) {
+                if item.delete_after_log_index <= log_id.index {
+                    delete_keys.push(item.key);
+                } else {
+                    keep.push(item);
+                }
+            }
+            *queue = keep;
+            delete_keys
+        };
+
+        for key in gc_keys {
+            if let Err(e) = self.payload_store.delete(&key).await {
+                warn!("payload gc delete failed for key {}: {}", key, e);
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_log_reader(&mut self) -> Self::LogReader {
@@ -995,12 +1037,20 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     let db =
         DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
     let db = Arc::new(db);
+    let payload_gc_queue = Arc::new(RwLock::new(Vec::new()));
 
     let log_store = LogStore {
         db: db.clone(),
         payload_store: payload_store.clone(),
+        payload_gc_queue: payload_gc_queue.clone(),
     };
-    let sm_store = StateMachineStore::new(db, topic_storage, payload_store, settings)
+    let sm_store = StateMachineStore::new(
+        db,
+        topic_storage,
+        payload_store,
+        payload_gc_queue,
+        settings,
+    )
         .await
         .unwrap();
     let is_ready = sm_store.is_ready.clone();

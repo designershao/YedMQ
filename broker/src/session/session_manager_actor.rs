@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::{
+    node_resolver::NodeResolver,
     protobuf::ForceStopSessionActorRequest,
     raft::{
         session_actor_map::{
@@ -110,6 +111,7 @@ pub struct SessionManagerActor {
     session_lifecycle_tx: Option<Sender<SessionLifecycleMessage>>,
 
     settings: Option<Arc<Settings>>,
+    node_resolver: Option<Arc<NodeResolver>>,
 
     session_clock: Option<Arc<SessionClock>>,
 
@@ -130,6 +132,7 @@ pub struct SessionManagerActor {
 #[rtype(result = "()")]
 pub struct Initialize {
     pub settings: Arc<Settings>,
+    pub node_resolver: Arc<NodeResolver>,
     pub plugin_manager: Arc<PluginManager>,
     pub session_clock: Arc<SessionClock>,
     pub session_registry: SessionRegistry,
@@ -144,6 +147,7 @@ impl Handler<Initialize> for SessionManagerActor {
 
     fn handle(&mut self, msg: Initialize, _ctx: &mut Self::Context) -> Self::Result {
         self.settings = Some(msg.settings.clone());
+        self.node_resolver = Some(msg.node_resolver);
         self.plugin_manager = Some(msg.plugin_manager);
         self.session_clock = Some(msg.session_clock);
         self.current_node_id = msg.settings.cluster.node_id;
@@ -262,6 +266,8 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
         let settings = self.settings.as_ref().unwrap().clone();
+        let node_resolver = self.node_resolver.as_ref().unwrap().clone();
+        let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let ttl = settings.cluster.session_ttl;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -292,7 +298,8 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
                             if let Ok(Ok(Some(entry))) = map_entry_res {
                                 if let Err(e) = call_force_disconnect(
                                     entry.node_id,
-                                    &settings.cluster.nodes,
+                                    node_resolver.clone(),
+                                    topic_raft_actor_addr.clone(),
                                     tenant_id.clone(),
                                     client_id.clone(),
                                 ).await {
@@ -706,18 +713,19 @@ pub struct CreateSessionMessage {
 // force disconnect
 async fn call_force_disconnect(
     node_id: NodeId,
-    nodes: &[crate::settings::Node],
+    node_resolver: Arc<NodeResolver>,
+    topic_raft_actor_addr: Addr<TopicRaftActor>,
     tenant_id: String,
     client_id: String,
 ) -> Result<bool, SessionManagerError> {
     let max_retries = 3;
 
-    let node = nodes
-        .iter()
-        .find(|node| node.id == node_id)
+    let node = node_resolver
+        .get_node(node_id, &topic_raft_actor_addr)
+        .await
         .ok_or_else(|| SessionManagerError::NodeNotFound(node_id.to_string()))?;
 
-    let addr = format!("http://{}", node.rpc_address);
+    let addr = format!("http://{}", node.rpc_addr);
 
     let mut client =
         crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone())
@@ -754,6 +762,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let tenant_id = msg.tenant_id.clone();
         let plugin_manager = self.plugin_manager.as_ref().unwrap().clone();
         let settings = self.settings.as_ref().unwrap().clone();
+        let node_resolver = self.node_resolver.as_ref().unwrap().clone();
+        let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let session_lifecycle_tx = self
             .session_lifecycle_tx
             .as_ref()
@@ -791,7 +801,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
                     let res = call_force_disconnect(
                         entry.node_id,
-                        &settings.cluster.nodes,
+                        node_resolver,
+                        topic_raft_actor_addr,
                         msg.tenant_id.clone(),
                         msg.client_id.clone(),
                     )

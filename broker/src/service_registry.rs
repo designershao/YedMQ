@@ -1,4 +1,5 @@
 use crate::arbiter_pool::ArbiterPool;
+use crate::node_resolver::NodeResolver;
 use crate::raft::session_actor_map::session_actor_map_raft_actor::{
     Initialize as InitializeSessionActorMapRaft, SessionActorMapRaftActor,
 };
@@ -28,6 +29,7 @@ pub struct ServiceRegistry {
     pub topic_raft: Addr<TopicRaftActor>,
     pub session_map_raft: Addr<SessionActorMapRaftActor>,
     pub session_state_raft: Addr<SessionStateRaftActor>,
+    pub node_resolver: Arc<NodeResolver>,
 }
 
 impl ServiceRegistry {
@@ -55,6 +57,7 @@ impl ServiceRegistry {
         let timer_actor = pools.start_actor(TimerActor::new);
 
         let session_registry = SessionRegistry::new();
+        let node_resolver = Arc::new(NodeResolver::new(settings.clone()));
 
         session_manager.do_send(InitializeSessionManager {
             settings: settings.clone(),
@@ -65,6 +68,7 @@ impl ServiceRegistry {
             timer_actor,
             metric: metric.clone(),
             arbiter_pool: pools.clone(),
+            node_resolver: node_resolver.clone(),
         });
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
@@ -105,6 +109,7 @@ impl ServiceRegistry {
             let settings_clone = settings.clone();
             let session_manager_clone = session_manager.clone();
             let topic_raft_clone = topic_raft.clone();
+            let node_resolver_clone = node_resolver.clone();
             let topic_storage = topic_storage.clone();
             let session_actor_map_storage = session_actor_map_storage.clone();
             let session_registry_clone = session_registry.clone();
@@ -115,6 +120,7 @@ impl ServiceRegistry {
                     settings_clone,
                     session_manager_clone,
                     topic_raft_clone,
+                    node_resolver_clone,
                     topic_storage,
                     session_actor_map_storage,
                     session_registry_clone,
@@ -146,6 +152,7 @@ impl ServiceRegistry {
             topic_raft,
             session_map_raft,
             session_state_raft,
+            node_resolver,
         })
     }
 }

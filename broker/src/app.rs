@@ -1,4 +1,4 @@
-use log::{error, info, warn};
+use log::{info, warn};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
@@ -41,40 +41,28 @@ impl YedMQApp {
     ) -> Option<ClusterServiceClient<tonic::transport::Channel>> {
         let nodes = self
             .service_registry
-            .session_map_raft
-            .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetClusterNodes)
-            .await
-            .expect("Session actor map is not ready");
+            .node_resolver
+            .get_node(*node_id, &self.service_registry.topic_raft)
+            .await;
 
-        if let Ok(nodes) = nodes {
-            match nodes.get(node_id) {
-                Some(node) => {
-                    let endpoint = tonic::transport::Endpoint::from_shared(format!(
-                        "http://{}",
-                        node.rpc_addr.clone()
-                    ))
-                    .expect("invalid rpc address")
-                    .connect_timeout(std::time::Duration::from_secs(5));
+        let Some(node) = nodes else {
+            warn!("node id {} not found in cluster nodes", node_id);
+            return None;
+        };
 
-                    match endpoint.connect().await {
-                        Ok(channel) => Some(ClusterServiceClient::new(channel)),
-                        Err(e) => {
-                            warn!("failed to connect to rpc client {}: {}", node_id, e);
-                            None
-                        }
-                    }
-                }
-                None => {
-                    warn!("node id {} not found in cluster nodes", node_id);
-                    None
-                }
+        let endpoint = tonic::transport::Endpoint::from_shared(format!(
+            "http://{}",
+            node.rpc_addr.clone()
+        ))
+        .expect("invalid rpc address")
+        .connect_timeout(std::time::Duration::from_secs(5));
+
+        match endpoint.connect().await {
+            Ok(channel) => Some(ClusterServiceClient::new(channel)),
+            Err(e) => {
+                warn!("failed to connect to rpc client {}: {}", node_id, e);
+                None
             }
-        } else {
-            error!(
-                "Session acotor map get cluster nodes error: {:?}",
-                nodes.err()
-            );
-            None
         }
     }
 

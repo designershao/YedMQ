@@ -9,6 +9,10 @@ use tonic::Request;
 use yedmq_mqtt::MqttPacketV3;
 
 use crate::metric::Metric;
+use crate::node_resolver::NodeResolver;
+use crate::raft::session_actor_map::session_actor_map_raft_actor::{
+    GetSessionActorMapLinearizable, SessionActorMapRaftActor,
+};
 use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
@@ -20,7 +24,6 @@ use crate::{
         session_manager_actor::{self},
         session_registry::SessionRegistry,
     },
-    settings::Node,
 };
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -33,6 +36,12 @@ pub enum RouterActorError {
 
     #[error("Topic raft error: {0}")]
     TopicRaftError(#[from] crate::raft::topic::topic_raft_actor::TopicRaftError),
+
+    #[error("Session actor map raft error: {0}")]
+    SessionActorMapRaftError(
+        #[from]
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+    ),
 
     #[error("Get subscribers error: {0}")]
     GetSubscribersError(#[from] crate::topic::TopicError),
@@ -78,6 +87,7 @@ impl Default for DeadLetterConfig {
 pub struct RouterActor {
     pub current_node_id: NodeId,
     pub settings: Arc<crate::settings::Settings>,
+    pub node_resolver: Arc<NodeResolver>,
     pub dead_letter_queue: VecDeque<DeadLetterItem>,
     pub dead_letter_config: DeadLetterConfig,
     pub session_manager_actor: Addr<SessionManagerActor>,
@@ -122,6 +132,7 @@ impl RouterActor {
         settings: Arc<Settings>,
         session_manager_actor: Addr<SessionManagerActor>,
         topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
+        node_resolver: Arc<NodeResolver>,
         topic_storage: Arc<RwLock<TopicStorage>>,
         session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
         session_registry: SessionRegistry,
@@ -130,6 +141,7 @@ impl RouterActor {
         RouterActor {
             current_node_id: settings.cluster.node_id,
             settings,
+            node_resolver,
             dead_letter_queue: VecDeque::new(),
             dead_letter_config: DeadLetterConfig::default(),
             session_manager_actor,
@@ -145,7 +157,8 @@ impl RouterActor {
         session_manager_actor: Addr<SessionManagerActor>,
         router_actor: Addr<RouterActor>,
         current_node_id: &NodeId,
-        cluster_nodes: &[Node],
+        node_resolver: Arc<NodeResolver>,
+        topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         tenant_id: &str,
         packet: &MqttPacketV3,
         local_topic_storage: Arc<RwLock<TopicStorage>>,
@@ -156,11 +169,32 @@ impl RouterActor {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
 
-            let subscriptions = {
+            let mut subscriptions = {
                 let local_topic_storage = local_topic_storage.read();
-
-                local_topic_storage.get_subscriptions(tenant_id.to_string(), topic.clone())?
+                local_topic_storage
+                    .get_subscriptions(tenant_id.to_string(), topic.clone())?
+                    .iter()
+                    .map(|x| crate::raft::topic::topic_raft_actor::SubscriptionInfo {
+                        client_identifier: x.client_identifier.clone(),
+                        qos: x.qos,
+                    })
+                    .collect::<Vec<_>>()
             };
+
+            // Fast path: use local topic storage.
+            // Fallback: when local copy is empty (e.g., node just joined and not fully caught up),
+            // do a linearizable read via raft/leader.
+            if subscriptions.is_empty() {
+                let subscriptions_res = topic_raft_actor
+                    .send(
+                        crate::raft::topic::topic_raft_actor::GetSubscriptionsEnsureLinearizable {
+                            tenant_id: tenant_id.to_string(),
+                            topic: topic.clone(),
+                        },
+                    )
+                    .await?;
+                subscriptions = subscriptions_res?.subscriptions;
+            }
 
             if subscriptions.is_empty() {
                 metric.increase_messages_dropped();
@@ -169,22 +203,30 @@ impl RouterActor {
             let local_session_actor_map_storage = local_session_actor_map_storage.read();
 
             for item in subscriptions {
-                let session_actor_map = local_session_actor_map_storage
+                let mut session_actor_map = local_session_actor_map_storage
                     .get_session_actor_map(tenant_id, &item.client_identifier);
+                if session_actor_map.is_none() {
+                    let remote = SessionActorMapRaftActor::from_registry()
+                        .send(GetSessionActorMapLinearizable {
+                            tenant_id: tenant_id.to_string(),
+                            client_id: item.client_identifier.clone(),
+                        })
+                        .await?;
+                    session_actor_map = remote?;
+                }
                 if let Some(session_actor_addr) = session_actor_map {
                     if session_actor_addr.node_id != *current_node_id {
                         // Route to other nodes
                         let dest_node_id = session_actor_addr.node_id;
-                        let nodes = cluster_nodes
-                            .iter()
-                            .filter(|n| n.id == dest_node_id)
-                            .collect::<Vec<_>>();
                         info!("route packet to node {}", dest_node_id);
-                        if nodes.is_empty() {
+                        let Some(dest_node) = node_resolver
+                            .get_node(dest_node_id, &topic_raft_actor)
+                            .await
+                        else {
                             warn!("No node found with id: {}", dest_node_id);
                             continue;
-                        }
-                        let dest_addr = nodes[0].rpc_address.clone();
+                        };
+                        let dest_addr = dest_node.rpc_addr.clone();
 
                         let tenant_id_clone = tenant_id.to_string();
                         let packet_clone = packet.clone();
@@ -526,9 +568,14 @@ impl Handler<RoutePacket> for RouterActor {
             msg.packet
         );
         let current_node_id = self.current_node_id;
-        let cluster_nodes = self.settings.cluster.nodes.clone();
+        let node_resolver = self.node_resolver.clone();
         let router_actor = _ctx.address();
         let session_manager_actor = self.session_manager_actor.clone();
+        let topic_raft_actor = self
+            .topic_raft_actor
+            .as_ref()
+            .expect("topic raft actor not set")
+            .clone();
         let topic_storage = self.local_topic_storage.clone();
         let session_actor_map_storage = self.local_session_actor_map_storage.clone();
         let session_registry = self.session_registry.clone();
@@ -539,7 +586,8 @@ impl Handler<RoutePacket> for RouterActor {
                     session_manager_actor,
                     router_actor,
                     &current_node_id,
-                    &cluster_nodes,
+                    node_resolver,
+                    topic_raft_actor,
                     &msg.tenant_id,
                     &msg.packet,
                     topic_storage,

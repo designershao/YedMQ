@@ -167,10 +167,7 @@ impl StateMachineStore {
         self.data.last_applied_log_id = snapshot.meta.last_log_id;
         self.data.last_membership = snapshot.meta.last_membership.clone();
 
-        println!("update state machin in topic state machine store");
-
         let mut topic_storage = self.data.state.topic_storage.write();
-
         *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot);
 
         Ok(())

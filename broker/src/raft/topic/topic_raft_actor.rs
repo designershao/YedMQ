@@ -1,4 +1,4 @@
-use std::{cell::OnceCell, collections::BTreeMap, path::Path, sync::Arc};
+use std::{cell::OnceCell, collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
 
 use actix::dev::MessageResponse;
 use actix::prelude::*;
@@ -661,8 +661,8 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
 #[derive(Message)]
 #[rtype(result = "Result<GetSubscriptionsResponse, TopicRaftError>")]
 pub struct GetSubscriptionsEnsureLinearizable {
-    tenant_id: String,
-    topic: String,
+    pub tenant_id: String,
+    pub topic: String,
 }
 
 impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
@@ -1540,17 +1540,17 @@ impl Handler<GetRaftMetrics> for TopicRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Vec<NodeId>, TopicRaftError>")]
+#[rtype(result = "Result<HashMap<NodeId, Node>, TopicRaftError>")]
 pub struct GetClusterNodes;
 
 impl Handler<GetClusterNodes> for TopicRaftActor {
-    type Result = Result<Vec<NodeId>, TopicRaftError>;
+    type Result = Result<HashMap<NodeId, Node>, TopicRaftError>;
 
     fn handle(&mut self, _msg: GetClusterNodes, _: &mut Self::Context) -> Self::Result {
         match &self.state {
             ActorState::Initializing => {
                 log::warn!("TopicRaftActor is initializing, message will be queued.");
-                Ok(Vec::new())
+                Ok(HashMap::new())
             }
             ActorState::Running => {
                 let raft = self.raft.clone();
@@ -1561,11 +1561,11 @@ impl Handler<GetClusterNodes> for TopicRaftActor {
                         .membership_config
                         .membership()
                         .nodes()
-                        .map(|node| *node.0)
+                        .map(|node| (*node.0, node.1.clone()))
                         .collect();
                     Ok(nodes)
                 } else {
-                    Ok(Vec::new())
+                    Ok(HashMap::new())
                 }
             }
             ActorState::Failed(e) => Err(TopicRaftError::ServiceUnavailable(e.to_string())),
