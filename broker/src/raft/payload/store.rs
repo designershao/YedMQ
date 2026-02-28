@@ -30,7 +30,8 @@ pub trait PayloadStore: Send + Sync + Debug + 'static {
     /// Read Payload
     async fn get(&self, key: &PayloadKey) -> Result<Option<Bytes>>;
 
-    /// Delete Payload
+    /// Delete Payload.
+    /// This operation should be idempotent: deleting a missing key should return `Ok(())`.
     async fn delete(&self, key: &PayloadKey) -> Result<()>;
 
     /// Check if payload exists

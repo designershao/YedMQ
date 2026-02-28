@@ -60,6 +60,7 @@ pub struct StateMachineData {
 }
 
 use crate::raft::payload::PayloadStore;
+use crate::raft::payload::store::PayloadError;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -95,6 +96,7 @@ pub struct SnapshotWrapper {
 struct PayloadGcItem {
     delete_after_log_index: u64,
     key: String,
+    payload_deleted: bool,
 }
 
 impl RaftSnapshotBuilder<SessionStateTypeConfig> for StateMachineStore {
@@ -241,8 +243,22 @@ impl StateMachineStore {
     async fn schedule_payload_gc(&self, log_index: u64, key: String) {
         self.payload_gc_queue.write().await.push(PayloadGcItem {
             delete_after_log_index: log_index,
-            key,
+            key: key.clone(),
+            payload_deleted: false,
         });
+
+        let Some(payload_gc_cf) = self.db.cf_handle("payload_gc") else {
+            warn!(
+                "Failed to schedule payload GC for key {}: payload_gc column family is missing",
+                key
+            );
+            return;
+        };
+
+        let k = payload_gc_record_key(log_index, &key);
+        if let Err(e) = self.db.put_cf(payload_gc_cf, &k, key.as_bytes()) {
+            warn!("Failed to schedule payload GC for key {}: {}", key, e);
+        }
     }
 }
 
@@ -687,6 +703,13 @@ fn id_to_bin(id: u64) -> Vec<u8> {
     buf
 }
 
+fn payload_gc_record_key(log_index: u64, key: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(8 + key.len());
+    k.write_u64::<BigEndian>(log_index).unwrap();
+    k.extend_from_slice(key.as_bytes());
+    k
+}
+
 fn bin_to_id(buf: &[u8]) -> u64 {
     (&buf[0..8]).read_u64::<BigEndian>().unwrap()
 }
@@ -989,25 +1012,61 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
             .delete_range_cf(self.logs(), &from, &to)
             .map_err(|e| StorageIOError::write_logs(&e))?;
 
-        let gc_keys = {
+        let gc_items = {
             let mut queue = self.payload_gc_queue.write().await;
             let mut keep = Vec::with_capacity(queue.len());
-            let mut delete_keys = Vec::new();
+            let mut delete_items = Vec::new();
 
             for item in queue.drain(..) {
                 if item.delete_after_log_index <= log_id.index {
-                    delete_keys.push(item.key);
+                    delete_items.push(item);
                 } else {
                     keep.push(item);
                 }
             }
             *queue = keep;
-            delete_keys
+            delete_items
         };
 
-        for key in gc_keys {
-            if let Err(e) = self.payload_store.delete(&key).await {
-                warn!("payload gc delete failed for key {}: {}", key, e);
+        for mut item in gc_items {
+            if !item.payload_deleted {
+                match self.payload_store.delete(&item.key).await {
+                    Ok(()) => {
+                        item.payload_deleted = true;
+                    }
+                    Err(PayloadError::NotFound(_)) => {
+                        // Idempotent behavior: treat missing payload as already deleted.
+                        item.payload_deleted = true;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "payload gc delete failed for key {}: {}, add to the gc queue again",
+                            item.key, e
+                        );
+                        // Re-add to GC queue for retry.
+                        self.payload_gc_queue.write().await.push(item);
+                        continue;
+                    }
+                }
+            }
+
+            let k = payload_gc_record_key(item.delete_after_log_index, &item.key);
+            let payload_gc_cf = self.db.cf_handle("payload_gc").ok_or_else(|| {
+                let e = std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "payload_gc column family is missing",
+                );
+                StorageError::IO {
+                    source: StorageIOError::write(&e),
+                }
+            })?;
+            if let Err(e) = self.db.delete_cf(payload_gc_cf, &k) {
+                warn!(
+                    "payload gc record delete failed for key {}: {}, add to the gc queue again",
+                    item.key, e
+                );
+                // Payload is already deleted. Only retry CF cleanup.
+                self.payload_gc_queue.write().await.push(item);
             }
         }
 
@@ -1031,13 +1090,40 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
 
     let store = ColumnFamilyDescriptor::new("store", Options::default());
     let logs = ColumnFamilyDescriptor::new("logs", Options::default());
+    let gc = ColumnFamilyDescriptor::new("payload_gc", Options::default());
 
     let session_actor_map_db_path = db_path.as_ref().join("session_state");
 
     let db =
-        DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs]).unwrap();
+        DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs, gc]).unwrap();
     let db = Arc::new(db);
     let payload_gc_queue = Arc::new(RwLock::new(Vec::new()));
+
+    // On startup, load existing GC queue from DB
+    let mut initial_queue = Vec::new();
+    if let Some(payload_gc_cf) = db.cf_handle("payload_gc") {
+        let iter = db.iterator_cf(payload_gc_cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            if let Ok((k, v)) = item {
+                if k.len() < 8 {
+                    warn!("Invalid payload_gc record with key: {:?}", k);
+                    continue;
+                }
+                let log_index = (&k[0..8]).read_u64::<BigEndian>().unwrap();
+                let key = String::from_utf8_lossy(&v).to_string();
+                initial_queue.push(PayloadGcItem {
+                    delete_after_log_index: log_index,
+                    key: key.clone(),
+                    payload_deleted: false,
+                });
+            } else {
+                warn!("Failed to read payload_gc record: {:?}", item);
+            }
+        }
+    } else {
+        warn!("payload_gc column family is missing; startup GC queue restore is skipped");
+    }
+    payload_gc_queue.write().await.extend(initial_queue);
 
     let log_store = LogStore {
         db: db.clone(),
