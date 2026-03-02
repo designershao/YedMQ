@@ -1463,7 +1463,8 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                         );
                                         Ok(Some(packet))
                                     }
-                                    _ => {
+                                    Some(crate::inflight::InflightState::WaitPubrec)
+                                    | Some(crate::inflight::InflightState::WaitPuback) => {
                                         if let Some(key) = key {
                                             let store = payload_store
                                                 .get()
@@ -1501,6 +1502,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                             Ok(None)
                                         }
                                     }
+                                    _ => Ok(None),
                                 }
                             } else {
                                 Err(SessionStateRaftError::NotInitialized)
@@ -1582,7 +1584,8 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                 let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
                                                 Ok(Some(packet))
                                             }
-                                            _ => {
+                                            Some(crate::inflight::InflightState::WaitPubrec)
+                                            | Some(crate::inflight::InflightState::WaitPuback) => {
                                                 if let Some(key) = key {
                                                     let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
                                                     match store.get(&key).await {
@@ -1604,6 +1607,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                     Ok(None)
                                                 }
                                             }
+                                            _ => Ok(None),
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NotInitialized)
@@ -1734,7 +1738,8 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                                         );
                                         Ok(Some(packet))
                                     }
-                                    _ => {
+                                    Some(crate::inflight::InflightState::WaitPubrec)
+                                    | Some(crate::inflight::InflightState::WaitPuback) => {
                                         if let Some(key) = key {
                                             let store = payload_store
                                                 .get()
@@ -1772,6 +1777,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                                             Ok(None)
                                         }
                                     }
+                                    _ => Ok(None),
                                 }
                             } else {
                                 Err(SessionStateRaftError::NotInitialized)
@@ -1853,7 +1859,8 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                                 let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
                                                 Ok(Some(packet))
                                             }
-                                            _ => {
+                                            Some(crate::inflight::InflightState::WaitPubrec)
+                                            | Some(crate::inflight::InflightState::WaitPuback) => {
                                                 if let Some(key) = key {
                                                     let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
                                                     match store.get(&key).await {
@@ -1875,6 +1882,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                                     Ok(None)
                                                 }
                                             }
+                                            _ => Ok(None),
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NotInitialized)

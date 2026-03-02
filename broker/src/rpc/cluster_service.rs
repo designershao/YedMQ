@@ -649,8 +649,16 @@ impl ClusterService for ClusterServiceImpl {
             })
             .await
             .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?
-            .map_err(|e| {
-                Status::internal(format!("Error in force stopping session actor: {}", e))
+            .or_else(|e| {
+                match e {
+                    crate::session::session_manager_actor::SessionManagerError::SessionNotExisted(
+                        client_id,
+                    ) if client_id == inner.client_id => Ok(()), // If session not existed, we consider it as already stopped, so we return Ok here.
+                    _ => Err(Status::internal(format!(
+                        "Error in force stopping session actor: {}",
+                        e
+                    ))),
+                }
             })?;
         Ok(Response::new(ForceStopSessionActorResponse {
             success: true,

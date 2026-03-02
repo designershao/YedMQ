@@ -1836,7 +1836,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         session_actor_addr
                                             .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
-                                    _ => {
+                                    Some(InflightState::WaitPubrec) | Some(InflightState::WaitPuback) => {
                                         if let Ok(Some(data)) = store.get(&key).await {
                                             if let Ok(mut packet) =
                                                 serde_json::from_slice::<MqttPacketV3>(&data)
@@ -1848,6 +1848,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             }
                                         }
                                     }
+                                    _ => {}
                                 }
                             }
                         }
@@ -2066,7 +2067,7 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
                                 session_actor_addr
                                     .do_send(SessionActorMessage::OutboundMessage(packet));
                             }
-                            _ => {
+                            Some(InflightState::WaitPubrec) | Some(InflightState::WaitPuback) => {
                                 if let Ok(Some(data)) = store.get(&key).await {
                                     if let Ok(mut packet) =
                                         serde_json::from_slice::<MqttPacketV3>(&data)
@@ -2077,6 +2078,7 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
                                     }
                                 }
                             }
+                            _ => {}
                         }
                     }
                 }
