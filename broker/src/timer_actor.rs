@@ -1,6 +1,7 @@
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_actor::SessionActorMessage::{InflightRetry, KeepAliveExpired};
 use actix::{Actor, AsyncContext, Context, Handler, Message, Recipient};
+use log::{debug, info};
 use std::collections::HashMap;
 use std::task::Poll;
 use std::time::Duration;
@@ -48,7 +49,7 @@ impl Handler<RemoveTimer> for TimerActor {
             timer_type: msg.timer_type,
         };
         if let Some(wrapper) = self.sessions.remove(&session_key) {
-            self.queue.remove(&wrapper.key);
+            let _ = self.queue.try_remove(&wrapper.key);
         }
     }
 }
@@ -72,16 +73,7 @@ impl Handler<RegisterKeepAlive> for TimerActor {
             session_id: msg.session_id.clone(),
             timer_type: TimerType::KeepAlive,
         };
-        let key = self.queue.insert(session_key.clone(), timeout);
-        self.sessions.insert(
-            session_key,
-            SessionTimerWrapper {
-                recipient: msg.addr,
-                duration: timeout,
-                timer_type: TimerType::KeepAlive,
-                key,
-            },
-        );
+        self.register_timer(session_key, timeout, msg.addr, TimerType::KeepAlive);
     }
 }
 
@@ -104,16 +96,7 @@ impl Handler<RegisterInflight> for TimerActor {
             session_id: msg.session_id,
             timer_type: TimerType::Inflight,
         };
-        let key = self.queue.insert(session_key.clone(), timeout);
-        self.sessions.insert(
-            session_key,
-            SessionTimerWrapper {
-                recipient: msg.addr,
-                duration: timeout,
-                timer_type: TimerType::Inflight,
-                key,
-            },
-        );
+        self.register_timer(session_key, timeout, msg.addr, TimerType::Inflight);
     }
 }
 
@@ -164,6 +147,28 @@ impl TimerActor {
         }
     }
 
+    fn register_timer(
+        &mut self,
+        session_key: SessionKey,
+        timeout: Duration,
+        addr: Recipient<SessionActorMessage>,
+        timer_type: TimerType,
+    ) {
+        if let Some(existing) = self.sessions.remove(&session_key) {
+            let _ = self.queue.try_remove(&existing.key);
+        }
+        let key = self.queue.insert(session_key.clone(), timeout);
+        self.sessions.insert(
+            session_key,
+            SessionTimerWrapper {
+                recipient: addr,
+                duration: timeout,
+                timer_type,
+                key,
+            },
+        );
+    }
+
     fn start_timeout_handler(&mut self, ctx: &mut Context<Self>) {
         ctx.run_interval(Duration::from_millis(10), |act, _ctx| {
             // Create a waker for polling
@@ -179,24 +184,24 @@ impl TimerActor {
                     Poll::Ready(Some(expired)) => {
                         let session_key = expired.into_inner();
 
-                        if let Some(wrapper) = act.sessions.get(&session_key) {
+                        if let Some(wrapper) = act.sessions.remove(&session_key) {
                             let SessionTimerWrapper {
                                 recipient: addr,
                                 timer_type,
                                 ..
                             } = wrapper;
-                            let tenant_id = session_key.tenant_id;
-                            let session_id = session_key.session_id;
+                            let tenant_id = &session_key.tenant_id;
+                            let session_id = &session_key.session_id;
                             match timer_type {
                                 TimerType::KeepAlive => {
-                                    println!(
+                                    info!(
                                         "Sending KeepAliveExpired to session {}/{}",
                                         tenant_id, session_id
                                     );
                                     addr.do_send(KeepAliveExpired);
                                 }
                                 TimerType::Inflight => {
-                                    println!(
+                                    info!(
                                         "Sending InflightRetry to session {}/{}",
                                         tenant_id, session_id
                                     );
@@ -204,8 +209,8 @@ impl TimerActor {
                                 }
                             }
                         } else {
-                            println!(
-                                "Session not found: {}/{} {:?}",
+                            debug!(
+                                "Ignoring stale timer entry for session {}/{} {:?}",
                                 session_key.tenant_id,
                                 session_key.session_id,
                                 session_key.timer_type

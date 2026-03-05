@@ -179,7 +179,7 @@ impl Actor for SessionManagerActor {
                         version,
                     } => {
                         info!(
-                            "received session lifectcle message SessionStopped session {} stopped",
+                            "Received session lifecycle message SessionStopped session {} stopped",
                             client_id
                         );
                         let res = session_actor_map_actor_addr.send(

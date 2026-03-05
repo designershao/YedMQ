@@ -14,7 +14,7 @@ use actix::{
     Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService,
     WrapFuture,
 };
-use log::info;
+use log::{debug, info};
 use openraft::{
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
@@ -186,7 +186,6 @@ impl SessionActorMapRaftActor {
         command: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
         let res = raft.client_write(command).await.map_err(|e| {
-            log::warn!("failed to write command to raft: {}", e);
             if let RaftError::APIError(openraft::error::ClientWriteError::ForwardToLeader(
                 e_inner,
             )) = e
@@ -195,6 +194,7 @@ impl SessionActorMapRaftActor {
                     leader: e_inner.leader_node,
                 }
             } else {
+                log::warn!("failed to write command to raft: {}", e);
                 SessionActorMapRaftError::RaftClientWriteError(e)
             }
         })?;
@@ -217,7 +217,7 @@ impl SessionActorMapRaftActor {
                 }),
             },
             Err(SessionActorMapRaftError::NotLeader { leader }) => {
-                log::info!("Not leader, forwarding request to leader: {:?}", leader);
+                log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
                     Self::forward_to_leader(leader_node.rpc_addr, request).await
                 } else {
@@ -242,7 +242,6 @@ impl SessionActorMapRaftActor {
         leader_addr: String,
         msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
-        info!("Forwarding request to leader at {}", leader_addr);
         let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
             .await
             .map_err(|e| {
@@ -759,7 +758,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                 }
                             }
                             Err(SessionActorMapRaftError::NotLeader { leader }) => {
-                                log::info!("Not leader, forwarding request to leader: {:?}", leader);
+                                log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
                                     let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
                                         log::error!("Failed to connect to leader: {}", e);

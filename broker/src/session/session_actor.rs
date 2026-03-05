@@ -512,6 +512,7 @@ impl Actor for SessionActor {
     }
 
     fn stopped(&mut self, _ctx: &mut Self::Context) {
+        self.stop_inflight_and_keep_alive_timer();
         info!("🗑️ session {} stopped", self.client_id);
     }
 }
@@ -1016,6 +1017,7 @@ impl SessionActor {
     }
 
     fn force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        self.stop_inflight_and_keep_alive_timer();
         // if connection is still alive, stop the connection actor
         if let Some(conn_recipient) = &self.conn_recipient {
             conn_recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
@@ -1918,6 +1920,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.clean_session = clean_session;
                 self.keep_alive = keep_alive;
                 self.username = username;
+                self.stop_inflight_and_keep_alive_timer();
+                self.start_inflight_and_keep_alive_timer(ctx);
 
                 self.session_metrics.set_connected(socket_addr.to_string());
 
