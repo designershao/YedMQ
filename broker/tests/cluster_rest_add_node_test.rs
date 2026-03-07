@@ -164,9 +164,10 @@ async fn start_node(
         }
     });
 
-    let started = tokio::task::spawn_blocking(move || start_rx.recv_timeout(Duration::from_secs(10)))
-        .await
-        .expect("wait start result task failed");
+    let started =
+        tokio::task::spawn_blocking(move || start_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .expect("wait start result task failed");
     match started {
         Ok(Ok(())) => {}
         Ok(Err(err)) => panic!("node {} failed to start: {}", node_id, err),
@@ -198,8 +199,15 @@ async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
 fn has_two_nodes(metrics: &Value, raft_key: &str) -> bool {
     let Some(nodes_obj) = metrics
         .get(raft_key)
-        .and_then(|v| v.get("membership_config").or_else(|| v.get("membershipConfig")))
-        .and_then(|v| v.get("membership").and_then(|m| m.get("nodes")).or_else(|| v.get("nodes")))
+        .and_then(|v| {
+            v.get("membership_config")
+                .or_else(|| v.get("membershipConfig"))
+        })
+        .and_then(|v| {
+            v.get("membership")
+                .and_then(|m| m.get("nodes"))
+                .or_else(|| v.get("nodes"))
+        })
         .and_then(|v| v.as_object())
     else {
         return false;

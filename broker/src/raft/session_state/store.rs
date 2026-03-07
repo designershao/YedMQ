@@ -59,8 +59,8 @@ pub struct StateMachineData {
     pub state: State,
 }
 
-use crate::raft::payload::PayloadStore;
 use crate::raft::payload::store::PayloadError;
+use crate::raft::payload::PayloadStore;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1094,8 +1094,8 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
 
     let session_actor_map_db_path = db_path.as_ref().join("session_state");
 
-    let db =
-        DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs, gc]).unwrap();
+    let db = DB::open_cf_descriptors(&db_opts, session_actor_map_db_path, vec![store, logs, gc])
+        .unwrap();
     let db = Arc::new(db);
     let payload_gc_queue = Arc::new(RwLock::new(Vec::new()));
 
@@ -1130,15 +1130,10 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
         payload_store: payload_store.clone(),
         payload_gc_queue: payload_gc_queue.clone(),
     };
-    let sm_store = StateMachineStore::new(
-        db,
-        topic_storage,
-        payload_store,
-        payload_gc_queue,
-        settings,
-    )
-        .await
-        .unwrap();
+    let sm_store =
+        StateMachineStore::new(db, topic_storage, payload_store, payload_gc_queue, settings)
+            .await
+            .unwrap();
     let is_ready = sm_store.is_ready.clone();
 
     (log_store, sm_store, is_ready)

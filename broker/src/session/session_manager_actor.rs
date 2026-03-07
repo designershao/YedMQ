@@ -287,7 +287,7 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
                     Ok(Ok(expired_list)) => {
                         for (tenant_id, client_id, disconnected_at) in expired_list {
                             info!("cleaning up expired persistent session: {}/{} (disconnected at {})", tenant_id, client_id, disconnected_at);
-                            
+
                             let map_entry_res = session_actor_map_raft_actor_addr.send(
                                 crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMap {
                                     tenant_id: tenant_id.clone(),

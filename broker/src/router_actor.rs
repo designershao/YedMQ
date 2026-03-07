@@ -499,11 +499,11 @@ impl RouterActor {
             actix::spawn(async move {
                 match Self::route_to_other_nodes(&dest_addr, &tenant_id, &packet).await {
                     Ok(_) => {
-                        log::debug!("Successfully retried message from dead letter queue: tenant={}, dest={}", 
+                        log::debug!("Successfully retried message from dead letter queue: tenant={}, dest={}",
                                   tenant_id, dest_addr);
                     }
                     Err(e) => {
-                        warn!("Failed to retry message from dead letter queue: tenant={}, dest={}, error={}", 
+                        warn!("Failed to retry message from dead letter queue: tenant={}, dest={}, error={}",
                               tenant_id, dest_addr, e);
 
                         // Readd message to dead letter queue

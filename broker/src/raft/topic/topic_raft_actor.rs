@@ -1,4 +1,9 @@
-use std::{cell::OnceCell, collections::{BTreeMap, HashMap}, path::Path, sync::Arc};
+use std::{
+    cell::OnceCell,
+    collections::{BTreeMap, HashMap},
+    path::Path,
+    sync::Arc,
+};
 
 use actix::dev::MessageResponse;
 use actix::prelude::*;

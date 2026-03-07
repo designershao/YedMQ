@@ -423,7 +423,7 @@ impl Actor for SessionActor {
                         disconnected_at: None,
                     }
                 ).await;
-                // 
+                //
 
                 for (topic, qos) in subscriptions {
                     info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
@@ -482,7 +482,7 @@ impl Actor for SessionActor {
                             } else {
                                 None
                             };
-    
+
                             if let Some(data) = data {
                                  if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
                                       session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
@@ -500,7 +500,7 @@ impl Actor for SessionActor {
                             break
                         },
                     }
-    
+
                 }
             }
             //
@@ -1838,7 +1838,8 @@ impl Handler<SessionActorMessage> for SessionActor {
                                         session_actor_addr
                                             .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
-                                    Some(InflightState::WaitPubrec) | Some(InflightState::WaitPuback) => {
+                                    Some(InflightState::WaitPubrec)
+                                    | Some(InflightState::WaitPuback) => {
                                         if let Ok(Some(data)) = store.get(&key).await {
                                             if let Ok(mut packet) =
                                                 serde_json::from_slice::<MqttPacketV3>(&data)

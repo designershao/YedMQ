@@ -50,12 +50,10 @@ impl YedMQApp {
             return None;
         };
 
-        let endpoint = tonic::transport::Endpoint::from_shared(format!(
-            "http://{}",
-            node.rpc_addr.clone()
-        ))
-        .expect("invalid rpc address")
-        .connect_timeout(std::time::Duration::from_secs(5));
+        let endpoint =
+            tonic::transport::Endpoint::from_shared(format!("http://{}", node.rpc_addr.clone()))
+                .expect("invalid rpc address")
+                .connect_timeout(std::time::Duration::from_secs(5));
 
         match endpoint.connect().await {
             Ok(channel) => Some(ClusterServiceClient::new(channel)),
