@@ -4,6 +4,10 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let protoc_path = protoc_bin_vendored::protoc_bin_path()?;
+    let protoc_include_path = protoc_bin_vendored::include_path()?;
+    env::set_var("PROTOC", protoc_path);
+
     let workspace_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     println!("Workspace directory: {}", workspace_dir);
     let protocol_crate_dir = format!("{}/../plugin_protocol", workspace_dir);
@@ -16,9 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Output directory: {}", out_dir);
 
     let mut config = Config::new();
+    let include_paths = vec![PathBuf::from(&proto_root), protoc_include_path];
     config
         .out_dir(PathBuf::from(&out_dir))
-        .compile_protos(proto_files, &[proto_root])?;
+        .compile_protos(proto_files, &include_paths)?;
 
     for proto_file in proto_files {
         println!("cargo:rerun-if-changed={}", proto_file);
