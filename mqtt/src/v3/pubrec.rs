@@ -88,10 +88,6 @@ impl MqttPacket for PubRecPacket {
         self.fix_header.ecnode(buf);
         self.variable_header.encode(buf);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        crate::PacketType::PUBREC
-    }
 }
 
 #[cfg(test)]

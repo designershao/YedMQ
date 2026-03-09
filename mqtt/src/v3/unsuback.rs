@@ -65,10 +65,6 @@ impl MqttPacket for UnSubackPacket {
         self.fix_header.ecnode(buf);
         self.variable_header.encode(buf);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        crate::PacketType::UNSUBACK
-    }
 }
 
 pub fn parse(input: &[u8]) -> IResult<&[u8], UnSubackPacket> {

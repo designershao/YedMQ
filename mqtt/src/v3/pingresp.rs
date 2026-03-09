@@ -45,10 +45,6 @@ impl MqttPacket for PingrespPacket {
     fn encode(&self, buf: &mut BytesMut) {
         self.fix_header.ecnode(buf);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        crate::PacketType::PINGRESP
-    }
 }
 
 #[cfg(test)]

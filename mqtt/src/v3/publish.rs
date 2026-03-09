@@ -293,10 +293,6 @@ impl MqttPacket for PublishPacket {
         self.variable_header.encode(buffer);
         self.payload.encode(buffer);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        crate::PacketType::PUBLISH
-    }
 }
 
 #[cfg(test)]

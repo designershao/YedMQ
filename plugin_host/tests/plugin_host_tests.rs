@@ -41,11 +41,10 @@ pub async fn test_plugin_host_init_scan() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let plugin_manager = yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
@@ -68,11 +67,10 @@ pub async fn test_plugin_host_start_plugin() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -111,11 +109,10 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -142,7 +139,7 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
         .await
         .unwrap();
 
-    assert!(result.authenticated == true);
+    assert!(result.authenticated);
 }
 
 #[tokio::test]
@@ -154,11 +151,10 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -185,7 +181,7 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
         .await
         .unwrap();
 
-    assert!(result.authorized == true);
+    assert!(result.authorized);
 }
 
 #[tokio::test]
@@ -200,11 +196,10 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -269,11 +264,10 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -324,11 +318,10 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -377,11 +370,10 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -405,7 +397,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
         let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
-        plugin_process.start_time.unwrap().clone()
+        plugin_process.start_time.unwrap()
     };
 
     plugin_manager
@@ -419,7 +411,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
 
-    let latest_plugin_start_time = plugin_process.start_time.unwrap().clone();
+    let latest_plugin_start_time = plugin_process.start_time.unwrap();
 
     assert!(plugin_process.state == yedmq_plugin_host::plugin_manager::PluginState::Running);
     assert!(latest_plugin_start_time > pre_plugin_start_time);
@@ -440,11 +432,10 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -478,7 +469,7 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
         .await
         .unwrap();
 
-    assert!(result.authenticated == true);
+    assert!(result.authenticated);
 
     let running_plugins = plugin_manager.get_running_plugins();
 
@@ -513,11 +504,10 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -591,11 +581,10 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -672,11 +661,10 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -771,11 +759,10 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -904,11 +891,10 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1031,11 +1017,10 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1157,11 +1142,10 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1240,7 +1224,7 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
     assert!(plugin_3_log.contains("Handling authenticate request"));
     //
 
-    assert_eq!(res.as_ref().unwrap().authenticated, false);
+    assert!(!res.as_ref().unwrap().authenticated);
     assert_eq!(
         res.as_ref().unwrap().error_reason,
         Some("Tenant ID mismatch".to_string())
@@ -1288,11 +1272,10 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1371,7 +1354,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
     assert!(!plugin_3_log.contains("Handling authenticate request"));
     //
 
-    assert_eq!(res.as_ref().unwrap().authenticated, false);
+    assert!(!res.as_ref().unwrap().authenticated);
     assert_eq!(
         res.as_ref().unwrap().error_reason,
         Some(format!(
@@ -1419,11 +1402,10 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1544,11 +1526,10 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1660,11 +1641,10 @@ executable = "non_existent_executable"
     let plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
 
     let mut plugin_manager =
@@ -1697,11 +1677,10 @@ pub async fn test_plugin_responds_to_ping_correctly() {
     let mut plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
     // Set a short health check interval for testing
     plugin_host_config.health_check_interval_secs = 1;
@@ -1757,11 +1736,10 @@ pub async fn test_plugin_state_changed_when_ping_timeout() {
     let mut plugin_host_config = get_plugin_host_test_config(
         tx,
         &temp_dir,
-        &temp_dir
+        temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy().as_ref()
     );
     // Set a short health check interval for testing
     plugin_host_config.health_check_interval_secs = 1;

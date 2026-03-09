@@ -14,7 +14,6 @@ use actix::{
     Actor, AsyncContext, Context, Handler, Message, ResponseActFuture, Supervised, SystemService,
     WrapFuture,
 };
-use log::warn;
 use openraft::{
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,

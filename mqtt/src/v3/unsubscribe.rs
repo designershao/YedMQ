@@ -204,10 +204,6 @@ impl MqttPacket for UnsubscribePacket {
         self.variable_header.encode(buf);
         self.payload.encode(buf);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        PacketType::UNSUBSCRIBE
-    }
 }
 
 #[cfg(test)]
