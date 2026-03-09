@@ -626,12 +626,12 @@ mod tests {
     fn test_connect_flag() {
         let input = &[0xF6];
         let (_, flags) = connect_flags(input).unwrap();
-        assert_eq!(flags.username_flag, true);
-        assert_eq!(flags.password_flag, true);
-        assert_eq!(flags.will_retain, true);
+        assert!(flags.username_flag);
+        assert!(flags.password_flag);
+        assert!(flags.will_retain);
         assert_eq!(flags.will_qos, 2);
-        assert_eq!(flags.will_flag, true);
-        assert_eq!(flags.clean_session, true);
+        assert!(flags.will_flag);
+        assert!(flags.clean_session);
     }
 
     #[test]
@@ -666,9 +666,9 @@ mod tests {
             0x54, 0x54, 0x00, 0x04, 0x4D, 0x51, 0x54, 0x54, 0x00, 0x04, 0x4D, 0x51, 0x54, 0x54,
         ];
         let out = parse(input).unwrap();
-        assert_eq!(out.1.variable_header.clean_session, true);
-        assert_eq!(out.1.variable_header.password_flag, true);
-        assert_eq!(out.1.variable_header.username_flag, true);
+        assert!(out.1.variable_header.clean_session);
+        assert!(out.1.variable_header.password_flag);
+        assert!(out.1.variable_header.username_flag);
         assert_eq!(out.1.variable_header.will_qos, 1);
         assert_eq!(out.1.variable_header.protocol_level, 0x04);
         assert_eq!(out.1.variable_header.keep_alive, 0x00);

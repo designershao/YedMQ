@@ -186,7 +186,7 @@ mod tests {
     fn test_variable_header() {
         let input = &[0x01, 0x01];
         let output = variable_header(input).unwrap();
-        assert_eq!(output.1.session_present, true);
+        assert!(output.1.session_present);
         assert_eq!(output.1.connect_return_code, 1);
     }
 
@@ -195,7 +195,7 @@ mod tests {
         let input = &[0x20, 0x02, 0x01, 0x01];
         let out = parse(input).unwrap();
         assert_eq!(out.1.variable_header.connect_return_code, 0x01);
-        assert_eq!(out.1.variable_header.session_present, true);
+        assert!(out.1.variable_header.session_present);
     }
 
     #[test]

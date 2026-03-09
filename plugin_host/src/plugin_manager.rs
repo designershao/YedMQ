@@ -351,7 +351,7 @@ impl PluginManager {
 
         let initialize_request_param = InitializeRequest::new_from_plugin_host_config(config);
 
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             let wrap_initialize_param_to_any = prost_types::Any {
                 type_url: super::protocol::INIT_REQUEST_TYPE_URL.to_owned(),
                 value: initialize_request_param.encode_to_vec(),
@@ -467,7 +467,7 @@ impl PluginManager {
         let inflight_manager = self.inflight_manager.clone();
         let hook_manager = self.hook_manager.clone();
 
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 tokio::select! {
                     msg = rx_cmd_receiver.recv() => {
