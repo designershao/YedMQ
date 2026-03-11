@@ -130,21 +130,25 @@ pub struct VariableHeader {
 
 impl VariableHeader {
     pub fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u16(self.topic_name.len().try_into().unwrap());
+        buf.put_u16(
+            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
+        );
         buf.put(self.topic_name.as_bytes());
 
-        if self.packet_identifier.is_some() {
-            buf.put_u16(self.packet_identifier.unwrap());
+        if let Some(packet_identifier) = self.packet_identifier {
+            buf.put_u16(packet_identifier);
         }
     }
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length());
-        buf.put_u16(self.topic_name.len().try_into().unwrap());
+        buf.put_u16(
+            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
+        );
         buf.put(self.topic_name.as_bytes());
 
-        if self.packet_identifier.is_some() {
-            buf.put_u16(self.packet_identifier.unwrap());
+        if let Some(packet_identifier) = self.packet_identifier {
+            buf.put_u16(packet_identifier);
         }
         buf
     }
@@ -307,7 +311,7 @@ mod tests {
     #[test]
     fn test_variable_header() {
         let input = &[0x00, 0x03, 0x61, 0x2F, 0x62];
-        let output = variable_header(false)(input).unwrap();
+        let output = variable_header(false)(input).expect("parse variable header");
         assert_eq!(output.1.topic_name, "a/b".to_string());
         assert_eq!(output.1.packet_identifier, None);
     }
@@ -332,7 +336,7 @@ mod tests {
     #[test]
     fn test_parse() {
         let input = &[0x3B, 0x08, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x00, 0x10, 0x01];
-        let out = parse(input).unwrap();
+        let out = parse(input).expect("parse publish packet");
         assert_eq!(out.1.payload.payload, vec!(0x01));
         assert_eq!(out.1.variable_header.topic_name, "a/b".to_string());
         assert_eq!(out.1.fix_header.qos, Some(1));

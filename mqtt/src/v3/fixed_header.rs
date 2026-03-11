@@ -139,9 +139,12 @@ impl FixHeader {
                 r += (self.qos.unwrap_or_default() as u8) << 1
             }
 
-            if self.retain.is_some() && self.retain.unwrap() {
-                r += 1;
+            if let Some(retain) = self.retain {
+                if retain {
+                    r += 1;
+                }
             }
+
             buf.put_u8(r);
         } else {
             buf.put_u8(packet_type_u8 << 4);
@@ -186,8 +189,10 @@ impl FixHeader {
                 r += (self.qos.unwrap_or_default() as u8) << 1
             }
 
-            if self.retain.is_some() && self.retain.unwrap() {
-                r += 1;
+            if let Some(retain) = self.retain {
+                if retain {
+                    r += 1;
+                }
             }
             buf.put_u8(r);
         } else {
@@ -219,9 +224,11 @@ impl FixHeader {
             let byte = size % 128;
             size /= 128;
             if size > 0 {
-                buf.put_u8((byte | 128).try_into().unwrap());
+                buf.put_u8(
+                    u8::try_from(byte | 128).expect("remaining length byte fits into u8"),
+                );
             } else {
-                buf.put_u8(byte.try_into().unwrap());
+                buf.put_u8(u8::try_from(byte).expect("remaining length byte fits into u8"));
                 break;
             }
         }
@@ -235,9 +242,11 @@ impl FixHeader {
             let byte = size % 128;
             size /= 128;
             if size > 0 {
-                buf.put_u8((byte | 128).try_into().unwrap());
+                buf.put_u8(
+                    u8::try_from(byte | 128).expect("remaining length byte fits into u8"),
+                );
             } else {
-                buf.put_u8(byte.try_into().unwrap());
+                buf.put_u8(u8::try_from(byte).expect("remaining length byte fits into u8"));
                 break;
             }
         }
@@ -254,17 +263,17 @@ mod tests {
     #[test]
     fn test_remaining_length() {
         let input = &[0xFF, 0xFF, 0xFF, 0x7F];
-        let output = remaining_length(input).unwrap();
+        let output = remaining_length(input).expect("parse remaining length");
         let length = output.1;
         assert_eq!(length, 268435455);
 
         let input = &[0x7F];
-        let output = remaining_length(input).unwrap();
+        let output = remaining_length(input).expect("parse remaining length");
         let length = output.1;
         assert_eq!(length, 127);
 
         let input = &[0xFF, 0x7F];
-        let output = remaining_length(input).unwrap();
+        let output = remaining_length(input).expect("parse remaining length");
         let length = output.1;
         assert_eq!(length, 16383);
     }
@@ -272,7 +281,7 @@ mod tests {
     #[test]
     fn test_fix_header() {
         let input = &[0xE0, 0x00]; // Disconnect Message bytes
-        let out = parse(input).unwrap();
+        let out = parse(input).expect("parse fixed header");
         let header = out.1;
         assert_eq!(header.packet_type, PacketType::DISCONNECT);
     }
