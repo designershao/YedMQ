@@ -5,7 +5,7 @@ use log::warn;
 use tokio::net::TcpListener;
 use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-use crate::connection::ConnectionActor;
+use crate::connection::{ConnectionActor, ConnectionActorStartConfig};
 
 pub struct MqttTcpTlsListener {
     pub app: Arc<crate::app::YedMQApp>,
@@ -67,13 +67,15 @@ impl MqttTcpTlsListener {
                         let metric = self.app.metric.clone();
                         ConnectionActor::create_and_start(
                             tls_stream,
-                            settings.mqtt.max_message_size,
-                            4096,
-                            remote_addr,
-                            plugin_manager_clone,
-                            client_certificate_vec,
-                            metric,
-                            settings.listener.tcp_tls.rate_limit.clone(),
+                            ConnectionActorStartConfig {
+                                max_message_size: settings.mqtt.max_message_size,
+                                default_buffer_size: 4096,
+                                peer_addr: remote_addr,
+                                plugin_service: plugin_manager_clone,
+                                client_certificate: client_certificate_vec,
+                                metric,
+                                rate_limit: settings.listener.tcp_tls.rate_limit.clone(),
+                            },
                         );
                     }
                 },

@@ -5,7 +5,7 @@ use log::warn;
 use tokio::net::TcpListener;
 use tokio_util::io::StreamReader;
 
-use crate::connection::ConnectionActor;
+use crate::connection::{ConnectionActor, ConnectionActorStartConfig};
 
 use super::{
     websocket_tunnel::{StreamWrapper, WebsocketTunnel},
@@ -37,13 +37,15 @@ impl MqttWsListener {
                         let metric = self.app.metric.clone();
                         ConnectionActor::create_and_start(
                             websocket_tunnel,
-                            settings.mqtt.max_message_size,
-                            4096,
-                            remote_addr,
-                            plugin_manager_clone,
-                            None,
-                            metric,
-                            settings.listener.ws.rate_limit.clone(),
+                            ConnectionActorStartConfig {
+                                max_message_size: settings.mqtt.max_message_size,
+                                default_buffer_size: 4096,
+                                peer_addr: remote_addr,
+                                plugin_service: plugin_manager_clone,
+                                client_certificate: None,
+                                metric,
+                                rate_limit: settings.listener.ws.rate_limit.clone(),
+                            },
                         );
                     } else {
                         warn!(

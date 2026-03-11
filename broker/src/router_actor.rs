@@ -13,7 +13,7 @@ use crate::node_resolver::NodeResolver;
 use crate::raft::session_actor_map::session_actor_map_raft_actor::{
     GetSessionActorMapLinearizable, SessionActorMapRaftActor,
 };
-use crate::session::session_actor_map_storage::SessionActorMapStorage;
+use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionActorMapStorage};
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
 use crate::topic::topic_storage::TopicStorage;
@@ -35,12 +35,16 @@ pub enum RouterActorError {
     ActorUnExceptedStopped(#[from] MailboxError),
 
     #[error("Topic raft error: {0}")]
-    TopicRaftError(#[from] crate::raft::topic::topic_raft_actor::TopicRaftError),
+    TopicRaftError(
+        #[from] Box<crate::raft::topic::topic_raft_actor::TopicRaftError>,
+    ),
 
     #[error("Session actor map raft error: {0}")]
     SessionActorMapRaftError(
         #[from]
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+        Box<
+            crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+        >,
     ),
 
     #[error("Get subscribers error: {0}")]
@@ -98,6 +102,29 @@ pub struct RouterActor {
     pub metric: Arc<Metric>,
 }
 
+pub struct RouterActorConfig {
+    pub settings: Arc<Settings>,
+    pub session_manager_actor: Addr<SessionManagerActor>,
+    pub topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
+    pub node_resolver: Arc<NodeResolver>,
+    pub topic_storage: Arc<RwLock<TopicStorage>>,
+    pub session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+    pub session_registry: SessionRegistry,
+    pub metric: Arc<Metric>,
+}
+
+struct RouteContext {
+    session_manager_actor: Addr<SessionManagerActor>,
+    router_actor: Addr<RouterActor>,
+    current_node_id: NodeId,
+    node_resolver: Arc<NodeResolver>,
+    topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
+    local_topic_storage: Arc<RwLock<TopicStorage>>,
+    local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
+    session_registry: SessionRegistry,
+    metric: Arc<Metric>,
+}
+
 impl Actor for RouterActor {
     type Context = Context<Self>;
 
@@ -128,49 +155,32 @@ impl Actor for RouterActor {
 }
 
 impl RouterActor {
-    pub fn new(
-        settings: Arc<Settings>,
-        session_manager_actor: Addr<SessionManagerActor>,
-        topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
-        node_resolver: Arc<NodeResolver>,
-        topic_storage: Arc<RwLock<TopicStorage>>,
-        session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_registry: SessionRegistry,
-        metric: Arc<Metric>,
-    ) -> Self {
+    pub fn new(config: RouterActorConfig) -> Self {
         RouterActor {
-            current_node_id: settings.cluster.node_id,
-            settings,
-            node_resolver,
+            current_node_id: config.settings.cluster.node_id,
+            settings: config.settings,
+            node_resolver: config.node_resolver,
             dead_letter_queue: VecDeque::new(),
             dead_letter_config: DeadLetterConfig::default(),
-            session_manager_actor,
-            topic_raft_actor: Some(topic_raft_actor),
-            local_topic_storage: topic_storage,
-            local_session_actor_map_storage: session_actor_map_storage,
-            session_registry,
-            metric,
+            session_manager_actor: config.session_manager_actor,
+            topic_raft_actor: Some(config.topic_raft_actor),
+            local_topic_storage: config.topic_storage,
+            local_session_actor_map_storage: config.session_actor_map_storage,
+            session_registry: config.session_registry,
+            metric: config.metric,
         }
     }
 
     async fn route(
-        session_manager_actor: Addr<SessionManagerActor>,
-        router_actor: Addr<RouterActor>,
-        current_node_id: &NodeId,
-        node_resolver: Arc<NodeResolver>,
-        topic_raft_actor: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
+        context: RouteContext,
         tenant_id: &str,
         packet: &MqttPacketV3,
-        local_topic_storage: Arc<RwLock<TopicStorage>>,
-        local_session_actor_map_storage: Arc<RwLock<SessionActorMapStorage>>,
-        session_registry: SessionRegistry,
-        metric: Arc<Metric>,
     ) -> Result<(), RouterActorError> {
         if let MqttPacketV3::Publish(publish_packet) = packet {
             let topic = &publish_packet.variable_header.topic_name;
 
             let mut subscriptions = {
-                let local_topic_storage = local_topic_storage.read();
+                let local_topic_storage = context.local_topic_storage.read();
                 local_topic_storage
                     .get_subscriptions(tenant_id.to_string(), topic.clone())?
                     .iter()
@@ -185,7 +195,8 @@ impl RouterActor {
             // Fallback: when local copy is empty (e.g., node just joined and not fully caught up),
             // do a linearizable read via raft/leader.
             if subscriptions.is_empty() {
-                let subscriptions_res = topic_raft_actor
+                let subscriptions_res = context
+                    .topic_raft_actor
                     .send(
                         crate::raft::topic::topic_raft_actor::GetSubscriptionsEnsureLinearizable {
                             tenant_id: tenant_id.to_string(),
@@ -193,34 +204,49 @@ impl RouterActor {
                         },
                     )
                     .await?;
-                subscriptions = subscriptions_res?.subscriptions;
+                subscriptions = subscriptions_res
+                    .map_err(|e| RouterActorError::TopicRaftError(Box::new(e)))?
+                    .subscriptions;
             }
 
             if subscriptions.is_empty() {
-                metric.increase_messages_dropped();
+                context.metric.increase_messages_dropped();
             }
 
-            let local_session_actor_map_storage = local_session_actor_map_storage.read();
+            let local_results: Vec<Option<SessionActorMapEntry>> = {
+                let local_session_actor_map_storage =
+                    context.local_session_actor_map_storage.read();
+                subscriptions
+                    .iter()
+                    .map(|item| {
+                        local_session_actor_map_storage
+                            .get_session_actor_map(tenant_id, &item.client_identifier)
+                    })
+                    .collect()
+            };
 
-            for item in subscriptions {
-                let mut session_actor_map = local_session_actor_map_storage
-                    .get_session_actor_map(tenant_id, &item.client_identifier);
-                if session_actor_map.is_none() {
-                    let remote = SessionActorMapRaftActor::from_registry()
-                        .send(GetSessionActorMapLinearizable {
-                            tenant_id: tenant_id.to_string(),
-                            client_id: item.client_identifier.clone(),
-                        })
+            for (item, session_actor_map) in subscriptions.iter().zip(local_results.into_iter()) {
+                let session_actor_map = match session_actor_map {
+                    Some(session_actor_map) => Some(session_actor_map),
+                    None => {
+                        let remote = SessionActorMapRaftActor::from_registry()
+                            .send(GetSessionActorMapLinearizable {
+                                tenant_id: tenant_id.to_string(),
+                                client_id: item.client_identifier.clone(),
+                            })
                         .await?;
-                    session_actor_map = remote?;
-                }
+                        remote
+                            .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?
+                    }
+                };
                 if let Some(session_actor_addr) = session_actor_map {
-                    if session_actor_addr.node_id != *current_node_id {
+                    if session_actor_addr.node_id != context.current_node_id {
                         // Route to other nodes
                         let dest_node_id = session_actor_addr.node_id;
                         info!("route packet to node {}", dest_node_id);
-                        let Some(dest_node) = node_resolver
-                            .get_node(dest_node_id, &topic_raft_actor)
+                        let Some(dest_node) = context
+                            .node_resolver
+                            .get_node(dest_node_id, &context.topic_raft_actor)
                             .await
                         else {
                             warn!("No node found with id: {}", dest_node_id);
@@ -230,7 +256,7 @@ impl RouterActor {
 
                         let tenant_id_clone = tenant_id.to_string();
                         let packet_clone = packet.clone();
-                        let router_actor_clone = router_actor.clone();
+                        let router_actor_clone = context.router_actor.clone();
 
                         tokio::spawn(async move {
                             if let Err(e) = Self::route_to_other_nodes(
@@ -272,8 +298,8 @@ impl RouterActor {
                             tenant_id,
                             &item.client_identifier,
                             MqttPacketV3::Publish(publish_packet),
-                            session_manager_actor.clone(),
-                            session_registry.clone(),
+                            context.session_manager_actor.clone(),
+                            context.session_registry.clone(),
                         ) {
                             warn!(
                                 "Failed to route packet in local node for tenant {}: {}",
@@ -398,7 +424,7 @@ impl RouterActor {
                 }
                 Err(e) => {
                     log::error!("Failed to get subscriptions for topic {}: {}", topic, e);
-                    Err(RouterActorError::TopicRaftError(e))
+                    Err(RouterActorError::TopicRaftError(Box::new(e)))
                 }
             }
         } else {
@@ -567,35 +593,24 @@ impl Handler<RoutePacket> for RouterActor {
             msg.tenant_id,
             msg.packet
         );
-        let current_node_id = self.current_node_id;
-        let node_resolver = self.node_resolver.clone();
-        let router_actor = _ctx.address();
-        let session_manager_actor = self.session_manager_actor.clone();
-        let topic_raft_actor = self
+        let context = RouteContext {
+            session_manager_actor: self.session_manager_actor.clone(),
+            router_actor: _ctx.address(),
+            current_node_id: self.current_node_id,
+            node_resolver: self.node_resolver.clone(),
+            topic_raft_actor: self
             .topic_raft_actor
             .as_ref()
             .expect("topic raft actor not set")
-            .clone();
-        let topic_storage = self.local_topic_storage.clone();
-        let session_actor_map_storage = self.local_session_actor_map_storage.clone();
-        let session_registry = self.session_registry.clone();
-        let metric = self.metric.clone();
+            .clone(),
+            local_topic_storage: self.local_topic_storage.clone(),
+            local_session_actor_map_storage: self.local_session_actor_map_storage.clone(),
+            session_registry: self.session_registry.clone(),
+            metric: self.metric.clone(),
+        };
         Box::pin(
             async move {
-                Self::route(
-                    session_manager_actor,
-                    router_actor,
-                    &current_node_id,
-                    node_resolver,
-                    topic_raft_actor,
-                    &msg.tenant_id,
-                    &msg.packet,
-                    topic_storage,
-                    session_actor_map_storage,
-                    session_registry,
-                    metric,
-                )
-                .await?;
+                Self::route(context, &msg.tenant_id, &msg.packet).await?;
                 Ok(())
             }
             .into_actor(self),

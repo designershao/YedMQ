@@ -11,7 +11,7 @@ use crate::{
         NodeId,
     },
     session::{
-        session_actor::SessionActor,
+        session_actor::{SessionActor, SessionActorConfig},
         session_registry::{SessionActorRecipientWrapper, SessionRegistry},
     },
     settings::Settings,
@@ -973,26 +973,26 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             let msg_tenant_id = msg.tenant_id.clone();
             let session_version_clone = session_version.clone();
             let session_actor_addr = arbiter_pool.start_actor(move || {
-                SessionActor::new(
-                    msg_tenant_id,
-                    msg_client_id,
-                    msg.clean_session,
-                    plugin_manager_clone,
-                    50,
-                    msg.will_message,
-                    msg.keep_alive,
-                    msg.connection_addr,
-                    msg.peer_addr,
+                SessionActor::new(SessionActorConfig {
+                    tenant_id: msg_tenant_id,
+                    client_id: msg_client_id,
+                    clean_session: msg.clean_session,
+                    plugin_manager: plugin_manager_clone,
+                    inflight_retry_duration_secs: 50,
+                    will_message: msg.will_message,
+                    keep_alive: msg.keep_alive,
+                    connection_actor_addr: msg.connection_addr,
+                    peer_addr: msg.peer_addr,
                     session_state,
                     session_lifecycle_tx,
-                    SessionStateRaftActor::from_registry(),
-                    TopicRaftActor::from_registry(),
+                    session_state_raft_actor: SessionStateRaftActor::from_registry(),
+                    topic_raft_actor: TopicRaftActor::from_registry(),
                     router_actors,
-                    payload_store.clone(),
+                    payload_store: payload_store.clone(),
                     timer_actor,
                     metric,
-                    session_version_clone,
-                )
+                    session_version: session_version_clone,
+                })
             });
 
             let session_actor_message_recipient = session_actor_addr.clone().recipient();

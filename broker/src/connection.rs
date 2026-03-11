@@ -295,29 +295,33 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     _phantom: std::marker::PhantomData<T>,
 }
 
+pub struct ConnectionActorStartConfig {
+    pub max_message_size: u32,
+    pub default_buffer_size: usize,
+    pub peer_addr: SocketAddr,
+    pub plugin_service: Arc<PluginManager>,
+    pub client_certificate: Option<Vec<u8>>,
+    pub metric: Arc<Metric>,
+    pub rate_limit: RateLimit,
+}
+
 impl<T> ConnectionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     pub fn create_and_start(
         stream: T,
-        max_message_size: u32,
-        default_buffer_size: usize,
-        peer_addr: SocketAddr,
-        plugin_service: Arc<PluginManager>,
-        client_certificate: Option<Vec<u8>>,
-        metric: Arc<Metric>,
-        rate_limit: RateLimit,
+        config: ConnectionActorStartConfig,
     ) -> Addr<Self> {
         let addr = ConnectionActor::create(move |ctx| {
             let (mut actor, mut reader, mut event_rx) = Self::new(
                 stream,
-                max_message_size,
-                default_buffer_size,
-                peer_addr,
-                plugin_service.clone(),
-                client_certificate.clone(),
-                metric.clone(),
+                config.max_message_size,
+                config.default_buffer_size,
+                config.peer_addr,
+                config.plugin_service.clone(),
+                config.client_certificate.clone(),
+                config.metric.clone(),
             );
 
             let self_addr = ctx.address();
@@ -335,11 +339,11 @@ where
             let read_addr = self_addr.clone();
             let max_msg_size = actor.max_message_size;
             let buf_size = actor.buffer_size;
-            let plugin_svc = plugin_service.clone();
-            let peer = peer_addr;
-            let cert = client_certificate.clone();
-            let metric_clone = metric.clone();
-            let rate_limiter = build_rate_limiter(&rate_limit);
+            let plugin_svc = config.plugin_service.clone();
+            let peer = config.peer_addr;
+            let cert = config.client_certificate.clone();
+            let metric_clone = config.metric.clone();
+            let rate_limiter = build_rate_limiter(&config.rate_limit);
 
             let handle = ctx.spawn(
                 async move {
@@ -579,6 +583,7 @@ where
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub async fn read_packet<T: AsyncRead + Unpin>(
     reader: &mut tokio::io::ReadHalf<T>,
     buffer: &mut BytesMut,

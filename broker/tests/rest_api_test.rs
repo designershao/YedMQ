@@ -235,11 +235,18 @@ async fn test_api_clients_list() {
 
     // Warm up: connect an MQTT client to ensure 'public' tenant exists
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-clients", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move { while let Ok(_) = eventloop.poll().await {} });
+    tokio::spawn(async move {
+        while (eventloop.poll().await).is_ok() {}
+    });
 
     // Wait for connection and session registration
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -271,12 +278,19 @@ async fn test_api_clients_list_persistent_session() {
 
     // Warm up: connect an MQTT client to ensure 'public' tenant exists
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-clients", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_clean_session(false);
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move { while let Ok(_) = eventloop.poll().await {} });
+    tokio::spawn(async move {
+        while (eventloop.poll().await).is_ok() {}
+    });
 
     // Wait for connection and session registration
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -311,10 +325,7 @@ async fn test_api_clients_list_persistent_session() {
             .unwrap(),
         "warmup-client-clients"
     );
-    assert_eq!(
-        client_info.get("connected").unwrap().as_bool().unwrap(),
-        false
-    );
+    assert!(!client_info.get("connected").unwrap().as_bool().unwrap());
     assert!(client_info.get("disconnectedAt").unwrap().as_f64().unwrap() > 0.0);
 }
 
@@ -326,7 +337,12 @@ async fn test_api_publish_message_with_plain_payload() {
 
     // Connect an MQTT subscriber to receive the message
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new("subscriber-api-msg", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (client_mqtt, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
@@ -400,7 +416,12 @@ async fn test_api_publish_message_with_base64_payload() {
 
     // Connect an MQTT subscriber to receive the message
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new("subscriber-api-msg", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (client_mqtt, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
@@ -475,11 +496,18 @@ async fn test_api_topics_list() {
 
     // Warm up: connect and subscribe to ensure 'public' tenant and some topics exist
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-topics", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move { while let Ok(_) = eventloop.poll().await {} });
+    tokio::spawn(async move {
+        while (eventloop.poll().await).is_ok() {}
+    });
 
     m_client
         .subscribe("test/topic", rumqttc::QoS::AtLeastOnce)
@@ -525,7 +553,12 @@ async fn test_api_client_kickoff() {
 
     let client_id = "kickoff-test-client";
     let broker_tcp_addr = &context.settings.listener.tcp.external;
-    let port = broker_tcp_addr.split(':').last().unwrap().parse().unwrap();
+    let port = broker_tcp_addr
+        .split(':')
+        .next_back()
+        .unwrap()
+        .parse()
+        .unwrap();
     let mut mqtt_options = rumqttc::MqttOptions::new(client_id, "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (_m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
