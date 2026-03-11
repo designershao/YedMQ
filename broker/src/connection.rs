@@ -596,12 +596,12 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
             nom::Err<nom::error::Error<&[u8]>>,
         > = yedmq_mqtt::parse(buffer, max_message_size);
 
-        if let Ok((_, (consumed_bytes, packet))) = packet_result {
-            buffer.advance(consumed_bytes.len());
-            return Ok(packet);
-        } else {
-            let err = packet_result.err().unwrap();
-            match err {
+        match packet_result {
+            Ok((_, (consumed_bytes, packet))) => {
+                buffer.advance(consumed_bytes.len());
+                return Ok(packet);
+            }
+            Err(err) => match err {
                 nom::Err::Incomplete(_) => {
                     let n = reader.read_buf(buffer).await?;
                     if let Some(m) = &metric {
@@ -631,7 +631,7 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
                         "Invalid MQTT Packet".to_string(),
                     ));
                 }
-            }
+            },
         }
     }
 }

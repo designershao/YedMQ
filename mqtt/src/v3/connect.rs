@@ -508,24 +508,24 @@ impl Payload {
         buf.put_u16(self.client_identifier.len() as u16);
         buf.put(self.client_identifier.as_bytes());
 
-        if self.will_topic.is_some() {
-            buf.put_u16(self.will_topic.as_ref().unwrap().len() as u16);
-            buf.put(self.will_topic.as_ref().unwrap().as_bytes());
+        if let Some(will_topic) = &self.will_topic {
+            buf.put_u16(will_topic.len() as u16);
+            buf.put(will_topic.as_bytes());
         }
 
-        if self.will_message.is_some() {
-            buf.put_u16(self.will_message.as_ref().unwrap().len() as u16);
-            buf.put(self.will_message.as_ref().unwrap().as_bytes());
+        if let Some(will_message) =  &self.will_message {
+            buf.put_u16(will_message.len() as u16);
+            buf.put(will_message.as_bytes());
         }
 
-        if self.username.is_some() {
-            buf.put_u16(self.username.as_ref().unwrap().len() as u16);
-            buf.put(self.username.as_ref().unwrap().as_bytes());
+        if let Some(username) = &self.username {
+            buf.put_u16(username.len() as u16);
+            buf.put(username.as_bytes());
         }
 
-        if self.password.is_some() {
-            buf.put_u16(self.password.as_ref().unwrap().len() as u16);
-            buf.put(self.password.as_ref().unwrap().as_bytes());
+        if let Some(password) = &self.password {
+            buf.put_u16(password.len() as u16);
+            buf.put(password.as_bytes());
         }
     }
 
@@ -534,24 +534,26 @@ impl Payload {
         buf.put_u16(self.client_identifier.len() as u16);
         buf.put(self.client_identifier.as_bytes());
 
-        if self.will_topic.is_some() {
-            buf.put_u16(self.will_topic.as_ref().unwrap().len() as u16);
-            buf.put(self.will_topic.as_ref().unwrap().as_bytes());
+        if let Some(will_topic) = &self.will_topic {
+            buf.put_u16(will_topic.len() as u16);
+            buf.put(will_topic.as_bytes());
         }
 
-        if self.will_message.is_some() {
-            buf.put_u16(self.will_message.as_ref().unwrap().len() as u16);
-            buf.put(self.will_message.as_ref().unwrap().as_bytes());
+        if let Some(will_message) =  &self.will_message {
+            buf.put_u16(will_message.len() as u16);
+            buf.put(will_message.as_bytes());
         }
 
-        if self.username.is_some() {
-            buf.put_u16(self.username.as_ref().unwrap().len() as u16);
-            buf.put(self.username.as_ref().unwrap().as_bytes());
+
+        if let Some(username) = &self.username {
+            buf.put_u16(username.len() as u16);
+            buf.put(username.as_bytes());
         }
 
-        if self.password.is_some() {
-            buf.put_u16(self.password.as_ref().unwrap().len() as u16);
-            buf.put(self.password.as_ref().unwrap().as_bytes());
+
+        if let Some(password) = &self.password {
+            buf.put_u16(password.len() as u16);
+            buf.put(password.as_bytes());
         }
 
         buf
@@ -562,20 +564,20 @@ impl Payload {
 
         len = len + self.client_identifier.len() + 2;
 
-        if self.will_topic.is_some() {
-            len = len + self.will_topic.as_ref().unwrap().len() + 2;
+        if let Some(will_topic) = &self.will_topic {
+            len = len + will_topic.len() + 2;
         }
 
-        if self.will_message.is_some() {
-            len = len + self.will_message.as_ref().unwrap().len() + 2;
+        if let Some(will_message) = &self.will_message {
+            len = len + will_message.len() + 2;
         }
 
-        if self.username.is_some() {
-            len = len + self.username.as_ref().unwrap().len() + 2;
+        if let Some(username) = &self.username {
+            len = len + username.len() + 2;
         }
 
-        if self.password.is_some() {
-            len = len + self.password.as_ref().unwrap().len() + 2;
+        if let Some(password) = &self.password {
+            len = len + password.len() + 2;
         }
 
         len

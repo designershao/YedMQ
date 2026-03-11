@@ -282,8 +282,7 @@ async fn handle_authenticate_request(
     config: &MockConfig,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling authenticate request");
-    if config.authenticate.delay_secs.is_some() {
-        let delay = config.authenticate.delay_secs.unwrap();
+    if let Some(delay) = config.authenticate.delay_secs {
         info!("Delaying authenticate response by {} seconds", delay);
         tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
     }
@@ -318,8 +317,7 @@ async fn handle_authorize_request(
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling authorize request");
 
-    if config.authorize.delay_secs.is_some() {
-        let delay = config.authorize.delay_secs.unwrap();
+    if let Some(delay) = config.authorize.delay_secs {
         tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
     }
 
@@ -407,21 +405,18 @@ async fn handle_on_message_publish_request(
         return Err(anyhow::anyhow!("Missing params in publish request"));
     };
 
-    let mut raw_mqtt_msg = incoming_mqtt_message.message.unwrap();
+    let mut raw_mqtt_msg = incoming_mqtt_message
+        .message
+        .ok_or_else(|| anyhow::anyhow!("Missing mqtt message in publish request"))?;
 
     let on_message_publish_config = config.on_message_publish.clone();
 
-    if config.on_message_publish.modified_message.is_some() {
-        raw_mqtt_msg.payload = on_message_publish_config
-            .modified_message
-            .clone()
-            .as_mut()
-            .unwrap()
-            .modified_message
-            .as_ref()
-            .unwrap()
-            .clone()
-            .into_bytes();
+    if let Some(modified) = on_message_publish_config
+        .modified_message
+        .as_ref()
+        .and_then(|msg| msg.modified_message.as_ref())
+    {
+        raw_mqtt_msg.payload = modified.clone().into_bytes();
     }
 
     let response = yedmq_plugin_host::protocol::plugin_protocol::MessagePublishResponse {
@@ -482,8 +477,7 @@ async fn handle_request(
                 ));
             }
             // For simplicity, we just respond to ping immediately
-            if config.ping.delay_secs.is_some() {
-                let delay = config.ping.delay_secs.unwrap();
+            if let Some(delay) = config.ping.delay_secs {
                 info!("Delaying ping response by {} seconds", delay);
                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
             }
@@ -538,7 +532,13 @@ async fn main() {
     info!("Socket path: {}", args.socket_path);
     info!("Using config: {:?}", config);
 
-    let socket_name = args.socket_path.to_fs_name::<GenericFilePath>().unwrap();
+    let socket_name = match args.socket_path.to_fs_name::<GenericFilePath>() {
+        Ok(name) => name,
+        Err(e) => {
+            error!("Invalid socket path: {}", e);
+            return;
+        }
+    };
 
     let stream = match timeout(Duration::from_secs(5), Stream::connect(socket_name)).await {
         Ok(Ok(s)) => s,
@@ -564,7 +564,13 @@ async fn main() {
         match framed.next().await {
             Some(Ok(msg)) => {
                 info!("Received a frame: {:?}", msg);
-                let protocol_msg = ProtocolMessage::decode(msg.payload.as_ref()).unwrap();
+                let protocol_msg = match ProtocolMessage::decode(msg.payload.as_ref()) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        error!("Failed to decode protocol message: {}", e);
+                        continue;
+                    }
+                };
 
                 if let Err(e) =
                     handle_request(&protocol_msg, &config, &args.auth_code, &mut framed).await

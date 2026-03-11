@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc_include_path = protoc_bin_vendored::include_path()?;
     env::set_var("PROTOC", protoc_path);
 
-    let workspace_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set");
     println!("Workspace directory: {}", workspace_dir);
     let protocol_crate_dir = format!("{}/../plugin_protocol", workspace_dir);
     let proto_root = format!("{}/../plugin_protocol/proto", workspace_dir);

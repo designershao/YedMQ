@@ -90,7 +90,9 @@ pub struct TopicFilter {
 impl TopicFilter {
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length());
-        buf.put_u16(self.topic_name.len().try_into().unwrap());
+        buf.put_u16(
+            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
+        );
         buf.put(self.topic_name.as_bytes());
         buf.put_u8(self.qos);
         buf
@@ -183,7 +185,10 @@ impl SubscribePacket {
     fn get_fix_header_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(2);
         buf.put_u8((1 << 7) + (1 << 1));
-        buf.put_u8(self.fix_header.remaining_length.try_into().unwrap());
+        buf.put_u8(
+            u8::try_from(self.fix_header.remaining_length)
+                .expect("remaining length fits into u8"),
+        );
         buf
     }
 }
@@ -222,7 +227,7 @@ mod tests {
     #[test]
     fn test_payload() {
         let input = &[0x00, 0x03, 0x61, 0x2F, 0x62, 0x02];
-        let out = topic_filter(input).unwrap();
+        let out = topic_filter(input).expect("parse topic filter");
         assert_eq!(out.1.topic_name, "a/b".to_string());
         assert_eq!(out.1.qos, 2);
     }
@@ -230,10 +235,10 @@ mod tests {
     #[test]
     fn test_parse() {
         let input = &[0x82, 0x08, 0x00, 0x10, 0x00, 0x03, 0x61, 0x2F, 0x62, 0x02];
-        let fixed_header = fixed_header::parse(input).unwrap();
+        let fixed_header = fixed_header::parse(input).expect("parse fixed header");
         assert_eq!(fixed_header.1.remaining_length, 8);
         assert_eq!(fixed_header.1.packet_type, PacketType::SUBSCRIBE);
-        let out = parse(input).unwrap();
+        let out = parse(input).expect("parse subscribe packet");
         assert_eq!(out.1.payload.topic_filters[0].topic_name, "a/b".to_string());
     }
 
