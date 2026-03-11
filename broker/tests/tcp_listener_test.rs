@@ -41,7 +41,7 @@ async fn setup_instance() -> &'static TestContext {
 
             let temp_dir = TempDir::new().unwrap();
 
-            fs::copy("./yedmq.toml", &temp_dir.path().join("yedmq.toml")).unwrap();
+            fs::copy("./yedmq.toml", temp_dir.path().join("yedmq.toml")).unwrap();
 
             env::set_current_dir(temp_dir.path()).unwrap();
 
@@ -91,7 +91,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
 
     let settings = Settings {
         session: yedmq::settings::Session {
-            qos_expired_secs: qos_expired_secs,
+            qos_expired_secs,
             packet_resend_interval_secs: resend_duration_sec,
             session_clock_path: temp_dir.join("clock").to_str().unwrap().to_string(),
         },
@@ -474,7 +474,7 @@ async fn test_last_will_message() {
                     connected = true;
                 }
                 Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
-                Err(e) => {
+                Err(_e) => {
                     return;
                 }
             }

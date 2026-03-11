@@ -227,7 +227,7 @@ async fn test_cluster_persistent_session_cleared_by_clean_session() {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     // 2. Publish to Node 2
-    let mut pub_opts = MqttOptions::new("publisher-node2", addr2.ip().to_string(), addr2.port());
+    let pub_opts = MqttOptions::new("publisher-node2", addr2.ip().to_string(), addr2.port());
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
 
     let pub_task = tokio::spawn(async move {

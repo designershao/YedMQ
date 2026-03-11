@@ -209,10 +209,6 @@ impl MqttPacket for SubscribePacket {
         self.variable_header.encode(buf);
         self.payload.encode(buf);
     }
-
-    fn get_packet_type(&self) -> crate::PacketType {
-        crate::PacketType::SUBSCRIBE
-    }
 }
 
 #[cfg(test)]

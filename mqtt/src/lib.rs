@@ -33,11 +33,6 @@ trait MqttPacket {
     fn to_bytes(&self) -> BytesMut;
 
     fn encode(&self, buffer: &mut BytesMut);
-
-    /*
-     * Returns the packet type
-     */
-    fn get_packet_type(&self) -> PacketType;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

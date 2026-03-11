@@ -217,14 +217,12 @@ mod tests {
         let cmd = loader
             .get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?
             .unwrap();
-        assert_eq!(
-            cmd.as_std()
-                .get_program()
-                .to_str()
-                .unwrap()
-                .ends_with("test_executable"),
-            true
-        );
+        assert!(cmd
+            .as_std()
+            .get_program()
+            .to_str()
+            .unwrap()
+            .ends_with("test_executable"));
         Ok(())
     }
 }

@@ -535,6 +535,17 @@ struct HandlePublishResult {
     inflight_packet: Option<MqttPacketV3>,
 }
 
+struct HandlePublishContext {
+    client_info: Client,
+    plugin_manager: Arc<PluginManager>,
+    session_state: Arc<RwLock<SessionState>>,
+    clean_session: bool,
+    router_actors: Vec<Addr<RouterActor>>,
+    session_state_raft_actor: Addr<SessionStateRaftActor>,
+    topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
+    payload_store: Option<Arc<dyn PayloadStore>>,
+}
+
 async fn do_handle_unsubscribe(
     unsubscribe_packet: UnsubscribePacket,
     client_info: &Client,
@@ -574,19 +585,13 @@ async fn do_handle_unsubscribe(
 
 async fn do_handle_publish(
     publish_packet: PublishPacket,
-    client_info: Client,
-    plugin_manager: Arc<PluginManager>,
-    session_state: Arc<RwLock<SessionState>>,
-    clean_session: bool,
-    router_actors: Vec<Addr<RouterActor>>,
-    session_state_raft_actor: Addr<SessionStateRaftActor>,
-    topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
-    payload_store: Option<Arc<dyn PayloadStore>>,
+    context: HandlePublishContext,
 ) -> HandlePublishResult {
     let authorize_request = AuthorizeRequest {
-        tenant_id: client_info.tenant_id.clone(),
-        client_id: client_info.client_identifier.clone(),
-        username: client_info
+        tenant_id: context.client_info.tenant_id.clone(),
+        client_id: context.client_info.client_identifier.clone(),
+        username: context
+            .client_info
             .properties
             .username
             .clone()
@@ -597,7 +602,10 @@ async fn do_handle_publish(
         context: None,
     };
 
-    let publish_authorize_result = plugin_manager.call_authorize_hook(authorize_request).await;
+    let publish_authorize_result = context
+        .plugin_manager
+        .call_authorize_hook(authorize_request)
+        .await;
 
     if publish_authorize_result.is_err() {
         return HandlePublishResult {
@@ -614,8 +622,8 @@ async fn do_handle_publish(
     if publish_authorization {
         let message_publish_request = MessagePublishRequest {
             message: Some(MqttMessage {
-                tenant_id: client_info.tenant_id.clone(),
-                client_id: client_info.client_identifier.clone(),
+                tenant_id: context.client_info.tenant_id.clone(),
+                client_id: context.client_info.client_identifier.clone(),
                 topic: publish_packet.variable_header.topic_name.clone(),
                 payload: publish_packet.payload.payload.to_vec(),
                 qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
@@ -628,23 +636,24 @@ async fn do_handle_publish(
             context: None,
         };
 
-        plugin_manager
+        context
+            .plugin_manager
             .call_message_published_hook(message_publish_request)
             .await;
 
-        let mut session_state_guard = session_state.write().await;
+        let mut session_state_guard = context.session_state.write().await;
 
         if publish_packet.fix_header.qos > Some(0) {
             debug!(
                 "client {} start process packet {:?} ",
-                client_info.client_identifier,
+                context.client_info.client_identifier,
                 publish_packet.clone()
             );
 
             let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
             let qos = publish_packet.fix_header.qos.unwrap() as u8;
 
-            let key = if let Some(store) = &payload_store {
+            let key = if let Some(store) = &context.payload_store {
                 let k = uuid::Uuid::new_v4().to_string();
                 let data =
                     serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
@@ -662,11 +671,11 @@ async fn do_handle_publish(
                 .register_with_rx_packet(packet_id, qos, key.clone());
 
             // if not clean session, should sync inflight rx packet to raft
-            if !clean_session {
-                let res = session_state_raft_actor.send(
+            if !context.clean_session {
+                let res = context.session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::RegisterInflightRxPacket {
-                        tenant_id: client_info.tenant_id.clone(),
-                        client_id: client_info.client_identifier.clone(),
+                        tenant_id: context.client_info.tenant_id.clone(),
+                        client_id: context.client_info.client_identifier.clone(),
                         packet_id,
                         qos,
                         packet_key: key.clone(),
@@ -694,9 +703,9 @@ async fn do_handle_publish(
 
             // if publish packet paloyd is empty , clean retained publish packet
             if publish_packet.payload.payload.is_empty() {
-                match topic_raft_actor
+                match context.topic_raft_actor
                     .send(topic_raft_actor::CleanRetainPublishPacket {
-                        tenant_id: client_info.tenant_id.clone(),
+                        tenant_id: context.client_info.tenant_id.clone(),
                         topic_filter: publish_packet.variable_header.topic_name.clone(),
                     })
                     .await
@@ -713,10 +722,10 @@ async fn do_handle_publish(
                     }
                 }
             } else {
-                match topic_raft_actor
+                match context.topic_raft_actor
                     .send(topic_raft_actor::RegisterRetainPublishPacket {
-                        tenant_id: client_info.tenant_id.clone(),
-                        client_id: client_info.client_identifier.clone(),
+                        tenant_id: context.client_info.tenant_id.clone(),
+                        client_id: context.client_info.client_identifier.clone(),
                         publish_packet: MqttPacketV3::Publish(publish_packet.clone()),
                     })
                     .await
@@ -740,10 +749,11 @@ async fn do_handle_publish(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&publish_packet.variable_header.topic_name, &mut hasher);
         let hash = std::hash::Hasher::finish(&hasher);
-        let router_actor = &router_actors[hash as usize % router_actors.len()];
+        let router_actor =
+            &context.router_actors[hash as usize % context.router_actors.len()];
 
         router_actor.do_send(crate::router_actor::RoutePacket {
-            tenant_id: client_info.tenant_id.clone(),
+            tenant_id: context.client_info.tenant_id.clone(),
             packet: MqttPacketV3::Publish(publish_packet.clone()),
         });
     }
@@ -852,52 +862,54 @@ async fn do_handle_subscribe(
 
 type ThenCallback<A, R> = fn(R, &mut A, &mut Context<A>) -> actix::fut::Ready<R>;
 
+pub struct SessionActorConfig {
+    pub tenant_id: String,
+    pub client_id: String,
+    pub clean_session: bool,
+    pub plugin_manager: Arc<PluginManager>,
+    pub inflight_retry_duration_secs: u64,
+    pub will_message: Option<WillMessage>,
+    pub keep_alive: u64,
+    pub connection_actor_addr: Recipient<ConnectionActorMessage>,
+    pub peer_addr: SocketAddr,
+    pub session_state: Arc<RwLock<SessionState>>,
+    pub session_lifecycle_tx: Sender<SessionLifecycleMessage>,
+    pub session_state_raft_actor: Addr<SessionStateRaftActor>,
+    pub topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
+    pub router_actors: Vec<Addr<RouterActor>>,
+    pub payload_store: Option<Arc<dyn PayloadStore>>,
+    pub timer_actor: Addr<TimerActor>,
+    pub metric: Arc<Metric>,
+    pub session_version: SessionVersion,
+}
+
 impl SessionActor {
-    pub fn new(
-        tenant_id: String,
-        client_id: String,
-        clean_session: bool,
-        plugin_manager: Arc<PluginManager>,
-        inflight_retry_duration_secs: u64,
-        will_message: Option<WillMessage>,
-        keep_alive: u64,
-        connection_actor_addr: Recipient<ConnectionActorMessage>,
-        peer_addr: SocketAddr,
-        session_state: Arc<RwLock<SessionState>>,
-        session_lifecycle_tx: Sender<SessionLifecycleMessage>,
-        session_state_raft_actor: Addr<SessionStateRaftActor>,
-        topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
-        router_actors: Vec<Addr<RouterActor>>,
-        payload_store: Option<Arc<dyn PayloadStore>>,
-        timer_actor: Addr<TimerActor>,
-        metric: Arc<Metric>,
-        session_version: SessionVersion,
-    ) -> Self {
+    pub fn new(config: SessionActorConfig) -> Self {
         let session_metrics = SessionMetrics::new();
-        session_metrics.set_connected(peer_addr.ip().to_string());
+        session_metrics.set_connected(config.peer_addr.ip().to_string());
 
         SessionActor {
-            plugin_manager,
-            conn_recipient: Some(connection_actor_addr),
-            conn_addr: Some(peer_addr),
+            plugin_manager: config.plugin_manager,
+            conn_recipient: Some(config.connection_actor_addr),
+            conn_addr: Some(config.peer_addr),
             activity_state: ActivityState::Active,
-            clean_session,
-            keep_alive,
+            clean_session: config.clean_session,
+            keep_alive: config.keep_alive,
             keep_alive_expired: true,
-            inflight_retry_interval: inflight_retry_duration_secs,
-            tenant_id,
-            client_id,
-            will_message,
+            inflight_retry_interval: config.inflight_retry_duration_secs,
+            tenant_id: config.tenant_id,
+            client_id: config.client_id,
+            will_message: config.will_message,
             username: None,
-            state: session_state,
-            session_lifecycle_tx,
-            session_state_raft_actor,
-            topic_raft_actor,
-            router_actors,
-            payload_store,
-            timer_actor,
-            metric,
-            session_version,
+            state: config.session_state,
+            session_lifecycle_tx: config.session_lifecycle_tx,
+            session_state_raft_actor: config.session_state_raft_actor,
+            topic_raft_actor: config.topic_raft_actor,
+            router_actors: config.router_actors,
+            payload_store: config.payload_store,
+            timer_actor: config.timer_actor,
+            metric: config.metric,
+            session_version: config.session_version,
             session_metrics: Arc::new(session_metrics),
         }
     }
@@ -1062,29 +1074,20 @@ impl SessionActor {
     ) {
         self.metric.increase_messages_received();
         self.session_metrics.increase_messages_received();
-        let plugin_manager = self.plugin_manager.clone();
-        let client_info = self.get_plugin_client_info();
-        let session_state = self.state.clone();
-        let clean_session = self.clean_session;
-        let router_actors = self.router_actors.clone();
-        let session_state_raft_actor = self.session_state_raft_actor.clone();
-        let topic_raft_actor = self.topic_raft_actor.clone();
-        let payload_store = self.payload_store.clone();
+        let context = HandlePublishContext {
+            client_info: self.get_plugin_client_info(),
+            plugin_manager: self.plugin_manager.clone(),
+            session_state: self.state.clone(),
+            clean_session: self.clean_session,
+            router_actors: self.router_actors.clone(),
+            session_state_raft_actor: self.session_state_raft_actor.clone(),
+            topic_raft_actor: self.topic_raft_actor.clone(),
+            payload_store: self.payload_store.clone(),
+        };
 
         ctx.spawn(
             async move {
-                do_handle_publish(
-                    publish_packet,
-                    client_info,
-                    plugin_manager,
-                    session_state,
-                    clean_session,
-                    router_actors,
-                    session_state_raft_actor,
-                    topic_raft_actor,
-                    payload_store,
-                )
-                    .await
+                do_handle_publish(publish_packet, context).await
             }
                 .into_actor(self)
                 .map(|res, act, _ctx| {

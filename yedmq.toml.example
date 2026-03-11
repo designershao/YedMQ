@@ -1,0 +1,140 @@
+# YedMQ Configuration Example
+# Copy this file to yedmq.toml and modify as needed
+
+# ============================================================================
+# MQTT Protocol Settings
+# ============================================================================
+[mqtt]
+# Interval for publishing $SYS topics (in seconds)
+sys_topic_interval_secs = 10
+
+# Retry interval for in-flight messages (in seconds)
+inflight_retry_interval_secs = 10
+
+# Default authentication behavior when no plugin is configured
+# Options: "allow" | "deny"
+default_authentication = "allow"
+
+# Default authorization behavior when no plugin is configured
+# Options: "allow" | "deny"
+default_authorization = "allow"
+
+# Maximum MQTT message size in bytes (default: 256MB)
+max_message_size = 268435456
+
+# ============================================================================
+# Session Management
+# ============================================================================
+[session]
+# QoS message expiration time (in seconds)
+qos_expired_secs = 10
+
+# Packet resend interval for QoS 1/2 (in seconds)
+packet_resend_interval_secs = 10
+
+# Path to session clock file for persistence
+session_clock_path = "./clock"
+
+# ============================================================================
+# Plugin System
+# ============================================================================
+[plugin]
+# Directory containing plugin configurations
+dir = "./plugins"
+
+# Unix domain socket path for plugin communication
+# On Windows, this will be a named pipe
+local_socket_path = "/tmp/yedmq_plugin.sock"
+
+# Default authorization result when plugin times out
+default_authorize_result = true
+
+# Default authentication result when plugin times out
+default_authenticate_result = true
+
+# ============================================================================
+# Logging
+# ============================================================================
+[log]
+# Log level: "trace" | "debug" | "info" | "warning" | "error"
+level = "info"
+
+# ============================================================================
+# Listeners
+# ============================================================================
+
+# REST API Listener
+[listener.api]
+external = "0.0.0.0:3456"
+
+[listener.api.auth]
+# Basic auth users for REST API
+users = [
+    { username = "admin", password = "change_me_in_production" }
+]
+
+# MQTT TCP Listener
+[listener.tcp]
+external = "0.0.0.0:1883"
+
+[listener.tcp.rate_limit]
+# Maximum messages per second per connection
+messages_rate = 1000
+# Burst capacity
+messages_burst = 100
+
+# MQTT over TLS Listener
+[listener.tcp_tls]
+external = "0.0.0.0:8883"
+# Path to CA certificate file
+cacert_file = "/path/to/ca.crt"
+# Path to server certificate file
+cert_file = "/path/to/server.crt"
+# Path to server private key file
+key_file = "/path/to/server.key"
+
+# MQTT over WebSocket Listener
+[listener.ws]
+external = "0.0.0.0:8083"
+
+# MQTT over Secure WebSocket Listener
+[listener.wss]
+external = "0.0.0.0:8084"
+cacert_file = "/path/to/ca.crt"
+cert_file = "/path/to/server.crt"
+key_file = "/path/to/server.key"
+
+# ============================================================================
+# Cluster Configuration
+# ============================================================================
+[cluster]
+# Unique cluster name
+cluster_name = "YedMQ"
+
+# Unique node ID (must be different for each node)
+node_id = 1001
+
+# Raft heartbeat interval (in seconds)
+heartbeat_interval = 10
+
+# Directory for Raft state storage
+store_dir = "./store"
+
+# Startup mode: "bootstrap" | "join"
+# Use "bootstrap" for the first node, "join" for additional nodes
+startup_mode = "bootstrap"
+
+# Session TTL in seconds (for cleanup of disconnected persistent sessions)
+session_ttl = 86400
+
+# Cluster nodes configuration
+# For a 3-node cluster, list all nodes here
+nodes = [
+    { id = 1001, rpc_address = "node1.example.com:3457", api_address = "node1.example.com:3456" },
+    # { id = 1002, rpc_address = "node2.example.com:3457", api_address = "node2.example.com:3456" },
+    # { id = 1003, rpc_address = "node3.example.com:3457", api_address = "node3.example.com:3456" },
+]
+
+# Cluster RPC Listener (for inter-node communication)
+[cluster.rpc]
+external = "0.0.0.0:3457"

@@ -5,7 +5,7 @@ use crate::raft::session_actor_map::session_actor_map_raft_actor::{
 };
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
-use crate::router_actor::RouterActor;
+use crate::router_actor::{RouterActor, RouterActorConfig};
 use crate::rpc::rpc_actor::RpcActor;
 use crate::session::session_actor_map_storage::SessionClock;
 use crate::session::session_manager_actor::{
@@ -116,16 +116,16 @@ impl ServiceRegistry {
             let metric_clone = metric.clone();
 
             let router = pools.start_actor(move || {
-                RouterActor::new(
-                    settings_clone,
-                    session_manager_clone,
-                    topic_raft_clone,
-                    node_resolver_clone,
+                RouterActor::new(RouterActorConfig {
+                    settings: settings_clone,
+                    session_manager_actor: session_manager_clone,
+                    topic_raft_actor: topic_raft_clone,
+                    node_resolver: node_resolver_clone,
                     topic_storage,
                     session_actor_map_storage,
-                    session_registry_clone,
-                    metric_clone,
-                )
+                    session_registry: session_registry_clone,
+                    metric: metric_clone,
+                })
             });
             router_actors.push(router);
         }

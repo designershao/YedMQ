@@ -483,18 +483,18 @@ impl Handler<PerformIntegrityCheck> for SessionStateRaftActor {
     }
 }
 
+type InitializationResult = Result<
+    (
+        SessionStateRaft,
+        Arc<RwLock<SessionStateStorage>>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ),
+    SessionStateRaftError,
+>;
+
 #[derive(Message, Clone)]
 #[rtype(result = "()")]
-struct InitializationComplete(
-    Result<
-        (
-            SessionStateRaft,
-            Arc<RwLock<SessionStateStorage>>,
-            Arc<std::sync::atomic::AtomicBool>,
-        ),
-        SessionStateRaftError,
-    >,
-);
+struct InitializationComplete(InitializationResult);
 
 impl Handler<InitializationComplete> for SessionStateRaftActor {
     type Result = ();

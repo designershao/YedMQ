@@ -4,7 +4,7 @@ use anyhow::Result;
 use log::warn;
 use tokio::net::TcpListener;
 
-use crate::connection::ConnectionActor;
+use crate::connection::{ConnectionActor, ConnectionActorStartConfig};
 
 pub struct MqttTcpListener {
     pub app: Arc<crate::app::YedMQApp>,
@@ -23,13 +23,15 @@ impl MqttTcpListener {
                     let metric = self.app.metric.clone();
                     ConnectionActor::create_and_start(
                         stream,
-                        settings.mqtt.max_message_size,
-                        4096,
-                        peer_addr,
-                        plugin_manager,
-                        None,
-                        metric,
-                        settings.listener.tcp.rate_limit.clone(),
+                        ConnectionActorStartConfig {
+                            max_message_size: settings.mqtt.max_message_size,
+                            default_buffer_size: 4096,
+                            peer_addr,
+                            plugin_service: plugin_manager,
+                            client_certificate: None,
+                            metric,
+                            rate_limit: settings.listener.tcp.rate_limit.clone(),
+                        },
                     );
                 }
                 Err(_) => {

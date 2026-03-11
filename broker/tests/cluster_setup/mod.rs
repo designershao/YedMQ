@@ -1,4 +1,3 @@
-use env_logger;
 use rand::Rng;
 use std::{env, fs, path::PathBuf, sync::Arc, thread, time::Duration};
 use tempfile::TempDir;
@@ -45,7 +44,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
             let mut nodes_settings = Vec::new();
             let mut cluster_nodes_config = Vec::new();
 
-            let node_ids = vec![1001, 1002, 1003];
+            let node_ids = [1001, 1002, 1003];
             let mut ports = Vec::new();
             for _ in 0..3 {
                 ports.push((

@@ -127,7 +127,7 @@ async fn test_publish_subscribe_cross_node(qos: QoS) {
     pub_opts.set_keep_alive(Duration::from_secs(5));
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_opts, 10);
 
-    let pub_task = tokio::spawn(async move {
+    let _pub_task = tokio::spawn(async move {
         let mut connected = false;
         loop {
             match pub_eventloop.poll().await {
@@ -335,7 +335,7 @@ async fn test_last_will_message_cross_node() {
                     connected = true;
                 }
                 Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
-                Err(e) => {
+                Err(_e) => {
                     return;
                 }
             }
