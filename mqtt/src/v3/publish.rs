@@ -130,9 +130,7 @@ pub struct VariableHeader {
 
 impl VariableHeader {
     pub fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u16(
-            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
-        );
+        buf.put_u16(u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"));
         buf.put(self.topic_name.as_bytes());
 
         if let Some(packet_identifier) = self.packet_identifier {
@@ -142,9 +140,7 @@ impl VariableHeader {
 
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length());
-        buf.put_u16(
-            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
-        );
+        buf.put_u16(u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"));
         buf.put(self.topic_name.as_bytes());
 
         if let Some(packet_identifier) = self.packet_identifier {

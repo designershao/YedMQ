@@ -309,10 +309,7 @@ impl<T> ConnectionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    pub fn create_and_start(
-        stream: T,
-        config: ConnectionActorStartConfig,
-    ) -> Addr<Self> {
+    pub fn create_and_start(stream: T, config: ConnectionActorStartConfig) -> Addr<Self> {
         let addr = ConnectionActor::create(move |ctx| {
             let (mut actor, mut reader, mut event_rx) = Self::new(
                 stream,

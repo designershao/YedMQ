@@ -91,7 +91,13 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
 
         let snapshot_json = {
             let snapshot_data = SnapshotWrapper {
-                topic_storage_snapshot: self.data.state.topic_storage.read().to_snapshot(),
+                topic_storage_snapshot: self
+                    .data
+                    .state
+                    .topic_storage
+                    .read()
+                    .to_snapshot()
+                    .map_err(|e| StorageIOError::write_state_machine(&e))?,
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -175,7 +181,8 @@ impl StateMachineStore {
         self.data.last_membership = snapshot.meta.last_membership.clone();
 
         let mut topic_storage = self.data.state.topic_storage.write();
-        *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot);
+        *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot)
+            .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         Ok(())
     }
@@ -192,11 +199,7 @@ impl StateMachineStore {
             .and_then(|v| serde_json::from_slice(&v).ok()))
     }
 
-    fn flush(
-        &self,
-        subject: ErrorSubject<NodeId>,
-        verb: ErrorVerb,
-    ) -> BoxedStorageIOResult<()> {
+    fn flush(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<()> {
         self.db
             .flush_wal(true)
             .map_err(|e| Box::new(StorageIOError::new(subject, verb, AnyError::new(&e))))?;
@@ -368,11 +371,7 @@ impl LogStore {
         self.db.cf_handle("logs").unwrap()
     }
 
-    fn flush(
-        &self,
-        subject: ErrorSubject<NodeId>,
-        verb: ErrorVerb,
-    ) -> BoxedStorageIOResult<()> {
+    fn flush(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<()> {
         self.db
             .flush_wal(true)
             .map_err(|e| Box::new(StorageIOError::new(subject, verb, AnyError::new(&e))))?;
@@ -383,9 +382,11 @@ impl LogStore {
         Ok(self
             .db
             .get_cf(self.store(), b"last_purged_log_id")
-            .map_err(|e| Box::new(StorageError::IO {
-                source: StorageIOError::read(&e),
-            }))?
+            .map_err(|e| {
+                Box::new(StorageError::IO {
+                    source: StorageIOError::read(&e),
+                })
+            })?
             .and_then(|v| serde_json::from_slice(&v).ok()))
     }
 
@@ -396,19 +397,18 @@ impl LogStore {
                 b"last_purged_log_id",
                 serde_json::to_vec(&log_id).unwrap().as_slice(),
             )
-            .map_err(|e| Box::new(StorageError::IO {
-                source: StorageIOError::write(&e),
-            }))?;
+            .map_err(|e| {
+                Box::new(StorageError::IO {
+                    source: StorageIOError::write(&e),
+                })
+            })?;
 
         self.flush(ErrorSubject::Store, ErrorVerb::Write)
             .map_err(|e| Box::new(StorageError::IO { source: *e }))?;
         Ok(())
     }
 
-    fn set_committed_(
-        &self,
-        committed: &Option<LogId<NodeId>>,
-    ) -> BoxedStorageIOResult<()> {
+    fn set_committed_(&self, committed: &Option<LogId<NodeId>>) -> BoxedStorageIOResult<()> {
         let json = serde_json::to_vec(committed).unwrap();
 
         self.db

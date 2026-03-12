@@ -602,7 +602,10 @@ pub async fn session_actor_map_raft_change_membership(
         }
         Err(e) => {
             error!("SessionActorMapRaftActor unavailable: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("SessionActorMapRaftActor unavailable: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            )
         }
     }
 }
@@ -626,7 +629,10 @@ pub async fn session_state_raft_change_membership(
         }
         Err(e) => {
             error!("SessionStateRaftActor unavailable: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("SessionStateRaftActor unavailable: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
+            )
         }
     }
 }
@@ -737,10 +743,7 @@ pub async fn change_membership(
         .await;
     match res {
         Ok(resp) => {
-            info!(
-                "update topic cluster membership status: {}",
-                resp.status()
-            );
+            info!("update topic cluster membership status: {}", resp.status());
         }
         Err(e) => {
             return (

@@ -150,13 +150,6 @@ impl TopicStorageNode {
     }
 
     pub fn add_subscription(&self, subscribtion: Subscription) {
-        /*
-        let client_existed = self
-            .subscriptions
-            .read()
-            .unwrap()
-            .contains_key(&subscribtion.client_identifier);
-        */
         self.subscriptions.write().insert(
             subscribtion.client_identifier.clone(),
             Arc::new(subscribtion),
@@ -286,19 +279,23 @@ impl TopicStorage {
         limit: u64,
     ) -> anyhow::Result<TopicPaginationResult> {
         let topic_info_recorder = self.topic_info_recorder.read();
-        if topic_info_recorder.contains_key(tenant_id) {
-            let items = topic_info_recorder.get(tenant_id).unwrap();
-            let mut result_items = Vec::new();
-            for (key, qos) in items.iter().skip(offset as usize).take(limit as usize) {
-                let (client_id, topic) = extract_info_from_key(key);
-                result_items.push((client_id, topic, *qos));
+        match topic_info_recorder.get(tenant_id) {
+            Some(items) => {
+                let result_items: Vec<(String, String, u8)> = items
+                    .iter()
+                    .skip(offset as usize)
+                    .take(limit as usize)
+                    .map(|(key, qos)| {
+                        let (client_id, topic) = extract_info_from_key(key);
+                        (client_id, topic, *qos)
+                    })
+                    .collect();
+                let total = items.len();
+                Ok((total as u64, result_items))
             }
-            let total = items.len();
-            Ok((total as u64, result_items))
-        } else {
-            Err(anyhow::anyhow!(TopicError::TenantNotFound(
+            None => Err(anyhow::anyhow!(TopicError::TenantNotFound(
                 tenant_id.to_string()
-            )))
+            ))),
         }
     }
 
@@ -308,14 +305,14 @@ impl TopicStorage {
         topic_tree.contains_key(tenant_id)
     }
 
-    pub fn to_snapshot(&self) -> Vec<u8> {
+    pub fn to_snapshot(&self) -> Result<Vec<u8>, serde_json::Error> {
         let serializable = self.to_serializable();
-        serde_json::to_vec(&serializable).unwrap()
+        serde_json::to_vec(&serializable)
     }
 
-    pub fn from_snapshot(snapshot: Vec<u8>) -> Self {
-        let serializable: SerializableTopicStorage = serde_json::from_slice(&snapshot).unwrap();
-        Self::from_serializable(serializable)
+    pub fn from_snapshot(snapshot: Vec<u8>) -> Result<Self, serde_json::Error> {
+        let serializable: SerializableTopicStorage = serde_json::from_slice(&snapshot)?;
+        Ok(Self::from_serializable(serializable))
     }
 
     fn to_serializable(&self) -> SerializableTopicStorage {
@@ -637,7 +634,9 @@ impl TopicStorage {
         let mut result: Vec<Arc<MqttPacketV3>> = vec![];
         if !topic_patterns.is_empty() {
             let topic_pattern = &topic_patterns[0];
-            if topic_pattern == &"+".to_string() || topic_pattern == &"#".to_string() {
+            if topic_pattern == &"#".to_string() {
+                result.append(&mut Self::collect_retain_subtree(topic_node));
+            } else if topic_pattern == &"+".to_string() {
                 for sub in topic_node.write().leaves.read().iter() {
                     let topic_patterns_rest = topic_patterns.clone().drain(1..).collect();
                     result.append(&mut Self::recursion_get_retain_packet(
@@ -660,6 +659,24 @@ impl TopicStorage {
             if let Some(p) = &topic_node.retain_publish_packet {
                 result.append(&mut vec![p.clone()])
             }
+        }
+        result
+    }
+
+    fn collect_retain_subtree(topic_node: Arc<RwLock<TopicStorageNode>>) -> Vec<Arc<MqttPacketV3>> {
+        let (retain_packet, leaves) = {
+            let node = topic_node.read();
+            let retain_packet = node.retain_publish_packet.clone();
+            let leaves = node.leaves.read().values().cloned().collect::<Vec<_>>();
+            (retain_packet, leaves)
+        };
+
+        let mut result: Vec<Arc<MqttPacketV3>> = vec![];
+        if let Some(packet) = retain_packet {
+            result.push(packet);
+        }
+        for leaf in leaves {
+            result.append(&mut Self::collect_retain_subtree(leaf));
         }
         result
     }
@@ -758,6 +775,7 @@ struct SerializableTopicStorage {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use yedmq_mqtt::{
         v3::{
@@ -770,6 +788,32 @@ mod tests {
     use super::*;
     use bytes::Bytes;
     use std::thread;
+
+    fn build_retain_publish_packet(topic_name: &str) -> MqttPacketV3 {
+        let fix_header = FixHeader {
+            packet_type: PacketType::PUBLISH,
+            qos: Some(1),
+            retain: Some(true),
+            dup: Some(1),
+            remaining_length: 8,
+        };
+        let variable_header = VariableHeader {
+            topic_name: topic_name.to_string(),
+            packet_identifier: Some(0x10),
+        };
+
+        let payload = Payload {
+            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
+        };
+
+        let publish_packet = PublishPacket {
+            fix_header,
+            variable_header,
+            payload,
+        };
+
+        MqttPacketV3::Publish(publish_packet)
+    }
 
     #[test]
     fn when_subscribe_same_topic_from_other_node_should_update_subscription() {
@@ -1152,27 +1196,7 @@ mod tests {
 
     #[test]
     fn test_retain_message() {
-        let fix_header = FixHeader {
-            packet_type: PacketType::PUBLISH,
-            qos: Some(1),
-            retain: Some(true),
-            dup: Some(1),
-            remaining_length: 8,
-        };
-        let variable_header = VariableHeader {
-            topic_name: "a/b".to_string(),
-            packet_identifier: Some(0x10),
-        };
-
-        let payload = Payload {
-            payload: Bytes::copy_from_slice(vec![0x01].as_slice()),
-        };
-
-        let publish_packet = PublishPacket {
-            fix_header,
-            variable_header,
-            payload,
-        };
+        let publish_packet = build_retain_publish_packet("a/b");
 
         let topic_storage = TopicStorage::new();
         let tenant_name = "hello".to_string();
@@ -1181,7 +1205,7 @@ mod tests {
             .register_retain_publish_packet(
                 "hello".to_string(),
                 "client_a".to_string(),
-                &MqttPacketV3::Publish(publish_packet),
+                &publish_packet,
             )
             .unwrap();
         let retain_packet =
@@ -1199,5 +1223,45 @@ mod tests {
         let retain_packet =
             topic_storage.get_retain_publish_packet("hello".to_string(), "a".to_string());
         assert_eq!(0, retain_packet.unwrap().len());
+    }
+
+    #[test]
+    fn test_retain_message_sharp_wildcard_should_include_current_node() {
+        let topic_storage = TopicStorage::new();
+        let tenant_name = "hello".to_string();
+        topic_storage.create_tenant(&tenant_name);
+
+        let root_packet = build_retain_publish_packet("a");
+        let child_packet = build_retain_publish_packet("a/b");
+
+        topic_storage
+            .register_retain_publish_packet(
+                "hello".to_string(),
+                "client_a".to_string(),
+                &root_packet,
+            )
+            .unwrap();
+        topic_storage
+            .register_retain_publish_packet(
+                "hello".to_string(),
+                "client_a".to_string(),
+                &child_packet,
+            )
+            .unwrap();
+
+        let retain_packet =
+            topic_storage.get_retain_publish_packet("hello".to_string(), "a/#".to_string());
+        let retain_packet = retain_packet.unwrap();
+        assert_eq!(2, retain_packet.len());
+
+        let mut topics = retain_packet
+            .iter()
+            .filter_map(|packet| match &**packet {
+                MqttPacketV3::Publish(p) => Some(p.variable_header.topic_name.clone()),
+                _ => None,
+            })
+            .collect::<Vec<String>>();
+        topics.sort();
+        assert_eq!(topics, vec!["a".to_string(), "a/b".to_string()]);
     }
 }

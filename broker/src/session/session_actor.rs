@@ -703,7 +703,8 @@ async fn do_handle_publish(
 
             // if publish packet paloyd is empty , clean retained publish packet
             if publish_packet.payload.payload.is_empty() {
-                match context.topic_raft_actor
+                match context
+                    .topic_raft_actor
                     .send(topic_raft_actor::CleanRetainPublishPacket {
                         tenant_id: context.client_info.tenant_id.clone(),
                         topic_filter: publish_packet.variable_header.topic_name.clone(),
@@ -722,7 +723,8 @@ async fn do_handle_publish(
                     }
                 }
             } else {
-                match context.topic_raft_actor
+                match context
+                    .topic_raft_actor
                     .send(topic_raft_actor::RegisterRetainPublishPacket {
                         tenant_id: context.client_info.tenant_id.clone(),
                         client_id: context.client_info.client_identifier.clone(),
@@ -749,8 +751,7 @@ async fn do_handle_publish(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         std::hash::Hash::hash(&publish_packet.variable_header.topic_name, &mut hasher);
         let hash = std::hash::Hasher::finish(&hasher);
-        let router_actor =
-            &context.router_actors[hash as usize % context.router_actors.len()];
+        let router_actor = &context.router_actors[hash as usize % context.router_actors.len()];
 
         router_actor.do_send(crate::router_actor::RoutePacket {
             tenant_id: context.client_info.tenant_id.clone(),

@@ -35,9 +35,7 @@ pub enum RouterActorError {
     ActorUnExceptedStopped(#[from] MailboxError),
 
     #[error("Topic raft error: {0}")]
-    TopicRaftError(
-        #[from] Box<crate::raft::topic::topic_raft_actor::TopicRaftError>,
-    ),
+    TopicRaftError(#[from] Box<crate::raft::topic::topic_raft_actor::TopicRaftError>),
 
     #[error("Session actor map raft error: {0}")]
     SessionActorMapRaftError(
@@ -234,7 +232,7 @@ impl RouterActor {
                                 tenant_id: tenant_id.to_string(),
                                 client_id: item.client_identifier.clone(),
                             })
-                        .await?;
+                            .await?;
                         remote
                             .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?
                     }
@@ -599,10 +597,10 @@ impl Handler<RoutePacket> for RouterActor {
             current_node_id: self.current_node_id,
             node_resolver: self.node_resolver.clone(),
             topic_raft_actor: self
-            .topic_raft_actor
-            .as_ref()
-            .expect("topic raft actor not set")
-            .clone(),
+                .topic_raft_actor
+                .as_ref()
+                .expect("topic raft actor not set")
+                .clone(),
             local_topic_storage: self.local_topic_storage.clone(),
             local_session_actor_map_storage: self.local_session_actor_map_storage.clone(),
             session_registry: self.session_registry.clone(),

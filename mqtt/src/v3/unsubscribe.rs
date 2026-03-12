@@ -89,9 +89,7 @@ pub struct TopicFilter {
 impl TopicFilter {
     pub fn to_bytes(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.get_length() + 2);
-        buf.put_u16(
-            u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"),
-        );
+        buf.put_u16(u16::try_from(self.topic_name.len()).expect("topic name length fits into u16"));
         buf.put(self.topic_name.as_bytes());
         buf
     }
@@ -181,8 +179,7 @@ impl UnsubscribePacket {
         let mut buf = BytesMut::with_capacity(2);
         buf.put_u8((10 << 4) + (1 << 1));
         buf.put_u8(
-            u8::try_from(self.fix_header.remaining_length)
-                .expect("remaining length fits into u8"),
+            u8::try_from(self.fix_header.remaining_length).expect("remaining length fits into u8"),
         );
         buf
     }

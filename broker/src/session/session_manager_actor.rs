@@ -265,8 +265,16 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
     fn handle(&mut self, _msg: CheckExpiredSessions, ctx: &mut Self::Context) -> Self::Result {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-        let settings = self.settings.as_ref().expect("settings must be initialized before handling messages").clone();
-        let node_resolver = self.node_resolver.as_ref().expect("node_resolver must be initialized before handling messages").clone();
+        let settings = self
+            .settings
+            .as_ref()
+            .expect("settings must be initialized before handling messages")
+            .clone();
+        let node_resolver = self
+            .node_resolver
+            .as_ref()
+            .expect("node_resolver must be initialized before handling messages")
+            .clone();
         let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let ttl = settings.cluster.session_ttl;
         let now = std::time::SystemTime::now()
@@ -815,7 +823,9 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 Some(ts) => ts,
                 None => {
                     sessions.insert(tenant_id.clone(), Arc::new(DashMap::new()));
-                    sessions.get(&tenant_id).expect("tenant session has created")
+                    sessions
+                        .get(&tenant_id)
+                        .expect("tenant session has created")
                 }
             };
 
