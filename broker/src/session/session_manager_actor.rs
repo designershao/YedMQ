@@ -265,13 +265,13 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
     fn handle(&mut self, _msg: CheckExpiredSessions, ctx: &mut Self::Context) -> Self::Result {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-        let settings = self.settings.as_ref().unwrap().clone();
-        let node_resolver = self.node_resolver.as_ref().unwrap().clone();
+        let settings = self.settings.as_ref().expect("settings must be initialized before handling messages").clone();
+        let node_resolver = self.node_resolver.as_ref().expect("node_resolver must be initialized before handling messages").clone();
         let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let ttl = settings.cluster.session_ttl;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         ctx.spawn(
@@ -760,22 +760,54 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
     fn handle(&mut self, msg: CreateSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner();
         let tenant_id = msg.tenant_id.clone();
-        let plugin_manager = self.plugin_manager.as_ref().unwrap().clone();
-        let settings = self.settings.as_ref().unwrap().clone();
-        let node_resolver = self.node_resolver.as_ref().unwrap().clone();
+        let plugin_manager = self
+            .plugin_manager
+            .as_ref()
+            .expect("plugin_manager must be initialized before handling messages")
+            .clone();
+        let settings = self
+            .settings
+            .as_ref()
+            .expect("settings must be initialized before handling messages")
+            .clone();
+        let node_resolver = self
+            .node_resolver
+            .as_ref()
+            .expect("node_resolver must be initialized before handling messages")
+            .clone();
         let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let session_lifecycle_tx = self
             .session_lifecycle_tx
             .as_ref()
             .expect("session lifecycle tx must exist")
             .clone();
-        let session_clock = self.session_clock.as_ref().unwrap().clone();
+        let session_clock = self
+            .session_clock
+            .as_ref()
+            .expect("session_clock must be initialized before handling messages")
+            .clone();
         let current_node_id = self.current_node_id;
-        let router_actors = self.router_actors.as_ref().unwrap().clone();
-        let arbiter_pool = self.arbiter_pool.as_ref().unwrap().clone();
+        let router_actors = self
+            .router_actors
+            .as_ref()
+            .expect("router_actors must be initialized before handling messages")
+            .clone();
+        let arbiter_pool = self
+            .arbiter_pool
+            .as_ref()
+            .expect("arbiter_pool must be initialized before handling messages")
+            .clone();
         let payload_store = self.payload_store.clone();
-        let timer_actor = self.timer_actor.as_ref().unwrap().clone();
-        let metric = self.metric.as_ref().unwrap().clone();
+        let timer_actor = self
+            .timer_actor
+            .as_ref()
+            .expect("timer_actor must be initialized before handling messages")
+            .clone();
+        let metric = self
+            .metric
+            .as_ref()
+            .expect("metric must be initialized before handling messages")
+            .clone();
 
         let future = async move {
             let existing = sessions.get(&tenant_id);
@@ -783,7 +815,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 Some(ts) => ts,
                 None => {
                     sessions.insert(tenant_id.clone(), Arc::new(DashMap::new()));
-                    sessions.get(&tenant_id).unwrap()
+                    sessions.get(&tenant_id).expect("tenant session has created")
                 }
             };
 

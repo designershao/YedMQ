@@ -462,7 +462,7 @@ impl RouterActor {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let dead_letter_item = DeadLetterItem {
@@ -487,7 +487,7 @@ impl RouterActor {
     fn process_dead_letter_queue(&mut self, router_actor: Addr<RouterActor>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let mut items_to_retry = Vec::new();
@@ -549,7 +549,7 @@ impl RouterActor {
     fn cleanup_expired_dead_letters(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let initial_size = self.dead_letter_queue.len();

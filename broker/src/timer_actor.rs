@@ -232,6 +232,7 @@ impl TimerActor {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::session::session_actor::SessionActorMessage;
@@ -255,7 +256,7 @@ mod tests {
         fn handle(&mut self, _msg: SessionActorMessage, _ctx: &mut Self::Context) {
             match _msg {
                 SessionActorMessage::KeepAliveExpired => {
-                    let mut count = self.keep_alive_count.lock().unwrap();
+                    let mut count: std::sync::MutexGuard<'_, usize> = self.keep_alive_count.lock().unwrap();
                     *count += 1;
                     println!(
                         "TestSessionActor received KeepAliveTimeout, count: {}",
