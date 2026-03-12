@@ -28,6 +28,7 @@ impl MqttPacket for DisconnectPacket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 

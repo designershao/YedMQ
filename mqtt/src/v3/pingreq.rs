@@ -49,6 +49,7 @@ impl MqttPacket for PingreqPacket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 

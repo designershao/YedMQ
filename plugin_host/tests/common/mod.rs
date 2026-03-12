@@ -192,6 +192,7 @@ pub fn get_mock_plugin_path() -> PathBuf {
     cargo_target_dir.join("debug").join("mock_plugin_harness")
 }
 
+#[allow(clippy::unwrap_used)]
 pub fn setup_test_plugins(plugins_test_dir: &TempDir, mock_config: MockConfig) {
     let mock_plugin_dir = plugins_test_dir.path().join("mock_plugin_harness");
     std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
@@ -233,6 +234,7 @@ timeout_secs = 12
         .expect("Failed to write mock plugin manifest");
 }
 
+#[allow(clippy::unwrap_used)]
 pub fn setup_mutiple_test_plugins(
     plugins_test_dir: &TempDir,
     mock_config_map: HashMap<String, MockConfig>,
