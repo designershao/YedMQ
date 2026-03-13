@@ -118,7 +118,8 @@ impl RaftSnapshotBuilder<SessionStateTypeConfig> for StateMachineStore {
                     .session_state_storage
                     .read()
                     .await
-                    .to_snapshot(),
+                    .to_snapshot()
+                    .map_err(|e| StorageIOError::write_state_machine(&e))?,
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -217,7 +218,8 @@ impl StateMachineStore {
         let mut session_state_storage = self.data.state.session_state_storage.write().await;
 
         *session_state_storage =
-            SessionStateStorage::from_snapshot(state.session_state_storage_snapshot);
+            SessionStateStorage::from_snapshot(state.session_state_storage_snapshot)
+                .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         Ok(())
     }

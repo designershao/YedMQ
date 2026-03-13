@@ -80,7 +80,13 @@ impl RaftSnapshotBuilder<SessionActorMapTypeConfig> for StateMachineStore {
 
         let snapshot_json = {
             let snapshot_data = SnapshotWrapper {
-                session_actor_map_snapshot: self.data.state.session_actor_map.read().to_snapshot(),
+                session_actor_map_snapshot: self
+                    .data
+                    .state
+                    .session_actor_map
+                    .read()
+                    .to_snapshot()
+                    .map_err(|e| StorageIOError::write_state_machine(&e))?,
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -171,7 +177,8 @@ impl StateMachineStore {
         let mut session_actor_map_storage = self.data.state.session_actor_map.write();
 
         *session_actor_map_storage =
-            SessionActorMapStorage::from_snapshot(state.session_actor_map_snapshot);
+            SessionActorMapStorage::from_snapshot(state.session_actor_map_snapshot)
+                .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         Ok(())
     }

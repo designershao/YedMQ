@@ -123,7 +123,7 @@ impl SessionMetrics {
     pub fn new() -> SessionMetrics {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time is before unix epoch")
             .as_millis() as u64;
 
         SessionMetrics {
@@ -146,7 +146,7 @@ impl SessionMetrics {
     pub fn set_connected(&self, ip_address: String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time is before unix epoch")
             .as_millis() as u64;
         self.connected
             .store(true, std::sync::atomic::Ordering::Release);
@@ -160,7 +160,7 @@ impl SessionMetrics {
     pub fn set_disconnected(&self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("system time is before unix epoch")
             .as_millis() as u64;
         self.connected
             .store(false, std::sync::atomic::Ordering::Release);
@@ -207,7 +207,7 @@ pub struct ClientProperties {
 fn get_protobuf_now_timestamp() -> Timestamp {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
+        .expect("system time is before unix epoch");
     Timestamp {
         seconds: now.as_secs() as i64,
         nanos: now.subsec_nanos() as i32,
@@ -990,7 +990,7 @@ impl SessionActor {
                 if !clean_session {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("system time is before unix epoch")
                         .as_secs();
                     ctx.spawn(async move {
                         let _ = session_state_raft_actor.send(
