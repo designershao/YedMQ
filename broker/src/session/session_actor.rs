@@ -1094,7 +1094,11 @@ impl SessionActor {
                 .into_actor(self)
                 .map(|res, act, _ctx| {
                     if let Some(packet) = res.inflight_packet {
-                        let conn = act.conn_recipient.clone().unwrap();
+                        let conn = if let Some(recipient) = &act.conn_recipient {
+                            recipient
+                        } else {
+                            return;
+                        };
                         let state = act.state.clone();
                         let payload_store = act.payload_store.clone();
                         let clean_session = act.clean_session;
@@ -1133,7 +1137,11 @@ impl SessionActor {
     ) {
         let plugin_manager = self.plugin_manager.clone();
         let client_info = self.get_plugin_client_info();
-        let conn = self.conn_recipient.clone().unwrap();
+        let conn = if let Some(recipient) = &self.conn_recipient {
+            recipient.clone()
+        } else {
+            return; // If connection recipient is none, it means the connection is already closed, no need to handle subscribe
+        };
         let session_state = self.state.clone();
         let clean_session = self.clean_session;
         let metric = self.metric.clone();
@@ -1234,10 +1242,11 @@ impl SessionActor {
     }
 
     fn handle_pingreq(&mut self) {
-        let conn = self.conn_recipient.clone().unwrap();
-        conn.do_send(ConnectionActorMessage::WritePacketToClient(
-            yedmq_mqtt::MqttPacketV3::Pingresp(PingrespPacket::new()),
-        ));
+        if let Some(recipient) = &self.conn_recipient {
+            recipient.do_send(ConnectionActorMessage::WritePacketToClient(
+                yedmq_mqtt::MqttPacketV3::Pingresp(PingrespPacket::new()),
+            ));
+        }
     }
 
     fn handle_unsubscribe(
@@ -1245,9 +1254,13 @@ impl SessionActor {
         unsubscribe_packet: UnsubscribePacket,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
+        let conn = if let Some(recipient) = &self.conn_recipient {
+            recipient.clone()
+        } else {
+            return; // If connection recipient is none, it means the connection is already closed, no need to handle unsubscribe
+        };
         let client_info = self.get_plugin_client_info();
         let session_state = self.state.clone();
-        let conn = self.conn_recipient.clone().unwrap();
         let clean_session = self.clean_session;
         let topic_raft_actor = self.topic_raft_actor.clone();
         let metric = self.metric.clone();
@@ -1308,7 +1321,11 @@ impl SessionActor {
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let session_state = self.state.clone();
-        let conn = self.conn_recipient.clone().unwrap();
+        let conn = if let Some(recipient) = &self.conn_recipient {
+            recipient.clone()
+        } else {
+            return; // If connection recipient is none, it means the connection is already closed, no need to handle pubrel
+        };
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
         let session_state_raft_actor = self.session_state_raft_actor.clone();
@@ -1373,7 +1390,11 @@ impl SessionActor {
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let session_state = self.state.clone();
-        let conn = self.conn_recipient.clone().unwrap();
+        let conn = if let Some(recipient) = &self.conn_recipient {
+            recipient.clone()
+        } else {
+            return; // If connection recipient is none, it means the connection is already closed, no need to handle pubrec
+        };
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
         let session_state_raft_actor = self.session_state_raft_actor.clone();
@@ -1729,35 +1750,41 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             }
                                         }
                                     } else {
-                                        let res = session_state_raft_actor.send(RegisterInflightTxPacket {
+                                        match session_state_raft_actor.send(RegisterInflightTxPacket {
                                             tenant_id: tenant_id.clone(),
                                             client_id: client_id.clone(),
                                             packet_id,
                                             qos,
                                             packet_key: key.clone(),
-                                        }).await.unwrap();
-
-                                        if let Err(e) = res {
-                                            if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
-                                                let new_id = {
-                                                    let mut session_state_guard = session_state.write().await;
-                                                    session_state_guard.inflight.allocate_packet_id()
-                                                };
-                                                if let Some(new_id) = new_id {
-                                                    publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                    let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
-                                                        tenant_id,
-                                                        client_id,
-                                                        packet_id: new_id,
-                                                        qos,
-                                                        packet_key: key.clone(),
-                                                    }).await;
+                                        }).await {
+                                            Ok(Ok(())) => {},
+                                            Ok(Err(e)) => {
+                                                if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
+                                                    let new_id = {
+                                                        let mut session_state_guard = session_state.write().await;
+                                                        session_state_guard.inflight.allocate_packet_id()
+                                                    };
+                                                    if let Some(new_id) = new_id {
+                                                        publish_packet.variable_header.packet_identifier = Some(new_id);
+                                                        let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
+                                                            tenant_id,
+                                                            client_id,
+                                                            packet_id: new_id,
+                                                            qos,
+                                                            packet_key: key.clone(),
+                                                        }).await;
+                                                    }
+                                                } else {
+                                                    error!("Register InflightTxPacket through SessionStateRaftActor error: {}", e);
+                                                    return;
                                                 }
-                                            } else {
-                                                error!("Raft error: {}", e);
+                                            }
+                                            Err(e) => {
+                                                error!("SessionStateRaftActor unavailable: {}", e);
                                                 return;
                                             }
                                         }
+
                                     }
                                     let _ = conn.send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet))).await;
                                 }.into_actor(self));
@@ -1889,7 +1916,12 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::ForceDisconnect => {
                 if matches!(self.activity_state, ActivityState::Active) {
-                    let conn = self.conn_recipient.clone().unwrap();
+                    //If the session is active, it means the connection is still alive, we can send disconnect message to connection actor to trigger will message and proper clean up
+                    let conn = if let Some(recipient) = &self.conn_recipient {
+                        recipient.clone()
+                    } else {
+                        return;
+                    };
                     async move {
                         conn.send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal)).await
                     }
@@ -1991,18 +2023,22 @@ impl Handler<SessionActorMessage> for SessionActor {
                             QoS::ExactlyOnce => 2,
                             QoS::AtMostOnce => 0,
                         };
-                        let res = topic_raft_actor
+                        match topic_raft_actor
                             .send(crate::raft::topic::topic_raft_actor::Subscribe {
                                 tenant_id: tenant_id.clone(),
                                 client_identifier: client_identifier.clone(),
                                 topic: topic.clone(),
                                 qos: qos_v,
                             })
-                            .await
-                            .unwrap();
-                        if res.is_err() {
-                            warn!("handle subscribe topic error {}", res.unwrap_err())
-                        }
+                            .await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    warn!("handle subscribe topic error for session {}, topic {}, error: {}", client_identifier, topic, e);
+                                }
+                                Err(e) => {
+                                    warn!("TopicRaftActor unavailable when subscribe topic for session {}, topic {}, error: {}", client_identifier, topic, e);
+                                }
+                            }
                     }
                     debug!(
                         "finish update topic subscribe for session {}",
