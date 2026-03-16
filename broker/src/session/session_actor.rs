@@ -7,6 +7,7 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::error;
 use std::{
     cmp,
     net::SocketAddr,
@@ -1765,7 +1766,6 @@ impl Handler<SessionActorMessage> for SessionActor {
                     } else if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
                         let client_info = self.get_plugin_client_info();
                         ctx.spawn(async move {
-                            let mut session_state_guard = session_state.write().await;
                             let key = if let Some(store) = &payload_store {
                                 let k = uuid::Uuid::new_v4().to_string();
                                 let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
@@ -1775,16 +1775,40 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 }
                                 k
                             } else {
-                                return;
+                                error!("Payload store missing");
+                                return; // If payload store is not available, we cannot store the message, so just return
                             };
 
-                            session_state_guard.pending_messages.push(key.clone());
                             if !clean_session {
-                                let _ = session_state_raft_actor.send(crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
+                                match session_state_raft_actor.send(crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
                                     tenant_id: client_info.tenant_id.clone(),
                                     client_id: client_info.client_identifier.clone(),
-                                    packet_key: key,
-                                }).await;
+                                    packet_key: key.clone(),
+                                }).await {
+                                    Ok(Ok(())) => {
+                                        let mut session_state_guard = session_state.write().await;
+                                        session_state_guard.pending_messages.push(key);
+                                        debug!("Stored offline message for session {}", client_info.client_identifier);
+                                    }
+                                    Ok(Err(e)) => {
+                                        if let Some(store) = &payload_store {
+                                            let _  = store.delete(&key).await;
+                                        }
+                                        error!("Failed to store message in session state raft actor for session {}, error: {}", client_info.client_identifier, e);
+                                    }
+                                    Err(_) => {
+                                        if let Some(store) = &payload_store {
+                                            let _  = store.delete(&key).await;
+                                        }
+                                        error!("SessionStateRaftActor unavailable");
+                                    }
+                                }
+                            } else {
+                                if let Some(store) = &payload_store {
+                                    let _  = store.delete(&key).await;
+                                }
+                                let mut session_state_guard = session_state.write().await;
+                                session_state_guard.pending_messages.push(key.clone());
                             }
                         }.into_actor(self));
                     }
