@@ -257,6 +257,7 @@ impl Encoder<ProtocolMessage> for ProtocolMessageCodec {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use crate::{
         create_message_id, create_timestamp,

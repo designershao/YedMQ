@@ -91,6 +91,7 @@ impl MqttPacket for PubCompPacket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 
