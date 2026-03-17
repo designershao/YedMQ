@@ -7,9 +7,9 @@ use bytes::Bytes;
 use log::{debug, error, info, warn};
 use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::tungstenite::error;
 use std::{
     cmp,
+    collections::HashMap,
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64},
@@ -39,7 +39,7 @@ use yedmq_mqtt::{
     MqttPacketV3,
 };
 use yedmq_plugin_host::{
-    plugin_manager::PluginManager,
+    plugin_manager::{AuthorizeResult, PluginManager},
     protocol::plugin_protocol::{
         AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage,
     },
@@ -48,7 +48,8 @@ use yedmq_plugin_host::{
 use crate::{
     inflight::{InflightError, InflightState},
     raft::{
-        session_state::session_state_raft_actor::RegisterInflightTxPacket, topic::topic_raft_actor,
+        payload::PayloadError, session_state::session_state_raft_actor::RegisterInflightTxPacket,
+        topic::topic_raft_actor,
     },
     router_actor::RouterActor,
 };
@@ -155,7 +156,11 @@ impl SessionMetrics {
             .store(now, std::sync::atomic::Ordering::Release);
         self.disconnected_at
             .store(0, std::sync::atomic::Ordering::Release);
-        *self.ip_address.write().unwrap() = Some(ip_address);
+        if let Ok(mut guard) = self.ip_address.write() {
+            *guard = Some(ip_address);
+        } else {
+            warn!("failed to update ip_address: poisoned lock");
+        }
     }
 
     pub fn set_disconnected(&self) {
@@ -169,7 +174,11 @@ impl SessionMetrics {
             .store(0, std::sync::atomic::Ordering::Release);
         self.disconnected_at
             .store(now, std::sync::atomic::Ordering::Release);
-        *self.ip_address.write().unwrap() = None;
+        if let Ok(mut guard) = self.ip_address.write() {
+            *guard = None;
+        } else {
+            warn!("failed to clear ip_address: poisoned lock");
+        }
     }
 
     pub fn increase_messages_received(&self) {
@@ -405,7 +414,7 @@ impl Actor for SessionActor {
         async move {
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
                 error!("send session started message to session manager error: {}, force stop the current session actor", e);
-                self_addr.send(SessionActorMessage::ForceStop).await.unwrap();
+                self_addr.do_send(SessionActorMessage::ForceStop);
                 return;
             }
             let subscriptions: Vec<(String, QoS)> = {
@@ -468,8 +477,8 @@ impl Actor for SessionActor {
                             tenant_id: tenant_id.clone(),
                             client_id: client_id.clone(),
                         }
-                    ).await.unwrap() {
-                        Ok((Some(key), payload_opt)) => {
+                    ).await {
+                        Ok(Ok((Some(key), payload_opt))) => {
                             let data = if let Some(payload) = payload_opt {
                                  Some(bytes::Bytes::from(payload))
                             } else if let Some(store) = &payload_store {
@@ -492,14 +501,18 @@ impl Actor for SessionActor {
                                  warn!("Payload missing during recovery for key: {}", key);
                             }
                         },
-                        Ok((None, _)) => {
+                        Ok(Ok((None, _))) => {
                             info!("recovery from pending messages finished");
                             break
                         },
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("session state raft client pop from pending queue error, {}", e);
                             break
                         },
+                        Err(e) => {
+                            error!("SessionStateRaftActor unavailable when pop pending message during recovery, {}", e);
+                            break
+                        }
                     }
 
                 }
@@ -532,6 +545,15 @@ struct HandleUnSubscribeResult {
     succeed_unsubscriptions: Vec<String>,
 }
 
+#[derive(Debug, Error)]
+enum HandlePublishError {
+    #[error("Packet ID does not exist")]
+    PacketIdNotExist,
+
+    #[error("Payload store error: {0}")]
+    PayloadStoreError(#[from] PayloadError),
+}
+
 struct HandlePublishResult {
     inflight_packet: Option<MqttPacketV3>,
 }
@@ -558,20 +580,33 @@ async fn do_handle_unsubscribe(
         for topic in unsub_topic_filters {
             let tenant_id = client_info.tenant_id.clone();
             let client_id = client_info.client_identifier.clone();
-            let res = topic_raft_actor_addr
+            match topic_raft_actor_addr
                 .send(topic_raft_actor::Unsubscribe {
                     tenant_id: tenant_id.clone(),
                     client_identifier: client_id.clone(),
                     topic: topic.topic_name.clone(),
                 })
                 .await
-                .unwrap();
-            if let Err(e) = res {
-                error!(
-                    "session {} unsubscribe topic {} error: {}",
-                    client_info.client_identifier, topic.topic_name, e
-                );
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    error!(
+                        "session {} unsubscribe topic {} error: {}",
+                        client_info.client_identifier, topic.topic_name, e
+                    );
+                }
+                Err(e) => {
+                    error!(
+                            "TopicRaftActor unavailable when session {} unsubscribe topic {}, error: {}",
+                            client_info.client_identifier, topic.topic_name, e
+                        );
+                }
             }
+            // warning: even if the unsubscription fails in raft layer,
+            // we still return success to client and remove the subscription in memory,
+            // this may cause inconsistency between session state and topic state in raft,
+            // but mqtt 3.1.1 protocol does not specify the behavior when unsubscription fails,
+            // and this can avoid client being stuck in retry loop when raft layer is unavailable
             succeed_unsubscriptions.push(topic.topic_name.clone());
         }
     }
@@ -587,7 +622,7 @@ async fn do_handle_unsubscribe(
 async fn do_handle_publish(
     publish_packet: PublishPacket,
     context: HandlePublishContext,
-) -> HandlePublishResult {
+) -> Result<HandlePublishResult, HandlePublishError> {
     let authorize_request = AuthorizeRequest {
         tenant_id: context.client_info.tenant_id.clone(),
         client_id: context.client_info.client_identifier.clone(),
@@ -609,12 +644,18 @@ async fn do_handle_publish(
         .await;
 
     if publish_authorize_result.is_err() {
-        return HandlePublishResult {
+        return Ok(HandlePublishResult {
             inflight_packet: None,
-        };
+        });
     }
 
-    let publish_authorization = publish_authorize_result.unwrap().authorized;
+    let publish_authorization = publish_authorize_result
+        .unwrap_or(AuthorizeResult {
+            authorized: false,
+            reason: Some("Authorization failed".to_string()),
+            modified_context: HashMap::new(),
+        })
+        .authorized;
 
     let mut result = HandlePublishResult {
         inflight_packet: None,
@@ -651,20 +692,30 @@ async fn do_handle_publish(
                 publish_packet.clone()
             );
 
-            let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
-            let qos = publish_packet.fix_header.qos.unwrap() as u8;
+            let packet_id = match publish_packet.variable_header.packet_identifier {
+                Some(id) => id,
+                None => {
+                    warn!("Packet ID is required for QoS > 0");
+                    return Err(HandlePublishError::PacketIdNotExist);
+                }
+            };
+            let qos = publish_packet.fix_header.qos.unwrap_or(0) as u8;
 
             let key = if let Some(store) = &context.payload_store {
                 let k = uuid::Uuid::new_v4().to_string();
-                let data =
-                    serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
-                store.put(&k, bytes::Bytes::from(data)).await.unwrap();
+                let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+                    .map_err(|e| {
+                        HandlePublishError::PayloadStoreError(PayloadError::Serialization(
+                            e.to_string(),
+                        ))
+                    })?;
+                store.put(&k, bytes::Bytes::from(data)).await?;
                 k
             } else {
                 warn!("Payload store not available in do_handle_publish");
-                return HandlePublishResult {
-                    inflight_packet: None,
-                };
+                return Err(HandlePublishError::PayloadStoreError(
+                    PayloadError::Storage("Payload store not available".to_string()),
+                ));
             };
 
             session_state_guard
@@ -673,7 +724,7 @@ async fn do_handle_publish(
 
             // if not clean session, should sync inflight rx packet to raft
             if !context.clean_session {
-                let res = context.session_state_raft_actor.send(
+                match context.session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::RegisterInflightRxPacket {
                         tenant_id: context.client_info.tenant_id.clone(),
                         client_id: context.client_info.client_identifier.clone(),
@@ -681,12 +732,20 @@ async fn do_handle_publish(
                         qos,
                         packet_key: key.clone(),
                     },
-                ).await.unwrap();
-                if res.is_err() {
-                    warn!("inflight register rx packet error, {}", res.unwrap_err());
-                    return HandlePublishResult {
-                        inflight_packet: None,
-                    };
+                ).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => {
+                        warn!("inflight register rx packet error, {}", e);
+                        return Ok(HandlePublishResult {
+                            inflight_packet: None,
+                        });
+                    }
+                    Err(e) => {
+                        error!("SessionStateRaftActor unavailable when register inflight rx packet, {}", e);
+                        return Ok(HandlePublishResult {
+                            inflight_packet: None,
+                        });
+                    }
                 }
             }
 
@@ -760,7 +819,7 @@ async fn do_handle_publish(
         });
     }
 
-    result
+    Ok(result)
 }
 
 async fn do_handle_subscribe(
@@ -799,11 +858,15 @@ async fn do_handle_subscribe(
         let topic_authorizate_result = plugin_manager
             .call_authorize_hook(authorize_request)
             .await
-            .unwrap();
+            .unwrap_or(AuthorizeResult {
+                authorized: false,
+                reason: Some("Authorization failed".to_string()),
+                modified_context: HashMap::new(),
+            }); // if plugin call fails, treat it as unauthorized
 
         if topic_authorizate_result.authorized {
             let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
-            let sub_result = topic_raft_actor_addr
+            match topic_raft_actor_addr
                 .send(topic_raft_actor::Subscribe {
                     tenant_id: tenant_id.clone(),
                     client_identifier: client_id.clone(),
@@ -811,41 +874,61 @@ async fn do_handle_subscribe(
                     qos: topic.qos,
                 })
                 .await
-                .unwrap();
-            if sub_result.is_ok() {
-                succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
-                match topic.qos {
-                    0 => {
-                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos0);
+            {
+                Ok(Ok(_)) => {
+                    succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
+                    match topic.qos {
+                        0 => {
+                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos0);
+                        }
+                        1 => {
+                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos1);
+                        }
+                        2 => {
+                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos2);
+                        }
+                        _ => {
+                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+                        }
                     }
-                    1 => {
-                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos1);
-                    }
-                    2 => {
-                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos2);
-                    }
-                    _ => {
-                        return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+
+                    let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
+
+                    match topic_raft_actor_addr
+                        .send(topic_raft_actor::GetRetainPublishPacket {
+                            tenant_id: tenant_id.clone(),
+                            topic: topic.topic_name.clone(),
+                        })
+                        .await
+                    {
+                        Ok(Ok(mut packets)) => {
+                            retain_messages.append(&mut packets);
+                        }
+                        Ok(Err(e)) => {
+                            warn!(
+                                    "Failed to get retain publish packet from topic raft actor for session {} subscribe topic {}, error: {}",
+                                    client_id, topic.topic_name, e
+                                );
+                        }
+                        Err(e) => {
+                            error!("TopicRaftActor unavailable when session {} get retain messages topic {}, error: {}", client_id, topic.topic_name, e);
+                        }
                     }
                 }
-
-                let topic_raft_actor_addr = topic_raft_actor::TopicRaftActor::from_registry();
-
-                let packets = topic_raft_actor_addr
-                    .send(topic_raft_actor::GetRetainPublishPacket {
-                        tenant_id: tenant_id.clone(),
-                        topic: topic.topic_name.clone(),
-                    })
-                    .await
-                    .unwrap();
-
-                if let Ok(packets) = packets {
-                    for packet in packets {
-                        retain_messages.push(packet);
-                    }
+                Ok(Err(e)) => {
+                    warn!(
+                        "session {} subscribe topic {} error: {}",
+                        client_id, topic.topic_name, e
+                    );
+                    return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
                 }
-            } else {
-                return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+                Err(e) => {
+                    warn!(
+                        "TopicRaftActor unavailable when session {} subscribe topic {}, error: {}",
+                        client_id, topic.topic_name, e
+                    );
+                    return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+                }
             }
         }
     }
@@ -937,7 +1020,9 @@ impl SessionActor {
             client_identifier: self.client_id.clone(),
             tenant_id: self.tenant_id.clone(),
             properties: client_properties,
-            socket_addr: self.conn_addr.unwrap(),
+            socket_addr: self
+                .conn_addr
+                .expect("session connection address should existed"),
         }
     }
 
@@ -1021,10 +1106,18 @@ impl SessionActor {
         self.activity_state = state;
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
         async move {
-            session_lifecycle_tx
+            match session_lifecycle_tx
                 .send(SessionLifecycleMessage::SessionDeactivate)
                 .await
-                .unwrap();
+            {
+                Ok(_) => {}
+                Err(e) => {
+                    error!(
+                        "send session deactivate message to session manager actor error: {}",
+                        e
+                    );
+                }
+            }
         }
         .into_actor(self)
         .wait(ctx);
@@ -1092,37 +1185,52 @@ impl SessionActor {
                 do_handle_publish(publish_packet, context).await
             }
                 .into_actor(self)
-                .map(|res, act, _ctx| {
-                    if let Some(packet) = res.inflight_packet {
-                        let conn = if let Some(recipient) = &act.conn_recipient {
-                            recipient
-                        } else {
-                            return;
-                        };
-                        let state = act.state.clone();
-                        let payload_store = act.payload_store.clone();
-                        let clean_session = act.clean_session;
-                        let session_state_raft_actor = act.session_state_raft_actor.clone();
-                        let tenant_id = act.tenant_id.clone();
-                        let client_id = act.client_id.clone();
+                .map(|result, act, _ctx| {
+                    match result {
+                        Ok(res) => {
+                            if let Some(packet) = res.inflight_packet {
+                                let conn = if let Some(recipient) = &act.conn_recipient {
+                                    recipient
+                                } else {
+                                    return;
+                                };
+                                let state = act.state.clone();
+                                let payload_store = act.payload_store.clone();
+                                let clean_session = act.clean_session;
+                                let session_state_raft_actor = act.session_state_raft_actor.clone();
+                                let tenant_id = act.tenant_id.clone();
+                                let client_id = act.client_id.clone();
 
-                        conn.do_send(ConnectionActorMessage::WritePacketToClient(packet.clone()));
+                                conn.do_send(ConnectionActorMessage::WritePacketToClient(packet.clone()));
 
-                        // If it was a Puback (QoS 1 Receiver completion), trigger cleanup
-                        if matches!(packet, MqttPacketV3::Puback(_)) {
-                            if clean_session {
-                                actix::spawn(async move {
-                                    Self::cleanup_local_finished_items(state, payload_store).await;
-                                });
-                            } else {
-                                actix::spawn(async move {
-                                    let _ = session_state_raft_actor.send(
-                                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-                                            tenant_id,
-                                            client_id,
-                                        }
-                                    ).await;
-                                });
+                                // If it was a Puback (QoS 1 Receiver completion), trigger cleanup
+                                if matches!(packet, MqttPacketV3::Puback(_)) {
+                                    if clean_session {
+                                        actix::spawn(async move {
+                                            Self::cleanup_local_finished_items(state, payload_store).await;
+                                        });
+                                    } else {
+                                        actix::spawn(async move {
+                                            let _ = session_state_raft_actor.send(
+                                                crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
+                                                    tenant_id,
+                                                    client_id,
+                                                }
+                                            ).await;
+                                        });
+                                    }
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            match e {
+                                HandlePublishError::PacketIdNotExist => {
+                                    // Qos > 0 publish packet without packet id, this should not happen, force stop the session
+                                    _ctx.address().do_send(SessionActorMessage::ForceDisconnect);
+                                }
+                                HandlePublishError::PayloadStoreError(e) => {
+                                    error!("Failed to store payload for incoming publish packet: {}", e);
+                                }
                             }
                         }
                     }
@@ -1180,51 +1288,36 @@ impl SessionActor {
 
             if !clean_session {
                 for (topic, qos) in res.succeed_subscriptions {
+
                     let qos_v = match qos {
                         QoS::AtMostOnce => 0,
                         QoS::AtLeastOnce => 1,
                         QoS::ExactlyOnce => 2,
                     };
-
-                    session_state
-                        .write()
-                        .await
-                        .subscriptions
-                        .insert(topic.clone(), qos);
-
-                    let topic_raft_actor_addr = crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
-                    let res = topic_raft_actor_addr.send(
-                        crate::raft::topic::topic_raft_actor::Subscribe {
-                            tenant_id: tenant_id.clone(),
-                            client_identifier: client_id.clone(),
-                            topic: topic.clone(),
-                            qos: qos_v,
-                        },
-                    ).await.unwrap();
-
-                    if res.is_err() {
-                        warn!(
-                            "persistent session add subscribe topic {} error, {}",
-                            topic.clone(),
-                            res.unwrap_err()
-                        );
-                    }
-
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    match session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::SubscribeTopic {
                             tenant_id: tenant_id.clone(),
                             client_id: client_id.clone(),
                             topic: topic.clone(),
                             qos: qos_v,
                         },
-                    ).await.unwrap();
-                    if res.is_err() {
-                        warn!(
-                            "persistent session raft add subscribe topic {} error, {}",
-                            topic.clone(),
-                            res.unwrap_err()
-                        );
+                    ).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            warn!(
+                                "persistent session raft add subscribe topic {} error, {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "SessionStateRaftActor unavailable when session add subscribe topic {}, error: {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
                     }
                 }
             } else {
@@ -1274,36 +1367,29 @@ impl SessionActor {
                     session_state.write().await.subscriptions.remove(&topic);
                 }
                 if !clean_session {
-                    let res = topic_raft_actor.send(
-                        crate::raft::topic::topic_raft_actor::Unsubscribe {
-                            tenant_id: client_info.tenant_id.clone(),
-                            client_identifier: client_info.client_identifier.clone(),
-                            topic: topic.clone(),
-                        },
-                    ).await.unwrap();
-
-                    if res.is_err() {
-                        warn!(
-                            "persistent session add unsubscribe topic {} error, {}",
-                            topic.clone(),
-                            res.unwrap_err()
-                        );
-                    }
-
                     let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
-                    let res = session_state_raft_actor_addr.send(
+                    match session_state_raft_actor_addr.send(
                         crate::raft::session_state::session_state_raft_actor::UnsubscribeTopic {
                             tenant_id: client_info.tenant_id.clone(),
                             client_id: client_info.client_identifier.clone(),
                             topic: topic.clone(),
                         },
-                    ).await.unwrap();
-                    if res.is_err() {
-                        warn!(
-                            "persistent session raft add unsubscribe topic {} error, {}",
-                            topic.clone(),
-                            res.unwrap_err()
-                        );
+                    ).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            error!(
+                                "persistent session raft remove subscribe topic {} error, {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
+                        Err(e) => {
+                            error!(
+                                "SessionStateRaftActor unavailable when session unsubscribe topic {}, error: {}",
+                                topic.clone(),
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -1354,29 +1440,39 @@ impl SessionActor {
                     Self::cleanup_local_finished_items(state, store).await;
                 });
             } else {
-                let res = session_state_raft_actor.send(
+                match session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
                         packet_id: packet_id.into(),
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(())) => {
+                        session_state_guard
+                            .inflight
+                            .next_state(packet_id);
 
-                if res.is_ok() {
-                    session_state_guard
-                        .inflight
-                        .next_state(packet_id);
-
-                    // Trigger Raft cleanup
-                    let _ = session_state_raft_actor.send(
-                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-                            tenant_id: client_info.tenant_id.clone(),
-                            client_id: client_info.client_identifier.clone(),
-                        },
-                    ).await;
-                    session_state_guard.inflight.clean_finished_items();
-                } else {
-                    warn!("handle pubrel raft advance state error {}", res.unwrap_err());
+                        // Trigger Raft cleanup
+                        let _ = session_state_raft_actor.send(
+                            crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
+                                tenant_id: client_info.tenant_id.clone(),
+                                client_id: client_info.client_identifier.clone(),
+                            },
+                        ).await;
+                        session_state_guard.inflight.clean_finished_items();
+                    }
+                    Ok(Err(e)) => {
+                        error!(
+                            "handle pubrel raft advance state error {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "SessionStateRaftActor unavailable when handling pubrel, error: {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1400,7 +1496,6 @@ impl SessionActor {
         let session_state_raft_actor = self.session_state_raft_actor.clone();
 
         async move {
-            let mut session_state_guard = session_state.write().await;
             let packet_id = pubrec_packet.variable_header.packet_identifier;
 
             // Generate Pubrel command
@@ -1412,23 +1507,32 @@ impl SessionActor {
             {
                 warn!("handle pubrec write pubrel to client error: {}", e);
             } else if clean_session {
+                let mut session_state_guard = session_state.write().await;
                 session_state_guard.inflight.next_state(packet_id);
             } else {
-                let res = session_state_raft_actor.send(
+                match session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
                         packet_id: packet_id.into(),
                     },
-                ).await.unwrap();
-
-                if res.is_ok() {
-                    session_state_guard.inflight.next_state(packet_id);
-                } else {
-                    warn!(
-                        "handle pubrec raft advance state error {}",
-                        res.unwrap_err()
-                    );
+                ).await {
+                    Ok(Ok(())) => {
+                        let mut session_state_guard = session_state.write().await;
+                        session_state_guard.inflight.next_state(packet_id);
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "handle pubrec raft advance state error {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "SessionStateRaftActor unvailable when handling pubrec, error: {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1448,39 +1552,66 @@ impl SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
-            let mut session_state_guard = session_state.write().await;
             let packet_id = puback_packet.variable_header.packet_identifier;
 
             if clean_session {
-                session_state_guard
-                    .inflight
-                    .next_state(packet_id);
+                let mut session_state_guard = session_state.write().await;
+                session_state_guard.inflight.next_state(packet_id);
                 let state = session_state.clone();
                 let store = payload_store.clone();
                 actix::spawn(async move {
                     Self::cleanup_local_finished_items(state, store).await;
                 });
             } else {
-                let res = session_state_raft_actor.send(
+                match session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
                         packet_id: packet_id.into(),
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(())) => {
+                        {
+                            let mut session_state_guard = session_state.write().await;
+                            session_state_guard.inflight.next_state(packet_id);
+                        }
 
-                if res.is_ok() {
-                    session_state_guard
-                        .inflight
-                        .next_state(packet_id);
-
-                    let _ = session_state_raft_actor.send(
-                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-                            tenant_id: client_info.tenant_id.clone(),
-                            client_id: client_info.client_identifier.clone(),
-                        },
-                    ).await;
-                    session_state_guard.inflight.clean_finished_items();
+                        match session_state_raft_actor.send(
+                            crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
+                                tenant_id: client_info.tenant_id.clone(),
+                                client_id: client_info.client_identifier.clone(),
+                            },
+                        ).await {
+                            Ok(Ok(())) => {
+                                let mut session_state_guard = session_state.write().await;
+                                session_state_guard.inflight.clean_finished_items();
+                            }
+                            Ok(Err(e)) => {
+                                warn!(
+                                    "handle puback raft clean finished items error {}",
+                                    e
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "SessionStateRaftActor unvailable when handling puback clean finished items, error: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "handle puback raft advance state error {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "SessionStateRaftActor unvailable when handling puback, error: {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1506,17 +1637,12 @@ impl SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
-            let mut session_state_guard = session_state.write().await;
-
             let packet_id = pubcomp_packet.variable_header.packet_identifier;
 
 
             if clean_session {
-                session_state_guard
-
-                    .inflight
-
-                    .next_state(packet_id);
+                let mut session_state_guard = session_state.write().await;
+                session_state_guard.inflight.next_state(packet_id);
 
                 let state = session_state.clone();
 
@@ -1526,7 +1652,8 @@ impl SessionActor {
                     Self::cleanup_local_finished_items(state, store).await;
                 });
             } else {
-                let res = session_state_raft_actor.send(
+
+                match session_state_raft_actor.send(
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
 
@@ -1535,28 +1662,54 @@ impl SessionActor {
                         packet_id: packet_id.into(),
 
                     },
-                ).await.unwrap();
+                ).await {
+                    Ok(Ok(())) => {
+                        {
+                            let mut session_state_guard = session_state.write().await;
+                            session_state_guard.inflight.next_state(packet_id);
+                        }
 
 
-                if res.is_ok() {
-                    session_state_guard
+                        match session_state_raft_actor.send(
+                            crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
+                                tenant_id: client_info.tenant_id.clone(),
 
-                        .inflight
+                                client_id: client_info.client_identifier.clone(),
 
-                        .next_state(packet_id);
+                            },
+                        ).await {
+                            Ok(Ok(())) => {
+                                let mut session_state_guard = session_state.write().await;
+                                session_state_guard.inflight.clean_finished_items();
+                            }
+                            Ok(Err(e)) => {
+                                warn!(
+                                    "handle pubcomp raft clean finished items error {}",
+                                    e
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "SessionStateRaftActor unvailable when handling pubcomp clean finished items, error: {}",
+                                    e
+                                );
+                            }
+                        }
 
-
-                    let _ = session_state_raft_actor.send(
-                        crate::raft::session_state::session_state_raft_actor::InflightCleanFinishedItems {
-                            tenant_id: client_info.tenant_id.clone(),
-
-                            client_id: client_info.client_identifier.clone(),
-
-                        },
-                    ).await;
-
-                    session_state_guard.inflight.clean_finished_items();
-                }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(
+                            "handle pubcomp raft advance state error {}",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "SessionStateRaftActor unvailable when handling pubcomp, error: {}",
+                            e
+                        );
+                    }
+                };
             }
         }
 
@@ -1571,10 +1724,10 @@ impl SessionActor {
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.clean_will_message();
-        self.conn_recipient
-            .clone()
-            .unwrap()
-            .do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
+
+        if let Some(recipient) = &self.conn_recipient {
+            recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
+        }
 
         let plugin_manager = self.plugin_manager.clone();
         let tenant_id = self.tenant_id.clone();
@@ -1712,6 +1865,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                     let session_state_raft_actor = self.session_state_raft_actor.clone();
                     let payload_store = self.payload_store.clone();
                     let conn = self.conn_recipient.clone();
+                    let self_addr = ctx.address();
 
                     if matches!(self.activity_state, ActivityState::Active) && conn.is_some() {
                         if let Some(conn) = conn {
@@ -1721,12 +1875,26 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 ));
                             } else {
                                 ctx.spawn(async move {
-                                    let packet_id = publish_packet.variable_header.packet_identifier.unwrap();
-                                    let qos = publish_packet.fix_header.qos.unwrap() as u8;
+                                    let packet_id = match publish_packet.variable_header.packet_identifier {
+                                        Some(id) => id,
+                                        None => {
+                                            error!("QoS > 0 publish packet missing packet identifier, tenant_id: {}, client_id: {}, close the connection", tenant_id, client_id);
+                                            self_addr.do_send(SessionActorMessage::ForceDisconnect);
+                                            return;
+                                        }
+                                    };
+
+                                    let qos = publish_packet.fix_header.qos.expect("Qos should be set") as u8;
 
                                     let key = if let Some(store) = &payload_store {
                                         let k = uuid::Uuid::new_v4().to_string();
-                                        let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
+                                        let data = match serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())) {
+                                            Ok(d) => d,
+                                            Err(e) => {
+                                                error!("Failed to serialize payload: {}", e);
+                                                return;
+                                            }
+                                        };
                                         if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
                                             error!("Failed to store payload: {}", e);
                                             return;
@@ -1795,7 +1963,13 @@ impl Handler<SessionActorMessage> for SessionActor {
                         ctx.spawn(async move {
                             let key = if let Some(store) = &payload_store {
                                 let k = uuid::Uuid::new_v4().to_string();
-                                let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())).unwrap();
+                                let data = match serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())) {
+                                    Ok(d) => d,
+                                    Err(e) => {
+                                        error!("Failed to serialize payload: {}", e); // If serialization fails, we cannot store the message, so just
+                                        return;
+                                    }
+                                };
                                 if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
                                     error!("Failed to store offline payload: {}", e);
                                     return;
