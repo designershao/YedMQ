@@ -2,7 +2,7 @@ use std::{
     cell::OnceCell,
     collections::BTreeMap,
     path::Path,
-    sync::{Arc, atomic::Ordering},
+    sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 
@@ -11,9 +11,9 @@ use actix::{
     WrapFuture,
 };
 use openraft::{
-    Config, RaftMetrics, StorageError,
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
+    Config, RaftMetrics, StorageError,
 };
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
@@ -21,17 +21,17 @@ use yedmq_mqtt::MqttPacketV3;
 use crate::{
     inflight::InflightError,
     protobuf::{
-        RaftType, WriteRequest, cluster_service_client::ClusterServiceClient,
-        raft_service_client::RaftServiceClient,
+        cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient,
+        RaftType, WriteRequest,
     },
     raft::{
-        Node, NodeId,
         session_state::{
-            SessionStateRaft,
             raft_network_impl::Network,
             store::new_storage,
             types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig},
+            SessionStateRaft,
         },
+        Node, NodeId,
     },
     session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError},
 };

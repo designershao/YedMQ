@@ -3,13 +3,13 @@ use std::{io, io::Cursor, ops::RangeBounds, path::Path, sync::Arc};
 use actix::SystemService;
 use log::debug;
 use openraft::{
+    storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
     AnyError, Entry, ErrorSubject, ErrorVerb, LogId, LogState, OptionalSend, RaftLogReader,
     RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
     Vote,
-    storage::{LogFlushed, RaftLogStorage, RaftStateMachine},
 };
 use parking_lot::RwLock;
-use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, DB, Direction, Options};
+use rocksdb::{ColumnFamily, ColumnFamilyDescriptor, Direction, Options, DB};
 use serde::{Deserialize, Serialize};
 
 use crate::{
