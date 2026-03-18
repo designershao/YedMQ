@@ -185,14 +185,11 @@ impl StateMachineStore {
     }
 
     fn get_current_snapshot_(&self) -> BoxedStorageResult<Option<StoredSnapshot>> {
-        let snapshot = self
-            .db
-            .get_cf(self.store()?, b"snapshot")
-            .map_err(|e| {
-                Box::new(StorageError::IO {
-                    source: StorageIOError::read(&e),
-                })
-            })?;
+        let snapshot = self.db.get_cf(self.store()?, b"snapshot").map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::read(&e),
+            })
+        })?;
 
         snapshot
             .map(|v| {
@@ -289,8 +286,10 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
 
                                 // update current node session clock
                                 self.session_clock.bump(&version);
-                                self.session_clock.persist().await.map_err(|e| StorageError::IO {
-                                    source: StorageIOError::write_state_machine(&e),
+                                self.session_clock.persist().await.map_err(|e| {
+                                    StorageError::IO {
+                                        source: StorageIOError::write_state_machine(&e),
+                                    }
                                 })?;
                                 replies.push(SessionActorMapResponse::None)
                             }
@@ -322,9 +321,12 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             );
                             self.session_clock.bump(&session_version);
                         }
-                        self.session_clock.persist().await.map_err(|e| StorageError::IO {
-                            source: StorageIOError::write_state_machine(&e),
-                        })?;
+                        self.session_clock
+                            .persist()
+                            .await
+                            .map_err(|e| StorageError::IO {
+                                source: StorageIOError::write_state_machine(&e),
+                            })?;
                         replies.push(SessionActorMapResponse::None);
                     }
                     types::SessionActorMapRequest::CleanExpiredSessions { sessions } => {
@@ -412,15 +414,21 @@ fn id_to_bin(id: u64) -> Vec<u8> {
     id.to_be_bytes().to_vec()
 }
 
-fn bin_to_id(buf: &[u8]) -> StorageResult<u64> {
-    let bytes: [u8; 8] = buf.try_into().map_err(|_| StorageError::IO {
-        source: StorageIOError::read_logs(&io::Error::other("invalid log key length")),
+fn bin_to_id(buf: &[u8]) -> BoxedStorageResult<u64> {
+    let bytes: [u8; 8] = buf.try_into().map_err(|_| {
+        Box::new(StorageError::IO {
+            source: StorageIOError::read_logs(&io::Error::other("invalid log key length")),
+        })
     })?;
     Ok(u64::from_be_bytes(bytes))
 }
 
 impl LogStore {
-    fn store_io(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<&ColumnFamily> {
+    fn store_io(
+        &self,
+        subject: ErrorSubject<NodeId>,
+        verb: ErrorVerb,
+    ) -> BoxedStorageIOResult<&ColumnFamily> {
         self.db.cf_handle("store").ok_or_else(|| {
             Box::new(StorageIOError::new(
                 subject,
@@ -495,11 +503,15 @@ impl LogStore {
     }
 
     fn set_committed_(&self, committed: &Option<LogId<NodeId>>) -> BoxedStorageIOResult<()> {
-        let json = serde_json::to_vec(committed)
-            .map_err(|e| Box::new(StorageIOError::write(&e)))?;
+        let json =
+            serde_json::to_vec(committed).map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.db
-            .put_cf(self.store_io(ErrorSubject::Store, ErrorVerb::Write)?, b"committed", json)
+            .put_cf(
+                self.store_io(ErrorSubject::Store, ErrorVerb::Write)?,
+                b"committed",
+                json,
+            )
             .map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.flush(ErrorSubject::Store, ErrorVerb::Write)?;
@@ -507,14 +519,11 @@ impl LogStore {
     }
 
     fn get_committed_(&self) -> BoxedStorageResult<Option<LogId<NodeId>>> {
-        let committed = self
-            .db
-            .get_cf(self.store()?, b"committed")
-            .map_err(|e| {
-                Box::new(StorageError::IO {
-                    source: StorageIOError::read(&e),
-                })
-            })?;
+        let committed = self.db.get_cf(self.store()?, b"committed").map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::read(&e),
+            })
+        })?;
 
         committed
             .map(|v| {
@@ -548,14 +557,11 @@ impl LogStore {
     }
 
     fn get_vote_(&self) -> BoxedStorageResult<Option<Vote<NodeId>>> {
-        let vote = self
-            .db
-            .get_cf(self.store()?, b"vote")
-            .map_err(|e| {
-                Box::new(StorageError::IO {
-                    source: StorageIOError::write_vote(&e),
-                })
-            })?;
+        let vote = self.db.get_cf(self.store()?, b"vote").map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::write_vote(&e),
+            })
+        })?;
 
         vote.map(|v| {
             serde_json::from_slice(&v).map_err(|e| {
@@ -593,7 +599,7 @@ impl RaftLogReader<SessionActorMapTypeConfig> for LogStore {
                     serde_json::from_slice(&val).map_err(|e| StorageError::IO {
                         source: StorageIOError::read_logs(&e),
                     });
-                let id = bin_to_id(&id)?;
+                let id = bin_to_id(&id).map_err(|e| *e)?;
 
                 assert_eq!(Ok(id), entry.as_ref().map(|e| e.log_id.index));
                 Ok((id, entry))
@@ -675,7 +681,7 @@ impl RaftLogStorage<SessionActorMapTypeConfig> for LogStore {
     {
         for entry in entries {
             let id = id_to_bin(entry.log_id.index);
-            assert_eq!(bin_to_id(&id)?, entry.log_id.index);
+            assert_eq!(bin_to_id(&id).map_err(|e| *e)?, entry.log_id.index);
             self.db
                 .put_cf(
                     self.logs().map_err(|e| *e)?,

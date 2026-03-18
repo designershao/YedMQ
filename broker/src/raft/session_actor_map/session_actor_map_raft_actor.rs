@@ -527,11 +527,9 @@ impl Handler<GetSessionActorMapStorage> for SessionActorMapRaftActor {
         _msg: GetSessionActorMapStorage,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        let session_actor_map_storage = self
-            .session_actor_map_storage
-            .get()
-            .cloned()
-            .ok_or(SessionActorMapRaftError::NotReady("Initializing".to_string()))?;
+        let session_actor_map_storage = self.session_actor_map_storage.get().cloned().ok_or(
+            SessionActorMapRaftError::NotReady("Initializing".to_string()),
+        )?;
 
         Ok(GetSessionActorMapStorageResponse {
             session_actor_map_storage,

@@ -57,13 +57,12 @@ pub enum SessionManagerError {
 
     #[error("session actor map error {0}")]
     SessionActorMapError(
-        #[from]
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+        Box<crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError>,
     ),
 
     #[error("session state raft error {0}")]
     SessionStateRaftError(
-        #[from] crate::raft::session_state::session_state_raft_actor::SessionStateRaftError,
+        Box<crate::raft::session_state::session_state_raft_actor::SessionStateRaftError>,
     ),
 
     #[error("send message error {0}")]
@@ -91,6 +90,26 @@ pub enum SessionLifecycleMessage {
         client_id: String,
         version: SessionVersion,
     },
+}
+
+impl From<crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError>
+    for SessionManagerError
+{
+    fn from(
+        value: crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError,
+    ) -> Self {
+        Self::SessionActorMapError(Box::new(value))
+    }
+}
+
+impl From<crate::raft::session_state::session_state_raft_actor::SessionStateRaftError>
+    for SessionManagerError
+{
+    fn from(
+        value: crate::raft::session_state::session_state_raft_actor::SessionStateRaftError,
+    ) -> Self {
+        Self::SessionStateRaftError(Box::new(value))
+    }
 }
 
 impl SystemService for SessionManagerActor {
@@ -838,8 +857,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     if let Err(err) = res {
                         warn!(
                             "force disconnect previous session actor map node id: {} failed: {}",
-                            entry.node_id,
-                            err
+                            entry.node_id, err
                         );
                     }
                 } else {
@@ -849,10 +867,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         drop(session);
                         let res = recipient.send(SessionActorMessage::ForceDisconnect).await;
                         if let Err(err) = res {
-                            warn!(
-                                "force disconnect in current node failed: {}",
-                                err
-                            );
+                            warn!("force disconnect in current node failed: {}", err);
                         }
                     } else {
                         info!("session map in current not found, maybe node reboot");
@@ -895,7 +910,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             return Err(SessionManagerError::NewerSessionExisted);
                         }
                         _ => {
-                            return Err(SessionManagerError::SessionActorMapError(e));
+                            return Err(e.into());
                         }
                     }
                 }

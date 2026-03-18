@@ -154,11 +154,7 @@ impl StateMachineStore {
             })
         })?;
         self.db
-            .put_cf(
-                self.store()?,
-                b"snapshot",
-                snapshot_data.as_slice(),
-            )
+            .put_cf(self.store()?, b"snapshot", snapshot_data.as_slice())
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::write_snapshot(Some(snap.meta.signature()), &e),
@@ -366,12 +362,14 @@ fn id_to_bin(id: u64) -> Vec<u8> {
     id.to_be_bytes().to_vec()
 }
 
-fn bin_to_id(buf: &[u8]) -> StorageResult<u64> {
-    let bytes: [u8; 8] = buf.try_into().map_err(|_| StorageError::IO {
-        source: StorageIOError::read_logs(&std::io::Error::other(format!(
-            "invalid log key length: {}",
-            buf.len()
-        ))),
+fn bin_to_id(buf: &[u8]) -> BoxedStorageResult<u64> {
+    let bytes: [u8; 8] = buf.try_into().map_err(|_| {
+        Box::new(StorageError::IO {
+            source: StorageIOError::read_logs(&std::io::Error::other(format!(
+                "invalid log key length: {}",
+                buf.len()
+            ))),
+        })
     })?;
     Ok(u64::from_be_bytes(bytes))
 }
@@ -398,9 +396,8 @@ impl LogStore {
     }
 
     fn store_io(&self) -> BoxedStorageIOResult<&ColumnFamily> {
-        self.store().map_err(|e| {
-            Box::new(StorageIOError::read(&std::io::Error::other(e.to_string())))
-        })
+        self.store()
+            .map_err(|e| Box::new(StorageIOError::read(&std::io::Error::other(e.to_string()))))
     }
 
     fn flush(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<()> {
@@ -429,11 +426,7 @@ impl LogStore {
             })
         })?;
         self.db
-            .put_cf(
-                self.store()?,
-                b"last_purged_log_id",
-                json.as_slice(),
-            )
+            .put_cf(self.store()?, b"last_purged_log_id", json.as_slice())
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::write(&e),
@@ -450,11 +443,7 @@ impl LogStore {
             serde_json::to_vec(committed).map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.db
-            .put_cf(
-                self.store_io()?,
-                b"committed",
-                json,
-            )
+            .put_cf(self.store_io()?, b"committed", json)
             .map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.flush(ErrorSubject::Store, ErrorVerb::Write)?;
@@ -524,10 +513,11 @@ impl RaftLogReader<TypeConfig> for LogStore {
                 let (id, val) = res.map_err(|e| StorageError::IO {
                     source: StorageIOError::read_logs(&e),
                 })?;
-                let entry: Entry<_> = serde_json::from_slice(&val).map_err(|e| StorageError::IO {
-                    source: StorageIOError::read_logs(&e),
-                })?;
-                let id = bin_to_id(&id)?;
+                let entry: Entry<_> =
+                    serde_json::from_slice(&val).map_err(|e| StorageError::IO {
+                        source: StorageIOError::read_logs(&e),
+                    })?;
+                let id = bin_to_id(&id).map_err(|e| *e)?;
 
                 assert_eq!(id, entry.log_id.index);
                 Ok((id, entry))
@@ -603,7 +593,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     {
         for entry in entries {
             let id = id_to_bin(entry.log_id.index);
-            assert_eq!(bin_to_id(&id)?, entry.log_id.index);
+            assert_eq!(bin_to_id(&id).map_err(|e| *e)?, entry.log_id.index);
             self.db
                 .put_cf(
                     self.logs().map_err(|e| *e)?,
