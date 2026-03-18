@@ -24,35 +24,34 @@ impl MqttWsListener {
 
             match stream.peer_addr() {
                 Ok(remote_addr) => {
-                    let ws_stream =
-                        tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await;
+                    match tokio_tungstenite::accept_hdr_async(stream, WsCallBack {}).await {
+                        Ok(ws_stream) => {
+                            let websocket_tunnel = WebsocketTunnel {
+                                inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
+                            };
 
-                    if let Ok(ws_stream) = ws_stream {
-                        let websocket_tunnel = WebsocketTunnel {
-                            inner: StreamReader::new(StreamWrapper { inner: ws_stream }),
-                        };
-
-                        let settings = self.app.settings.clone();
-                        let plugin_manager_clone = self.app.plugin_manager.clone();
-                        let metric = self.app.metric.clone();
-                        ConnectionActor::create_and_start(
-                            websocket_tunnel,
-                            ConnectionActorStartConfig {
-                                max_message_size: settings.mqtt.max_message_size,
-                                default_buffer_size: 4096,
-                                peer_addr: remote_addr,
-                                plugin_service: plugin_manager_clone,
-                                client_certificate: None,
-                                metric,
-                                rate_limit: settings.listener.ws.rate_limit.clone(),
-                            },
-                        );
-                    } else {
-                        warn!(
-                            "Failed to accept WebSocket connection from {}, err {}",
-                            remote_addr,
-                            ws_stream.err().unwrap()
-                        );
+                            let settings = self.app.settings.clone();
+                            let plugin_manager_clone = self.app.plugin_manager.clone();
+                            let metric = self.app.metric.clone();
+                            ConnectionActor::create_and_start(
+                                websocket_tunnel,
+                                ConnectionActorStartConfig {
+                                    max_message_size: settings.mqtt.max_message_size,
+                                    default_buffer_size: 4096,
+                                    peer_addr: remote_addr,
+                                    plugin_service: plugin_manager_clone,
+                                    client_certificate: None,
+                                    metric,
+                                    rate_limit: settings.listener.ws.rate_limit.clone(),
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to accept WebSocket connection from {}, err {}",
+                                remote_addr, err
+                            );
+                        }
                     }
                 }
                 Err(_) => {
