@@ -92,9 +92,14 @@ impl ServiceRegistry {
         let get_topic_storage_res = topic_raft
             .send(crate::raft::topic::topic_raft_actor::GetTopicStorage {})
             .await
-            .expect("get topic storage error");
+            .expect("get topic storage mailbox error")
+            .expect("get topic storage actor error");
 
-        let get_session_actor_map_storage_res = session_map_raft.send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMapStorage{}).await.expect("get session actor map storage error");
+        let get_session_actor_map_storage_res = session_map_raft
+            .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMapStorage {})
+            .await
+            .expect("get session actor map storage mailbox error")
+            .expect("get session actor map storage actor error");
 
         let topic_storage = get_topic_storage_res.topic_storage.clone();
         let session_actor_map_storage = get_session_actor_map_storage_res

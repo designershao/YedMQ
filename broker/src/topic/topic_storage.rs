@@ -251,15 +251,13 @@ impl TopicStorage {
         tenant_identifier: &str,
         offset: u64,
         limit: u64,
-    ) -> anyhow::Result<TopicPaginationResult> {
+    ) -> Result<TopicPaginationResult, TopicError> {
         if !self
             .retain_message_recorder
             .read()
             .contains_key(tenant_identifier)
         {
-            Err(anyhow::anyhow!(TopicError::TenantNotFound(
-                tenant_identifier.to_string()
-            )))
+            Err(TopicError::TenantNotFound(tenant_identifier.to_string()))
         } else {
             let retain_message_recorder = self.retain_message_recorder.read();
             match retain_message_recorder.get(tenant_identifier) {
@@ -285,7 +283,7 @@ impl TopicStorage {
         tenant_id: &str,
         offset: u64,
         limit: u64,
-    ) -> anyhow::Result<TopicPaginationResult> {
+    ) -> Result<TopicPaginationResult, TopicError> {
         let topic_info_recorder = self.topic_info_recorder.read();
         match topic_info_recorder.get(tenant_id) {
             Some(items) => {
@@ -301,9 +299,7 @@ impl TopicStorage {
                 let total = items.len();
                 Ok((total as u64, result_items))
             }
-            None => Err(anyhow::anyhow!(TopicError::TenantNotFound(
-                tenant_id.to_string()
-            ))),
+            None => Err(TopicError::TenantNotFound(tenant_id.to_string())),
         }
     }
 

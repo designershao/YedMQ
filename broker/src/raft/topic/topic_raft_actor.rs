@@ -100,7 +100,9 @@ impl TopicRaftActor {
 
         let dir = Path::new(&settings.cluster.store_dir);
 
-        let config = Arc::new(raft_config.validate().unwrap());
+        let config = Arc::new(raft_config.validate().map_err(|e| {
+            TopicRaftError::ServiceUnavailable(format!("invalid raft config: {e}"))
+        })?);
 
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
 
@@ -229,7 +231,10 @@ impl TopicRaftActor {
                 TopicRaftError::GRPC(e.to_string())
             })?;
 
-        let data = serde_json::to_string(&msg).unwrap();
+        let data = serde_json::to_string(&msg).map_err(|e| {
+            log::error!("Failed to serialize raft write request: {}", e);
+            TopicRaftError::GRPC(format!("serialize raft request failed: {e}"))
+        })?;
 
         let request = WriteRequest {
             data,
@@ -292,36 +297,24 @@ impl Actor for TopicRaftActor {
 }
 
 #[derive(Message, Clone)]
-#[rtype(result = "GetTopicStorageResponse")]
+#[rtype(result = "Result<GetTopicStorageResponse, TopicRaftError>")]
 pub struct GetTopicStorage;
 
 pub struct GetTopicStorageResponse {
     pub topic_storage: Arc<RwLock<TopicStorage>>,
 }
 
-impl<A, M> MessageResponse<A, M> for GetTopicStorageResponse
-where
-    A: Actor,
-    M: Message<Result = GetTopicStorageResponse>,
-{
-    fn handle(
-        self,
-        _ctx: &mut <A as Actor>::Context,
-        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
-    ) {
-        if let Some(tx) = tx {
-            let _ = tx.send(self);
-        }
-    }
-}
-
 impl Handler<GetTopicStorage> for TopicRaftActor {
-    type Result = GetTopicStorageResponse;
+    type Result = Result<GetTopicStorageResponse, TopicRaftError>;
 
     fn handle(&mut self, _msg: GetTopicStorage, _ctx: &mut Self::Context) -> Self::Result {
-        GetTopicStorageResponse {
-            topic_storage: self.topic_storage.get().unwrap().clone(),
-        }
+        let topic_storage = self
+            .topic_storage
+            .get()
+            .cloned()
+            .ok_or_else(|| TopicRaftError::NotReady("Initializing".to_string()))?;
+
+        Ok(GetTopicStorageResponse { topic_storage })
     }
 }
 
@@ -1109,12 +1102,11 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
                                 let storage = topic_storage.read();
-                                let res = storage.get_retain_message_list_with_pagination(
+                                match storage.get_retain_message_list_with_pagination(
                                     &msg.tenant_id,
                                     msg.offset,
                                     msg.limit,
-                                );
-                                match res {
+                                ) {
                                     Ok(res) => Ok(GetRetainMessageListWithPaginationResponse {
                                         total: res.0,
                                         data: res
@@ -1127,10 +1119,7 @@ impl Handler<GetRetainMessageListWithPagination> for TopicRaftActor {
                                             })
                                             .collect(),
                                     }),
-                                    Err(e) => {
-                                        let topic_err = e.downcast_ref::<TopicError>().unwrap();
-                                        Err(TopicRaftError::TopicError(topic_err.clone()))
-                                    }
+                                    Err(e) => Err(TopicRaftError::TopicError(e)),
                                 }
                             } else {
                                 Err(TopicRaftError::NotReady("Initializing".to_string()))
@@ -1194,12 +1183,11 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                         if raft.get().is_some() {
                             if let Some(topic_storage) = topic_storage.get() {
                                 let storage = topic_storage.read();
-                                let res = storage.get_topic_list_with_pagination(
+                                match storage.get_topic_list_with_pagination(
                                     &msg.tenant_id,
                                     msg.offset,
                                     msg.limit,
-                                );
-                                match res {
+                                ) {
                                     Ok(res) => Ok(GetTopicListWithPaginationResponse {
                                         total: res.0,
                                         data: res
@@ -1212,10 +1200,7 @@ impl Handler<GetTopicListWithPagination> for TopicRaftActor {
                                             })
                                             .collect(),
                                     }),
-                                    Err(e) => {
-                                        let topic_err = e.downcast_ref::<TopicError>().unwrap();
-                                        Err(TopicRaftError::TopicError(topic_err.clone()))
-                                    }
+                                    Err(e) => Err(TopicRaftError::TopicError(e)),
                                 }
                             } else {
                                 Err(TopicRaftError::NotReady("Initializing".to_string()))
@@ -1257,15 +1242,13 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
             }
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get() {
+                    let Some(settings) = self.settings.as_ref() else {
+                        return Box::pin(
+                            async move { Err(TopicRaftError::NotInitialized) }.into_actor(self),
+                        );
+                    };
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self
-                        .settings
-                        .as_ref()
-                        .expect("settings should not be none")
-                        .cluster
-                        .nodes
-                        .iter()
-                    {
+                    for item in settings.cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {
