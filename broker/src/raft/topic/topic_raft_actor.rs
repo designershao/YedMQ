@@ -104,7 +104,9 @@ impl TopicRaftActor {
 
         let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
 
-        let (log_store, state_machine_store) = new_storage(&dir, topic_storage.clone()).await;
+        let (log_store, state_machine_store) = new_storage(&dir, topic_storage.clone())
+            .await
+            .map_err(|e| TopicRaftError::ServiceUnavailable(e.to_string()))?;
 
         let network = Network {};
 

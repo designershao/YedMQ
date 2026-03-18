@@ -13,7 +13,7 @@ use actix::{
 use openraft::{
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
-    Config, RaftMetrics,
+    Config, RaftMetrics, StorageError,
 };
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
@@ -69,6 +69,9 @@ pub enum SessionStateRaftError {
 
     #[error("Raft fatal error: {0}")]
     RaftFatalError(#[from] Fatal<NodeId>),
+
+    #[error("Raft storage error: {0}")]
+    RaftStorageError(#[from] StorageError<NodeId>),
 
     #[error("gRPC error: {0}")]
     GRPC(String),
@@ -184,7 +187,7 @@ impl SessionStateRaftActor {
             payload_store.clone(),
             settings.clone(),
         )
-        .await;
+        .await?;
 
         let network = Network::new(payload_store);
 
@@ -1344,7 +1347,7 @@ impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
 pub struct AdvanceInflightState {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet_id: u64,
+    pub packet_id: u16,
 }
 
 impl Handler<AdvanceInflightState> for SessionStateRaftActor {
@@ -1404,7 +1407,7 @@ impl Handler<AdvanceInflightState> for SessionStateRaftActor {
 pub struct GetCurrentInflightPacket {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet_id: u64,
+    pub packet_id: u16,
 }
 
 impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
@@ -1429,12 +1432,11 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                         if raft.get().is_some() {
                             if let Some(session_state_storage) = session_state_storage.get() {
                                 let session_state_storage = session_state_storage.read().await;
-                                let packet_id_u16 = msg.packet_id.try_into().unwrap();
                                 let state = session_state_storage
                                     .inflight_get_packet_state(
                                         msg.tenant_id.clone(),
                                         msg.client_id.clone(),
-                                        packet_id_u16,
+                                        msg.packet_id,
                                     )
                                     .await;
 
@@ -1442,7 +1444,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                     .inflight_get_current_packet_key(
                                         msg.tenant_id,
                                         msg.client_id,
-                                        packet_id_u16,
+                                        msg.packet_id,
                                     )
                                     .await;
 
@@ -1450,7 +1452,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                     Some(crate::inflight::InflightState::WaitPubcomp) => {
                                         let packet = MqttPacketV3::Pubrel(
                                             yedmq_mqtt::v3::pubrel::PubRelPacket::new(
-                                                packet_id_u16,
+                                                msg.packet_id,
                                             ),
                                         );
                                         Ok(Some(packet))
@@ -1458,7 +1460,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                     Some(crate::inflight::InflightState::WaitPubrel) => {
                                         let packet = MqttPacketV3::Pubrec(
                                             yedmq_mqtt::v3::pubrec::PubRecPacket::new(
-                                                packet_id_u16,
+                                                msg.packet_id,
                                             ),
                                         );
                                         Ok(Some(packet))
@@ -1538,7 +1540,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
 pub struct GetCurrentInflightPacketLinearizable {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet_id: u64,
+    pub packet_id: u16,
 }
 
 impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
@@ -1569,19 +1571,18 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                 Ok(_) => {
                                     if let Some(session_state_storage) = session_state_storage.get() {
                                         let session_state_storage = session_state_storage.read().await;
-                                        let packet_id_u16 = msg.packet_id.try_into().unwrap();
                                         let state = session_state_storage
-                                            .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                                            .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), msg.packet_id).await;
                                         let key = session_state_storage
-                                            .inflight_get_current_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                                            .inflight_get_current_packet_key(msg.tenant_id, msg.client_id, msg.packet_id).await;
 
                                         match state {
                                             Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrel) => {
-                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrec)
@@ -1624,7 +1625,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                             crate::protobuf::GetCurrentInflightPacketRequest {
                                                 tenant_id: msg.tenant_id,
                                                 client_id: msg.client_id,
-                                                packet_id: msg.packet_id,
+                                                packet_id: u32::from(msg.packet_id),
                                             }
                                         ).await.map_err(|e| {
                                             log::error!("Failed to get current inflight packet from leader: {}", e);
@@ -1680,7 +1681,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
 pub struct GetNextInflightPacket {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet_id: u64,
+    pub packet_id: u16,
 }
 
 impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
@@ -1705,19 +1706,18 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                         if raft.get().is_some() {
                             if let Some(session_state_storage) = session_state_storage.get() {
                                 let session_state_storage = session_state_storage.read().await;
-                                let packet_id_u16 = msg.packet_id.try_into().unwrap();
                                 let state = session_state_storage
                                     .inflight_get_packet_state(
                                         msg.tenant_id.clone(),
                                         msg.client_id.clone(),
-                                        packet_id_u16,
+                                        msg.packet_id,
                                     )
                                     .await;
                                 let key = session_state_storage
                                     .inflight_get_next_state_packet_key(
                                         msg.tenant_id,
                                         msg.client_id,
-                                        packet_id_u16,
+                                        msg.packet_id,
                                     )
                                     .await;
 
@@ -1725,7 +1725,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                                     Some(crate::inflight::InflightState::WaitPubcomp) => {
                                         let packet = MqttPacketV3::Pubrel(
                                             yedmq_mqtt::v3::pubrel::PubRelPacket::new(
-                                                packet_id_u16,
+                                                msg.packet_id,
                                             ),
                                         );
                                         Ok(Some(packet))
@@ -1733,7 +1733,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                                     Some(crate::inflight::InflightState::WaitPubrel) => {
                                         let packet = MqttPacketV3::Pubrec(
                                             yedmq_mqtt::v3::pubrec::PubRecPacket::new(
-                                                packet_id_u16,
+                                                msg.packet_id,
                                             ),
                                         );
                                         Ok(Some(packet))
@@ -1813,7 +1813,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
 pub struct GetNextInflightPacketLinearizable {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet_id: u64,
+    pub packet_id: u16,
 }
 
 impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
@@ -1844,19 +1844,18 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                 Ok(_) => {
                                     if let Some(session_state_storage) = session_state_storage.get() {
                                         let session_state_storage = session_state_storage.read().await;
-                                        let packet_id_u16 = msg.packet_id.try_into().unwrap();
                                         let state = session_state_storage
-                                            .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), packet_id_u16).await;
+                                            .inflight_get_packet_state(msg.tenant_id.clone(), msg.client_id.clone(), msg.packet_id).await;
                                         let key = session_state_storage
-                                            .inflight_get_next_state_packet_key(msg.tenant_id, msg.client_id, packet_id_u16).await;
+                                            .inflight_get_next_state_packet_key(msg.tenant_id, msg.client_id, msg.packet_id).await;
 
                                         match state {
                                             Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(packet_id_u16));
+                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrel) => {
-                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id_u16));
+                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrec)
@@ -1898,7 +1897,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                         let request = crate::protobuf::GetNextInflightPacketRequest {
                                             tenant_id: msg.tenant_id.clone(),
                                             client_id: msg.client_id.clone(),
-                                            packet_id: msg.packet_id,
+                                            packet_id: u32::from(msg.packet_id),
                                         };
 
                                         let response = client.get_next_inflight_packet(request).await.map_err(|e| {

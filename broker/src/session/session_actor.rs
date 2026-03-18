@@ -1444,7 +1444,7 @@ impl SessionActor {
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
-                        packet_id: packet_id.into(),
+                        packet_id: packet_id,
                     },
                 ).await {
                     Ok(Ok(())) => {
@@ -1514,7 +1514,7 @@ impl SessionActor {
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
-                        packet_id: packet_id.into(),
+                        packet_id: packet_id,
                     },
                 ).await {
                     Ok(Ok(())) => {
@@ -1567,7 +1567,7 @@ impl SessionActor {
                     crate::raft::session_state::session_state_raft_actor::AdvanceInflightState {
                         tenant_id: client_info.tenant_id.clone(),
                         client_id: client_info.client_identifier.clone(),
-                        packet_id: packet_id.into(),
+                        packet_id: packet_id,
                     },
                 ).await {
                     Ok(Ok(())) => {
@@ -1659,7 +1659,7 @@ impl SessionActor {
 
                         client_id: client_info.client_identifier.clone(),
 
-                        packet_id: packet_id.into(),
+                        packet_id: packet_id,
 
                     },
                 ).await {

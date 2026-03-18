@@ -180,7 +180,7 @@ message RegisterInflightTxPacketResponse {
 message AdvanceInflightStateRequest {
     string tenant_id = 1;
     string client_id = 2;
-    uint64 packet_id = 3; // Packet identifier
+    uint32 packet_id = 3; // MQTT packet identifier is 16-bit
 }
 
 // Response for advancing the inflight packet state.
@@ -193,7 +193,7 @@ message AdvanceInflightStateResponse {
 message GetCurrentInflightPacketRequest {
     string tenant_id = 1;
     string client_id = 2;
-    uint64 packet_id = 3;
+    uint32 packet_id = 3; // MQTT packet identifier is 16-bit
 }
 
 // Response for getting the current inflight packet.
@@ -207,7 +207,7 @@ message GetCurrentInflightPacketResponse {
 message GetNextInflightPacketRequest {
     string tenant_id = 1;
     string client_id = 2;
-    uint64 packet_id = 3;
+    uint32 packet_id = 3; // MQTT packet identifier is 16-bit
 }
 
 // Response for getting the next inflight packet.
