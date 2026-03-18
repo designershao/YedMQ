@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient},
+    protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest},
     session::session_actor_map_storage::SessionActorMapEntry,
 };
 use actix::dev::MessageResponse;
@@ -15,20 +15,20 @@ use actix::{
     WrapFuture,
 };
 use openraft::{
-    Config, RaftMetrics,
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
+    Config, RaftMetrics,
 };
 use parking_lot::RwLock;
 
 use crate::{
-    protobuf::{RaftType, raft_service_client::RaftServiceClient},
+    protobuf::{raft_service_client::RaftServiceClient, RaftType},
     raft::{
-        Node, NodeId,
         session_actor_map::{
-            SessionActorMapRaft, raft_network_impl::Network, store::new_storage,
-            types::SessionActorMapTypeConfig,
+            raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig,
+            SessionActorMapRaft,
         },
+        Node, NodeId,
     },
     session::session_actor_map_storage::{SessionActorMapStorage, SessionClock, SessionVersion},
 };
