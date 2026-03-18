@@ -72,6 +72,9 @@ pub enum SessionManagerError {
     #[error("node not found {0}")]
     NodeNotFound(String),
 
+    #[error("session manager is not initialized: {0}")]
+    NotInitialized(&'static str),
+
     #[error(transparent)]
     Transport(#[from] tonic::transport::Error),
 }
@@ -126,6 +129,16 @@ pub struct SessionManagerActor {
     timer_actor: Option<Addr<TimerActor>>,
 
     metric: Option<Arc<Metric>>,
+}
+
+fn require_initialized<T: Clone>(
+    value: &Option<T>,
+    name: &'static str,
+) -> Result<T, SessionManagerError> {
+    value
+        .as_ref()
+        .cloned()
+        .ok_or(SessionManagerError::NotInitialized(name))
 }
 
 #[derive(Message)]
@@ -265,22 +278,26 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
     fn handle(&mut self, _msg: CheckExpiredSessions, ctx: &mut Self::Context) -> Self::Result {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-        let settings = self
-            .settings
-            .as_ref()
-            .expect("settings must be initialized before handling messages")
-            .clone();
-        let node_resolver = self
-            .node_resolver
-            .as_ref()
-            .expect("node_resolver must be initialized before handling messages")
-            .clone();
+        let Some(settings) = self.settings.as_ref().cloned() else {
+            warn!("skip CheckExpiredSessions: settings not initialized");
+            return;
+        };
+        let Some(node_resolver) = self.node_resolver.as_ref().cloned() else {
+            warn!("skip CheckExpiredSessions: node_resolver not initialized");
+            return;
+        };
         let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let ttl = settings.cluster.session_ttl;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("System time is before UNIX_EPOCH")
-            .as_secs();
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs(),
+            Err(err) => {
+                warn!(
+                    "skip CheckExpiredSessions: system time is before UNIX_EPOCH: {}",
+                    err
+                );
+                return;
+            }
+        };
 
         ctx.spawn(
             async move {
@@ -768,66 +785,35 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
     fn handle(&mut self, msg: CreateSessionMessage, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner();
         let tenant_id = msg.tenant_id.clone();
-        let plugin_manager = self
-            .plugin_manager
-            .as_ref()
-            .expect("plugin_manager must be initialized before handling messages")
-            .clone();
-        let settings = self
-            .settings
-            .as_ref()
-            .expect("settings must be initialized before handling messages")
-            .clone();
-        let node_resolver = self
-            .node_resolver
-            .as_ref()
-            .expect("node_resolver must be initialized before handling messages")
-            .clone();
+        let plugin_manager = require_initialized(&self.plugin_manager, "plugin_manager");
+        let settings = require_initialized(&self.settings, "settings");
+        let node_resolver = require_initialized(&self.node_resolver, "node_resolver");
         let topic_raft_actor_addr = TopicRaftActor::from_registry();
-        let session_lifecycle_tx = self
-            .session_lifecycle_tx
-            .as_ref()
-            .expect("session lifecycle tx must exist")
-            .clone();
-        let session_clock = self
-            .session_clock
-            .as_ref()
-            .expect("session_clock must be initialized before handling messages")
-            .clone();
+        let session_lifecycle_tx =
+            require_initialized(&self.session_lifecycle_tx, "session_lifecycle_tx");
+        let session_clock = require_initialized(&self.session_clock, "session_clock");
         let current_node_id = self.current_node_id;
-        let router_actors = self
-            .router_actors
-            .as_ref()
-            .expect("router_actors must be initialized before handling messages")
-            .clone();
-        let arbiter_pool = self
-            .arbiter_pool
-            .as_ref()
-            .expect("arbiter_pool must be initialized before handling messages")
-            .clone();
+        let router_actors = require_initialized(&self.router_actors, "router_actors");
+        let arbiter_pool = require_initialized(&self.arbiter_pool, "arbiter_pool");
         let payload_store = self.payload_store.clone();
-        let timer_actor = self
-            .timer_actor
-            .as_ref()
-            .expect("timer_actor must be initialized before handling messages")
-            .clone();
-        let metric = self
-            .metric
-            .as_ref()
-            .expect("metric must be initialized before handling messages")
-            .clone();
+        let timer_actor = require_initialized(&self.timer_actor, "timer_actor");
+        let metric = require_initialized(&self.metric, "metric");
 
         let future = async move {
-            let existing = sessions.get(&tenant_id);
-            let tenant_sessions = match existing {
-                Some(ts) => ts,
-                None => {
-                    sessions.insert(tenant_id.clone(), Arc::new(DashMap::new()));
-                    sessions
-                        .get(&tenant_id)
-                        .expect("tenant session has created")
-                }
-            };
+            let plugin_manager = plugin_manager?;
+            let settings = settings?;
+            let node_resolver = node_resolver?;
+            let session_lifecycle_tx = session_lifecycle_tx?;
+            let session_clock = session_clock?;
+            let router_actors = router_actors?;
+            let arbiter_pool = arbiter_pool?;
+            let timer_actor = timer_actor?;
+            let metric = metric?;
+
+            let tenant_sessions = sessions
+                .entry(tenant_id.clone())
+                .or_insert_with(|| Arc::new(DashMap::new()))
+                .clone();
 
             // Force previous session to disconnect if exists
             let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
@@ -849,11 +835,11 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         msg.client_id.clone(),
                     )
                     .await;
-                    if res.is_err() {
+                    if let Err(err) = res {
                         warn!(
                             "force disconnect previous session actor map node id: {} failed: {}",
                             entry.node_id,
-                            res.unwrap_err()
+                            err
                         );
                     }
                 } else {
@@ -862,10 +848,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                         let recipient = session.session_actor_message_recipient.clone();
                         drop(session);
                         let res = recipient.send(SessionActorMessage::ForceDisconnect).await;
-                        if res.is_err() {
+                        if let Err(err) = res {
                             warn!(
                                 "force disconnect in current node failed: {}",
-                                res.unwrap_err()
+                                err
                             );
                         }
                     } else {

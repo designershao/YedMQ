@@ -738,7 +738,18 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                             )
                         }
                     })?
-                    .map_err(|e| ConnectionError::SessionManagerServiceUnavailable(e.to_string()))
+                    .map_err(|e| match e {
+                        crate::session::session_manager_actor::SessionManagerError::NotInitialized(
+                            dependency,
+                        ) => {
+                            error!("session manager not initialized: {}", dependency);
+                            ConnectionError::SessionManagerServiceUnavailable(format!(
+                                "session manager not initialized: {}",
+                                dependency
+                            ))
+                        }
+                        other => ConnectionError::SessionManagerServiceUnavailable(other.to_string()),
+                    })
                     .map(|r| HandleInitialConnectResult {
                         session_recipient: r.session_actor_recipient,
                         session_present: r.session_present,

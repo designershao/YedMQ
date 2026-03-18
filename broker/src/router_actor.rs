@@ -678,8 +678,7 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
             async move {
                 let tenant_ids = session_manager_actor_addr
                     .send(session_manager_actor::GetAllTenantIds {})
-                    .await
-                    .unwrap();
+                    .await?;
                 for tenant_id in tenant_ids {
                     Self::publish_to_local_subscribers(
                         &tenant_id,

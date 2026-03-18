@@ -1911,8 +1911,25 @@ impl Handler<SessionActorMessage> for SessionActor {
                                             if matches!(e, InflightError::PacketIdentifierHasExisted) {
                                                 if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
                                                     publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                    session_state_guard.inflight.register_with_tx_packet(new_id, qos, key.clone()).unwrap();
+                                                    if let Err(e) = session_state_guard
+                                                        .inflight
+                                                        .register_with_tx_packet(new_id, qos, key.clone())
+                                                    {
+                                                        error!(
+                                                            "Failed to register reallocated inflight tx packet, tenant_id={}, client_id={}, packet_id={}, err={}",
+                                                            tenant_id,
+                                                            client_id,
+                                                            new_id,
+                                                            e
+                                                        );
+                                                        return;
+                                                    }
                                                 } else {
+                                                    warn!(
+                                                        "Failed to allocate new inflight packet id, tenant_id={}, client_id={}",
+                                                        tenant_id,
+                                                        client_id
+                                                    );
                                                     return;
                                                 }
                                             }
