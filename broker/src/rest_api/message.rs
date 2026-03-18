@@ -49,8 +49,18 @@ pub async fn clean_retain_message(
                 topic_filter: topic_filter.clone(),
             },
         )
-        .await
-        .unwrap();
+        .await;
+    let r = match r {
+        Ok(r) => r,
+        Err(err) => {
+            error!("clean retain message mailbox error: {}", err);
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal Server Error".to_string(),
+            };
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
+        }
+    };
     if let Err(err) = r {
         error!("clean retain message error: {}", err);
         let error_response = super::ErrorResponse {
@@ -80,57 +90,67 @@ pub async fn retain_message_list(
                 limit: limit_param,
             },
         )
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(err) = r {
-        if let crate::raft::topic::topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
-            let error_response = match topic_error {
-                crate::topic::TopicError::TenantNotFound(_) => {
-                    let error_response = super::ErrorResponse {
-                        code: 3,
-                        message: format!("tenant {} not existed", tenant_id),
-                    };
-                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                }
-                _ => {
-                    error!("get retain message list error: {}", topic_error);
-                    let error_response = super::ErrorResponse {
-                        code: 101,
-                        message: "Internal Server Error".to_string(),
-                    };
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-                }
+    match r {
+        Ok(Ok(retain_message_list)) => {
+            let mut result = Vec::<RetainMessage>::new();
+
+            for retain_message in retain_message_list.data {
+                let retain_message = RetainMessage {
+                    topic: retain_message.topic,
+                    qos: retain_message.qos,
+                    client_identifier: retain_message.client_id,
+                };
+                result.push(retain_message);
+            }
+            let meta = PaginationMeta {
+                offset: offset_param,
+                limit: limit_param,
+                total: retain_message_list.total,
             };
-            error_response
-        } else {
-            error!("get retain message list error: {}", err);
+
+            let result = PaginationListResult { meta, data: result };
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Ok(Err(err)) => {
+            if let crate::raft::topic::topic_raft_actor::TopicRaftError::TopicError(topic_error) =
+                err
+            {
+                match topic_error {
+                    crate::topic::TopicError::TenantNotFound(_) => {
+                        let error_response = super::ErrorResponse {
+                            code: 3,
+                            message: format!("tenant {} not existed", tenant_id),
+                        };
+                        (StatusCode::NOT_FOUND, Json(error_response)).into_response()
+                    }
+                    _ => {
+                        error!("get retain message list error: {}", topic_error);
+                        let error_response = super::ErrorResponse {
+                            code: 101,
+                            message: "Internal Server Error".to_string(),
+                        };
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+                    }
+                }
+            } else {
+                error!("get retain message list error: {}", err);
+                let error_response = super::ErrorResponse {
+                    code: 101,
+                    message: "Internal Server Error".to_string(),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+            }
+        }
+        Err(err) => {
+            error!("get retain message list mailbox error: {}", err);
             let error_response = super::ErrorResponse {
                 code: 101,
                 message: "Internal Server Error".to_string(),
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
-    } else {
-        let retain_message_list = r.unwrap();
-        let mut result = Vec::<RetainMessage>::new();
-
-        for retain_message in retain_message_list.data {
-            let retain_message = RetainMessage {
-                topic: retain_message.topic,
-                qos: retain_message.qos,
-                client_identifier: retain_message.client_id,
-            };
-            result.push(retain_message);
-        }
-        let meta = PaginationMeta {
-            offset: offset_param,
-            limit: limit_param,
-            total: retain_message_list.total,
-        };
-
-        let result = PaginationListResult { meta, data: result };
-        (StatusCode::OK, Json(result)).into_response()
     }
 }
 
