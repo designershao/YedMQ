@@ -39,57 +39,65 @@ pub async fn topic_list(
             offset: offset_param,
             limit: limit_param,
         })
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(err) = topic_list_result {
-        if let topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
-            let error_response = match topic_error {
-                crate::topic::TopicError::TenantNotFound(_) => {
-                    let error_response = super::ErrorResponse {
-                        code: 3,
-                        message: format!("tenant {} not existed", tenant_id),
-                    };
-                    (StatusCode::NOT_FOUND, Json(error_response)).into_response()
-                }
-                _ => {
-                    error!("get retain message list error: {}", topic_error);
-                    let error_response = super::ErrorResponse {
-                        code: 101,
-                        message: "Internal Server Error".to_string(),
-                    };
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
-                }
+    match topic_list_result {
+        Ok(Ok(topic_list)) => {
+            let mut result = Vec::<Topic>::new();
+
+            for topic_info in topic_list.data {
+                let topic = Topic {
+                    topic: topic_info.topic,
+                    client_id: topic_info.client_id,
+                    qos: topic_info.qos,
+                };
+                result.push(topic);
+            }
+            let meta = PaginationMeta {
+                offset: offset_param,
+                limit: limit_param,
+                total: topic_list.total,
             };
-            error_response
-        } else {
-            error!("get topic list error: {}", err);
+
+            let result = PaginationListResult { meta, data: result };
+
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Ok(Err(err)) => {
+            if let topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
+                match topic_error {
+                    crate::topic::TopicError::TenantNotFound(_) => {
+                        let error_response = super::ErrorResponse {
+                            code: 3,
+                            message: format!("tenant {} not existed", tenant_id),
+                        };
+                        (StatusCode::NOT_FOUND, Json(error_response)).into_response()
+                    }
+                    _ => {
+                        error!("get retain message list error: {}", topic_error);
+                        let error_response = super::ErrorResponse {
+                            code: 101,
+                            message: "Internal Server Error".to_string(),
+                        };
+                        (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+                    }
+                }
+            } else {
+                error!("get topic list error: {}", err);
+                let error_response = super::ErrorResponse {
+                    code: 101,
+                    message: "Internal Server Error".to_string(),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+            }
+        }
+        Err(err) => {
+            error!("get topic list mailbox error: {}", err);
             let error_response = super::ErrorResponse {
                 code: 101,
                 message: "Internal Server Error".to_string(),
             };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
-    } else {
-        let topic_list = topic_list_result.unwrap();
-        let mut result = Vec::<Topic>::new();
-
-        for topic_info in topic_list.data {
-            let topic = Topic {
-                topic: topic_info.topic,
-                client_id: topic_info.client_id,
-                qos: topic_info.qos,
-            };
-            result.push(topic);
-        }
-        let meta = PaginationMeta {
-            offset: offset_param,
-            limit: limit_param,
-            total: topic_list.total,
-        };
-
-        let result = PaginationListResult { meta, data: result };
-
-        (StatusCode::OK, Json(result)).into_response()
     }
 }

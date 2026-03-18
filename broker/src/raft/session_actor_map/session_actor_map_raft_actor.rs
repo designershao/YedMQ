@@ -120,7 +120,9 @@ impl SessionActorMapRaftActor {
 
         let dir = Path::new(&settings.cluster.store_dir);
 
-        let config = Arc::new(raft_config.validate().unwrap());
+        let config = Arc::new(raft_config.validate().map_err(|e| {
+            SessionActorMapRaftError::ServiceUnavailable(format!("invalid raft config: {e}"))
+        })?);
 
         let session_actor_map_storage = Arc::new(RwLock::new(SessionActorMapStorage::new()));
         let (log_store, state_machine_store) = new_storage(
@@ -130,7 +132,8 @@ impl SessionActorMapRaftActor {
             session_clock.clone(),
             settings.cluster.session_ttl,
         )
-        .await;
+        .await
+        .map_err(|e| SessionActorMapRaftError::ServiceUnavailable(e.to_string()))?;
 
         let network = Network {};
 
@@ -248,7 +251,10 @@ impl SessionActorMapRaftActor {
                 SessionActorMapRaftError::GRPC(e.to_string())
             })?;
 
-        let data = serde_json::to_string(&msg).unwrap();
+        let data = serde_json::to_string(&msg).map_err(|e| {
+            log::error!("Failed to serialize raft write request: {}", e);
+            SessionActorMapRaftError::GRPC(format!("serialize raft request failed: {e}"))
+        })?;
 
         let request = WriteRequest {
             data,
@@ -263,10 +269,18 @@ impl SessionActorMapRaftActor {
         let inner_res = res.into_inner();
         if inner_res.success {
             let res = inner_res.data;
-            Ok(serde_json::from_str(&res).unwrap())
+            serde_json::from_str(&res).map_err(|e| {
+                log::error!("Failed to deserialize remote raft write response: {}", e);
+                SessionActorMapRaftError::UnexpectedResponseType(format!(
+                    "invalid remote raft write response: {e}"
+                ))
+            })
         } else {
             Err(SessionActorMapRaftError::GRPC(
-                inner_res.error.unwrap().message,
+                inner_res
+                    .error
+                    .map(|err| err.message)
+                    .unwrap_or_else(|| "remote raft write failed without error detail".to_string()),
             ))
         }
     }
@@ -310,11 +324,11 @@ impl Handler<Initialize> for SessionActorMapRaftActor {
     type Result = ();
 
     fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
-        self.settings = Some(msg.settings);
-        self.session_clock = Some(msg.session_clock);
+        let settings = msg.settings;
+        let session_clock = msg.session_clock;
+        self.settings = Some(settings.clone());
+        self.session_clock = Some(session_clock.clone());
 
-        let settings = self.settings.as_ref().unwrap().clone();
-        let session_clock = self.session_clock.as_ref().unwrap().clone();
         let addr = ctx.address();
         ctx.spawn(
             async move {
@@ -488,7 +502,7 @@ pub struct GetSessionActorMapStorageResponse {
 impl<A, M> MessageResponse<A, M> for GetSessionActorMapStorageResponse
 where
     A: Actor,
-    M: Message<Result = GetSessionActorMapStorageResponse>,
+    M: Message<Result = Result<GetSessionActorMapStorageResponse, SessionActorMapRaftError>>,
 {
     fn handle(
         self,
@@ -496,26 +510,32 @@ where
         tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
     ) {
         if let Some(tx) = tx {
-            let _ = tx.send(self);
+            let _ = tx.send(Ok(self));
         }
     }
 }
 
 #[derive(Message, Clone)]
-#[rtype(result = "GetSessionActorMapStorageResponse")]
+#[rtype(result = "Result<GetSessionActorMapStorageResponse, SessionActorMapRaftError>")]
 pub struct GetSessionActorMapStorage;
 
 impl Handler<GetSessionActorMapStorage> for SessionActorMapRaftActor {
-    type Result = GetSessionActorMapStorageResponse;
+    type Result = Result<GetSessionActorMapStorageResponse, SessionActorMapRaftError>;
 
     fn handle(
         &mut self,
         _msg: GetSessionActorMapStorage,
         _ctx: &mut Self::Context,
     ) -> Self::Result {
-        GetSessionActorMapStorageResponse {
-            session_actor_map_storage: self.session_actor_map_storage.get().unwrap().clone(),
-        }
+        let session_actor_map_storage = self
+            .session_actor_map_storage
+            .get()
+            .cloned()
+            .ok_or(SessionActorMapRaftError::NotReady("Initializing".to_string()))?;
+
+        Ok(GetSessionActorMapStorageResponse {
+            session_actor_map_storage,
+        })
     }
 }
 
@@ -777,11 +797,27 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                             if inner_res.payload.is_none() {
                                                 Ok(None)
                                             } else {
-                                                let entry = serde_json::from_str(&inner_res.payload.unwrap()).unwrap();
+                                                let payload = inner_res.payload.ok_or_else(|| {
+                                                    SessionActorMapRaftError::UnexpectedResponseType(
+                                                        "missing payload in successful session actor map response".to_string(),
+                                                    )
+                                                })?;
+                                                let entry = serde_json::from_str(&payload).map_err(|e| {
+                                                    SessionActorMapRaftError::UnexpectedResponseType(
+                                                        format!("invalid session actor map payload: {e}"),
+                                                    )
+                                                })?;
                                                 Ok(Some(entry))
                                             }
                                         } else {
-                                            Err(SessionActorMapRaftError::GRPC(inner_res.error.unwrap().message))
+                                            Err(SessionActorMapRaftError::GRPC(
+                                                inner_res
+                                                    .error
+                                                    .map(|err| err.message)
+                                                    .unwrap_or_else(|| {
+                                                        "get session actor map failed without error detail".to_string()
+                                                    }),
+                                            ))
                                         }
                                     })
                                 } else {
@@ -951,8 +987,14 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
             }
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get() {
+                    let Some(settings) = self.settings.as_ref() else {
+                        return Box::pin(
+                            async move { Err(SessionActorMapRaftError::NotInitialized) }
+                                .into_actor(self),
+                        );
+                    };
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self.settings.as_ref().unwrap().cluster.nodes.iter() {
+                    for item in settings.cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {

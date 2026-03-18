@@ -244,9 +244,7 @@ async fn test_api_clients_list() {
     let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-clients", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move {
-        while (eventloop.poll().await).is_ok() {}
-    });
+    tokio::spawn(async move { while (eventloop.poll().await).is_ok() {} });
 
     // Wait for connection and session registration
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -288,9 +286,7 @@ async fn test_api_clients_list_persistent_session() {
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     mqtt_options.set_clean_session(false);
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move {
-        while (eventloop.poll().await).is_ok() {}
-    });
+    tokio::spawn(async move { while (eventloop.poll().await).is_ok() {} });
 
     // Wait for connection and session registration
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -505,9 +501,7 @@ async fn test_api_topics_list() {
     let mut mqtt_options = rumqttc::MqttOptions::new("warmup-client-topics", "127.0.0.1", port);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
     let (m_client, mut eventloop) = rumqttc::AsyncClient::new(mqtt_options, 10);
-    tokio::spawn(async move {
-        while (eventloop.poll().await).is_ok() {}
-    });
+    tokio::spawn(async move { while (eventloop.poll().await).is_ok() {} });
 
     m_client
         .subscribe("test/topic", rumqttc::QoS::AtLeastOnce)

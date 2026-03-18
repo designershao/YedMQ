@@ -160,11 +160,13 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<RegisterInflightRxPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
+        let packet_id = u16::try_from(inner.packet_id)
+            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
         let register_inflight_rx_packet_actor =
             session_state_raft_actor::RegisterInflightRxPacket {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                packet_id: inner.packet_id as u16,
+                packet_id,
                 qos: inner.qos as u8,
                 packet_key: inner.packet_key,
             };
@@ -187,11 +189,13 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<RegisterInflightTxPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
+        let packet_id = u16::try_from(inner.packet_id)
+            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
         let register_inflight_tx_packet_actor =
             session_state_raft_actor::RegisterInflightTxPacket {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                packet_id: inner.packet_id as u16,
+                packet_id,
                 qos: inner.qos as u8,
                 packet_key: inner.packet_key,
             };
@@ -214,10 +218,12 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<AdvanceInflightStateResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
+        let packet_id = u16::try_from(inner.packet_id)
+            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
         let advance_inflight_state_actor = session_state_raft_actor::AdvanceInflightState {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
-            packet_id: inner.packet_id,
+            packet_id,
         };
         session_state_raft_actor_addr
             .send(advance_inflight_state_actor)
@@ -236,11 +242,13 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<GetCurrentInflightPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
+        let packet_id = u16::try_from(inner.packet_id)
+            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
         let get_current_inflight_packet_actor =
             session_state_raft_actor::GetCurrentInflightPacket {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                packet_id: inner.packet_id,
+                packet_id,
             };
         let res = session_state_raft_actor_addr
             .send(get_current_inflight_packet_actor)
@@ -268,10 +276,12 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<GetNextInflightPacketResponse>, Status> {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
+        let packet_id = u16::try_from(inner.packet_id)
+            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
         let get_next_inflight_packet_actor = session_state_raft_actor::GetNextInflightPacket {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
-            packet_id: inner.packet_id,
+            packet_id,
         };
         let res = session_state_raft_actor_addr
             .send(get_next_inflight_packet_actor)

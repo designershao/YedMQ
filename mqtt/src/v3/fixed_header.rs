@@ -224,9 +224,7 @@ impl FixHeader {
             let byte = size % 128;
             size /= 128;
             if size > 0 {
-                buf.put_u8(
-                    u8::try_from(byte | 128).expect("remaining length byte fits into u8"),
-                );
+                buf.put_u8(u8::try_from(byte | 128).expect("remaining length byte fits into u8"));
             } else {
                 buf.put_u8(u8::try_from(byte).expect("remaining length byte fits into u8"));
                 break;
@@ -242,9 +240,7 @@ impl FixHeader {
             let byte = size % 128;
             size /= 128;
             if size > 0 {
-                buf.put_u8(
-                    u8::try_from(byte | 128).expect("remaining length byte fits into u8"),
-                );
+                buf.put_u8(u8::try_from(byte | 128).expect("remaining length byte fits into u8"));
             } else {
                 buf.put_u8(u8::try_from(byte).expect("remaining length byte fits into u8"));
                 break;

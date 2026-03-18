@@ -441,15 +441,14 @@ impl SessionStateStorage {
         }
     }
 
-    pub fn to_snapshot(&self) -> Vec<u8> {
+    pub fn to_snapshot(&self) -> Result<Vec<u8>, serde_json::Error> {
         let serializable = self.to_serializable();
-        serde_json::to_vec(&serializable).unwrap()
+        serde_json::to_vec(&serializable)
     }
 
-    pub fn from_snapshot(snapshot: Vec<u8>) -> Self {
-        let serializable: SerializableSessionStateStorage =
-            serde_json::from_slice(&snapshot).unwrap();
-        Self::from_serializable(serializable)
+    pub fn from_snapshot(snapshot: Vec<u8>) -> Result<Self, serde_json::Error> {
+        let serializable: SerializableSessionStateStorage = serde_json::from_slice(&snapshot)?;
+        Ok(Self::from_serializable(serializable))
     }
 }
 

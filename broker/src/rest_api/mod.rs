@@ -196,8 +196,8 @@ pub async fn run_rest_api_task(
 
     info!("start listening on {}", listen_address);
 
-    let listener = tokio::net::TcpListener::bind(listen_address).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(listen_address).await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

@@ -86,6 +86,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], UnSubackPacket> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 

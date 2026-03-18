@@ -32,6 +32,7 @@ pub fn get_plugin_host_test_config(
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn test_plugin_host_init_scan() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     common::setup_test_plugins(&temp_dir, MockConfig::default());
@@ -44,7 +45,8 @@ pub async fn test_plugin_host_init_scan() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let plugin_manager = yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
@@ -58,6 +60,7 @@ pub async fn test_plugin_host_init_scan() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn test_plugin_host_start_plugin() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     common::setup_test_plugins(&temp_dir, MockConfig::default());
@@ -70,7 +73,8 @@ pub async fn test_plugin_host_start_plugin() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -101,6 +105,7 @@ pub async fn test_plugin_host_start_plugin() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_default_result() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -112,7 +117,8 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -143,6 +149,7 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default_result() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -154,7 +161,8 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -185,6 +193,7 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
@@ -199,7 +208,8 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -253,6 +263,7 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
@@ -267,7 +278,8 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -309,6 +321,7 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     common::setup_test_plugins(&temp_dir, MockConfig::default());
@@ -321,7 +334,8 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -357,6 +371,7 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
     env_logger::builder()
         .is_test(true)
@@ -373,7 +388,8 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -418,6 +434,7 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenticate_method() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
@@ -435,7 +452,8 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -483,6 +501,7 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_message_published_event_plugin_host_should_call_plugin_message_published_method(
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -507,7 +526,8 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -559,6 +579,7 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_message_publish_method()
 {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -584,7 +605,8 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -639,6 +661,7 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_message_subscribe_method(
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -664,7 +687,8 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -715,6 +739,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_strictly_by_priority_in_full_chain(
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -762,7 +787,8 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -847,6 +873,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_immediately_stop_calling_lower_priority_plugins(
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -894,7 +921,8 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -979,6 +1007,7 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chain_and_deny_access()
 {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1020,7 +1049,8 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1103,6 +1133,7 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_host_should_stop_chain_and_deny_access(
 ) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1145,7 +1176,8 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1232,6 +1264,7 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_should_deny_access() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -1275,7 +1308,8 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1365,6 +1399,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_and_deny_access() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -1405,7 +1440,8 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1486,6 +1522,7 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should_deny_access() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -1529,7 +1566,8 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1614,6 +1652,7 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 async fn when_plugin_start_failed_plugin_state_should_be_failed() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
@@ -1644,7 +1683,8 @@ executable = "non_existent_executable"
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
 
     let mut plugin_manager =
@@ -1668,6 +1708,7 @@ executable = "non_existent_executable"
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn test_plugin_responds_to_ping_correctly() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     common::setup_test_plugins(&temp_dir, MockConfig::default());
@@ -1680,7 +1721,8 @@ pub async fn test_plugin_responds_to_ping_correctly() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
     // Set a short health check interval for testing
     plugin_host_config.health_check_interval_secs = 1;
@@ -1723,6 +1765,7 @@ pub async fn test_plugin_responds_to_ping_correctly() {
 }
 
 #[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn test_plugin_state_changed_when_ping_timeout() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
     let mut mock_config = MockConfig::default();
@@ -1739,7 +1782,8 @@ pub async fn test_plugin_state_changed_when_ping_timeout() {
         temp_dir
             .path()
             .join("yedmq_plugin.sock")
-            .to_string_lossy().as_ref()
+            .to_string_lossy()
+            .as_ref(),
     );
     // Set a short health check interval for testing
     plugin_host_config.health_check_interval_secs = 1;

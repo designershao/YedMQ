@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use actix::SystemService;
 use axum::{extract::State, http::StatusCode, Json};
-use log::{info, warn};
+use log::{error, info, warn};
 use openraft::RaftMetrics;
 use serde::{Deserialize, Serialize};
 use tokio::try_join;
@@ -277,14 +277,21 @@ pub async fn topic_raft_add_learner(
             node_id: payload.node_id,
             node: payload.node,
         })
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = res {
-        warn!("topic raft add learner error: {}", e);
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("topic raft add learner error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("TopicRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TopicRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -299,14 +306,21 @@ pub async fn session_actor_map_raft_add_learner(
             node_id: payload.node_id,
             node: payload.node,
         })
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = res {
-        warn!("session actor map raft add learner error: {}", e);
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("session actor map raft add learner error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("SessionActorMapRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -321,13 +335,21 @@ pub async fn session_state_raft_add_learner(
             node_id: payload.node_id,
             node: payload.node,
         })
-        .await
-        .unwrap();
-    if let Err(e) = res {
-        warn!("session state raft add learner error: {}", e);
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+        .await;
+
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("session state raft add learner error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("SessionStateRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -351,62 +373,77 @@ pub async fn add_node(
         );
     let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
 
-    let topic_raft_leader_node = match topic_raft_actor_addr
+    let topic_raft_leader_node_res = topic_raft_actor_addr
         .send(crate::raft::topic::topic_raft_actor::GetLeader {})
-        .await
-        .unwrap()
-    {
-        Ok(Some(node)) => node,
-        Ok(None) => {
+        .await;
+    let topic_raft_leader_node = match topic_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "topic raft leader unavailable".to_string(),
             );
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("get topic raft leader error: {}", e),
             );
         }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TopicRaftActor unavailable: {}", e),
+            );
+        }
     };
 
-    let session_actor_map_raft_leader_node = match session_actor_map_raft_actor_addr
+    let session_actor_map_raft_leader_node_res = session_actor_map_raft_actor_addr
         .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetLeader {})
-        .await
-        .unwrap()
-    {
-        Ok(Some(node)) => node,
-        Ok(None) => {
+        .await;
+    let session_actor_map_raft_leader_node = match session_actor_map_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "session actor map raft leader unavailable".to_string(),
             );
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("get session actor map raft leader error: {}", e),
             );
         }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            );
+        }
     };
 
-    let session_state_raft_leader_node = match session_state_raft_actor_addr
+    let session_state_raft_leader_node_res = session_state_raft_actor_addr
         .send(crate::raft::session_state::session_state_raft_actor::GetLeader {})
-        .await
-        .unwrap()
-    {
-        Ok(Some(node)) => node,
-        Ok(None) => {
+        .await;
+    let session_state_raft_leader_node = match session_state_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "session state raft leader unavailable".to_string(),
             );
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("get session state raft leader error: {}", e),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
             );
         }
     };
@@ -526,14 +563,21 @@ pub async fn topic_raft_change_membership(
                 members: payload.members.clone(),
             },
         )
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = res {
-        warn!("topic raft change membership error: {}", e);
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("topic raft change membership error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("TopicRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TopicRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -548,13 +592,21 @@ pub async fn session_actor_map_raft_change_membership(
         .send(session_actor_map_raft_actor::ChangeMembershipMessage {
             members: payload.members.clone(),
         })
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = res {
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("session actor map raft change membership error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("SessionActorMapRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -568,12 +620,20 @@ pub async fn session_state_raft_change_membership(
         .send(session_state_raft_actor::ChangeMembershipMessage {
             members: payload.members.clone(),
         })
-        .await
-        .unwrap();
-    if let Err(e) = res {
-        (StatusCode::BAD_REQUEST, format!("{}", e))
-    } else {
-        (StatusCode::OK, String::new())
+        .await;
+    match res {
+        Ok(Ok(_)) => (StatusCode::OK, String::new()),
+        Ok(Err(e)) => {
+            warn!("session state raft change membership error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("{}", e))
+        }
+        Err(e) => {
+            error!("SessionStateRaftActor unavailable: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
+            )
+        }
     }
 }
 
@@ -588,77 +648,116 @@ pub async fn change_membership(
     let topic_raft_actor_addr =
         crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
 
-    let topic_raft_leader_node = topic_raft_actor_addr
+    let topic_raft_leader_node_res = topic_raft_actor_addr
         .send(crate::raft::topic::topic_raft_actor::GetLeader {})
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = topic_raft_leader_node {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("get topic raft leader error: {}", e),
-        );
-    }
+    let topic_raft_leader_node = match topic_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "topic raft leader unavailable".to_string(),
+            );
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("get topic raft leader error: {}", e),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TopicRaftActor unavailable: {}", e),
+            );
+        }
+    };
 
     let session_state_raft_actor_addr =
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry(
         );
 
-    let session_state_raft_leader_node = session_state_raft_actor_addr
+    let session_state_raft_leader_node_res = session_state_raft_actor_addr
         .send(crate::raft::session_state::session_state_raft_actor::GetLeader {})
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = session_state_raft_leader_node {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("get session state raft leader error: {}", e),
-        );
-    }
+    let session_state_raft_leader_node = match session_state_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session state raft leader unavailable".to_string(),
+            );
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("get session state raft leader error: {}", e),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
+            );
+        }
+    };
 
     let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
 
-    let session_actor_map_raft_leader_node = session_actor_map_raft_actor_addr
+    let session_actor_map_raft_leader_node_res = session_actor_map_raft_actor_addr
         .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetLeader {})
-        .await
-        .unwrap();
+        .await;
 
-    if let Err(e) = session_actor_map_raft_leader_node {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("get session actor map raft leader error: {}", e),
-        );
-    }
+    let session_actor_map_raft_leader_node = match session_actor_map_raft_leader_node_res {
+        Ok(Ok(Some(node))) => node,
+        Ok(Ok(None)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "session actor map raft leader unavailable".to_string(),
+            );
+        }
+        Ok(Err(e)) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("get session actor map raft leader error: {}", e),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            );
+        }
+    };
 
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/topic/membership",
-            topic_raft_leader_node.unwrap().unwrap().api_addr
+            topic_raft_leader_node.api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
         .send()
         .await;
-    if let Err(e) = res {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("update topic cluster membership error: {}", e),
-        );
-    } else {
-        info!(
-            "update topic cluster membership status: {}",
-            res.unwrap().status()
-        );
+    match res {
+        Ok(resp) => {
+            info!("update topic cluster membership status: {}", resp.status());
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("update topic cluster membership error: {}", e),
+            );
+        }
     }
 
     info!("start change session actor map membership");
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/session_actor_map/membership",
-            session_actor_map_raft_leader_node
-                .unwrap()
-                .unwrap()
-                .api_addr
+            session_actor_map_raft_leader_node.api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
@@ -678,7 +777,7 @@ pub async fn change_membership(
     let res = reqwest::Client::new()
         .post(format!(
             "http://{}/api/v1/cluster/session_state/membership",
-            session_state_raft_leader_node.unwrap().unwrap().api_addr
+            session_state_raft_leader_node.api_addr
         ))
         .json(&payload)
         .basic_auth(auth_info.username.clone(), Some(auth_info.password.clone()))
@@ -694,7 +793,9 @@ pub async fn change_membership(
     (StatusCode::OK, String::new())
 }
 
-pub async fn metrics(State(_): State<Arc<YedMQApp>>) -> (StatusCode, Json<RaftMetricsResponse>) {
+pub async fn metrics(
+    State(_): State<Arc<YedMQApp>>,
+) -> Result<Json<RaftMetricsResponse>, (StatusCode, String)> {
     let topic_raft_actor_addr =
         crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
     let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
@@ -702,21 +803,59 @@ pub async fn metrics(State(_): State<Arc<YedMQApp>>) -> (StatusCode, Json<RaftMe
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry(
         );
 
-    let topic_metrics = topic_raft_actor_addr
+    let topic_metrics = match topic_raft_actor_addr
         .send(crate::raft::topic::topic_raft_actor::GetRaftMetrics {})
         .await
-        .unwrap()
-        .unwrap();
-    let session_actor_map_metrics = session_actor_map_raft_actor_addr
+    {
+        Ok(Ok(metrics)) => metrics,
+        Ok(Err(e)) => {
+            warn!("topic raft get metrics error: {}", e);
+            return Err((StatusCode::BAD_REQUEST, format!("{}", e)));
+        }
+        Err(e) => {
+            error!("TopicRaftActor unavailable: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("TopicRaftActor unavailable: {}", e),
+            ));
+        }
+    };
+
+    let session_actor_map_metrics = match session_actor_map_raft_actor_addr
         .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetRaftMetrics {})
         .await
-        .unwrap()
-        .unwrap();
-    let session_state_metrics = session_state_raft_actor_addr
+    {
+        Ok(Ok(metrics)) => metrics,
+        Ok(Err(e)) => {
+            warn!("session actor map raft get metrics error: {}", e);
+            return Err((StatusCode::BAD_REQUEST, format!("{}", e)));
+        }
+        Err(e) => {
+            error!("SessionActorMapRaftActor unavailable: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionActorMapRaftActor unavailable: {}", e),
+            ));
+        }
+    };
+
+    let session_state_metrics = match session_state_raft_actor_addr
         .send(crate::raft::session_state::session_state_raft_actor::GetRaftMetrics {})
         .await
-        .unwrap()
-        .unwrap();
+    {
+        Ok(Ok(metrics)) => metrics,
+        Ok(Err(e)) => {
+            warn!("session state raft get metrics error: {}", e);
+            return Err((StatusCode::BAD_REQUEST, format!("{}", e)));
+        }
+        Err(e) => {
+            error!("SessionStateRaftActor unavailable: {}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("SessionStateRaftActor unavailable: {}", e),
+            ));
+        }
+    };
 
     let response = RaftMetricsResponse {
         topic_raft: topic_metrics,
@@ -724,5 +863,5 @@ pub async fn metrics(State(_): State<Arc<YedMQApp>>) -> (StatusCode, Json<RaftMe
         session_state_map_raft: session_state_metrics,
     };
 
-    (StatusCode::OK, Json(response))
+    Ok(Json(response))
 }

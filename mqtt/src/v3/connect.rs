@@ -513,7 +513,7 @@ impl Payload {
             buf.put(will_topic.as_bytes());
         }
 
-        if let Some(will_message) =  &self.will_message {
+        if let Some(will_message) = &self.will_message {
             buf.put_u16(will_message.len() as u16);
             buf.put(will_message.as_bytes());
         }
@@ -539,17 +539,15 @@ impl Payload {
             buf.put(will_topic.as_bytes());
         }
 
-        if let Some(will_message) =  &self.will_message {
+        if let Some(will_message) = &self.will_message {
             buf.put_u16(will_message.len() as u16);
             buf.put(will_message.as_bytes());
         }
-
 
         if let Some(username) = &self.username {
             buf.put_u16(username.len() as u16);
             buf.put(username.as_bytes());
         }
-
 
         if let Some(password) = &self.password {
             buf.put_u16(password.len() as u16);
@@ -607,6 +605,7 @@ impl MqttPacket for ConnectPacket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 

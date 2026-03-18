@@ -157,7 +157,7 @@ impl SessionActorMapStorage {
                 if let Some(session_entry) = session_tenant.get_mut(&renew.session_id) {
                     session_entry.expiration_timestamp = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("system time is before unix epoch")
                         .as_secs()
                         + session_ttl;
                 }
@@ -172,7 +172,7 @@ impl SessionActorMapStorage {
                 if session.expiration_timestamp
                     < std::time::SystemTime::now()
                         .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                        .unwrap()
+                        .expect("system time is before unix epoch")
                         .as_secs()
                 {
                     result.push(ExpiredSession {
@@ -207,8 +207,8 @@ impl SessionActorMapStorage {
         session_ttl: u64,
     ) -> Result<(), SessionActorMapError> {
         let session_tenant = self.inner.entry(tenant_id.clone()).or_default();
-        if session_tenant.contains_key(&session_id) {
-            let existing_entry = session_tenant.get(&session_id).unwrap();
+
+        if let Some(existing_entry) = session_tenant.get(&session_id) {
             if existing_entry.version.is_newer_than(version) {
                 return Err(SessionActorMapError::SessionVersionRejected {
                     current_version: version.clone(),
@@ -216,12 +216,13 @@ impl SessionActorMapStorage {
                 });
             }
         }
+
         let session_actor_map_entry = SessionActorMapEntry {
             node_id,
             version: version.clone(),
             expiration_timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
+                .expect("system time is before unix epoch")
                 .as_secs()
                 + session_ttl,
         };
@@ -262,15 +263,14 @@ impl SessionActorMapStorage {
         SessionActorMapStorage { inner: data.inner }
     }
 
-    pub fn to_snapshot(&self) -> Vec<u8> {
+    pub fn to_snapshot(&self) -> Result<Vec<u8>, serde_json::Error> {
         let serializable = self.to_serializable();
-        serde_json::to_vec(&serializable).unwrap()
+        serde_json::to_vec(&serializable)
     }
 
-    pub fn from_snapshot(snapshot: Vec<u8>) -> Self {
-        let serializable: SerializableSessionActorMapStorage =
-            serde_json::from_slice(&snapshot).unwrap();
-        Self::from_serializable(serializable)
+    pub fn from_snapshot(snapshot: Vec<u8>) -> Result<Self, serde_json::Error> {
+        let serializable: SerializableSessionActorMapStorage = serde_json::from_slice(&snapshot)?;
+        Ok(Self::from_serializable(serializable))
     }
 
     pub fn get_client_id_list_with_pagination(
@@ -281,14 +281,13 @@ impl SessionActorMapStorage {
     ) -> Option<ClientListWithPagination> {
         if let Some(tenant_map) = self.inner.get(tenant_id) {
             let total = tenant_map.len();
-            let clients: Vec<String> = tenant_map.keys().cloned().collect();
-            let paginated_clients = clients
-                .into_iter()
+            let paginated_clients = tenant_map
+                .iter()
                 .skip(offset)
                 .take(limit)
-                .map(|client_id| {
-                    let node_id = tenant_map.get(&client_id).unwrap().node_id;
-                    (client_id, node_id)
+                .map(|(client_id, entry)| {
+                    let node_id = entry.node_id;
+                    (client_id.clone(), node_id)
                 })
                 .collect::<Vec<(String, NodeId)>>();
             Some(ClientListWithPagination {

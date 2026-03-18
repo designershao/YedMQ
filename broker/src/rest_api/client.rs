@@ -58,10 +58,10 @@ pub async fn kickoff_client(
             tenant_id: tenant_id.clone(),
             client_id: client_id.clone(),
         })
-        .await
-        .unwrap();
-    if let Err(session_err) = kickoff_result {
-        let response = match session_err {
+        .await;
+    match kickoff_result {
+        Ok(Ok(())) => axum::http::StatusCode::OK.into_response(),
+        Ok(Err(session_err)) => match session_err {
             session_manager_actor::SessionManagerError::TenantNotExisted(_) => {
                 let error_response = super::ErrorResponse {
                     code: 3,
@@ -84,10 +84,15 @@ pub async fn kickoff_client(
                 error!("kickoff client error: {}", session_err);
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
             }
-        };
-        response
-    } else {
-        axum::http::StatusCode::OK.into_response()
+        },
+        Err(err) => {
+            error!("kickoff client mailbox error: {}", err);
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal server error".to_string(),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+        }
     }
 }
 
@@ -108,9 +113,8 @@ pub async fn client_list(
             limit: limit_param as usize,
         })
         .await
-        .expect("Session actor map actor not ready")
     {
-        Ok(response) => {
+        Ok(Ok(response)) => {
             let mut clients: Vec<Client> = Vec::new();
             for (client_id, node_id) in response.client_list {
                 let cluster_rpc_client_option = app.get_cluster_service_rpc_client(&node_id).await;
@@ -122,7 +126,14 @@ pub async fn client_list(
                         })
                         .await;
                     if let Ok(response) = get_session_info_response {
-                        let session_info = response.into_inner().payload.unwrap();
+                        let inner = response.into_inner();
+                        let Some(session_info) = inner.payload else {
+                            error!(
+                                "get session info rpc returned empty payload for tenant_id={}, node_id={}",
+                                tenant_id, node_id
+                            );
+                            continue;
+                        };
                         let activaty_state = match crate::protobuf::ActivityState::try_from(
                             session_info.session_state,
                         )
@@ -169,7 +180,7 @@ pub async fn client_list(
 
             (StatusCode::OK, Json(result)).into_response()
         }
-        Err(e) => match e {
+        Ok(Err(e)) => match e {
             SessionActorMapRaftError::TenantNotFound { tenant_id } => {
                 let error_response = super::ErrorResponse {
                     code: 3,
@@ -185,5 +196,13 @@ pub async fn client_list(
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
             }
         },
+        Err(err) => {
+            error!("get client list mailbox error: {}", err);
+            let error_response = super::ErrorResponse {
+                code: 101,
+                message: "Internal server error".to_string(),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
+        }
     }
 }

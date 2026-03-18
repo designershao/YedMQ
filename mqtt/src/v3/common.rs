@@ -16,6 +16,7 @@ pub fn parse_utf8_complete(input: &[u8]) -> IResult<&[u8], String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

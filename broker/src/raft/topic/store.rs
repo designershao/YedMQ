@@ -6,9 +6,6 @@ use std::sync::Arc;
 
 use crate::raft::SnapshotData;
 use crate::topic::topic_storage::TopicStorage;
-use byteorder::BigEndian;
-use byteorder::ReadBytesExt;
-use byteorder::WriteBytesExt;
 use log::debug;
 use openraft::storage::LogFlushed;
 use openraft::storage::RaftLogStorage;
@@ -91,7 +88,13 @@ impl RaftSnapshotBuilder<TypeConfig> for StateMachineStore {
 
         let snapshot_json = {
             let snapshot_data = SnapshotWrapper {
-                topic_storage_snapshot: self.data.state.topic_storage.read().to_snapshot(),
+                topic_storage_snapshot: self
+                    .data
+                    .state
+                    .topic_storage
+                    .read()
+                    .to_snapshot()
+                    .map_err(|e| StorageIOError::write_state_machine(&e))?,
             };
             serde_json::to_vec(&snapshot_data)
                 .map_err(|e| StorageIOError::read_state_machine(&e))?
@@ -145,11 +148,16 @@ impl StateMachineStore {
     }
 
     fn set_current_snapshot_(&self, snap: StoredSnapshot) -> BoxedStorageResult<()> {
+        let snapshot_data = serde_json::to_vec(&snap).map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::write_snapshot(Some(snap.meta.signature()), &e),
+            })
+        })?;
         self.db
             .put_cf(
-                self.store(),
+                self.store()?,
                 b"snapshot",
-                serde_json::to_vec(&snap).unwrap().as_slice(),
+                snapshot_data.as_slice(),
             )
             .map_err(|e| {
                 Box::new(StorageError::IO {
@@ -175,7 +183,8 @@ impl StateMachineStore {
         self.data.last_membership = snapshot.meta.last_membership.clone();
 
         let mut topic_storage = self.data.state.topic_storage.write();
-        *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot);
+        *topic_storage = TopicStorage::from_snapshot(state.topic_storage_snapshot)
+            .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         Ok(())
     }
@@ -183,7 +192,7 @@ impl StateMachineStore {
     fn get_current_snapshot_(&self) -> BoxedStorageResult<Option<StoredSnapshot>> {
         Ok(self
             .db
-            .get_cf(self.store(), b"snapshot")
+            .get_cf(self.store()?, b"snapshot")
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::read(&e),
@@ -192,19 +201,21 @@ impl StateMachineStore {
             .and_then(|v| serde_json::from_slice(&v).ok()))
     }
 
-    fn flush(
-        &self,
-        subject: ErrorSubject<NodeId>,
-        verb: ErrorVerb,
-    ) -> BoxedStorageIOResult<()> {
+    fn flush(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<()> {
         self.db
             .flush_wal(true)
             .map_err(|e| Box::new(StorageIOError::new(subject, verb, AnyError::new(&e))))?;
         Ok(())
     }
 
-    fn store(&self) -> &ColumnFamily {
-        self.db.cf_handle("store").unwrap()
+    fn store(&self) -> BoxedStorageResult<&ColumnFamily> {
+        self.db.cf_handle("store").ok_or_else(|| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::read(&std::io::Error::other(
+                    "column family not found: store",
+                )),
+            })
+        })
     }
 }
 
@@ -279,7 +290,9 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                                 source_client_identifier,
                                 &publish_packet,
                             )
-                            .unwrap();
+                            .map_err(|e| StorageError::IO {
+                                source: StorageIOError::write_state_machine(&e),
+                            })?;
                         replies.push(Response::None);
                     }
                     Request::CleanRetainPublishPacket {
@@ -350,29 +363,47 @@ pub struct LogStore {
 }
 
 fn id_to_bin(id: u64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(8);
-    buf.write_u64::<BigEndian>(id).unwrap();
-    buf
+    id.to_be_bytes().to_vec()
 }
 
-fn bin_to_id(buf: &[u8]) -> u64 {
-    (&buf[0..8]).read_u64::<BigEndian>().unwrap()
+fn bin_to_id(buf: &[u8]) -> StorageResult<u64> {
+    let bytes: [u8; 8] = buf.try_into().map_err(|_| StorageError::IO {
+        source: StorageIOError::read_logs(&std::io::Error::other(format!(
+            "invalid log key length: {}",
+            buf.len()
+        ))),
+    })?;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 impl LogStore {
-    fn store(&self) -> &ColumnFamily {
-        self.db.cf_handle("store").unwrap()
+    fn store(&self) -> BoxedStorageResult<&ColumnFamily> {
+        self.db.cf_handle("store").ok_or_else(|| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::read(&std::io::Error::other(
+                    "column family not found: store",
+                )),
+            })
+        })
     }
 
-    fn logs(&self) -> &ColumnFamily {
-        self.db.cf_handle("logs").unwrap()
+    fn logs(&self) -> BoxedStorageResult<&ColumnFamily> {
+        self.db.cf_handle("logs").ok_or_else(|| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::read_logs(&std::io::Error::other(
+                    "column family not found: logs",
+                )),
+            })
+        })
     }
 
-    fn flush(
-        &self,
-        subject: ErrorSubject<NodeId>,
-        verb: ErrorVerb,
-    ) -> BoxedStorageIOResult<()> {
+    fn store_io(&self) -> BoxedStorageIOResult<&ColumnFamily> {
+        self.store().map_err(|e| {
+            Box::new(StorageIOError::read(&std::io::Error::other(e.to_string())))
+        })
+    }
+
+    fn flush(&self, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> BoxedStorageIOResult<()> {
         self.db
             .flush_wal(true)
             .map_err(|e| Box::new(StorageIOError::new(subject, verb, AnyError::new(&e))))?;
@@ -382,37 +413,48 @@ impl LogStore {
     fn get_last_purged_(&self) -> BoxedStorageResult<Option<LogId<u64>>> {
         Ok(self
             .db
-            .get_cf(self.store(), b"last_purged_log_id")
-            .map_err(|e| Box::new(StorageError::IO {
-                source: StorageIOError::read(&e),
-            }))?
+            .get_cf(self.store()?, b"last_purged_log_id")
+            .map_err(|e| {
+                Box::new(StorageError::IO {
+                    source: StorageIOError::read(&e),
+                })
+            })?
             .and_then(|v| serde_json::from_slice(&v).ok()))
     }
 
     fn set_last_purged_(&self, log_id: LogId<u64>) -> BoxedStorageResult<()> {
+        let json = serde_json::to_vec(&log_id).map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::write(&e),
+            })
+        })?;
         self.db
             .put_cf(
-                self.store(),
+                self.store()?,
                 b"last_purged_log_id",
-                serde_json::to_vec(&log_id).unwrap().as_slice(),
+                json.as_slice(),
             )
-            .map_err(|e| Box::new(StorageError::IO {
-                source: StorageIOError::write(&e),
-            }))?;
+            .map_err(|e| {
+                Box::new(StorageError::IO {
+                    source: StorageIOError::write(&e),
+                })
+            })?;
 
         self.flush(ErrorSubject::Store, ErrorVerb::Write)
             .map_err(|e| Box::new(StorageError::IO { source: *e }))?;
         Ok(())
     }
 
-    fn set_committed_(
-        &self,
-        committed: &Option<LogId<NodeId>>,
-    ) -> BoxedStorageIOResult<()> {
-        let json = serde_json::to_vec(committed).unwrap();
+    fn set_committed_(&self, committed: &Option<LogId<NodeId>>) -> BoxedStorageIOResult<()> {
+        let json =
+            serde_json::to_vec(committed).map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.db
-            .put_cf(self.store(), b"committed", json)
+            .put_cf(
+                self.store_io()?,
+                b"committed",
+                json,
+            )
             .map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.flush(ErrorSubject::Store, ErrorVerb::Write)?;
@@ -422,7 +464,7 @@ impl LogStore {
     fn get_committed_(&self) -> BoxedStorageResult<Option<LogId<NodeId>>> {
         Ok(self
             .db
-            .get_cf(self.store(), b"committed")
+            .get_cf(self.store()?, b"committed")
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::read(&e),
@@ -432,8 +474,13 @@ impl LogStore {
     }
 
     fn set_vote_(&self, vote: &Vote<NodeId>) -> BoxedStorageResult<()> {
+        let vote_data = serde_json::to_vec(vote).map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::write_vote(&e),
+            })
+        })?;
         self.db
-            .put_cf(self.store(), b"vote", serde_json::to_vec(vote).unwrap())
+            .put_cf(self.store()?, b"vote", vote_data)
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::write_vote(&e),
@@ -448,7 +495,7 @@ impl LogStore {
     fn get_vote_(&self) -> BoxedStorageResult<Option<Vote<NodeId>>> {
         Ok(self
             .db
-            .get_cf(self.store(), b"vote")
+            .get_cf(self.store()?, b"vote")
             .map_err(|e| {
                 Box::new(StorageError::IO {
                     source: StorageIOError::write_vote(&e),
@@ -470,22 +517,26 @@ impl RaftLogReader<TypeConfig> for LogStore {
         };
         self.db
             .iterator_cf(
-                self.logs(),
+                self.logs().map_err(|e| *e)?,
                 rocksdb::IteratorMode::From(&start, Direction::Forward),
             )
             .map(|res| {
-                let (id, val) = res.unwrap();
-                let entry: StorageResult<Entry<_>> =
-                    serde_json::from_slice(&val).map_err(|e| StorageError::IO {
-                        source: StorageIOError::read_logs(&e),
-                    });
-                let id = bin_to_id(&id);
+                let (id, val) = res.map_err(|e| StorageError::IO {
+                    source: StorageIOError::read_logs(&e),
+                })?;
+                let entry: Entry<_> = serde_json::from_slice(&val).map_err(|e| StorageError::IO {
+                    source: StorageIOError::read_logs(&e),
+                })?;
+                let id = bin_to_id(&id)?;
 
-                assert_eq!(Ok(id), entry.as_ref().map(|e| e.log_id.index));
-                (id, entry)
+                assert_eq!(id, entry.log_id.index);
+                Ok((id, entry))
             })
-            .take_while(|(id, _)| range.contains(id))
-            .map(|x| x.1)
+            .take_while(|res| match res {
+                Ok((id, _)) => range.contains(id),
+                Err(_) => true,
+            })
+            .map(|res| res.map(|(_, entry)| entry))
             .collect()
     }
 }
@@ -496,16 +547,20 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfig>> {
         let last = self
             .db
-            .iterator_cf(self.logs(), rocksdb::IteratorMode::End)
+            .iterator_cf(self.logs().map_err(|e| *e)?, rocksdb::IteratorMode::End)
             .next()
-            .and_then(|res| {
-                let (_, ent) = res.unwrap();
-                Some(
-                    serde_json::from_slice::<Entry<TypeConfig>>(&ent)
-                        .ok()?
-                        .log_id,
-                )
-            });
+            .transpose()
+            .map_err(|e| StorageError::IO {
+                source: StorageIOError::read_logs(&e),
+            })?
+            .map(|(_, ent)| {
+                serde_json::from_slice::<Entry<TypeConfig>>(&ent)
+                    .map(|entry| entry.log_id)
+                    .map_err(|e| StorageError::IO {
+                        source: StorageIOError::read_logs(&e),
+                    })
+            })
+            .transpose()?;
 
         let last_purged_log_id = self.get_last_purged_().map_err(|e| *e)?;
 
@@ -548,10 +603,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     {
         for entry in entries {
             let id = id_to_bin(entry.log_id.index);
-            assert_eq!(bin_to_id(&id), entry.log_id.index);
+            assert_eq!(bin_to_id(&id)?, entry.log_id.index);
             self.db
                 .put_cf(
-                    self.logs(),
+                    self.logs().map_err(|e| *e)?,
                     id,
                     serde_json::to_vec(&entry).map_err(|e| StorageIOError::write_logs(&e))?,
                 )
@@ -569,7 +624,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         let from = id_to_bin(log_id.index);
         let to = id_to_bin(0xff_ff_ff_ff_ff_ff_ff_ff);
         self.db
-            .delete_range_cf(self.logs(), &from, &to)
+            .delete_range_cf(self.logs().map_err(|e| *e)?, &from, &to)
             .map_err(|e| StorageIOError::write_logs(&e).into())
     }
 
@@ -580,7 +635,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         let from = id_to_bin(0);
         let to = id_to_bin(log_id.index + 1);
         self.db
-            .delete_range_cf(self.logs(), &from, &to)
+            .delete_range_cf(self.logs().map_err(|e| *e)?, &from, &to)
             .map_err(|e| StorageIOError::write_logs(&e).into())
     }
 
@@ -592,7 +647,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<TopicStorage>>,
-) -> (LogStore, StateMachineStore) {
+) -> StorageResult<(LogStore, StateMachineStore)> {
     let mut db_opts = Options::default();
     db_opts.create_missing_column_families(true);
     db_opts.create_if_missing(true);
@@ -602,11 +657,15 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
 
     let topic_db_path = db_path.as_ref().join("topic");
 
-    let db = DB::open_cf_descriptors(&db_opts, topic_db_path, vec![store, logs]).unwrap();
+    let db = DB::open_cf_descriptors(&db_opts, topic_db_path, vec![store, logs]).map_err(|e| {
+        StorageError::IO {
+            source: StorageIOError::new(ErrorSubject::Store, ErrorVerb::Read, AnyError::new(&e)),
+        }
+    })?;
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };
-    let sm_store = StateMachineStore::new(db, topic_storage).await.unwrap();
+    let sm_store = StateMachineStore::new(db, topic_storage).await?;
 
-    (log_store, sm_store)
+    Ok((log_store, sm_store))
 }

@@ -37,8 +37,11 @@ impl NetworkConnection {
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
         let addr = format!("http://{}", self.node.rpc_addr);
+        let endpoint = addr
+            .parse()
+            .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
-        match Channel::builder(addr.parse().unwrap()).connect().await {
+        match Channel::builder(endpoint).connect().await {
             Ok(channel) => Ok(RaftServiceClient::new(channel)),
             Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
         }
@@ -87,8 +90,10 @@ impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let mut c = self.c().await?;
 
+        let data = serde_json::to_string(&req)
+            .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         let mes = crate::protobuf::VoteRequest {
-            data: serde_json::to_string(&req).expect("fail to serialize"),
+            data,
             raft_type: crate::protobuf::RaftType::SessionActorMap.into(),
         };
         let request = tonic::Request::new(mes);

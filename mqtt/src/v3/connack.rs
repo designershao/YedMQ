@@ -171,6 +171,7 @@ impl MqttPacket for ConnAckPacket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use nom::AsBytes;
 

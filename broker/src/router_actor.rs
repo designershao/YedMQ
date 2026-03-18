@@ -35,9 +35,7 @@ pub enum RouterActorError {
     ActorUnExceptedStopped(#[from] MailboxError),
 
     #[error("Topic raft error: {0}")]
-    TopicRaftError(
-        #[from] Box<crate::raft::topic::topic_raft_actor::TopicRaftError>,
-    ),
+    TopicRaftError(#[from] Box<crate::raft::topic::topic_raft_actor::TopicRaftError>),
 
     #[error("Session actor map raft error: {0}")]
     SessionActorMapRaftError(
@@ -234,7 +232,7 @@ impl RouterActor {
                                 tenant_id: tenant_id.to_string(),
                                 client_id: item.client_identifier.clone(),
                             })
-                        .await?;
+                            .await?;
                         remote
                             .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?
                     }
@@ -462,7 +460,7 @@ impl RouterActor {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let dead_letter_item = DeadLetterItem {
@@ -487,7 +485,7 @@ impl RouterActor {
     fn process_dead_letter_queue(&mut self, router_actor: Addr<RouterActor>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let mut items_to_retry = Vec::new();
@@ -549,7 +547,7 @@ impl RouterActor {
     fn cleanup_expired_dead_letters(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("System time is before UNIX_EPOCH")
             .as_secs();
 
         let initial_size = self.dead_letter_queue.len();
@@ -599,10 +597,10 @@ impl Handler<RoutePacket> for RouterActor {
             current_node_id: self.current_node_id,
             node_resolver: self.node_resolver.clone(),
             topic_raft_actor: self
-            .topic_raft_actor
-            .as_ref()
-            .expect("topic raft actor not set")
-            .clone(),
+                .topic_raft_actor
+                .as_ref()
+                .expect("topic raft actor not set")
+                .clone(),
             local_topic_storage: self.local_topic_storage.clone(),
             local_session_actor_map_storage: self.local_session_actor_map_storage.clone(),
             session_registry: self.session_registry.clone(),
@@ -680,8 +678,7 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
             async move {
                 let tenant_ids = session_manager_actor_addr
                     .send(session_manager_actor::GetAllTenantIds {})
-                    .await
-                    .unwrap();
+                    .await?;
                 for tenant_id in tenant_ids {
                     Self::publish_to_local_subscribers(
                         &tenant_id,

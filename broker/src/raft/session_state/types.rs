@@ -32,12 +32,12 @@ pub enum SessionStateRequest {
     InflightGetCurrentPacket {
         tenant_id: String,
         client_id: String,
-        packet_identifier: u64,
+        packet_identifier: u16,
     },
     InflightNextState {
         tenant_id: String,
         client_id: String,
-        packet_identifier: u64,
+        packet_identifier: u16,
     },
     InflightCleanFinishItems {
         tenant_id: String,
