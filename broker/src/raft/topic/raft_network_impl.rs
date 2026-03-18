@@ -90,8 +90,8 @@ impl RaftNetwork<TypeConfig> for NetworkConnection {
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         let mut c = self.c().await?;
 
-        let data = serde_json::to_string(&req)
-            .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
+        let data =
+            serde_json::to_string(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         let mes = crate::protobuf::VoteRequest {
             data,
             raft_type: crate::protobuf::RaftType::Topic.into(),

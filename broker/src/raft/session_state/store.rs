@@ -404,11 +404,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                             .session_state_storage
                             .write()
                             .await
-                            .inflight_next_state(
-                                tenant_id,
-                                client_id,
-                                packet_identifier,
-                            )
+                            .inflight_next_state(tenant_id, client_id, packet_identifier)
                             .await;
                         if let Some(key) = freed_key {
                             self.schedule_payload_gc(current_log_index, key).await;
@@ -719,12 +715,14 @@ fn payload_gc_record_key(log_index: u64, key: &str) -> Vec<u8> {
     k
 }
 
-fn bin_to_id(buf: &[u8]) -> StorageResult<u64> {
-    let bytes: [u8; 8] = buf.try_into().map_err(|_| StorageError::IO {
-        source: StorageIOError::read_logs(&std::io::Error::other(format!(
-            "invalid log key length: {}",
-            buf.len()
-        ))),
+fn bin_to_id(buf: &[u8]) -> BoxedStorageResult<u64> {
+    let bytes: [u8; 8] = buf.try_into().map_err(|_| {
+        Box::new(StorageError::IO {
+            source: StorageIOError::read_logs(&std::io::Error::other(format!(
+                "invalid log key length: {}",
+                buf.len()
+            ))),
+        })
     })?;
     Ok(u64::from_be_bytes(bytes))
 }
@@ -794,8 +792,8 @@ impl LogStore {
     }
 
     fn set_committed_(&self, committed: &Option<LogId<NodeId>>) -> BoxedStorageIOResult<()> {
-        let json = serde_json::to_vec(committed)
-            .map_err(|e| Box::new(StorageIOError::write(&e)))?;
+        let json =
+            serde_json::to_vec(committed).map_err(|e| Box::new(StorageIOError::write(&e)))?;
 
         self.db
             .put_cf(self.store_io()?, b"committed", json)
@@ -823,13 +821,11 @@ impl LogStore {
                 source: StorageIOError::write_vote(&e),
             })
         })?;
-        self.db
-            .put_cf(self.store()?, b"vote", json)
-            .map_err(|e| {
-                Box::new(StorageError::IO {
-                    source: StorageIOError::write_vote(&e),
-                })
-            })?;
+        self.db.put_cf(self.store()?, b"vote", json).map_err(|e| {
+            Box::new(StorageError::IO {
+                source: StorageIOError::write_vote(&e),
+            })
+        })?;
 
         self.flush(ErrorSubject::Vote, ErrorVerb::Write)
             .map_err(|e| Box::new(StorageError::IO { source: *e }))?;
@@ -862,14 +858,14 @@ impl RaftLogReader<SessionStateTypeConfig> for LogStore {
         let logs_cf = self.logs().map_err(|e| *e)?;
         let mut entries = Vec::new();
 
-        for res in self
-            .db
-            .iterator_cf(logs_cf, rocksdb::IteratorMode::From(&start, Direction::Forward))
-        {
+        for res in self.db.iterator_cf(
+            logs_cf,
+            rocksdb::IteratorMode::From(&start, Direction::Forward),
+        ) {
             let (id, val) = res.map_err(|e| StorageError::IO {
                 source: StorageIOError::read_logs(&e),
             })?;
-            let id = bin_to_id(&id)?;
+            let id = bin_to_id(&id).map_err(|e| *e)?;
 
             if !range.contains(&id) {
                 break;
@@ -902,12 +898,11 @@ impl RaftLogStorage<SessionStateTypeConfig> for LogStore {
                     source: StorageIOError::read_logs(&e),
                 })?;
                 Some(
-                    serde_json::from_slice::<Entry<SessionStateTypeConfig>>(&ent).map_err(
-                        |e| StorageError::IO {
+                    serde_json::from_slice::<Entry<SessionStateTypeConfig>>(&ent)
+                        .map_err(|e| StorageError::IO {
                             source: StorageIOError::read_logs(&e),
-                        },
-                    )?
-                    .log_id,
+                        })?
+                        .log_id,
                 )
             }
         };
@@ -1174,7 +1169,7 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
                     warn!("Invalid payload_gc record with key: {:?}", k);
                     continue;
                 }
-                let log_index = match bin_to_id(&k[0..8]) {
+                let log_index = match bin_to_id(&k[0..8]).map_err(|e| *e) {
                     Ok(index) => index,
                     Err(e) => {
                         warn!("Invalid payload_gc record key: {:?}, error: {}", k, e);
