@@ -177,7 +177,9 @@ impl SessionStateRaftActor {
 
         let dir = Path::new(&settings.cluster.store_dir);
 
-        let config = Arc::new(raft_config.validate().unwrap());
+        let config = Arc::new(raft_config.validate().map_err(|e| {
+            SessionStateRaftError::ServiceUnavailable(format!("invalid raft config: {}", e))
+        })?);
 
         let session_state_storage = Arc::new(RwLock::new(SessionStateStorage::new()));
 
@@ -344,7 +346,10 @@ impl SessionStateRaftActor {
                 SessionStateRaftError::GRPC(e.to_string())
             })?;
 
-        let data = serde_json::to_string(&msg).unwrap();
+        let data = serde_json::to_string(&msg).map_err(|e| {
+            log::error!("Failed to serialize raft write request: {}", e);
+            SessionStateRaftError::GRPC(format!("serialize raft request failed: {}", e))
+        })?;
 
         let request = WriteRequest {
             data,
@@ -359,11 +364,17 @@ impl SessionStateRaftActor {
         let inner_res = res.into_inner();
         if inner_res.success {
             let res = inner_res.data;
-            Ok(serde_json::from_str(&res).unwrap())
+            serde_json::from_str(&res).map_err(|e| {
+                log::error!("Failed to deserialize raft write response: {}", e);
+                SessionStateRaftError::GRPC(format!("deserialize raft response failed: {}", e))
+            })
         } else {
-            Err(SessionStateRaftError::GRPC(
-                inner_res.error.unwrap().message,
-            ))
+            let error_message = inner_res
+                .error
+                .map(|error| error.message)
+                .filter(|message| !message.is_empty())
+                .unwrap_or_else(|| "remote raft write failed without error detail".to_string());
+            Err(SessionStateRaftError::GRPC(error_message))
         }
     }
 
@@ -789,7 +800,15 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                                     Ok(None)
                                                 }
                                             } else {
-                                                Err(SessionStateRaftError::GRPC(inner.error.unwrap().message))
+                                                let error_message = inner
+                                                    .error
+                                                    .map(|error| error.message)
+                                                    .filter(|message| !message.is_empty())
+                                                    .unwrap_or_else(|| {
+                                                        "get session state failed without error detail"
+                                                            .to_string()
+                                                    });
+                                                Err(SessionStateRaftError::GRPC(error_message))
                                             }
                                         })
                                     } else {
@@ -849,12 +868,15 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
             ActorState::Running => {
                 let raft = self.raft.clone();
                 let payload_store = self.payload_store.get().cloned();
-                let inflight_duration = self
-                    .settings
-                    .as_ref()
-                    .expect("settings should not be none")
-                    .mqtt
-                    .inflight_retry_interval_secs;
+                let inflight_duration = match self.settings.as_ref() {
+                    Some(settings) => settings.mqtt.inflight_retry_interval_secs,
+                    None => {
+                        return Box::pin(
+                            async move { Err(SessionStateRaftError::NotInitialized) }
+                                .into_actor(self),
+                        );
+                    }
+                };
                 Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
@@ -1634,13 +1656,27 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(packet) = inner.packet {
-                                                let packet = serde_json::from_str(&packet).unwrap();
+                                                let packet = serde_json::from_str(&packet).map_err(|e| {
+                                                    log::error!("Failed to deserialize current inflight packet: {}", e);
+                                                    SessionStateRaftError::GRPC(format!(
+                                                        "deserialize current inflight packet failed: {}",
+                                                        e
+                                                    ))
+                                                })?;
                                                 Ok(Some(packet))
                                             } else {
                                                 Ok(None)
                                             }
                                         } else {
-                                            Err(SessionStateRaftError::GRPC(inner.error.unwrap().message))
+                                            let error_message = inner
+                                                .error
+                                                .map(|error| error.message)
+                                                .filter(|message| !message.is_empty())
+                                                .unwrap_or_else(|| {
+                                                    "get current inflight packet failed without error detail"
+                                                        .to_string()
+                                                });
+                                            Err(SessionStateRaftError::GRPC(error_message))
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
@@ -1907,13 +1943,27 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(packet) = inner.packet {
-                                                let packet = serde_json::from_str(&packet).unwrap();
+                                                let packet = serde_json::from_str(&packet).map_err(|e| {
+                                                    log::error!("Failed to deserialize next inflight packet: {}", e);
+                                                    SessionStateRaftError::GRPC(format!(
+                                                        "deserialize next inflight packet failed: {}",
+                                                        e
+                                                    ))
+                                                })?;
                                                 Ok(Some(packet))
                                             } else {
                                                 Ok(None)
                                             }
                                         } else {
-                                            Err(SessionStateRaftError::GRPC(inner.error.unwrap().message))
+                                            let error_message = inner
+                                                .error
+                                                .map(|error| error.message)
+                                                .filter(|message| !message.is_empty())
+                                                .unwrap_or_else(|| {
+                                                    "get next inflight packet failed without error detail"
+                                                        .to_string()
+                                                });
+                                            Err(SessionStateRaftError::GRPC(error_message))
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
@@ -2182,14 +2232,16 @@ impl Handler<InitRaftClusterMessage> for SessionStateRaftActor {
             ActorState::Running => {
                 if let Some(raft_instance) = self.raft.get() {
                     let mut cluster_nodes = BTreeMap::new();
-                    for item in self
-                        .settings
-                        .as_ref()
-                        .expect("settings should not be none")
-                        .cluster
-                        .nodes
-                        .iter()
-                    {
+                    let settings = match self.settings.as_ref() {
+                        Some(settings) => settings,
+                        None => {
+                            return Box::pin(
+                                async move { Err(SessionStateRaftError::NotInitialized) }
+                                    .into_actor(self),
+                            );
+                        }
+                    };
+                    for item in settings.cluster.nodes.iter() {
                         cluster_nodes.insert(
                             item.id,
                             Node {
