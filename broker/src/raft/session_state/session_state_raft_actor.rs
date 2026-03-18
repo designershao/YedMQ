@@ -2,7 +2,7 @@ use std::{
     cell::OnceCell,
     collections::BTreeMap,
     path::Path,
-    sync::{atomic::Ordering, Arc},
+    sync::{Arc, atomic::Ordering},
     time::Duration,
 };
 
@@ -11,9 +11,9 @@ use actix::{
     WrapFuture,
 };
 use openraft::{
+    Config, RaftMetrics, StorageError,
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
-    Config, RaftMetrics, StorageError,
 };
 use tokio::sync::RwLock;
 use yedmq_mqtt::MqttPacketV3;
@@ -21,17 +21,17 @@ use yedmq_mqtt::MqttPacketV3;
 use crate::{
     inflight::InflightError,
     protobuf::{
-        cluster_service_client::ClusterServiceClient, raft_service_client::RaftServiceClient,
-        RaftType, WriteRequest,
+        RaftType, WriteRequest, cluster_service_client::ClusterServiceClient,
+        raft_service_client::RaftServiceClient,
     },
     raft::{
+        Node, NodeId,
         session_state::{
+            SessionStateRaft,
             raft_network_impl::Network,
             store::new_storage,
             types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig},
-            SessionStateRaft,
         },
-        Node, NodeId,
     },
     session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError},
 };
@@ -307,7 +307,12 @@ impl SessionStateRaftActor {
                                 .replicate(&leader_node.rpc_addr, k.clone(), term)
                                 .await
                             {
-                                log::error!("CRITICAL: Failed to push payload {} to leader {} before forwarding: {}", k, leader_node.rpc_addr, e);
+                                log::error!(
+                                    "CRITICAL: Failed to push payload {} to leader {} before forwarding: {}",
+                                    k,
+                                    leader_node.rpc_addr,
+                                    e
+                                );
                                 return Err(SessionStateRaftError::GRPC(format!(
                                     "Payload push failed: {}",
                                     e
@@ -777,40 +782,42 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                             log::error!("Failed to connect to leader {}", e);
                                             SessionStateRaftError::GRPC(e.to_string())
                                         })?;
-                                        client.get_session_state(crate::protobuf::GetSessionStateRequest {
-                                            tenant_id: msg.tenant_id,
-                                            client_id: msg.client_id,
-                                        }).await.map_err(|e| {
-                                            log::error!("Failed to get session state from leader: {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
-                                        }).and_then(|res| {
-                                            let inner = res.into_inner();
-                                            if inner.success {
-                                                if let Some(payload) = inner.payload {
-                                                    println!("Got session state from leader: {}", payload);
-                                                    match serde_json::from_str(&payload) {
-                                                        Ok(Some(session_state)) => Ok(Some(session_state)),
-                                                        Ok(None) => Ok(None),
-                                                        Err(e) => {
-                                                            log::error!("Failed to deserialize session state: {}", e);
-                                                            Ok(None)
-                                                        }
+                                        let response = client
+                                            .get_session_state(crate::protobuf::GetSessionStateRequest {
+                                                tenant_id: msg.tenant_id,
+                                                client_id: msg.client_id,
+                                            })
+                                            .await
+                                            .map_err(|e| {
+                                                log::error!("Failed to get session state from leader: {}", e);
+                                                SessionStateRaftError::GRPC(e.to_string())
+                                            })?;
+                                        let inner = response.into_inner();
+                                        if inner.success {
+                                            if let Some(payload) = inner.payload {
+                                                println!("Got session state from leader: {}", payload);
+                                                match serde_json::from_str(&payload) {
+                                                    Ok(Some(session_state)) => Ok(Some(session_state)),
+                                                    Ok(None) => Ok(None),
+                                                    Err(e) => {
+                                                        log::error!("Failed to deserialize session state: {}", e);
+                                                        Ok(None)
                                                     }
-                                                } else {
-                                                    Ok(None)
                                                 }
                                             } else {
-                                                let error_message = inner
-                                                    .error
-                                                    .map(|error| error.message)
-                                                    .filter(|message| !message.is_empty())
-                                                    .unwrap_or_else(|| {
-                                                        "get session state failed without error detail"
-                                                            .to_string()
-                                                    });
-                                                Err(SessionStateRaftError::GRPC(error_message))
+                                                Ok(None)
                                             }
-                                        })
+                                        } else {
+                                            let error_message = inner
+                                                .error
+                                                .map(|error| error.message)
+                                                .filter(|message| !message.is_empty())
+                                                .unwrap_or_else(|| {
+                                                    "get session state failed without error detail"
+                                                        .to_string()
+                                                });
+                                            Err(SessionStateRaftError::GRPC(error_message))
+                                        }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
                                     }

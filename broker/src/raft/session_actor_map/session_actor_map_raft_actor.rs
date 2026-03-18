@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    protobuf::{cluster_service_client::ClusterServiceClient, WriteRequest},
+    protobuf::{WriteRequest, cluster_service_client::ClusterServiceClient},
     session::session_actor_map_storage::SessionActorMapEntry,
 };
 use actix::dev::MessageResponse;
@@ -15,20 +15,20 @@ use actix::{
     WrapFuture,
 };
 use openraft::{
+    Config, RaftMetrics,
     error::{ClientWriteError, Fatal, InitializeError, RaftError},
     raft::ClientWriteResponse,
-    Config, RaftMetrics,
 };
 use parking_lot::RwLock;
 
 use crate::{
-    protobuf::{raft_service_client::RaftServiceClient, RaftType},
+    protobuf::{RaftType, raft_service_client::RaftServiceClient},
     raft::{
-        session_actor_map::{
-            raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig,
-            SessionActorMapRaft,
-        },
         Node, NodeId,
+        session_actor_map::{
+            SessionActorMapRaft, raft_network_impl::Network, store::new_storage,
+            types::SessionActorMapTypeConfig,
+        },
     },
     session::session_actor_map_storage::{SessionActorMapStorage, SessionClock, SessionVersion},
 };
@@ -781,43 +781,38 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                         log::error!("Failed to connect to leader: {}", e);
                                         SessionActorMapRaftError::GRPC(e.to_string())
                                     })?;
-                                    client.get_session_actor_map(
-                                        crate::protobuf::GetSessionActorMapRequest {
+                                    let response = client
+                                        .get_session_actor_map(crate::protobuf::GetSessionActorMapRequest {
                                             tenant_id: msg.tenant_id.clone(),
                                             client_id: msg.client_id.clone(),
-                                        }
-                                    ).await.map_err(|e| {
-                                        log::error!("Failed to get session actor map from leader: {}", e);
-                                        SessionActorMapRaftError::GRPC(e.to_string())
-                                    }).and_then(|res| {
-                                        let inner_res = res.into_inner();
-                                        if inner_res.success {
-                                            if inner_res.payload.is_none() {
-                                                Ok(None)
-                                            } else {
-                                                let payload = inner_res.payload.ok_or_else(|| {
-                                                    SessionActorMapRaftError::UnexpectedResponseType(
-                                                        "missing payload in successful session actor map response".to_string(),
-                                                    )
-                                                })?;
-                                                let entry = serde_json::from_str(&payload).map_err(|e| {
-                                                    SessionActorMapRaftError::UnexpectedResponseType(
-                                                        format!("invalid session actor map payload: {e}"),
-                                                    )
-                                                })?;
-                                                Ok(Some(entry))
-                                            }
+                                        })
+                                        .await
+                                        .map_err(|e| {
+                                            log::error!("Failed to get session actor map from leader: {}", e);
+                                            SessionActorMapRaftError::GRPC(e.to_string())
+                                        })?;
+                                    let inner_res = response.into_inner();
+                                    if inner_res.success {
+                                        if let Some(payload) = inner_res.payload {
+                                            let entry = serde_json::from_str(&payload).map_err(|e| {
+                                                SessionActorMapRaftError::UnexpectedResponseType(
+                                                    format!("invalid session actor map payload: {e}"),
+                                                )
+                                            })?;
+                                            Ok(Some(entry))
                                         } else {
-                                            Err(SessionActorMapRaftError::GRPC(
-                                                inner_res
-                                                    .error
-                                                    .map(|err| err.message)
-                                                    .unwrap_or_else(|| {
-                                                        "get session actor map failed without error detail".to_string()
-                                                    }),
-                                            ))
+                                            Ok(None)
                                         }
-                                    })
+                                    } else {
+                                        Err(SessionActorMapRaftError::GRPC(
+                                            inner_res
+                                                .error
+                                                .map(|err| err.message)
+                                                .unwrap_or_else(|| {
+                                                    "get session actor map failed without error detail".to_string()
+                                                }),
+                                        ))
+                                    }
                                 } else {
                                     Err(SessionActorMapRaftError::NoLeaderAvailable)
                                 }

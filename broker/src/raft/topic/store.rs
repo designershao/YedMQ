@@ -7,9 +7,6 @@ use std::sync::Arc;
 use crate::raft::SnapshotData;
 use crate::topic::topic_storage::TopicStorage;
 use log::debug;
-use openraft::storage::LogFlushed;
-use openraft::storage::RaftLogStorage;
-use openraft::storage::RaftStateMachine;
 use openraft::AnyError;
 use openraft::Entry;
 use openraft::EntryPayload;
@@ -26,12 +23,15 @@ use openraft::StorageError;
 use openraft::StorageIOError;
 use openraft::StoredMembership;
 use openraft::Vote;
+use openraft::storage::LogFlushed;
+use openraft::storage::RaftLogStorage;
+use openraft::storage::RaftStateMachine;
 use parking_lot::RwLock;
 use rocksdb::ColumnFamily;
 use rocksdb::ColumnFamilyDescriptor;
+use rocksdb::DB;
 use rocksdb::Direction;
 use rocksdb::Options;
-use rocksdb::DB;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -504,30 +504,30 @@ impl RaftLogReader<TypeConfig> for LogStore {
             std::ops::Bound::Excluded(x) => id_to_bin(*x + 1),
             std::ops::Bound::Unbounded => id_to_bin(0),
         };
-        self.db
-            .iterator_cf(
-                self.logs().map_err(|e| *e)?,
-                rocksdb::IteratorMode::From(&start, Direction::Forward),
-            )
-            .map(|res| {
-                let (id, val) = res.map_err(|e| StorageError::IO {
-                    source: StorageIOError::read_logs(&e),
-                })?;
-                let entry: Entry<_> =
-                    serde_json::from_slice(&val).map_err(|e| StorageError::IO {
-                        source: StorageIOError::read_logs(&e),
-                    })?;
-                let id = bin_to_id(&id).map_err(|e| *e)?;
+        let logs_cf = self.logs().map_err(|e| *e)?;
+        let mut entries = Vec::new();
 
-                assert_eq!(id, entry.log_id.index);
-                Ok((id, entry))
-            })
-            .take_while(|res| match res {
-                Ok((id, _)) => range.contains(id),
-                Err(_) => true,
-            })
-            .map(|res| res.map(|(_, entry)| entry))
-            .collect()
+        for res in self.db.iterator_cf(
+            logs_cf,
+            rocksdb::IteratorMode::From(&start, Direction::Forward),
+        ) {
+            let (id, val) = res.map_err(|e| StorageError::IO {
+                source: StorageIOError::read_logs(&e),
+            })?;
+            let id = bin_to_id(&id).map_err(|e| *e)?;
+            if !range.contains(&id) {
+                break;
+            }
+
+            let entry: Entry<_> = serde_json::from_slice(&val).map_err(|e| StorageError::IO {
+                source: StorageIOError::read_logs(&e),
+            })?;
+
+            assert_eq!(id, entry.log_id.index);
+            entries.push(entry);
+        }
+
+        Ok(entries)
     }
 }
 
@@ -535,22 +535,24 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> StorageResult<LogState<TypeConfig>> {
-        let last = self
+        let last = match self
             .db
             .iterator_cf(self.logs().map_err(|e| *e)?, rocksdb::IteratorMode::End)
             .next()
             .transpose()
             .map_err(|e| StorageError::IO {
                 source: StorageIOError::read_logs(&e),
-            })?
-            .map(|(_, ent)| {
-                serde_json::from_slice::<Entry<TypeConfig>>(&ent)
-                    .map(|entry| entry.log_id)
-                    .map_err(|e| StorageError::IO {
+            })? {
+            Some((_, ent)) => {
+                let entry = serde_json::from_slice::<Entry<TypeConfig>>(&ent).map_err(|e| {
+                    StorageError::IO {
                         source: StorageIOError::read_logs(&e),
-                    })
-            })
-            .transpose()?;
+                    }
+                })?;
+                Some(entry.log_id)
+            }
+            None => None,
+        };
 
         let last_purged_log_id = self.get_last_purged_().map_err(|e| *e)?;
 

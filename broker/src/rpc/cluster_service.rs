@@ -486,19 +486,17 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
-        let version = inner.session_version.map_or_else(
-            || {
-                Err(Status::invalid_argument(
+        let version = match inner.session_version {
+            Some(s) => SessionVersion {
+                counter: s.counter,
+                node_id: s.node_id,
+            },
+            None => {
+                return Err(Status::invalid_argument(
                     "Session version is required for registering session actor map",
-                ))
-            },
-            |s| {
-                Ok(SessionVersion {
-                    counter: s.counter,
-                    node_id: s.node_id,
-                })
-            },
-        )?;
+                ));
+            }
+        };
         let register_session_actor_map_actor =
             session_actor_map_raft_actor::RegisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
@@ -527,19 +525,17 @@ impl ClusterService for ClusterServiceImpl {
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
 
-        let version = inner.session_version.map_or_else(
-            || {
-                Err(Status::invalid_argument(
+        let version = match inner.session_version {
+            Some(s) => SessionVersion {
+                counter: s.counter,
+                node_id: s.node_id,
+            },
+            None => {
+                return Err(Status::invalid_argument(
                     "Session version is required for unregistering session actor map",
-                ))
-            },
-            |s| {
-                Ok(SessionVersion {
-                    counter: s.counter,
-                    node_id: s.node_id,
-                })
-            },
-        )?;
+                ));
+            }
+        };
 
         let unregister_session_actor_map_actor =
             session_actor_map_raft_actor::UnregisterSessionActorMap {
@@ -652,24 +648,26 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<ForceStopSessionActorResponse>, Status> {
         let session_manager_actor_addr = SessionManagerActor::from_registry();
         let inner = request.into_inner();
-        session_manager_actor_addr
+        let force_stop_result = session_manager_actor_addr
             .send(crate::session::session_manager_actor::ForceStop {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
             })
             .await
-            .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?
-            .or_else(|e| {
-                match e {
-                    crate::session::session_manager_actor::SessionManagerError::SessionNotExisted(
-                        client_id,
-                    ) if client_id == inner.client_id => Ok(()), // If session not existed, we consider it as already stopped, so we return Ok here.
-                    _ => Err(Status::internal(format!(
+            .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?;
+        if let Err(e) = force_stop_result {
+            match e {
+                crate::session::session_manager_actor::SessionManagerError::SessionNotExisted(
+                    client_id,
+                ) if client_id == inner.client_id => {}
+                _ => {
+                    return Err(Status::internal(format!(
                         "Error in force stopping session actor: {}",
                         e
-                    ))),
+                    )));
                 }
-            })?;
+            }
+        }
         Ok(Response::new(ForceStopSessionActorResponse {
             success: true,
             error: None,
