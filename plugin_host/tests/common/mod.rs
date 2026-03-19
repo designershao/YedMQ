@@ -79,6 +79,7 @@ fn default_auth_config() -> AuthenticateConfig {
         tenant_id: Some("default_tenant".to_string()),
         continue_chain: true,
         delay_secs: None,
+        record_file: None,
     }
 }
 
@@ -134,6 +135,9 @@ pub struct AuthenticateConfig {
 
     /// optional delay in seconds before responding
     pub delay_secs: Option<u64>,
+
+    /// optional file path used by tests to record authenticate handling
+    pub record_file: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

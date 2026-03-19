@@ -7,7 +7,7 @@ use interprocess::local_socket::{
 use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, io::Write, time::Duration};
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
 use yedmq_plugin_host::protocol::{
@@ -80,6 +80,7 @@ fn default_auth_config() -> AuthenticateConfig {
         tenant_id: Some("default_tenant".to_string()),
         continue_chain: false,
         delay_secs: None,
+        record_file: None,
     }
 }
 
@@ -129,6 +130,9 @@ struct AuthenticateConfig {
 
     /// delay in seconds before responding
     pub delay_secs: Option<u64>,
+
+    /// optional file path used by tests to record authenticate handling
+    pub record_file: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -280,11 +284,19 @@ async fn handle_initialize_request(
 async fn handle_authenticate_request(
     request: &ProtocolMessage,
     config: &MockConfig,
+    auth_code: &str,
 ) -> Result<ProtocolMessage, anyhow::Error> {
     info!("Handling authenticate request");
     if let Some(delay) = config.authenticate.delay_secs {
         info!("Delaying authenticate response by {} seconds", delay);
         tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+    }
+    if let Some(record_file) = &config.authenticate.record_file {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(record_file)?;
+        writeln!(file, "{},{}", auth_code, std::process::id())?;
     }
     let response = AuthenticateResponse {
         authenticated: config.authenticate.authenticated,
@@ -463,7 +475,7 @@ async fn handle_request(
 
     let response_msg = match method {
         Method::Initialize => handle_initialize_request(request, config, auth_code).await,
-        Method::Authenticate => handle_authenticate_request(request, config).await,
+        Method::Authenticate => handle_authenticate_request(request, config, auth_code).await,
         Method::Authorize => handle_authorize_request(request, config).await,
         Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config).await,
         Method::OnMessagePublish => handle_on_message_publish_request(request, config).await,
