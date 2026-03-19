@@ -4,7 +4,8 @@ members = [
     "broker",
     "mqtt",
     "plugin_host",
-    "mock_plugin_harness"]
+    "mock_plugin_harness",
+    "example_plugins/acl_file"]
 
 [workspace.dependencies]
 thiserror = "1.0"

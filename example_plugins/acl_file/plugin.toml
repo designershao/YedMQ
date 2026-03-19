@@ -1,0 +1,16 @@
+[plugin]
+name = "acl_file"
+version = "0.1.0"
+description = "File-based ACL plugin example for YedMQ"
+author = "YedMQ"
+license = "Apache-2.0"
+homepage = "https://www.yedmq.com"
+repository = "https://github.com/designershao/YedMQ"
+
+[runtime]
+type = "process"
+executable = "../../target/debug/acl_file"
+args = ["--acl-file", "./acl.json"]
+env = {}
+working_dir = "."
+timeout_secs = 12
