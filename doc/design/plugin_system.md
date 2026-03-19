@@ -277,6 +277,12 @@ Notes:
 
 ### 7.3 Request-style hook semantics
 
+Access control in the current design should be understood as layered responsibilities:
+
+1. `Authenticate` handles login-stage admission.
+2. `Authorize` handles coarse-grained allow or deny decisions for topic operations.
+3. `OnMessageSubscribe` handles deeper subscription shaping, such as adjusting the final granted QoS per topic.
+
 #### Authenticate
 
 Invocation point:
@@ -290,6 +296,7 @@ Chain rules:
 - if any plugin times out, the chain stops immediately and access is denied;
 - if multiple plugins return success, their `tenant_id` values must match, otherwise access is denied;
 - if no `Authenticate` hook is registered, the host returns `default_authenticate_result`.
+- if `Authenticate` hooks are registered but no active plugin instance is available to handle the request, access is denied.
 
 Fields defined in the response but not propagated further by the Broker today:
 
@@ -308,6 +315,7 @@ Chain rules:
 - plugins are called in priority order;
 - if any plugin returns `authorized = false`, the chain stops immediately and access is denied;
 - if any plugin times out, the chain stops immediately and access is denied;
+- only when every plugin in the chain passes does the final result remain allow;
 - if no `Authorize` hook is registered, the host returns `default_authorize_result`.
 
 `AuthorizeResponse.modified_context` exists in the protocol, but the host does not currently expose it upstream. The effective result is always an empty map.
@@ -334,6 +342,7 @@ Chain rules:
 
 - the initial result allows all requested subscriptions;
 - each plugin may override `allowed` and `granted_qos` for individual topics;
+- this hook is the right place for cases such as "the client requested QoS 2, but the plugin downgrades it to granted_qos = 1";
 - if `continue_chain = false`, no lower-priority plugin is called.
 
 ### 7.4 Event-style hook semantics
