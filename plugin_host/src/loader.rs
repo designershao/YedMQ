@@ -147,7 +147,16 @@ impl PluginLoader {
                     let plugin_dir = self
                         .get_plugin_path(plugin_name)
                         .ok_or_else(|| anyhow!("Plugin '{}' path not existed", plugin_name))?;
-                    let exe_path = plugin_dir.join(executable);
+                    let mut exe_path = plugin_dir.join(executable);
+
+                    #[cfg(windows)]
+                    if exe_path.extension().is_none() && !exe_path.exists() {
+                        let candidate = exe_path.with_extension("exe");
+                        if candidate.exists() {
+                            exe_path = candidate;
+                        }
+                    }
+
                     let mut cmd = Command::new(exe_path);
 
                     if let Some(working_dir) = &manifest.runtime.working_dir {

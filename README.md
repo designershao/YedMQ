@@ -41,7 +41,7 @@
 
 - [Rust](https://www.rust-lang.org/tools/install) (1.75 or later)
 - Protocol Buffers compiler (`protoc`)
-- Make (optional, for convenience)
+- Make (optional, Unix-like convenience only)
 
 ### Installation
 
@@ -50,7 +50,7 @@
 ```bash
 git clone https://github.com/designershao/YedMQ.git
 cd YedMQ
-make build-all-release
+cargo build --release -p yedmq
 ```
 
 #### Using Docker
@@ -66,6 +66,10 @@ docker run -p 1883:1883 -p 3456:3456 yedmq/yedmq:latest
    ```bash
    cp yedmq.toml.example yedmq.toml
    ```
+   Windows PowerShell:
+   ```powershell
+   Copy-Item yedmq.toml.example yedmq.toml
+   ```
 
 2. **Edit the configuration** (optional):
    ```bash
@@ -76,6 +80,12 @@ docker run -p 1883:1883 -p 3456:3456 yedmq/yedmq:latest
    ```bash
    cd target/release
    RUST_LOG=info ./yedmq
+   ```
+   Windows PowerShell:
+   ```powershell
+   Set-Location target/release
+   $env:RUST_LOG = "info"
+   .\yedmq.exe
    ```
 
 4. **Test the connection:**

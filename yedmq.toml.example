@@ -42,8 +42,10 @@ session_clock_path = "./clock"
 # Directory containing plugin configurations
 dir = "./plugins"
 
-# Unix domain socket path for plugin communication
-# On Windows, this will be a named pipe
+# Unix domain socket path for plugin communication.
+# On Windows you can either use an explicit named pipe path such as
+# "\\.\pipe\yedmq_plugin.sock" or keep a path-style value and let YedMQ
+# map it to a deterministic named pipe automatically.
 local_socket_path = "/tmp/yedmq_plugin.sock"
 
 # Default authorization result when plugin times out

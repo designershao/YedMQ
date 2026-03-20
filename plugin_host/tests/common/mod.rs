@@ -193,7 +193,10 @@ pub struct HookConfig {
 
 pub fn get_mock_plugin_path() -> PathBuf {
     let cargo_target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target");
-    cargo_target_dir.join("debug").join("mock_plugin_harness")
+    cargo_target_dir.join("debug").join(format!(
+        "mock_plugin_harness{}",
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 
 #[allow(clippy::unwrap_used)]
@@ -202,12 +205,13 @@ pub fn setup_test_plugins(plugins_test_dir: &TempDir, mock_config: MockConfig) {
     std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
 
     let mock_plugin_exe = get_mock_plugin_path();
+    let executable_name = format!("mock_plugin_harness{}", std::env::consts::EXE_SUFFIX);
     let mock_plugin_harness_dir = plugins_test_dir.path().join("mock_plugin_harness");
     std::fs::create_dir_all(&mock_plugin_harness_dir)
         .expect("Failed to create mock plugin harness dir");
     std::fs::copy(
         mock_plugin_exe,
-        mock_plugin_harness_dir.join("mock_plugin_harness"),
+        mock_plugin_harness_dir.join(&executable_name),
     )
     .expect("Failed to copy mock plugin exe");
 
@@ -225,12 +229,13 @@ repository = "https://github.com"
 
 [runtime]
 type = "process"
-executable = "mock_plugin_harness"
+executable = {:?}
 args = ["--config", {:?}]
 env = {{}}
 working_dir = "."
 timeout_secs = 12
     "###,
+        executable_name,
         mock_config_json.unwrap()
     );
 
@@ -248,12 +253,13 @@ pub fn setup_mutiple_test_plugins(
         std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
 
         let mock_plugin_exe = get_mock_plugin_path();
+        let executable_name = format!("{}{}", plugin_name, std::env::consts::EXE_SUFFIX);
         let mock_plugin_harness_dir = plugins_test_dir.path().join(plugin_name.clone());
         std::fs::create_dir_all(&mock_plugin_harness_dir)
             .expect("Failed to create mock plugin harness dir");
         std::fs::copy(
             mock_plugin_exe,
-            mock_plugin_harness_dir.join(plugin_name.clone()),
+            mock_plugin_harness_dir.join(&executable_name),
         )
         .expect("Failed to copy mock plugin exe");
 
@@ -278,7 +284,7 @@ working_dir = "."
 timeout_secs = 12
         "###,
             plugin_name.clone(),
-            plugin_name.clone(),
+            executable_name,
             mock_config_json.unwrap()
         );
 

@@ -23,6 +23,9 @@ fn plugin_host_test_config(
         cluster_name: "test_cluster".to_string(),
         max_restart_attempts: 3,
         health_check_interval_secs: 10,
+        init_timeout_secs: 2,
+        request_timeout_secs: 2,
+        ping_timeout_secs: 2,
         shutdown_signal: sender,
         local_socket_path: local_socket_path.to_string(),
         default_authenticate_result: true,
@@ -35,7 +38,8 @@ fn write_plugin_fixture(root: &Path, acl_json: &str) {
     fs::create_dir_all(&plugin_dir).expect("failed to create plugin dir");
 
     let binary_path = PathBuf::from(env!("CARGO_BIN_EXE_acl_file"));
-    let target_binary = plugin_dir.join("acl_file");
+    let executable_name = format!("acl_file{}", std::env::consts::EXE_SUFFIX);
+    let target_binary = plugin_dir.join(&executable_name);
     fs::copy(binary_path, &target_binary).expect("failed to copy plugin binary");
 
     #[cfg(unix)]
@@ -50,8 +54,7 @@ fn write_plugin_fixture(root: &Path, acl_json: &str) {
     }
 
     fs::write(plugin_dir.join("acl.json"), acl_json).expect("failed to write acl file");
-    fs::write(
-        plugin_dir.join("plugin.toml"),
+    let manifest = format!(
         r#"[plugin]
 name = "acl_file"
 version = "0.1.0"
@@ -60,14 +63,14 @@ author = "Test Author"
 
 [runtime]
 type = "process"
-executable = "acl_file"
+executable = "{executable_name}"
 args = ["--acl-file", "./acl.json"]
-env = {}
+env = {{}}
 working_dir = "."
 timeout_secs = 12
 "#,
-    )
-    .expect("failed to write plugin manifest");
+    );
+    fs::write(plugin_dir.join("plugin.toml"), manifest).expect("failed to write plugin manifest");
 }
 
 async fn wait_until_running(plugin_manager: &PluginManager, plugin_name: &str) {

@@ -4,14 +4,12 @@ use acl_file::{AclConfig, AclPlugin};
 use anyhow::{Context, Result};
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
-use interprocess::local_socket::{
-    tokio::{prelude::*, Stream},
-    GenericFilePath,
-};
+use interprocess::local_socket::tokio::{prelude::*, Stream};
 use log::{error, info};
 use prost::Message as _;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
+use yedmq_plugin_host::local_socket_name::resolve_local_socket_name;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::ProtocolMessage, protocol_frame::ProtocolFrameCodec,
 };
@@ -52,10 +50,7 @@ async fn main() -> Result<()> {
     info!("Socket path: {}", args.socket_path);
     info!("ACL file: {}", args.acl_file);
 
-    let socket_name = args
-        .socket_path
-        .to_fs_name::<GenericFilePath>()
-        .context("invalid socket path")?;
+    let socket_name = resolve_local_socket_name(&args.socket_path)?;
 
     let stream = match timeout(Duration::from_secs(5), Stream::connect(socket_name)).await {
         Ok(Ok(stream)) => stream,

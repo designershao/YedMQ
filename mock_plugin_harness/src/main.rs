@@ -1,15 +1,13 @@
 use clap::Parser;
 use futures::{SinkExt, StreamExt};
-use interprocess::local_socket::{
-    GenericFilePath,
-    tokio::{Stream, prelude::*},
-};
+use interprocess::local_socket::tokio::{Stream, prelude::*};
 use log::{error, info};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Write, time::Duration};
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
+use yedmq_plugin_host::local_socket_name::resolve_local_socket_name;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
         AuthenticateResponse, Hook, InitializeResponse, MessageType, Method, ProtocolMessage,
@@ -544,7 +542,7 @@ async fn main() {
     info!("Socket path: {}", args.socket_path);
     info!("Using config: {:?}", config);
 
-    let socket_name = match args.socket_path.to_fs_name::<GenericFilePath>() {
+    let socket_name = match resolve_local_socket_name(&args.socket_path) {
         Ok(name) => name,
         Err(e) => {
             error!("Invalid socket path: {}", e);

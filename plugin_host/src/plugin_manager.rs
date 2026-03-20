@@ -1,8 +1,15 @@
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{tokio::prelude::*, tokio::Stream, ListenerOptions};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt,
+    security_descriptor::{AsSecurityDescriptorMutExt, SecurityDescriptor},
+};
 use log::{debug, error, info, warn};
-use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
+#[cfg(windows)]
+use std::ptr;
+use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
 
 use prost::Message as _;
 use tokio::{
@@ -15,6 +22,7 @@ use tokio_util::codec::Framed;
 
 use crate::{
     loader::PluginManifest,
+    local_socket_name::resolve_local_socket_name,
     plugin_host_config::PluginHostConfig,
     protocol::{
         plugin_protocol::{
@@ -284,6 +292,7 @@ impl PluginManager {
         let inflight_manager = self.inflight_manager.clone();
         let hook_manager = self.hook_manager.clone();
         let interval_secs = self.config.health_check_interval_secs;
+        let ping_timeout = self.config.ping_timeout();
 
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
@@ -318,7 +327,7 @@ impl PluginManager {
                         .build();
 
                     let result = inflight_manager
-                        .send_and_wait(&ipc_sender, ping_message.clone(), Duration::from_secs(5))
+                        .send_and_wait(&ipc_sender, ping_message.clone(), ping_timeout)
                         .await;
 
                     let mut hook_instance_to_remove = None;
@@ -374,6 +383,7 @@ impl PluginManager {
         );
 
         let initialize_request_param = InitializeRequest::new_from_plugin_host_config(config);
+        let init_timeout = config.init_timeout();
 
         tokio::spawn(async move {
             let wrap_initialize_param_to_any = prost_types::Any {
@@ -394,8 +404,7 @@ impl PluginManager {
                 return;
             }
 
-            // ensure the plugin response init response message in 5 seconds
-            match tokio::time::timeout(Duration::from_secs(5), framed.next()).await {
+            match tokio::time::timeout(init_timeout, framed.next()).await {
                 std::result::Result::Ok(Some(std::result::Result::Ok(msg))) => {
                     let protocol_message = ProtocolMessage::decode(msg.payload);
                     println!(
@@ -632,13 +641,15 @@ impl PluginManager {
     pub async fn start_listener(&mut self) -> Result<()> {
         let socket_path = self.config.local_socket_path.clone();
 
-        let path = Path::new(&socket_path);
-
-        if path.exists() {
-            std::fs::remove_file(path)?; // remove the existing socket file
+        #[cfg(not(windows))]
+        {
+            let path = std::path::Path::new(&socket_path);
+            if path.exists() {
+                std::fs::remove_file(path)?; // remove the existing socket file
+            }
         }
 
-        let name = socket_path.to_fs_name::<interprocess::local_socket::GenericFilePath>()?;
+        let name = resolve_local_socket_name(&socket_path)?;
 
         let (rx_cmd_sender, rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
 
@@ -647,6 +658,14 @@ impl PluginManager {
         let _ = self.start_handle_plugin_rx_cmd(rx_cmd_receiver).await;
 
         let opts = ListenerOptions::new().name(name);
+        #[cfg(windows)]
+        let opts = {
+            let mut security_descriptor = SecurityDescriptor::new()?;
+            unsafe {
+                security_descriptor.set_dacl(ptr::null_mut(), false)?;
+            }
+            opts.security_descriptor(security_descriptor)
+        };
 
         let listener = match opts.create_tokio() {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -890,7 +909,7 @@ impl PluginManager {
 
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -983,7 +1002,7 @@ impl PluginManager {
 
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -1072,7 +1091,7 @@ impl PluginManager {
 
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -1173,7 +1192,7 @@ impl PluginManager {
 
             let result = self
                 .inflight_manager
-                .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                 .await;
 
             match result {
@@ -1332,6 +1351,7 @@ impl PluginManager {
             .ok_or_else(|| anyhow::anyhow!("plugin {} start command not exsited", name))?;
 
         let mut process = match command
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

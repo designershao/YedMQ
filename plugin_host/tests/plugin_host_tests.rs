@@ -2,6 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use yedmq_plugin_host::{
     plugin_host_config,
+    plugin_manager::{PluginManager, PluginState},
     protocol::plugin_protocol::{
         AuthAction, AuthenticateRequest, AuthorizeRequest, MessagePublishRequest, MqttMessage,
         SubscribeRequest, TopicFilter,
@@ -11,6 +12,11 @@ use yedmq_plugin_host::{
 use crate::common::{HookConfig, InitFailMode, MockConfig};
 
 pub mod common;
+
+const TEST_LISTENER_START_DELAY: Duration = Duration::from_millis(150);
+const TEST_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+const TEST_STATE_TIMEOUT: Duration = Duration::from_secs(6);
+const TEST_LOG_TIMEOUT: Duration = Duration::from_secs(6);
 
 pub fn get_plugin_host_test_config(
     sender: tokio::sync::broadcast::Sender<()>,
@@ -24,10 +30,80 @@ pub fn get_plugin_host_test_config(
         cluster_name: "test_cluster".to_string(),
         max_restart_attempts: 3,
         health_check_interval_secs: 10,
+        init_timeout_secs: 2,
+        request_timeout_secs: 2,
+        ping_timeout_secs: 1,
         shutdown_signal: sender,
         local_socket_path: local_socket_path.to_string(),
         default_authenticate_result: true,
         default_authorize_result: true,
+    }
+}
+
+async fn wait_for_listener_start() {
+    tokio::time::sleep(TEST_LISTENER_START_DELAY).await;
+}
+
+async fn wait_for_plugin_state(
+    plugin_manager: &PluginManager,
+    plugin_name: &str,
+    expected_state: PluginState,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut last_state = None;
+
+    loop {
+        if let Some(plugin) = plugin_manager.get_running_plugins().get(plugin_name) {
+            let state = plugin.state;
+            if state == expected_state {
+                return;
+            }
+            last_state = Some(state);
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "plugin {plugin_name} did not reach state {:?}, last observed state: {:?}",
+                expected_state, last_state
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_plugins_running(
+    plugin_manager: &PluginManager,
+    plugin_names: &[&str],
+    timeout: Duration,
+) {
+    for plugin_name in plugin_names {
+        wait_for_plugin_state(plugin_manager, plugin_name, PluginState::Running, timeout).await;
+    }
+}
+
+async fn wait_for_plugin_log(
+    plugin_manager: &PluginManager,
+    plugin_name: &str,
+    expected_fragment: &str,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        if let Some(plugin) = plugin_manager.get_running_plugins().get(plugin_name) {
+            let logs = plugin.logs.read().await.join("\n");
+            if logs.contains(expected_fragment) {
+                return;
+            }
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!("plugin {plugin_name} did not emit log fragment {expected_fragment:?} in time");
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
@@ -84,19 +160,23 @@ pub async fn test_plugin_host_start_plugin() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
     assert!(running_plugins.contains_key("mock_plugin_harness"));
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin init
 
     assert!(matches!(
         running_plugins.get("mock_plugin_harness").unwrap().state,
@@ -128,7 +208,7 @@ async fn when_no_plugin_existed_call_authenticate_plugin_host_should_return_defa
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     let authenticate_request = AuthenticateRequest {
         password: "test_password".to_string(),
@@ -172,7 +252,7 @@ async fn when_no_plugin_existed_call_authorize_plugin_host_should_return_default
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     let authorize_request = AuthorizeRequest {
         client_id: "test_client_id".to_string(),
@@ -219,14 +299,20 @@ async fn when_plugin_stopped_plugin_host_should_change_the_plugin_state() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     {
         let running_plugins = plugin_manager.get_running_plugins();
@@ -289,14 +375,12 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
 
     {
         let running_plugins = plugin_manager.get_running_plugins();
@@ -304,7 +388,20 @@ async fn when_plugin_init_response_timeout_plugin_host_should_disconnect() {
         assert!(running_plugins.contains_key("mock_plugin_harness"));
     }
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(6)).await; // wait for plugin init
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Stopped,
+        TEST_STATE_TIMEOUT,
+    )
+    .await;
+    wait_for_plugin_log(
+        &plugin_manager,
+        "mock_plugin_harness",
+        "Connection closed by host",
+        TEST_LOG_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
 
@@ -345,21 +442,33 @@ pub async fn when_call_stop_plugin_plugin_host_should_stop_plugin() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     plugin_manager
         .stop_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await; // wait for plugin to stop
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Stopped,
+        TEST_STATE_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
 
@@ -399,14 +508,20 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let pre_plugin_start_time = {
         let running_plugins = plugin_manager.get_running_plugins();
@@ -421,7 +536,13 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await; // wait for listener to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
 
@@ -464,21 +585,33 @@ pub async fn when_call_authenticate_hook_after_plugin_stop_host_should_fall_back
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     plugin_manager
         .stop_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Stopped,
+        TEST_STATE_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         password: "test_password".to_string(),
@@ -531,21 +664,33 @@ pub async fn when_call_authenticate_hook_after_plugin_restart_host_should_not_in
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     plugin_manager
         .restart_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         password: "test_password".to_string(),
@@ -678,14 +823,20 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         password: "test_password".to_string(),
@@ -752,14 +903,20 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let message_publish_request = MessagePublishRequest {
         message: Some(MqttMessage {
@@ -831,14 +988,20 @@ pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_mess
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let message_publish_request = MessagePublishRequest {
         message: Some(MqttMessage {
@@ -913,14 +1076,20 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugin_on_me
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let subscribe_request = SubscribeRequest {
         client_id: "test_client_id".to_string(),
@@ -1013,7 +1182,7 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1028,7 +1197,16 @@ pub async fn when_call_on_message_subscribe_plugin_host_should_call_plugins_stri
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let subscribe_request = SubscribeRequest {
         client_id: "test_client_id".to_string(),
@@ -1147,7 +1325,7 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1162,7 +1340,16 @@ pub async fn when_call_on_message_subscribe_and_plugin_breaks_chain_host_should_
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let subscribe_request = SubscribeRequest {
         client_id: "test_client_id".to_string(),
@@ -1275,7 +1462,7 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1290,7 +1477,16 @@ pub async fn when_call_authenticate_hook_and_plugin_denies_host_should_stop_chai
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         client_id: "test_client_id".to_string(),
@@ -1402,7 +1598,7 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1417,7 +1613,16 @@ pub async fn when_call_authenticate_hook_and_plugin_response_tenant_id_conflict_
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         client_id: "test_client_id".to_string(),
@@ -1534,7 +1739,7 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1549,7 +1754,16 @@ pub async fn when_call_authenticate_hook_and_all_plugin_execute_timeout_host_sho
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authenticate_request = AuthenticateRequest {
         client_id: "test_client_id".to_string(),
@@ -1666,7 +1880,7 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1681,7 +1895,16 @@ pub async fn when_call_authorize_hook_and_plugin_denies_host_should_stop_chain_a
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authorize_request = AuthorizeRequest {
         client_id: "test_client_id".to_string(),
@@ -1792,7 +2015,7 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness_1")
@@ -1807,7 +2030,16 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugins_running(
+        &plugin_manager,
+        &[
+            "mock_plugin_harness_1",
+            "mock_plugin_harness_2",
+            "mock_plugin_harness_3",
+        ],
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     let authorize_request = AuthorizeRequest {
         client_id: "test_client_id".to_string(),
@@ -1909,7 +2141,7 @@ executable = "non_existent_executable"
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     // start_plugin will return Err because spawn fails
     let _ = plugin_manager.start_plugin(plugin_name).await;
@@ -1949,19 +2181,31 @@ pub async fn test_plugin_responds_to_ping_correctly() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     // Start heartbeat check
     plugin_manager.start_heartbeat_check_task().await;
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(20)).await; // wait for a few ping cycles
+    wait_for_plugin_log(
+        &plugin_manager,
+        "mock_plugin_harness",
+        "Handling ping request",
+        TEST_LOG_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
@@ -2010,59 +2254,38 @@ pub async fn test_plugin_state_changed_when_ping_timeout() {
 
     plugin_manager.start_listener().await.unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for listener to start
+    wait_for_listener_start().await;
 
     plugin_manager
         .start_plugin("mock_plugin_harness")
         .await
         .unwrap();
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await; // wait for plugin to start
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
 
     // Start heartbeat check
     plugin_manager.start_heartbeat_check_task().await;
 
-    // Wait for > 3 * interval.
-    // Interval 1s. Timeout 3 counts. so at least 3 seconds.
-    // Also ping request timeout is 5s (hardcoded in PluginManager).
-    // So for each ping, it waits 5s if it times out?
-    // Let's check PluginManager::start_heartbeat_check_task again.
-    // send_and_wait timeout is 5s.
-    // if respond = false, mock plugin might return error immediately or just hang?
-    // In mock_plugin_harness:
-    // if config.ping.respond == false { return Err(...) }
-    // If it returns Err, `handle_request` logs error and continues loop. It does NOT send response.
-    // So `plugin_host` will timeout after 5s.
-    // So 1st ping: starts at 1s, timeouts at 6s. Count = 1.
-    // 2nd ping: starts at 7s (approx), timeouts at 12s. Count = 2.
-    // 3rd ping: starts at 13s, timeouts at 18s. Count = 3 -> Failed.
-    // This is too long for a unit test (18s).
-
-    // Optimization: Configure mock plugin to delay response slightly (e.g., 6s) so it timeouts?
-    // Or just let it not respond.
-    // If I want to make it faster, I need to reduce the timeout in `PluginManager` but that is hardcoded to 5s.
-    //
-    // However, `PluginManager::start_heartbeat_check_task` loop:
-    // interval.tick().await; // first tick finishes immediately? No, "The first tick completes immediately".
-    // So:
-    // T=0: Tick. Send Ping 1.
-    // If mock plugin returns Err internally, it doesn't send response frame.
-    // Host waits 5s. T=5: Timeout. Count=1.
-    // Loop continues. interval was 1s. We are already past that.
-    // Next tick will happen immediately? "If the task is behind, the next tick will happen immediately".
-    // T=5: Tick. Send Ping 2.
-    // T=10: Timeout. Count=2.
-    // T=10: Tick. Send Ping 3.
-    // T=15: Timeout. Count=3. State -> Failed.
-    // So expected wait time is around 15 seconds. This is acceptable for a test, but maybe I can make it faster if I mock the delay?
-    //
-    // Actually, if `mock_plugin` returns error to `framed.send(response)`, `plugin_host` just timeouts.
-    //
-    // If I want to speed this up, I would need to change the 5s timeout in `PluginManager` to be configurable or smaller.
-    // But I shouldn't change too much production code just for tests if not necessary.
-    // I will wait 20s to be safe.
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+    wait_for_plugin_log(
+        &plugin_manager,
+        "mock_plugin_harness",
+        "Not responding to ping as per configuration",
+        TEST_LOG_TIMEOUT,
+    )
+    .await;
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Failed,
+        TEST_STATE_TIMEOUT,
+    )
+    .await;
 
     let running_plugins = plugin_manager.get_running_plugins();
     let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();

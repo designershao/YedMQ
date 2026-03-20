@@ -107,7 +107,8 @@ impl Default for Plugin {
             dir: "./plugins".to_string(),
             default_authenticate_result: true,
             default_authorize_result: true,
-            local_socket_path: "/tmp/yedmq_plugin_host.sock".to_string(),
+            local_socket_path: yedmq_plugin_host::local_socket_name::default_local_socket_path()
+                .to_string(),
         }
     }
 }
