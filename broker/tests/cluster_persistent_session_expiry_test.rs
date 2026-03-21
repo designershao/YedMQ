@@ -176,8 +176,8 @@ async fn start_node(
 
     let cluster_node_config = Node {
         id: node_id,
-        rpc_address: format!("0.0.0.0:{}", rpc),
-        api_address: format!("0.0.0.0:{}", api),
+        rpc_address: format!("127.0.0.1:{}", rpc),
+        api_address: format!("127.0.0.1:{}", api),
     };
 
     let settings = Settings {
@@ -188,11 +188,11 @@ async fn start_node(
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
-                external: format!("0.0.0.0:{}", tcp),
+                external: format!("127.0.0.1:{}", tcp),
                 rate_limit: Default::default(),
             },
             tcp_tls: yedmq::settings::TcpTls {
-                external: format!("0.0.0.0:{}", tcp_tls),
+                external: format!("127.0.0.1:{}", tcp_tls),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -206,11 +206,11 @@ async fn start_node(
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
-                external: format!("0.0.0.0:{}", ws),
+                external: format!("127.0.0.1:{}", ws),
                 rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
-                external: format!("0.0.0.0:{}", wss),
+                external: format!("127.0.0.1:{}", wss),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -224,7 +224,7 @@ async fn start_node(
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
-                external: format!("0.0.0.0:{}", api),
+                external: format!("127.0.0.1:{}", api),
                 auth: yedmq::settings::AuthConfig { users: vec![] },
             },
         },
@@ -251,7 +251,7 @@ async fn start_node(
             heartbeat_interval: 200,
             store_dir,
             rpc: yedmq::settings::RPC {
-                external: format!("0.0.0.0:{}", rpc),
+                external: format!("127.0.0.1:{}", rpc),
             },
             nodes: vec![cluster_node_config],
             session_ttl: 10,

@@ -97,27 +97,27 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
-                external: format!("0.0.0.0:{}", tcp_port).to_string(),
+                external: format!("127.0.0.1:{}", tcp_port).to_string(),
                 rate_limit: Default::default(),
             },
             tcp_tls: yedmq::settings::TcpTls {
-                external: format!("0.0.0.0:{}", tcp_port + 1).to_string(),
+                external: format!("127.0.0.1:{}", tcp_port + 1).to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
-                external: format!("0.0.0.0:{}", tcp_port + 2).to_string(),
+                external: format!("127.0.0.1:{}", tcp_port + 2).to_string(),
                 rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
-                external: format!("0.0.0.0:{}", tcp_port + 3).to_string(),
+                external: format!("127.0.0.1:{}", tcp_port + 3).to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
-                external: format!("0.0.0.0:{}", api_port).to_string(),
+                external: format!("127.0.0.1:{}", api_port).to_string(),
                 auth: yedmq::settings::AuthConfig { users: vec![] },
             },
         },
@@ -140,12 +140,12 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
             heartbeat_interval: 10,
             store_dir: test_temp_store_dir,
             rpc: yedmq::settings::RPC {
-                external: format!("0.0.0.0:{}", rpc_port).to_string(),
+                external: format!("127.0.0.1:{}", rpc_port).to_string(),
             },
             nodes: vec![yedmq::settings::Node {
                 id: 1001,
-                rpc_address: format!("0.0.0.0:{}", rpc_port).to_string(),
-                api_address: format!("0.0.0.0:{}", api_port).to_string(),
+                rpc_address: format!("127.0.0.1:{}", rpc_port).to_string(),
+                api_address: format!("127.0.0.1:{}", api_port).to_string(),
             }],
             session_ttl: 10,
             startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,

@@ -92,21 +92,21 @@ fn get_test_settings(temp_dir: &Path) -> Settings {
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
-                external: format!("0.0.0.0:{}", tcp_port),
+                external: format!("127.0.0.1:{}", tcp_port),
                 rate_limit: Default::default(),
             },
             tcp_tls: yedmq::settings::TcpTls {
-                external: format!("0.0.0.0:{}", tcp_port + 1),
+                external: format!("127.0.0.1:{}", tcp_port + 1),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
-                external: format!("0.0.0.0:{}", tcp_port + 2),
+                external: format!("127.0.0.1:{}", tcp_port + 2),
                 rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
-                external: format!("0.0.0.0:{}", tcp_port + 3),
+                external: format!("127.0.0.1:{}", tcp_port + 3),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
                 rate_limit: Default::default(),
@@ -140,11 +140,11 @@ fn get_test_settings(temp_dir: &Path) -> Settings {
             heartbeat_interval: 10,
             store_dir: test_temp_store_dir,
             rpc: yedmq::settings::RPC {
-                external: format!("0.0.0.0:{}", rpc_port),
+                external: format!("127.0.0.1:{}", rpc_port),
             },
             nodes: vec![yedmq::settings::Node {
                 id: 1001,
-                rpc_address: format!("0.0.0.0:{}", rpc_port).to_string(),
+                rpc_address: format!("127.0.0.1:{}", rpc_port).to_string(),
                 api_address: format!("127.0.0.1:{}", api_port).to_string(),
             }],
             session_ttl: 10,

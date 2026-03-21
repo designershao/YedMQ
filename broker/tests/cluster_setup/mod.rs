@@ -1,11 +1,16 @@
 use rand::Rng;
+use serde_json::Value;
 use std::{env, fs, path::PathBuf, sync::Arc, thread, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use yedmq::app::YedMQApp;
-use yedmq::settings::{Node, Settings};
+use yedmq::settings::{Node, Settings, User};
 
 static ASYNC_SETUP: OnceCell<TestClusterContext> = OnceCell::const_new();
+const API_USERNAME: &str = "admin";
+const API_PASSWORD: &str = "password";
+const CLUSTER_READY_TIMEOUT_SECS: u64 = 60;
+const CLUSTER_READY_POLL_INTERVAL_MILLIS: u64 = 500;
 
 pub struct TestClusterContext {
     pub _test_dir: TempDir,
@@ -62,8 +67,8 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                 let (_, _, _, _, api_port, rpc_port) = ports[i];
                 cluster_nodes_config.push(Node {
                     id,
-                    rpc_address: format!("0.0.0.0:{}", rpc_port),
-                    api_address: format!("0.0.0.0:{}", api_port),
+                    rpc_address: format!("127.0.0.1:{}", rpc_port),
+                    api_address: format!("127.0.0.1:{}", api_port),
                 });
             }
 
@@ -91,11 +96,11 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                     },
                     listener: yedmq::settings::Listener {
                         tcp: yedmq::settings::Tcp {
-                            external: format!("0.0.0.0:{}", tcp),
+                            external: format!("127.0.0.1:{}", tcp),
                             rate_limit: Default::default(),
                         },
                         tcp_tls: yedmq::settings::TcpTls {
-                            external: format!("0.0.0.0:{}", tcp_tls),
+                            external: format!("127.0.0.1:{}", tcp_tls),
                             cert_file: absolute_certs_path
                                 .join("server.crt")
                                 .to_str()
@@ -109,11 +114,11 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                             rate_limit: Default::default(),
                         },
                         ws: yedmq::settings::Ws {
-                            external: format!("0.0.0.0:{}", ws),
+                            external: format!("127.0.0.1:{}", ws),
                             rate_limit: Default::default(),
                         },
                         wss: yedmq::settings::Wss {
-                            external: format!("0.0.0.0:{}", wss),
+                            external: format!("127.0.0.1:{}", wss),
                             cert_file: absolute_certs_path
                                 .join("server.crt")
                                 .to_str()
@@ -127,8 +132,13 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                             rate_limit: Default::default(),
                         },
                         api: yedmq::settings::Api {
-                            external: format!("0.0.0.0:{}", api),
-                            auth: yedmq::settings::AuthConfig { users: vec![] },
+                            external: format!("127.0.0.1:{}", api),
+                            auth: yedmq::settings::AuthConfig {
+                                users: vec![User {
+                                    username: API_USERNAME.to_string(),
+                                    password: API_PASSWORD.to_string(),
+                                }],
+                            },
                         },
                     },
                     plugin: yedmq::settings::Plugin {
@@ -154,7 +164,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                         heartbeat_interval: 200,
                         store_dir,
                         rpc: yedmq::settings::RPC {
-                            external: format!("0.0.0.0:{}", rpc),
+                            external: format!("127.0.0.1:{}", rpc),
                         },
                         nodes: cluster_nodes_config.clone(),
                         session_ttl: 60,
@@ -177,7 +187,15 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                 });
             }
 
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .build()
+                .expect("Failed to build readiness HTTP client");
+            let api_addrs: Vec<String> = nodes_settings
+                .iter()
+                .map(|settings| settings.listener.api.external.clone())
+                .collect();
+            wait_for_cluster_ready(&client, &api_addrs, &node_ids).await;
 
             TestClusterContext {
                 _test_dir: temp_dir,
@@ -190,4 +208,143 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
 
 fn random_tcp_port() -> u16 {
     rand::thread_rng().gen_range(10240..=65535)
+}
+
+async fn wait_for_cluster_ready(client: &reqwest::Client, api_addrs: &[String], node_ids: &[u64]) {
+    for api_addr in api_addrs {
+        assert!(
+            wait_api_ready(client, api_addr).await,
+            "node api is not ready: {}",
+            api_addr
+        );
+    }
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(CLUSTER_READY_TIMEOUT_SECS);
+    let mut last_failure = "cluster readiness checks have not succeeded yet".to_string();
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "cluster did not become ready within {}s: {}",
+                CLUSTER_READY_TIMEOUT_SECS, last_failure
+            );
+        }
+
+        let mut cluster_ready = true;
+
+        for api_addr in api_addrs {
+            match fetch_cluster_metrics(client, api_addr).await {
+                Ok(metrics)
+                    if cluster_metrics_ready(&metrics, node_ids) =>
+                {
+                    continue;
+                }
+                Ok(metrics) => {
+                    cluster_ready = false;
+                    last_failure = format!("cluster metrics not ready on {}: {}", api_addr, metrics);
+                    break;
+                }
+                Err(err) => {
+                    cluster_ready = false;
+                    last_failure = format!("failed to fetch cluster metrics from {}: {}", api_addr, err);
+                    break;
+                }
+            }
+        }
+
+        if cluster_ready {
+            return;
+        }
+
+        tokio::time::sleep(Duration::from_millis(CLUSTER_READY_POLL_INTERVAL_MILLIS)).await;
+    }
+}
+
+async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
+    let url = format!("http://{}/api/v1/system_info", api_addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(CLUSTER_READY_TIMEOUT_SECS);
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+
+        let response = client
+            .get(&url)
+            .basic_auth(API_USERNAME, Some(API_PASSWORD))
+            .send()
+            .await;
+
+        if let Ok(response) = response {
+            if response.status().is_success() {
+                return true;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(CLUSTER_READY_POLL_INTERVAL_MILLIS)).await;
+    }
+}
+
+async fn fetch_cluster_metrics(
+    client: &reqwest::Client,
+    api_addr: &str,
+) -> Result<Value, String> {
+    let url = format!("http://{}/api/v1/cluster/metrics", api_addr);
+    let response = client
+        .get(&url)
+        .basic_auth(API_USERNAME, Some(API_PASSWORD))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    if !response.status().is_success() {
+        return Err(format!("status {}", response.status()));
+    }
+
+    response.json().await.map_err(|err| err.to_string())
+}
+
+fn cluster_metrics_ready(metrics: &Value, node_ids: &[u64]) -> bool {
+    const RAFT_GROUP_KEYS: [&str; 3] = [
+        "topic_raft",
+        "session_actor_map_raft",
+        "session_state_map_raft",
+    ];
+
+    RAFT_GROUP_KEYS
+        .iter()
+        .all(|raft_key| raft_group_ready(metrics, raft_key, node_ids))
+}
+
+fn raft_group_ready(metrics: &Value, raft_key: &str, node_ids: &[u64]) -> bool {
+    let Some(raft_metrics) = metrics.get(raft_key) else {
+        return false;
+    };
+
+    let has_leader = raft_metrics
+        .get("current_leader")
+        .or_else(|| raft_metrics.get("currentLeader"))
+        .is_some_and(|leader| !leader.is_null());
+
+    has_leader && membership_contains_all_nodes(raft_metrics, node_ids)
+}
+
+fn membership_contains_all_nodes(raft_metrics: &Value, node_ids: &[u64]) -> bool {
+    let Some(nodes_obj) = raft_metrics
+        .get("membership_config")
+        .or_else(|| raft_metrics.get("membershipConfig"))
+        .and_then(|membership| {
+            membership
+                .get("membership")
+                .and_then(|inner| inner.get("nodes"))
+                .or_else(|| membership.get("nodes"))
+        })
+        .and_then(|nodes| nodes.as_object())
+    else {
+        return false;
+    };
+
+    node_ids
+        .iter()
+        .all(|node_id| nodes_obj.contains_key(&node_id.to_string()))
 }
