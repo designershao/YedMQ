@@ -363,6 +363,11 @@ message GetSessionActorMapResponse {
 message RoutePacketRequest {
     string tenant_id = 1; // Tenant identifier
     string payload = 2; // MQTT packet to route
+    string route_id = 3; // Durable route task id, empty for best-effort
+    uint64 source_node_id = 4; // Source node identifier
+    string target_client_id = 5; // Explicit target client id
+    uint32 target_qos = 6; // Effective qos for the target subscriber
+    uint64 expiry_at = 7; // Expiry timestamp in unix seconds
 }
 
 message RoutePacketResponse {

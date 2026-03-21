@@ -631,6 +631,11 @@ impl ClusterService for ClusterServiceImpl {
             .send(RouteFromOtherNode {
                 tenant_id: inner.tenant_id.clone(),
                 packet,
+                route_id: inner.route_id,
+                source_node_id: inner.source_node_id,
+                target_client_id: inner.target_client_id,
+                target_qos: inner.target_qos as u8,
+                expiry_at: inner.expiry_at,
             })
             .await
             .map_err(|e| Status::internal(format!("Failed to route packet: {}", e)))?

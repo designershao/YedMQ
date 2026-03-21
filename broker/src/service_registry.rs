@@ -5,6 +5,7 @@ use crate::raft::session_actor_map::session_actor_map_raft_actor::{
 };
 use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
+use crate::route_store::JsonRocksDBStore;
 use crate::router_actor::{RouterActor, RouterActorConfig};
 use crate::rpc::rpc_actor::RpcActor;
 use crate::session::session_actor_map_storage::SessionClock;
@@ -110,7 +111,7 @@ impl ServiceRegistry {
         let num_routers = std::cmp::max(1, num_cpus.saturating_sub(2));
 
         let mut router_actors = Vec::new();
-        for _ in 0..num_routers {
+        for router_index in 0..num_routers {
             let settings_clone = settings.clone();
             let session_manager_clone = session_manager.clone();
             let topic_raft_clone = topic_raft.clone();
@@ -118,6 +119,21 @@ impl ServiceRegistry {
             let topic_storage = topic_storage.clone();
             let session_actor_map_storage = session_actor_map_storage.clone();
             let session_registry_clone = session_registry.clone();
+            let payload_store_clone = payload_store.clone();
+            let route_outbox_path = std::path::Path::new(&settings.cluster.store_dir)
+                .join("route_outbox")
+                .join(format!("router_{}", router_index));
+            let route_inbox_path = std::path::Path::new(&settings.cluster.store_dir)
+                .join("route_inbox")
+                .join(format!("router_{}", router_index));
+            let route_outbox_store = Arc::new(
+                JsonRocksDBStore::new(route_outbox_path)
+                    .expect("failed to initialize route outbox store"),
+            );
+            let route_inbox_store = Arc::new(
+                JsonRocksDBStore::new(route_inbox_path)
+                    .expect("failed to initialize route inbox store"),
+            );
             let metric_clone = metric.clone();
 
             let router = pools.start_actor(move || {
@@ -129,6 +145,9 @@ impl ServiceRegistry {
                     topic_storage,
                     session_actor_map_storage,
                     session_registry: session_registry_clone,
+                    payload_store: payload_store_clone,
+                    route_outbox_store,
+                    route_inbox_store,
                     metric: metric_clone,
                 })
             });

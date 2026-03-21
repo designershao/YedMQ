@@ -1,7 +1,7 @@
 use actix::{
     dev::{ContextFutureSpawner, MessageResponse},
     fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError,
-    Message, Recipient, ResponseFuture, SystemService, WrapFuture,
+    Message, Recipient, ResponseActFuture, ResponseFuture, SystemService, WrapFuture,
 };
 use bytes::Bytes;
 use log::{debug, error, info, warn};
@@ -292,6 +292,9 @@ pub enum SessionActorError {
 
     #[error("connection not set")]
     ConnectionNotSet,
+
+    #[error("delivery error: {0}")]
+    DeliveryError(String),
 }
 
 #[derive(Message)]
@@ -334,6 +337,12 @@ pub enum SessionActorMessage {
     ClientDisconnected,
 
     ForceStop,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<(), SessionActorError>")]
+pub struct AcceptRoutedPublish {
+    pub packet: MqttPacketV3,
 }
 
 #[derive(Message)]
@@ -552,6 +561,9 @@ enum HandlePublishError {
 
     #[error("Payload store error: {0}")]
     PayloadStoreError(#[from] PayloadError),
+
+    #[error("Route error: {0}")]
+    RouteError(String),
 }
 
 struct HandlePublishResult {
@@ -567,6 +579,172 @@ struct HandlePublishContext {
     session_state_raft_actor: Addr<SessionStateRaftActor>,
     topic_raft_actor: Addr<topic_raft_actor::TopicRaftActor>,
     payload_store: Option<Arc<dyn PayloadStore>>,
+}
+
+struct OutboundPublishDeliveryContext {
+    tenant_id: String,
+    client_id: String,
+    clean_session: bool,
+    activity_state: ActivityState,
+    session_state: Arc<RwLock<SessionState>>,
+    session_state_raft_actor: Addr<SessionStateRaftActor>,
+    payload_store: Option<Arc<dyn PayloadStore>>,
+    conn: Option<Recipient<ConnectionActorMessage>>,
+}
+
+async fn deliver_outbound_publish(
+    mut publish_packet: PublishPacket,
+    context: OutboundPublishDeliveryContext,
+) -> Result<(), SessionActorError> {
+    let qos = publish_packet.fix_header.qos.unwrap_or(0) as u8;
+
+    if matches!(context.activity_state, ActivityState::Active) {
+        let conn = context.conn.ok_or(SessionActorError::ConnectionNotSet)?;
+        if qos == 0 {
+            conn.send(ConnectionActorMessage::WritePacketToClient(
+                MqttPacketV3::Publish(publish_packet),
+            ))
+            .await?
+            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+            return Ok(());
+        }
+
+        let packet_id = publish_packet
+            .variable_header
+            .packet_identifier
+            .ok_or_else(|| {
+                SessionActorError::DeliveryError(
+                    "QoS > 0 publish packet missing packet identifier".to_string(),
+                )
+            })?;
+
+        let store = context.payload_store.as_ref().ok_or_else(|| {
+            SessionActorError::DeliveryError("payload store missing".to_string())
+        })?;
+        let key = uuid::Uuid::new_v4().to_string();
+        let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+        store
+            .put(&key, bytes::Bytes::from(data))
+            .await
+            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+
+        if context.clean_session {
+            let mut session_state_guard = context.session_state.write().await;
+            if let Err(e) = session_state_guard
+                .inflight
+                .register_with_tx_packet(packet_id, qos, key.clone())
+            {
+                if matches!(e, InflightError::PacketIdentifierHasExisted) {
+                    if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
+                        publish_packet.variable_header.packet_identifier = Some(new_id);
+                        session_state_guard
+                            .inflight
+                            .register_with_tx_packet(new_id, qos, key.clone())
+                            .map_err(|inner| {
+                                SessionActorError::DeliveryError(inner.to_string())
+                            })?;
+                    } else {
+                        return Err(SessionActorError::DeliveryError(
+                            "failed to allocate new inflight packet id".to_string(),
+                        ));
+                    }
+                } else {
+                    return Err(SessionActorError::DeliveryError(e.to_string()));
+                }
+            }
+        } else {
+            match context
+                .session_state_raft_actor
+                .send(RegisterInflightTxPacket {
+                    tenant_id: context.tenant_id.clone(),
+                    client_id: context.client_id.clone(),
+                    packet_id,
+                    qos,
+                    packet_key: key.clone(),
+                })
+                .await?
+            {
+                Ok(()) => {}
+                Err(e) => {
+                    if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
+                        let new_id = {
+                            let mut session_state_guard = context.session_state.write().await;
+                            session_state_guard.inflight.allocate_packet_id()
+                        };
+                        if let Some(new_id) = new_id {
+                            publish_packet.variable_header.packet_identifier = Some(new_id);
+                            context
+                                .session_state_raft_actor
+                                .send(RegisterInflightTxPacket {
+                                    tenant_id: context.tenant_id.clone(),
+                                    client_id: context.client_id.clone(),
+                                    packet_id: new_id,
+                                    qos,
+                                    packet_key: key.clone(),
+                                })
+                                .await?
+                                .map_err(|inner| {
+                                    SessionActorError::DeliveryError(inner.to_string())
+                                })?;
+                        } else {
+                            return Err(SessionActorError::DeliveryError(
+                                "failed to allocate new inflight packet id".to_string(),
+                            ));
+                        }
+                    } else {
+                        return Err(SessionActorError::DeliveryError(e.to_string()));
+                    }
+                }
+            }
+        }
+
+        conn.send(ConnectionActorMessage::WritePacketToClient(
+            MqttPacketV3::Publish(publish_packet),
+        ))
+        .await?
+        .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+
+        return Ok(());
+    }
+
+    if qos == 0 {
+        return Ok(());
+    }
+
+    let store = context
+        .payload_store
+        .as_ref()
+        .ok_or_else(|| SessionActorError::DeliveryError("payload store missing".to_string()))?;
+    let key = uuid::Uuid::new_v4().to_string();
+    let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+        .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+    store
+        .put(&key, bytes::Bytes::from(data))
+        .await
+        .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+
+    if !context.clean_session {
+        context
+            .session_state_raft_actor
+            .send(crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
+                tenant_id: context.tenant_id.clone(),
+                client_id: context.client_id.clone(),
+                packet_key: key.clone(),
+            })
+            .await?
+            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+
+        let mut session_state_guard = context.session_state.write().await;
+        session_state_guard.pending_messages.push(key);
+    } else {
+        store
+            .delete(&key)
+            .await
+            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+    }
+
+    Ok(())
 }
 
 async fn do_handle_unsubscribe(
@@ -813,10 +991,14 @@ async fn do_handle_publish(
         let hash = std::hash::Hasher::finish(&hasher);
         let router_actor = &context.router_actors[hash as usize % context.router_actors.len()];
 
-        router_actor.do_send(crate::router_actor::RoutePacket {
-            tenant_id: context.client_info.tenant_id.clone(),
-            packet: MqttPacketV3::Publish(publish_packet.clone()),
-        });
+        router_actor
+            .send(crate::router_actor::RoutePacket {
+                tenant_id: context.client_info.tenant_id.clone(),
+                packet: MqttPacketV3::Publish(publish_packet.clone()),
+            })
+            .await
+            .map_err(|e| HandlePublishError::RouteError(e.to_string()))?
+            .map_err(|e| HandlePublishError::RouteError(e.to_string()))?;
     }
 
     Ok(result)
@@ -1230,6 +1412,9 @@ impl SessionActor {
                                 }
                                 HandlePublishError::PayloadStoreError(e) => {
                                     error!("Failed to store payload for incoming publish packet: {}", e);
+                                }
+                                HandlePublishError::RouteError(e) => {
+                                    error!("Failed to route incoming publish packet: {}", e);
                                 }
                             }
                         }
@@ -1855,181 +2040,32 @@ impl Handler<SessionActorMessage> for SessionActor {
                 }
             }
             SessionActorMessage::OutboundMessage(packet) => {
-                if let MqttPacketV3::Publish(mut publish_packet) = packet {
+                if let MqttPacketV3::Publish(publish_packet) = packet {
                     self.metric.increase_messages_sent();
                     self.session_metrics.increase_messages_sent();
-                    let tenant_id = self.tenant_id.clone();
-                    let client_id = self.client_id.clone();
-                    let clean_session = self.clean_session;
-                    let session_state = self.state.clone();
-                    let session_state_raft_actor = self.session_state_raft_actor.clone();
-                    let payload_store = self.payload_store.clone();
-                    let conn = self.conn_recipient.clone();
-                    let self_addr = ctx.address();
+                    let delivery_context = OutboundPublishDeliveryContext {
+                        tenant_id: self.tenant_id.clone(),
+                        client_id: self.client_id.clone(),
+                        clean_session: self.clean_session,
+                        activity_state: self.activity_state,
+                        session_state: self.state.clone(),
+                        session_state_raft_actor: self.session_state_raft_actor.clone(),
+                        payload_store: self.payload_store.clone(),
+                        conn: self.conn_recipient.clone(),
+                    };
 
-                    if matches!(self.activity_state, ActivityState::Active) && conn.is_some() {
-                        if let Some(conn) = conn {
-                            if publish_packet.fix_header.qos.unwrap_or(0) == 0 {
-                                conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                                    MqttPacketV3::Publish(publish_packet),
-                                ));
-                            } else {
-                                ctx.spawn(async move {
-                                    let packet_id = match publish_packet.variable_header.packet_identifier {
-                                        Some(id) => id,
-                                        None => {
-                                            error!("QoS > 0 publish packet missing packet identifier, tenant_id: {}, client_id: {}, close the connection", tenant_id, client_id);
-                                            self_addr.do_send(SessionActorMessage::ForceDisconnect);
-                                            return;
-                                        }
-                                    };
-
-                                    let qos = publish_packet.fix_header.qos.expect("Qos should be set") as u8;
-
-                                    let key = if let Some(store) = &payload_store {
-                                        let k = uuid::Uuid::new_v4().to_string();
-                                        let data = match serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())) {
-                                            Ok(d) => d,
-                                            Err(e) => {
-                                                error!("Failed to serialize payload: {}", e);
-                                                return;
-                                            }
-                                        };
-                                        if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
-                                            error!("Failed to store payload: {}", e);
-                                            return;
-                                        }
-                                        k
-                                    } else {
-                                        warn!("Payload store missing");
-                                        return;
-                                    };
-
-                                    if clean_session {
-                                        let mut session_state_guard = session_state.write().await;
-                                        if let Err(e) = session_state_guard.inflight.register_with_tx_packet(packet_id, qos, key.clone()) {
-                                            if matches!(e, InflightError::PacketIdentifierHasExisted) {
-                                                if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
-                                                    publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                    if let Err(e) = session_state_guard
-                                                        .inflight
-                                                        .register_with_tx_packet(new_id, qos, key.clone())
-                                                    {
-                                                        error!(
-                                                            "Failed to register reallocated inflight tx packet, tenant_id={}, client_id={}, packet_id={}, err={}",
-                                                            tenant_id,
-                                                            client_id,
-                                                            new_id,
-                                                            e
-                                                        );
-                                                        return;
-                                                    }
-                                                } else {
-                                                    warn!(
-                                                        "Failed to allocate new inflight packet id, tenant_id={}, client_id={}",
-                                                        tenant_id,
-                                                        client_id
-                                                    );
-                                                    return;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        match session_state_raft_actor.send(RegisterInflightTxPacket {
-                                            tenant_id: tenant_id.clone(),
-                                            client_id: client_id.clone(),
-                                            packet_id,
-                                            qos,
-                                            packet_key: key.clone(),
-                                        }).await {
-                                            Ok(Ok(())) => {},
-                                            Ok(Err(e)) => {
-                                                if let crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted) = e {
-                                                    let new_id = {
-                                                        let mut session_state_guard = session_state.write().await;
-                                                        session_state_guard.inflight.allocate_packet_id()
-                                                    };
-                                                    if let Some(new_id) = new_id {
-                                                        publish_packet.variable_header.packet_identifier = Some(new_id);
-                                                        let _ = session_state_raft_actor.send(RegisterInflightTxPacket {
-                                                            tenant_id,
-                                                            client_id,
-                                                            packet_id: new_id,
-                                                            qos,
-                                                            packet_key: key.clone(),
-                                                        }).await;
-                                                    }
-                                                } else {
-                                                    error!("Register InflightTxPacket through SessionStateRaftActor error: {}", e);
-                                                    return;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("SessionStateRaftActor unavailable: {}", e);
-                                                return;
-                                            }
-                                        }
-
-                                    }
-                                    let _ = conn.send(ConnectionActorMessage::WritePacketToClient(MqttPacketV3::Publish(publish_packet))).await;
-                                }.into_actor(self));
-                            }
-                        }
-                    } else if publish_packet.fix_header.qos.unwrap_or(0) > 0 {
-                        let client_info = self.get_plugin_client_info();
-                        ctx.spawn(async move {
-                            let key = if let Some(store) = &payload_store {
-                                let k = uuid::Uuid::new_v4().to_string();
-                                let data = match serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone())) {
-                                    Ok(d) => d,
-                                    Err(e) => {
-                                        error!("Failed to serialize payload: {}", e); // If serialization fails, we cannot store the message, so just
-                                        return;
-                                    }
-                                };
-                                if let Err(e) = store.put(&k, bytes::Bytes::from(data)).await {
-                                    error!("Failed to store offline payload: {}", e);
-                                    return;
+                    ctx.spawn(
+                        async move { deliver_outbound_publish(publish_packet, delivery_context).await }
+                            .into_actor(self)
+                            .map(|result, act, _| {
+                                if let Err(e) = result {
+                                    error!(
+                                        "failed to deliver outbound publish for session {}: {}",
+                                        act.client_id, e
+                                    );
                                 }
-                                k
-                            } else {
-                                error!("Payload store missing");
-                                return; // If payload store is not available, we cannot store the message, so just return
-                            };
-
-                            if !clean_session {
-                                match session_state_raft_actor.send(crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
-                                    tenant_id: client_info.tenant_id.clone(),
-                                    client_id: client_info.client_identifier.clone(),
-                                    packet_key: key.clone(),
-                                }).await {
-                                    Ok(Ok(())) => {
-                                        let mut session_state_guard = session_state.write().await;
-                                        session_state_guard.pending_messages.push(key);
-                                        debug!("Stored offline message for session {}", client_info.client_identifier);
-                                    }
-                                    Ok(Err(e)) => {
-                                        if let Some(store) = &payload_store {
-                                            let _  = store.delete(&key).await;
-                                        }
-                                        error!("Failed to store message in session state raft actor for session {}, error: {}", client_info.client_identifier, e);
-                                    }
-                                    Err(_) => {
-                                        if let Some(store) = &payload_store {
-                                            let _  = store.delete(&key).await;
-                                        }
-                                        error!("SessionStateRaftActor unavailable");
-                                    }
-                                }
-                            } else {
-                                if let Some(store) = &payload_store {
-                                    let _  = store.delete(&key).await;
-                                }
-                                let mut session_state_guard = session_state.write().await;
-                                session_state_guard.pending_messages.push(key.clone());
-                            }
-                        }.into_actor(self));
-                    }
+                            }),
+                    );
                 }
             }
             SessionActorMessage::KeepAliveExpired => {
@@ -2293,6 +2329,38 @@ impl Handler<GetSessionInfo> for SessionActor {
         };
 
         Box::pin(future)
+    }
+}
+
+impl Handler<AcceptRoutedPublish> for SessionActor {
+    type Result = ResponseActFuture<Self, Result<(), SessionActorError>>;
+
+    fn handle(&mut self, msg: AcceptRoutedPublish, _ctx: &mut Self::Context) -> Self::Result {
+        let delivery_context = OutboundPublishDeliveryContext {
+            tenant_id: self.tenant_id.clone(),
+            client_id: self.client_id.clone(),
+            clean_session: self.clean_session,
+            activity_state: self.activity_state,
+            session_state: self.state.clone(),
+            session_state_raft_actor: self.session_state_raft_actor.clone(),
+            payload_store: self.payload_store.clone(),
+            conn: self.conn_recipient.clone(),
+        };
+
+        Box::pin(
+            async move {
+                match msg.packet {
+                    MqttPacketV3::Publish(publish_packet) => {
+                        deliver_outbound_publish(publish_packet, delivery_context).await
+                    }
+                    other => Err(SessionActorError::DeliveryError(format!(
+                        "unsupported routed packet: {:?}",
+                        other
+                    ))),
+                }
+            }
+            .into_actor(self),
+        )
     }
 }
 

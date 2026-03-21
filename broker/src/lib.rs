@@ -7,6 +7,7 @@ pub mod metric;
 pub mod node_resolver;
 pub mod raft;
 pub mod rest_api;
+pub mod route_store;
 pub mod router_actor;
 pub mod rpc;
 pub mod service_registry;

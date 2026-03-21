@@ -1039,11 +1039,13 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
             });
 
             let session_actor_message_recipient = session_actor_addr.clone().recipient();
+            let accept_routed_publish_recipient = session_actor_addr.clone().recipient();
             let get_session_info_recipient = session_actor_addr.clone().recipient();
             sessions_guard.insert(
                 msg.client_id.clone(),
                 SessionActorRecipientWrapper {
                     session_actor_message_recipient: session_actor_message_recipient.clone(),
+                    accept_routed_publish_recipient,
                     get_session_info_recipient,
                     session_version,
                 },
