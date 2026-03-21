@@ -493,11 +493,11 @@ async fn test_tls_last_will_message() {
     let (_will_client, mut will_eventloop) = AsyncClient::new(will_client_options, 10);
 
     let will_task = tokio::spawn(async move {
-        let mut connected = false;
-        while !connected {
+        loop {
             match will_eventloop.poll().await {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
-                    connected = true;
+                    // Drop the client without sending MQTT DISCONNECT to trigger the will.
+                    return;
                 }
                 Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
                 Err(_e) => {
@@ -505,12 +505,10 @@ async fn test_tls_last_will_message() {
                 }
             }
         }
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
     });
 
     // Wait for the will client to connect
-    tokio::time::timeout(Duration::from_secs(6), will_task)
+    tokio::time::timeout(Duration::from_secs(10), will_task)
         .await
         .expect("Will client task timed out")
         .unwrap();
