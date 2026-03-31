@@ -952,6 +952,75 @@ pub async fn when_call_message_published_event_plugin_host_should_call_plugin_me
 
 #[tokio::test]
 #[allow(clippy::unwrap_used)]
+pub async fn when_call_subscribe_removed_event_plugin_host_should_call_plugin_subscription_removed_method(
+) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    mock_config.initialize.hooks = vec![HookConfig {
+        name: "SubscribeRemoved".to_string(),
+        priority: 1,
+    }];
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .as_ref(),
+    );
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+
+    wait_for_listener_start().await;
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
+
+    let subscribe_request = SubscribeRequest {
+        client_id: "test_client_id".to_string(),
+        subscriptions: vec![TopicFilter {
+            topic: "test_topic".to_string(),
+            qos: 0,
+            options: None,
+        }],
+        context: None,
+    };
+
+    plugin_manager
+        .call_subscribe_removed_hook(subscribe_request)
+        .await;
+
+    wait_for_plugin_log(
+        &plugin_manager,
+        "mock_plugin_harness",
+        "Handling subscription removed request",
+        TEST_LOG_TIMEOUT,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
 pub async fn when_call_on_message_publish_plugin_host_should_call_plugin_on_message_publish_method()
 {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");

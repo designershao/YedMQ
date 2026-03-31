@@ -463,6 +463,14 @@ async fn handle_message_published_request(
     Err(anyhow::anyhow!("Not response"))
 }
 
+async fn handle_subscription_removed_request(
+    _: &ProtocolMessage,
+    _: &MockConfig,
+) -> Result<ProtocolMessage, anyhow::Error> {
+    info!("Handling subscription removed request");
+    Err(anyhow::anyhow!("Not response"))
+}
+
 async fn handle_request(
     request: &ProtocolMessage,
     config: &MockConfig,
@@ -478,6 +486,9 @@ async fn handle_request(
         Method::OnMessageSubscribe => handle_on_message_subscribe_request(request, config).await,
         Method::OnMessagePublish => handle_on_message_publish_request(request, config).await,
         Method::MessagePublished => handle_message_published_request(request, config).await,
+        Method::SubscriptionRemoved => {
+            handle_subscription_removed_request(request, config).await
+        }
         Method::Ping => {
             info!("Handling ping request");
             if !config.ping.respond {

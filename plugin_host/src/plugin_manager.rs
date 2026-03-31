@@ -744,7 +744,7 @@ impl PluginManager {
                     };
 
                     let protocol_message = ProtocolMessageBuilder::new()
-                        .with_method(Method::SubscriptionAdded)
+                        .with_method(Method::SubscriptionRemoved)
                         .with_type(MessageType::Event)
                         .with_params(subscribe_request_any_wrapper)
                         .build();

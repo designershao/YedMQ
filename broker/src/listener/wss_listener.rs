@@ -21,7 +21,7 @@ pub struct MqttWssListener {
 impl MqttWssListener {
     pub async fn run(self) -> Result<()> {
         let certs =
-            match CertificateDer::pem_file_iter(&self.app.settings.listener.tcp_tls.cert_file) {
+            match CertificateDer::pem_file_iter(&self.app.settings.listener.wss.cert_file) {
                 Ok(iter) => iter.collect::<Result<Vec<_>, _>>()?,
                 Err(e) => match e {
                     rustls::pki_types::pem::Error::Io(error) => {
