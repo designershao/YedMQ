@@ -269,8 +269,12 @@ async fn start_node(
             let app = Arc::new(YedMQApp::new(settings_clone).await);
             YedMQApp::start(app.clone()).await;
 
+            let app_clone = app.clone();
             actix::spawn(async move {
                 stop_rx.recv().await;
+                if let Err(e) = app_clone.shutdown().await {
+                    log::warn!("app shutdown failed: {}", e);
+                }
                 actix::System::current().stop();
             });
         });

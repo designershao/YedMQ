@@ -9,7 +9,12 @@ use interprocess::os::windows::{
 use log::{debug, error, info, warn};
 #[cfg(windows)]
 use std::ptr;
-use std::{collections::HashMap, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use prost::Message as _;
 use tokio::{
@@ -36,7 +41,7 @@ use crate::{
 };
 
 use super::loader::PluginLoader;
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use rand::Rng;
 
 type RequestContext = oneshot::Sender<Result<ProtocolMessage>>;
@@ -202,6 +207,9 @@ pub struct PluginManager {
     inflight_manager: Arc<InflightManager>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
     rx_cmd_sender: Option<tokio::sync::mpsc::Sender<RxCmd>>,
+    listener_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    heartbeat_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    rx_cmd_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 pub enum TxCmd {
@@ -274,6 +282,9 @@ impl PluginManager {
             inflight_manager: Arc::new(InflightManager::new()),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
             rx_cmd_sender: None,
+            listener_handle: Mutex::new(None),
+            heartbeat_handle: Mutex::new(None),
+            rx_cmd_handle: Mutex::new(None),
         })
     }
 
@@ -293,12 +304,25 @@ impl PluginManager {
         let hook_manager = self.hook_manager.clone();
         let interval_secs = self.config.health_check_interval_secs;
         let ping_timeout = self.config.ping_timeout();
+        let mut shutdown_rx = self.config.shutdown_signal.subscribe();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    recv_result = shutdown_rx.recv() => {
+                        match recv_result {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {}
+                }
 
                 let target_plugins: Vec<(String, String, tokio::sync::mpsc::Sender<TxCmd>)> =
                     running_plugins
@@ -364,6 +388,8 @@ impl PluginManager {
                 }
             }
         });
+
+        *self.heartbeat_handle.lock().unwrap() = Some(handle);
     }
 
     pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {
@@ -492,10 +518,10 @@ impl PluginManager {
         Ok(())
     }
 
-    async fn start_handle_plugin_rx_cmd(
+    fn start_handle_plugin_rx_cmd(
         &self,
         mut rx_cmd_receiver: tokio::sync::mpsc::Receiver<RxCmd>,
-    ) -> Result<()> {
+    ) -> tokio::task::JoinHandle<()> {
         let plugins = self.running_plugins.clone();
         let inflight_manager = self.inflight_manager.clone();
         let hook_manager = self.hook_manager.clone();
@@ -528,6 +554,8 @@ impl PluginManager {
                                     }
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
+                                        plugin.plugin_abort_tx = None;
+                                        plugin.plugin_log_collector_quit_tx = None;
                                         plugin.process_log_handle = None;
                                         plugin.process_wait_handle = None;
                                         plugin.ipc_sender = None;
@@ -633,9 +661,7 @@ impl PluginManager {
                     }
                 }
             }
-        });
-
-        Ok(())
+        })
     }
 
     pub async fn start_listener(&mut self) -> Result<()> {
@@ -655,7 +681,8 @@ impl PluginManager {
 
         self.rx_cmd_sender = Some(rx_cmd_sender.clone());
 
-        let _ = self.start_handle_plugin_rx_cmd(rx_cmd_receiver).await;
+        let rx_cmd_handle = self.start_handle_plugin_rx_cmd(rx_cmd_receiver);
+        *self.rx_cmd_handle.lock().unwrap() = Some(rx_cmd_handle);
 
         let opts = ListenerOptions::new().name(name);
         #[cfg(windows)]
@@ -678,19 +705,98 @@ impl PluginManager {
         };
 
         let config = self.config.clone();
+        let mut shutdown_rx = self.config.shutdown_signal.subscribe();
 
-        tokio::spawn(async move {
+        let listener_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    std::result::Result::Ok(c) => {
-                        info!("Plugin connected, start handling connection");
-                        let _ =
-                            Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone()).await;
+                tokio::select! {
+                    recv_result = shutdown_rx.recv() => {
+                        match recv_result {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                        }
                     }
-                    Err(_) => continue,
-                };
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            std::result::Result::Ok(c) => {
+                                info!("Plugin connected, start handling connection");
+                                let _ = Self::handle_plugin_connection(
+                                    &config,
+                                    c,
+                                    rx_cmd_sender.clone(),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn!("Plugin listener accept failed: {}", e);
+                                continue;
+                            }
+                        };
+                    }
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                let path = std::path::Path::new(&socket_path);
+                if path.exists() {
+                    if let Err(e) = std::fs::remove_file(path) {
+                        warn!("Failed to remove local socket '{}': {}", socket_path, e);
+                    }
+                }
             }
         });
+
+        *self.listener_handle.lock().unwrap() = Some(listener_handle);
+
+        Ok(())
+    }
+
+    async fn await_background_task(
+        task_name: &str,
+        handle: Option<tokio::task::JoinHandle<()>>,
+    ) {
+        if let Some(handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(())) => info!("{} exited", task_name),
+                Ok(Err(e)) => warn!("{} panicked: {:?}", task_name, e),
+                Err(_) => warn!("{} shutdown timed out", task_name),
+            }
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        info!("shutting down plugin manager");
+
+        let _ = self.config.shutdown_signal.send(());
+
+        let plugin_names = self
+            .running_plugins
+            .iter()
+            .map(|plugin| plugin.name.clone())
+            .collect::<Vec<_>>();
+
+        for plugin_name in plugin_names {
+            if let Err(e) = self.stop_plugin(&plugin_name).await {
+                warn!("Failed to stop plugin '{}': {}", plugin_name, e);
+            }
+        }
+
+        if let Some(rx_cmd_sender) = &self.rx_cmd_sender {
+            let _ = rx_cmd_sender.send(RxCmd::Shutdown).await;
+        }
+
+        let listener_handle = self.listener_handle.lock().unwrap().take();
+        let heartbeat_handle = self.heartbeat_handle.lock().unwrap().take();
+        let rx_cmd_handle = self.rx_cmd_handle.lock().unwrap().take();
+
+        Self::await_background_task("plugin listener", listener_handle).await;
+        Self::await_background_task("plugin heartbeat task", heartbeat_handle).await;
+        Self::await_background_task("plugin rx task", rx_cmd_handle).await;
 
         Ok(())
     }
@@ -1270,10 +1376,13 @@ impl PluginManager {
     }
 
     pub async fn stop_plugin(&self, name: &str) -> Result<()> {
-        let abort_tx = {
+        let (abort_tx, log_collector_quit_tx) = {
             let running_plugin = self.running_plugins.get(name);
             if let Some(running_plugin) = running_plugin {
-                if running_plugin.state == PluginState::Running {
+                if matches!(
+                    running_plugin.state,
+                    PluginState::Running | PluginState::Starting
+                ) {
                     match &running_plugin.plugin_abort_tx {
                         None => {
                             return Err(anyhow::anyhow!(
@@ -1281,7 +1390,10 @@ impl PluginManager {
                                 name
                             ));
                         }
-                        Some(abort_tx) => abort_tx.clone(),
+                        Some(abort_tx) => (
+                            abort_tx.clone(),
+                            running_plugin.plugin_log_collector_quit_tx.clone(),
+                        ),
                     }
                 } else {
                     return Ok(());
@@ -1290,6 +1402,10 @@ impl PluginManager {
                 return Err(anyhow::anyhow!("plugin '{}' not found", name));
             }
         };
+
+        if let Some(mut running_plugin) = self.running_plugins.get_mut(name) {
+            running_plugin.state = PluginState::Stopping;
+        }
 
         info!("stopping plugin '{}'...", name);
         let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
@@ -1301,6 +1417,10 @@ impl PluginManager {
             ));
         }
         let _ = notify_receiver.recv().await;
+
+        if let Some(log_collector_quit_tx) = log_collector_quit_tx {
+            let _ = log_collector_quit_tx.send(()).await;
+        }
 
         info!("plugin '{}' stopped successfully", name);
 
@@ -1509,6 +1629,30 @@ impl PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_config(base_dir: &std::path::Path, socket_name: &str) -> PluginHostConfig {
+        let plugin_dir = base_dir.join("plugins");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let (shutdown_signal, _) = tokio::sync::broadcast::channel(1);
+
+        PluginHostConfig {
+            broker_version: "test".to_string(),
+            broker_node_id: 1,
+            cluster_name: "test-cluster".to_string(),
+            plugin_directory: plugin_dir.to_string_lossy().into_owned(),
+            local_socket_path: base_dir.join(socket_name).to_string_lossy().into_owned(),
+            max_restart_attempts: 1,
+            health_check_interval_secs: 1,
+            init_timeout_secs: 1,
+            request_timeout_secs: 1,
+            ping_timeout_secs: 1,
+            shutdown_signal,
+            default_authorize_result: false,
+            default_authenticate_result: false,
+        }
+    }
 
     #[tokio::test]
     async fn send_and_wait_should_cleanup_inflight_after_timeout() {
@@ -1548,5 +1692,19 @@ mod tests {
 
         assert!(matches!(result, Err(InflightError::SendError(_))));
         assert_eq!(inflight_manager.inflight.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_should_release_listener_for_reuse_of_same_socket_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path(), "plugin_host.sock");
+
+        let mut first_manager = PluginManager::new(config.clone()).await.unwrap();
+        first_manager.start_listener().await.unwrap();
+        first_manager.shutdown().await.unwrap();
+
+        let mut second_manager = PluginManager::new(config).await.unwrap();
+        second_manager.start_listener().await.unwrap();
+        second_manager.shutdown().await.unwrap();
     }
 }

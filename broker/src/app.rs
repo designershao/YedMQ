@@ -1,5 +1,6 @@
 use log::{info, warn};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
@@ -35,6 +36,35 @@ pub struct YedMQApp {
 }
 
 impl YedMQApp {
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        info!("shutting down YedMQ app");
+
+        if let Err(e) = self.plugin_manager.shutdown().await {
+            warn!("plugin manager shutdown failed: {}", e);
+        }
+
+        let handles = {
+            let mut join_handles = self.join_handles.lock().await;
+            std::mem::take(&mut *join_handles)
+        };
+
+        for handle in &handles {
+            handle.abort();
+        }
+
+        for handle in handles {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => warn!("background task exited with error: {}", e),
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => warn!("background task panicked: {:?}", e),
+                Err(_) => warn!("background task shutdown timed out"),
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn get_cluster_service_rpc_client(
         &self,
         node_id: &NodeId,
