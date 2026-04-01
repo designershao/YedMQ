@@ -1,8 +1,8 @@
 [mqtt]
 sys_topic_interval_secs = 10
 inflight_retry_interval_secs = 10
-default_authentication = "allow"
-default_authorization = "allow"
+default_authentication = "deny"
+default_authorization = "deny"
 max_message_size = 268435456
 
 [session]
@@ -13,15 +13,15 @@ session_clock_path = "./clock"
 [plugin]
 dir = "./plugins"
 local_socket_path = "/tmp/yedmq_plugin.sock"
-default_authorize_result = true
-default_authenticate_result = true
+default_authorize_result = false
+default_authenticate_result = false
 
 
 [log]
 level = "warning"
 
 [listener.api]
-external = "0.0.0.0:3456"
+external = "127.0.0.1:3456"
 
 [listener.tcp]
 external = "0.0.0.0:1883"
@@ -46,9 +46,7 @@ cert_file = ""
 key_file = ""
 
 [listener.api.auth]
-users = [
-    { username = "admin", password = "password" }
-]
+users = []
 
 [cluster]
 cluster_name = "YedMQ"
@@ -57,9 +55,9 @@ heartbeat_interval = 10
 store_dir = "./store"
 startup_mode = "bootstrap"
 nodes = [
-    { id = 1001, rpc_address = "0.0.0.0:3457", api_address = "0.0.0.0:3456" }
+    { id = 1001, rpc_address = "127.0.0.1:3457", api_address = "127.0.0.1:3456" }
 ]
 session_ttl = 10
 
 [cluster.rpc]
-external = "0.0.0.0:3457"
+external = "127.0.0.1:3457"

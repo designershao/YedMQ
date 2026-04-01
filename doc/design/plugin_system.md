@@ -52,8 +52,8 @@ The plugin directory is configured by `plugin.dir`, with the default shown in `b
 [plugin]
 dir = "./plugins"
 local_socket_path = "/tmp/yedmq_plugin.sock"
-default_authorize_result = true
-default_authenticate_result = true
+default_authorize_result = false
+default_authenticate_result = false
 ```
 
 `PluginLoader` scans only first-level subdirectories under `plugin.dir`. Each plugin directory must contain a `plugin.toml`.
@@ -295,7 +295,7 @@ Chain rules:
 - if any plugin returns `authenticated = false`, the chain stops immediately and access is denied;
 - if any plugin times out, the chain stops immediately and access is denied;
 - if multiple plugins return success, their `tenant_id` values must match, otherwise access is denied;
-- if no `Authenticate` hook is registered, the host returns `default_authenticate_result`.
+- if no `Authenticate` hook is registered, the host returns `default_authenticate_result` (the shipped default is deny).
 - if `Authenticate` hooks are registered but no active plugin instance is available to handle the request, access is denied.
 
 Fields defined in the response but not propagated further by the Broker today:
@@ -316,7 +316,7 @@ Chain rules:
 - if any plugin returns `authorized = false`, the chain stops immediately and access is denied;
 - if any plugin times out, the chain stops immediately and access is denied;
 - only when every plugin in the chain passes does the final result remain allow;
-- if no `Authorize` hook is registered, the host returns `default_authorize_result`.
+- if no `Authorize` hook is registered, the host returns `default_authorize_result` (the shipped default is deny).
 
 `AuthorizeResponse.modified_context` exists in the protocol, but the host does not currently expose it upstream. The effective result is always an empty map.
 

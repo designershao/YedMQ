@@ -160,7 +160,6 @@ pub async fn publish_message(
     Path(tenant_id): Path<String>,
     Json(payload): Json<PublishMessage>,
 ) -> impl IntoResponse {
-    println!("Received publish request: tenant_id={}, topic={}, qos={}, retain={}, payload_encoding={:?}", tenant_id, payload.topic, payload.qos, payload.retain, payload.payload_encoding);
     let playload_encoding = payload.payload_encoding.unwrap_or("plain".to_string());
 
     let payload_bytes = if playload_encoding == "base64" {

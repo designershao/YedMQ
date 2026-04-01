@@ -13,11 +13,11 @@ inflight_retry_interval_secs = 10
 
 # Default authentication behavior when no plugin is configured
 # Options: "allow" | "deny"
-default_authentication = "allow"
+default_authentication = "deny"
 
 # Default authorization behavior when no plugin is configured
 # Options: "allow" | "deny"
-default_authorization = "allow"
+default_authorization = "deny"
 
 # Maximum MQTT message size in bytes (default: 256MB)
 max_message_size = 268435456
@@ -48,11 +48,13 @@ dir = "./plugins"
 # map it to a deterministic named pipe automatically.
 local_socket_path = "/tmp/yedmq_plugin.sock"
 
-# Default authorization result when plugin times out
-default_authorize_result = true
+# Default authorization result when no plugin handles the request
+# or when a plugin times out
+default_authorize_result = false
 
-# Default authentication result when plugin times out
-default_authenticate_result = true
+# Default authentication result when no plugin handles the request
+# or when a plugin times out
+default_authenticate_result = false
 
 # ============================================================================
 # Logging
@@ -67,13 +69,13 @@ level = "info"
 
 # REST API Listener
 [listener.api]
-external = "0.0.0.0:3456"
+external = "127.0.0.1:3456"
 
 [listener.api.auth]
-# Basic auth users for REST API
-users = [
-    { username = "admin", password = "change_me_in_production" }
-]
+# Add at least one user before exposing the API beyond localhost.
+users = []
+# Example:
+# users = [{ username = "admin", password = "replace_me" }]
 
 # MQTT TCP Listener
 [listener.tcp]
@@ -138,5 +140,6 @@ nodes = [
 ]
 
 # Cluster RPC Listener (for inter-node communication)
+# Change this to a routable address when clustering across hosts.
 [cluster.rpc]
-external = "0.0.0.0:3457"
+external = "127.0.0.1:3457"
