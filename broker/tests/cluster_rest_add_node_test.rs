@@ -69,8 +69,10 @@ fn build_settings(
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("127.0.0.1:{}", tcp_tls),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -79,8 +81,10 @@ fn build_settings(
             },
             wss: yedmq::settings::Wss {
                 external: format!("127.0.0.1:{}", wss),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {

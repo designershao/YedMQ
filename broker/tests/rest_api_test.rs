@@ -97,8 +97,10 @@ fn get_test_settings(temp_dir: &Path) -> Settings {
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("127.0.0.1:{}", tcp_port + 1),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -107,8 +109,10 @@ fn get_test_settings(temp_dir: &Path) -> Settings {
             },
             wss: yedmq::settings::Wss {
                 external: format!("127.0.0.1:{}", tcp_port + 3),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {

@@ -39,8 +39,8 @@ impl JsonRocksDBStore {
     pub async fn put<T: Serialize + Send + Sync>(&self, key: &str, value: &T) -> Result<()> {
         let db = self.db.clone();
         let key = key.to_string();
-        let bytes = serde_json::to_vec(value)
-            .map_err(|e| RouteStoreError::Serialization(e.to_string()))?;
+        let bytes =
+            serde_json::to_vec(value).map_err(|e| RouteStoreError::Serialization(e.to_string()))?;
 
         tokio::task::spawn_blocking(move || {
             db.put(key.as_bytes(), bytes)

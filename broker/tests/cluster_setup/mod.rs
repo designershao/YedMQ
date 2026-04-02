@@ -1,6 +1,7 @@
-use rand::Rng;
 use serde_json::Value;
-use std::{env, fs, path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{
+    env, fs, net::TcpListener as StdTcpListener, path::PathBuf, sync::Arc, thread, time::Duration,
+};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use yedmq::app::YedMQApp;
@@ -16,6 +17,52 @@ pub struct TestClusterContext {
     pub _test_dir: TempDir,
     pub original_dir: PathBuf,
     pub nodes: Vec<Arc<Settings>>,
+}
+
+struct ReservedNodePorts {
+    tcp: StdTcpListener,
+    tcp_tls: StdTcpListener,
+    ws: StdTcpListener,
+    wss: StdTcpListener,
+    api: StdTcpListener,
+    rpc: StdTcpListener,
+}
+
+impl ReservedNodePorts {
+    fn new() -> Self {
+        Self {
+            tcp: reserve_tcp_listener(),
+            tcp_tls: reserve_tcp_listener(),
+            ws: reserve_tcp_listener(),
+            wss: reserve_tcp_listener(),
+            api: reserve_tcp_listener(),
+            rpc: reserve_tcp_listener(),
+        }
+    }
+
+    fn tcp_port(&self) -> u16 {
+        self.tcp.local_addr().unwrap().port()
+    }
+
+    fn tcp_tls_port(&self) -> u16 {
+        self.tcp_tls.local_addr().unwrap().port()
+    }
+
+    fn ws_port(&self) -> u16 {
+        self.ws.local_addr().unwrap().port()
+    }
+
+    fn wss_port(&self) -> u16 {
+        self.wss.local_addr().unwrap().port()
+    }
+
+    fn api_port(&self) -> u16 {
+        self.api.local_addr().unwrap().port()
+    }
+
+    fn rpc_port(&self) -> u16 {
+        self.rpc.local_addr().unwrap().port()
+    }
 }
 
 impl Drop for TestClusterContext {
@@ -50,32 +97,20 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
             let mut cluster_nodes_config = Vec::new();
 
             let node_ids = [1001, 1002, 1003];
-            let mut ports = Vec::new();
-            for _ in 0..3 {
-                ports.push((
-                    random_tcp_port(), // tcp
-                    random_tcp_port(), // tcp_tls
-                    random_tcp_port(), // ws
-                    random_tcp_port(), // wss
-                    random_tcp_port(), // api
-                    random_tcp_port(), // rpc
-                ));
-            }
+            let reserved_ports: Vec<ReservedNodePorts> =
+                (0..3).map(|_| ReservedNodePorts::new()).collect();
 
             // Build the shared nodes list
             for (i, &id) in node_ids.iter().enumerate() {
-                let (_, _, _, _, api_port, rpc_port) = ports[i];
                 cluster_nodes_config.push(Node {
                     id,
-                    rpc_address: format!("127.0.0.1:{}", rpc_port),
-                    api_address: format!("127.0.0.1:{}", api_port),
+                    rpc_address: format!("127.0.0.1:{}", reserved_ports[i].rpc_port()),
+                    api_address: format!("127.0.0.1:{}", reserved_ports[i].api_port()),
                 });
             }
 
-            // Start nodes
+            // Build node settings first so reserved ports can be released before bind.
             for (i, &id) in node_ids.iter().enumerate() {
-                let (tcp, tcp_tls, ws, wss, api, rpc) = ports[i];
-
                 let node_dir = temp_dir.path().join(format!("node_{}", id));
                 fs::create_dir_all(&node_dir).unwrap();
                 let store_dir = node_dir.join("store").to_str().unwrap().to_string();
@@ -96,11 +131,16 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                     },
                     listener: yedmq::settings::Listener {
                         tcp: yedmq::settings::Tcp {
-                            external: format!("127.0.0.1:{}", tcp),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].tcp_port()),
                             rate_limit: Default::default(),
                         },
                         tcp_tls: yedmq::settings::TcpTls {
-                            external: format!("127.0.0.1:{}", tcp_tls),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].tcp_tls_port()),
+                            cacert_file: absolute_certs_path
+                                .join("ca.crt")
+                                .to_str()
+                                .unwrap()
+                                .to_string(),
                             cert_file: absolute_certs_path
                                 .join("server.crt")
                                 .to_str()
@@ -111,14 +151,20 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                                 .to_str()
                                 .unwrap()
                                 .to_string(),
+                            verify_client_cert: false,
                             rate_limit: Default::default(),
                         },
                         ws: yedmq::settings::Ws {
-                            external: format!("127.0.0.1:{}", ws),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].ws_port()),
                             rate_limit: Default::default(),
                         },
                         wss: yedmq::settings::Wss {
-                            external: format!("127.0.0.1:{}", wss),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].wss_port()),
+                            cacert_file: absolute_certs_path
+                                .join("ca.crt")
+                                .to_str()
+                                .unwrap()
+                                .to_string(),
                             cert_file: absolute_certs_path
                                 .join("server.crt")
                                 .to_str()
@@ -129,10 +175,11 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                                 .to_str()
                                 .unwrap()
                                 .to_string(),
+                            verify_client_cert: false,
                             rate_limit: Default::default(),
                         },
                         api: yedmq::settings::Api {
-                            external: format!("127.0.0.1:{}", api),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].api_port()),
                             auth: yedmq::settings::AuthConfig {
                                 users: vec![User {
                                     username: API_USERNAME.to_string(),
@@ -164,7 +211,7 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
                         heartbeat_interval: 200,
                         store_dir,
                         rpc: yedmq::settings::RPC {
-                            external: format!("127.0.0.1:{}", rpc),
+                            external: format!("127.0.0.1:{}", reserved_ports[i].rpc_port()),
                         },
                         nodes: cluster_nodes_config.clone(),
                         session_ttl: 60,
@@ -174,7 +221,11 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
 
                 let settings = Arc::new(settings);
                 nodes_settings.push(settings.clone());
+            }
 
+            drop(reserved_ports);
+
+            for settings in &nodes_settings {
                 let settings_clone = settings.clone();
 
                 thread::spawn(move || {
@@ -206,8 +257,8 @@ pub async fn setup_cluster() -> &'static TestClusterContext {
         .await
 }
 
-fn random_tcp_port() -> u16 {
-    rand::thread_rng().gen_range(10240..=65535)
+fn reserve_tcp_listener() -> StdTcpListener {
+    StdTcpListener::bind("127.0.0.1:0").expect("failed to reserve tcp port")
 }
 
 async fn wait_for_cluster_ready(client: &reqwest::Client, api_addrs: &[String], node_ids: &[u64]) {
@@ -234,19 +285,19 @@ async fn wait_for_cluster_ready(client: &reqwest::Client, api_addrs: &[String], 
 
         for api_addr in api_addrs {
             match fetch_cluster_metrics(client, api_addr).await {
-                Ok(metrics)
-                    if cluster_metrics_ready(&metrics, node_ids) =>
-                {
+                Ok(metrics) if cluster_metrics_ready(&metrics, node_ids) => {
                     continue;
                 }
                 Ok(metrics) => {
                     cluster_ready = false;
-                    last_failure = format!("cluster metrics not ready on {}: {}", api_addr, metrics);
+                    last_failure =
+                        format!("cluster metrics not ready on {}: {}", api_addr, metrics);
                     break;
                 }
                 Err(err) => {
                     cluster_ready = false;
-                    last_failure = format!("failed to fetch cluster metrics from {}: {}", api_addr, err);
+                    last_failure =
+                        format!("failed to fetch cluster metrics from {}: {}", api_addr, err);
                     break;
                 }
             }
@@ -285,10 +336,7 @@ async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
     }
 }
 
-async fn fetch_cluster_metrics(
-    client: &reqwest::Client,
-    api_addr: &str,
-) -> Result<Value, String> {
+async fn fetch_cluster_metrics(client: &reqwest::Client, api_addr: &str) -> Result<Value, String> {
     let url = format!("http://{}/api/v1/cluster/metrics", api_addr);
     let response = client
         .get(&url)

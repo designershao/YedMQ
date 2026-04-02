@@ -101,8 +101,10 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("127.0.0.1:{}", tcp_port + 1).to_string(),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -111,8 +113,10 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
             },
             wss: yedmq::settings::Wss {
                 external: format!("127.0.0.1:{}", tcp_port + 3).to_string(),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {

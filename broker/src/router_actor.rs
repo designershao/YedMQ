@@ -272,7 +272,10 @@ impl RouterActor {
         if let Some(recipient) = session_registry.get_session(tenant_id, client_id) {
             recipient.do_send(SessionActorMessage::OutboundMessage(packet));
         } else {
-            warn!("session {} not found locally, skip best-effort route", client_id);
+            warn!(
+                "session {} not found locally, skip best-effort route",
+                client_id
+            );
         }
         Ok(())
     }
@@ -613,7 +616,9 @@ impl RouterActor {
         packet: MqttPacketV3,
     ) {
         actix::spawn(async move {
-            let Some(dest_node) = node_resolver.get_node(dest_node_id, &topic_raft_actor).await
+            let Some(dest_node) = node_resolver
+                .get_node(dest_node_id, &topic_raft_actor)
+                .await
             else {
                 warn!("No node found with id: {}", dest_node_id);
                 return;
@@ -1090,8 +1095,7 @@ mod tests {
     impl Handler<SessionActorMessage> for TestRouteSessionActor {
         type Result = ();
 
-        fn handle(&mut self, _msg: SessionActorMessage, _ctx: &mut Self::Context) -> Self::Result {
-        }
+        fn handle(&mut self, _msg: SessionActorMessage, _ctx: &mut Self::Context) -> Self::Result {}
     }
 
     impl Handler<GetSessionInfo> for TestRouteSessionActor {
@@ -1131,7 +1135,10 @@ mod tests {
         Arc::new(settings)
     }
 
-    fn build_test_registry(tenant_id: &str, client_id: &str) -> (SessionRegistry, DeliveredPackets) {
+    fn build_test_registry(
+        tenant_id: &str,
+        client_id: &str,
+    ) -> (SessionRegistry, DeliveredPackets) {
         let registry = SessionRegistry::new();
         let delivered = DeliveredPackets::default();
         let actor = TestRouteSessionActor {
@@ -1149,7 +1156,9 @@ mod tests {
                 session_version: SessionVersion::new(1, 1001),
             },
         );
-        registry.get_inner().insert(tenant_id.to_string(), tenant_map);
+        registry
+            .get_inner()
+            .insert(tenant_id.to_string(), tenant_map);
 
         (registry, delivered)
     }
@@ -1170,12 +1179,10 @@ mod tests {
     #[actix::test]
     async fn test_accept_route_from_other_node_deduplicates_route_id() {
         let temp_dir = TempDir::new().unwrap();
-        let payload_store = Arc::new(
-            RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap(),
-        );
-        let route_inbox_store = Arc::new(
-            JsonRocksDBStore::new(temp_dir.path().join("route_inbox")).unwrap(),
-        );
+        let payload_store =
+            Arc::new(RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap());
+        let route_inbox_store =
+            Arc::new(JsonRocksDBStore::new(temp_dir.path().join("route_inbox")).unwrap());
         let (session_registry, delivered) = build_test_registry("tenant-a", "client-a");
         let metric = Arc::new(Metric::new());
         let retry_config = RouteRetryConfig::default();
@@ -1231,18 +1238,20 @@ mod tests {
         .unwrap();
 
         sleep(Duration::from_millis(100)).await;
-        assert_eq!(delivered.len(), 1, "duplicate route id should not re-deliver");
+        assert_eq!(
+            delivered.len(),
+            1,
+            "duplicate route id should not re-deliver"
+        );
     }
 
     #[actix::test]
     async fn test_process_inbox_item_recovers_pending_delivery_after_restart() {
         let temp_dir = TempDir::new().unwrap();
-        let payload_store = Arc::new(
-            RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap(),
-        );
-        let route_inbox_store = Arc::new(
-            JsonRocksDBStore::new(temp_dir.path().join("route_inbox")).unwrap(),
-        );
+        let payload_store =
+            Arc::new(RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap());
+        let route_inbox_store =
+            Arc::new(JsonRocksDBStore::new(temp_dir.path().join("route_inbox")).unwrap());
         let (session_registry, delivered) = build_test_registry("tenant-a", "client-a");
         let metric = Arc::new(Metric::new());
         let retry_config = RouteRetryConfig::default();
@@ -1298,12 +1307,10 @@ mod tests {
     #[actix::test]
     async fn test_dispatch_outbox_item_keeps_payload_for_retry_on_failure() {
         let temp_dir = TempDir::new().unwrap();
-        let payload_store = Arc::new(
-            RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap(),
-        );
-        let route_outbox_store = Arc::new(
-            JsonRocksDBStore::new(temp_dir.path().join("route_outbox")).unwrap(),
-        );
+        let payload_store =
+            Arc::new(RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap());
+        let route_outbox_store =
+            Arc::new(JsonRocksDBStore::new(temp_dir.path().join("route_outbox")).unwrap());
         let metric = Arc::new(Metric::new());
         let retry_config = RouteRetryConfig::default();
         let route_id = "route-outbox-retry";
@@ -1354,7 +1361,10 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err(), "failed remote route should be retried later");
+        assert!(
+            result.is_err(),
+            "failed remote route should be retried later"
+        );
 
         let stored_item = route_outbox_store
             .get::<RouteOutboxItem>(route_id)
@@ -1375,12 +1385,10 @@ mod tests {
     #[actix::test]
     async fn test_dispatch_outbox_item_drops_expired_payload() {
         let temp_dir = TempDir::new().unwrap();
-        let payload_store = Arc::new(
-            RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap(),
-        );
-        let route_outbox_store = Arc::new(
-            JsonRocksDBStore::new(temp_dir.path().join("route_outbox")).unwrap(),
-        );
+        let payload_store =
+            Arc::new(RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap());
+        let route_outbox_store =
+            Arc::new(JsonRocksDBStore::new(temp_dir.path().join("route_outbox")).unwrap());
         let metric = Arc::new(Metric::new());
         let retry_config = RouteRetryConfig::default();
         let route_id = "route-outbox-expired";
@@ -1433,7 +1441,11 @@ mod tests {
         .unwrap();
 
         assert!(
-            route_outbox_store.get::<RouteOutboxItem>(route_id).await.unwrap().is_none(),
+            route_outbox_store
+                .get::<RouteOutboxItem>(route_id)
+                .await
+                .unwrap()
+                .is_none(),
             "expired outbox item should be removed"
         );
         assert!(

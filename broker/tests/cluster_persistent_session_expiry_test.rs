@@ -193,6 +193,11 @@ async fn start_node(
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("127.0.0.1:{}", tcp_tls),
+                cacert_file: absolute_certs_path
+                    .join("ca.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -203,6 +208,7 @@ async fn start_node(
                     .to_str()
                     .unwrap()
                     .to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -211,6 +217,11 @@ async fn start_node(
             },
             wss: yedmq::settings::Wss {
                 external: format!("127.0.0.1:{}", wss),
+                cacert_file: absolute_certs_path
+                    .join("ca.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -221,6 +232,7 @@ async fn start_node(
                     .to_str()
                     .unwrap()
                     .to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {

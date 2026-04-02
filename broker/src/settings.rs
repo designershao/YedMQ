@@ -144,8 +144,10 @@ pub struct Listener {
 #[serde(default)]
 pub struct TcpTls {
     pub external: String,
+    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String,
+    pub verify_client_cert: bool,
     pub rate_limit: RateLimit,
 }
 
@@ -153,8 +155,10 @@ impl Default for TcpTls {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:8883".to_string(),
+            cacert_file: "".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            verify_client_cert: false,
             rate_limit: RateLimit::default(),
         }
     }
@@ -180,8 +184,10 @@ impl Default for Ws {
 #[serde(default)]
 pub struct Wss {
     pub external: String,
+    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String,
+    pub verify_client_cert: bool,
     pub rate_limit: RateLimit,
 }
 
@@ -189,8 +195,10 @@ impl Default for Wss {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:8084".to_string(),
+            cacert_file: "".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            verify_client_cert: false,
             rate_limit: RateLimit::default(),
         }
     }
@@ -337,12 +345,16 @@ impl Settings {
             .set_default("plugin.default_authenticate_result", false)?
             .set_default("listener.tcp.external", "0.0.0.0:1883")?
             .set_default("listener.tcp_tls.external", "0.0.0.0:8883")?
+            .set_default("listener.tcp_tls.cacert_file", "")?
             .set_default("listener.tcp_tls.cert_file", "")?
             .set_default("listener.tcp_tls.key_file", "")?
+            .set_default("listener.tcp_tls.verify_client_cert", false)?
             .set_default("listener.ws.external", "0.0.0.0:8083")?
             .set_default("listener.wss.external", "0.0.0.0:8084")?
+            .set_default("listener.wss.cacert_file", "")?
             .set_default("listener.wss.cert_file", "")?
             .set_default("listener.wss.key_file", "")?
+            .set_default("listener.wss.verify_client_cert", false)?
             .set_default("listener.api.external", "127.0.0.1:3456")?
             .set_default("cluster.cluster_name", "YedMQ")?
             .set_default("cluster.heartbeat_interval", 10)?

@@ -1,4 +1,12 @@
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
 use log::warn;
+use rustls::{
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
+    server::WebPkiClientVerifier,
+    RootCertStore, ServerConfig,
+};
 use tokio_tungstenite::tungstenite::{
     handshake::server::Callback,
     http::{HeaderValue, Response, StatusCode},
@@ -10,6 +18,71 @@ pub mod websocket_tls_tunnel;
 pub mod websocket_tunnel;
 pub mod ws_listener;
 pub mod wss_listener;
+
+pub(crate) fn build_server_tls_config(
+    cert_file: &str,
+    key_file: &str,
+    verify_client_cert: bool,
+    cacert_file: &str,
+) -> Result<ServerConfig> {
+    let certs = load_pem_certificates(cert_file, "TLS certificate chain")?;
+    let key = PrivateKeyDer::from_pem_file(key_file)
+        .with_context(|| format!("failed to read TLS private key file: {key_file}"))?;
+
+    let config_builder = rustls::ServerConfig::builder();
+    let config_builder = if verify_client_cert {
+        if cacert_file.trim().is_empty() {
+            return Err(anyhow!(
+                "verify_client_cert is enabled but cacert_file is not configured"
+            ));
+        }
+
+        let roots = load_root_cert_store(cacert_file)?;
+        let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
+            .build()
+            .map_err(|e| anyhow!("failed to build client certificate verifier: {e}"))?;
+        config_builder.with_client_cert_verifier(verifier)
+    } else {
+        config_builder.with_no_client_auth()
+    };
+
+    config_builder
+        .with_single_cert(certs, key)
+        .context("failed to build TLS server config")
+}
+
+fn load_root_cert_store(cacert_file: &str) -> Result<RootCertStore> {
+    let mut roots = RootCertStore::empty();
+    let certs = load_pem_certificates(cacert_file, "trusted client CA certificate")?;
+
+    for cert in certs {
+        roots
+            .add(cert)
+            .map_err(|e| anyhow!("failed to add client CA from {cacert_file}: {e}"))?;
+    }
+
+    if roots.is_empty() {
+        return Err(anyhow!(
+            "no valid client CA certificates found in {cacert_file}"
+        ));
+    }
+
+    Ok(roots)
+}
+
+fn load_pem_certificates(path: &str, description: &str) -> Result<Vec<CertificateDer<'static>>> {
+    match CertificateDer::pem_file_iter(path) {
+        Ok(iter) => iter
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .with_context(|| format!("failed to load {description} from {path}")),
+        Err(rustls::pki_types::pem::Error::Io(error)) => {
+            Err(anyhow!("failed to read {description} file {path}: {error}"))
+        }
+        Err(error) => Err(anyhow!(
+            "failed to parse {description} from {path}: {error}"
+        )),
+    }
+}
 
 struct WsCallBack {}
 

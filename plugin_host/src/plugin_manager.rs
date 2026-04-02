@@ -756,10 +756,7 @@ impl PluginManager {
         Ok(())
     }
 
-    async fn await_background_task(
-        task_name: &str,
-        handle: Option<tokio::task::JoinHandle<()>>,
-    ) {
+    async fn await_background_task(task_name: &str, handle: Option<tokio::task::JoinHandle<()>>) {
         if let Some(handle) = handle {
             match tokio::time::timeout(Duration::from_secs(5), handle).await {
                 Ok(Ok(())) => info!("{} exited", task_name),

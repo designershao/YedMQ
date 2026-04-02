@@ -618,9 +618,10 @@ async fn deliver_outbound_publish(
                 )
             })?;
 
-        let store = context.payload_store.as_ref().ok_or_else(|| {
-            SessionActorError::DeliveryError("payload store missing".to_string())
-        })?;
+        let store = context
+            .payload_store
+            .as_ref()
+            .ok_or_else(|| SessionActorError::DeliveryError("payload store missing".to_string()))?;
         let key = uuid::Uuid::new_v4().to_string();
         let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
@@ -631,9 +632,10 @@ async fn deliver_outbound_publish(
 
         if context.clean_session {
             let mut session_state_guard = context.session_state.write().await;
-            if let Err(e) = session_state_guard
-                .inflight
-                .register_with_tx_packet(packet_id, qos, key.clone())
+            if let Err(e) =
+                session_state_guard
+                    .inflight
+                    .register_with_tx_packet(packet_id, qos, key.clone())
             {
                 if matches!(e, InflightError::PacketIdentifierHasExisted) {
                     if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
@@ -641,9 +643,7 @@ async fn deliver_outbound_publish(
                         session_state_guard
                             .inflight
                             .register_with_tx_packet(new_id, qos, key.clone())
-                            .map_err(|inner| {
-                                SessionActorError::DeliveryError(inner.to_string())
-                            })?;
+                            .map_err(|inner| SessionActorError::DeliveryError(inner.to_string()))?;
                     } else {
                         return Err(SessionActorError::DeliveryError(
                             "failed to allocate new inflight packet id".to_string(),
@@ -727,11 +727,13 @@ async fn deliver_outbound_publish(
     if !context.clean_session {
         context
             .session_state_raft_actor
-            .send(crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
-                tenant_id: context.tenant_id.clone(),
-                client_id: context.client_id.clone(),
-                packet_key: key.clone(),
-            })
+            .send(
+                crate::raft::session_state::session_state_raft_actor::StoreOfflineMessage {
+                    tenant_id: context.tenant_id.clone(),
+                    client_id: context.client_id.clone(),
+                    packet_key: key.clone(),
+                },
+            )
             .await?
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
 

@@ -32,6 +32,7 @@ messages_burst = 100
 
 [listener.tcp_tls]
 external = "0.0.0.0:8883"
+verify_client_cert = false
 cacert_file = ""
 cert_file = ""
 key_file = ""
@@ -41,6 +42,7 @@ external = "0.0.0.0:8083"
 
 [listener.wss]
 external = "0.0.0.0:8084"
+verify_client_cert = false
 cacert_file = ""
 cert_file = ""
 key_file = ""

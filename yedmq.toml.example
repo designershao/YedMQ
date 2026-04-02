@@ -90,7 +90,9 @@ messages_burst = 100
 # MQTT over TLS Listener
 [listener.tcp_tls]
 external = "0.0.0.0:8883"
-# Path to CA certificate file
+# Require and verify client certificates against cacert_file when enabled
+verify_client_cert = false
+# Path to trusted CA certificate file used to verify client certificates in mTLS mode
 cacert_file = "/path/to/ca.crt"
 # Path to server certificate file
 cert_file = "/path/to/server.crt"
@@ -104,6 +106,7 @@ external = "0.0.0.0:8083"
 # MQTT over Secure WebSocket Listener
 [listener.wss]
 external = "0.0.0.0:8084"
+verify_client_cert = false
 cacert_file = "/path/to/ca.crt"
 cert_file = "/path/to/server.crt"
 key_file = "/path/to/server.key"
