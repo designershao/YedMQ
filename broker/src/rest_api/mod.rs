@@ -66,21 +66,25 @@ async fn basic_auth_middleware(
                     })?;
 
                     if let Ok(decoded_str) = std::str::from_utf8(&decoded) {
-                        let parts: Vec<&str> = decoded_str.split(":").collect();
-                        if parts.len() == 2 {
-                            let username = parts[0];
-                            let password = parts[1];
-
-                            if state
-                                .settings
-                                .listener
-                                .api
-                                .auth
-                                .users
-                                .iter()
-                                .any(|user| user.username == username && user.password == password)
-                            {
-                                return Ok(next.run(req).await);
+                        match decoded_str.split_once(":") {
+                            Some((username, password)) => {
+                                if state
+                                    .settings
+                                    .listener
+                                    .api
+                                    .auth
+                                    .users
+                                    .iter()
+                                    .any(|user| user.username == username && user.password == password)
+                                {
+                                    return Ok(next.run(req).await);
+                                }
+                            }
+                            None => {
+                                return Err((
+                                    StatusCode::UNAUTHORIZED,
+                                    "Invalid authorization header format".to_string(),
+                                ))
                             }
                         }
                     }
