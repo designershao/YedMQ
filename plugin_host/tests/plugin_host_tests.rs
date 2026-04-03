@@ -2,7 +2,7 @@ use std::{collections::HashMap, time::Duration};
 
 use yedmq_plugin_host::{
     plugin_host_config,
-    plugin_manager::{PluginManager, PluginState},
+    plugin_manager::{PluginControlError, PluginManager, PluginState},
     protocol::plugin_protocol::{
         AuthAction, AuthenticateRequest, AuthorizeRequest, MessagePublishRequest, MqttMessage,
         SubscribeRequest, TopicFilter,
@@ -104,6 +104,18 @@ async fn wait_for_plugin_log(
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn build_authenticate_request() -> AuthenticateRequest {
+    AuthenticateRequest {
+        password: "test_password".to_string(),
+        client_id: "test_client_id".to_string(),
+        username: "test_username".to_string(),
+        client_ip: "127.0.0.1".to_string(),
+        client_cert: Vec::new(),
+        protocol_version: "3.1.1".to_string(),
+        properties: None,
     }
 }
 
@@ -552,6 +564,168 @@ pub async fn when_call_restart_plugin_plugin_host_should_restart_plugin() {
 
     assert!(plugin_process.state == yedmq_plugin_host::plugin_manager::PluginState::Running);
     assert!(latest_plugin_start_time > pre_plugin_start_time);
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
+pub async fn restart_plugin_should_reload_latest_manifest_from_disk_without_rescan() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    mock_config.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    }];
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .as_ref(),
+    );
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+    wait_for_listener_start().await;
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
+
+    let initial_result = plugin_manager
+        .call_authenticate_hook(build_authenticate_request())
+        .await
+        .unwrap();
+    assert!(initial_result.authenticated);
+
+    let mut updated_config = MockConfig::default();
+    updated_config.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    }];
+    updated_config.authenticate.authenticated = false;
+    updated_config.authenticate.error_reason = Some("updated manifest applied".to_string());
+    common::write_mock_plugin_manifest(&temp_dir, "mock_plugin_harness", &updated_config);
+
+    plugin_manager
+        .restart_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
+
+    let updated_result = plugin_manager
+        .call_authenticate_hook(build_authenticate_request())
+        .await
+        .unwrap();
+
+    assert!(!updated_result.authenticated);
+    assert_eq!(
+        updated_result.error_reason.as_deref(),
+        Some("updated manifest applied")
+    );
+}
+
+#[tokio::test]
+#[allow(clippy::unwrap_used)]
+pub async fn restart_plugin_should_keep_old_process_running_when_latest_manifest_is_invalid() {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+    let mut mock_config = MockConfig::default();
+    mock_config.initialize.hooks = vec![HookConfig {
+        name: "Authenticate".to_string(),
+        priority: 1,
+    }];
+    common::setup_test_plugins(&temp_dir, mock_config);
+
+    let (tx, _) = tokio::sync::broadcast::channel(1);
+
+    let plugin_host_config = get_plugin_host_test_config(
+        tx,
+        &temp_dir,
+        temp_dir
+            .path()
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .as_ref(),
+    );
+
+    let mut plugin_manager =
+        yedmq_plugin_host::plugin_manager::PluginManager::new(plugin_host_config)
+            .await
+            .unwrap();
+
+    plugin_manager.start_listener().await.unwrap();
+    wait_for_listener_start().await;
+
+    plugin_manager
+        .start_plugin("mock_plugin_harness")
+        .await
+        .unwrap();
+
+    wait_for_plugin_state(
+        &plugin_manager,
+        "mock_plugin_harness",
+        PluginState::Running,
+        TEST_STARTUP_TIMEOUT,
+    )
+    .await;
+
+    let previous_auth_code = plugin_manager
+        .get_running_plugins()
+        .get("mock_plugin_harness")
+        .unwrap()
+        .auth_code
+        .clone();
+
+    std::fs::write(
+        temp_dir
+            .path()
+            .join("mock_plugin_harness")
+            .join("plugin.toml"),
+        "invalid = [",
+    )
+    .unwrap();
+
+    let restart_result = plugin_manager.restart_plugin("mock_plugin_harness").await;
+    assert!(matches!(
+        restart_result,
+        Err(PluginControlError::Internal(_))
+    ));
+
+    let running_plugins = plugin_manager.get_running_plugins();
+    let running_plugin = running_plugins.get("mock_plugin_harness").unwrap();
+    assert_eq!(running_plugin.state, PluginState::Running);
+    assert_eq!(running_plugin.auth_code, previous_auth_code);
+
+    let authenticate_result = plugin_manager
+        .call_authenticate_hook(build_authenticate_request())
+        .await
+        .unwrap();
+    assert!(authenticate_result.authenticated);
 }
 
 #[tokio::test]

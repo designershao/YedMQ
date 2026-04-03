@@ -10,9 +10,9 @@ use log::{debug, error, info, warn};
 #[cfg(windows)]
 use std::ptr;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock as StdRwLock},
     time::Duration,
 };
 
@@ -26,7 +26,7 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use crate::{
-    loader::PluginManifest,
+    loader::{InvalidPluginManifest, PluginLoader, PluginManifest},
     local_socket_name::resolve_local_socket_name,
     plugin_host_config::PluginHostConfig,
     protocol::{
@@ -39,8 +39,6 @@ use crate::{
         ProtocolMessageBuilder,
     },
 };
-
-use super::loader::PluginLoader;
 use anyhow::Result;
 use rand::Rng;
 
@@ -167,6 +165,71 @@ pub enum PluginState {
     Failed,     // Plugin failed to start
 }
 
+impl PluginState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PluginHookInfo {
+    pub name: String,
+    pub priority: u32,
+}
+
+#[derive(Clone)]
+pub struct PluginSnapshot {
+    pub name: String,
+    pub manifest: PluginManifest,
+    pub discovered: bool,
+    pub managed: bool,
+    pub state: PluginState,
+    pub healthy: Option<bool>,
+    pub uptime: Option<Duration>,
+    pub restart_count: u32,
+    pub last_health_check_ago: Option<Duration>,
+    pub ping_response_timeout_count: u32,
+    pub initialize_status: Option<String>,
+    pub capabilities: Vec<String>,
+    pub hooks: Vec<PluginHookInfo>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginListScope {
+    Managed,
+    Discovered,
+    All,
+}
+
+#[derive(Clone)]
+pub struct PluginLogsPage {
+    pub offset: u64,
+    pub limit: u64,
+    pub total: u64,
+    pub lines: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct PluginRescanReport {
+    pub discovered: Vec<String>,
+    pub removed: Vec<String>,
+    pub invalid: Vec<InvalidPluginManifest>,
+}
+
+struct PreparedPluginStart {
+    auth_code: String,
+    manifest: PluginManifest,
+    command: tokio::process::Command,
+}
+
 pub struct RunningPlugin {
     pub name: String,
     pub manifest: PluginManifest,
@@ -182,6 +245,10 @@ pub struct RunningPlugin {
     pub ipc_sender: Option<tokio::sync::mpsc::Sender<TxCmd>>,
     pub auth_code: String,
     pub logs: Arc<RwLock<Vec<String>>>,
+    pub initialize_status: Option<String>,
+    pub capabilities: Vec<String>,
+    pub hooks: Vec<PluginHookInfo>,
+    pub last_error: Option<String>,
 }
 
 impl RunningPlugin {
@@ -202,7 +269,7 @@ impl RunningPlugin {
 
 pub struct PluginManager {
     config: PluginHostConfig,
-    plugin_loader: PluginLoader,
+    plugin_loader: StdRwLock<PluginLoader>,
     running_plugins: Arc<DashMap<String, RunningPlugin>>,
     inflight_manager: Arc<InflightManager>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
@@ -253,31 +320,27 @@ pub enum PluginManagerError {
     PluginAuthenticateTenantIdConflict(String),
 }
 
-impl PluginManager {
-    pub async fn get_plugin_metadata_list_with_pagination(
-        &self,
-        offset: u64,
-        limit: u64,
-    ) -> (u64, Vec<PluginManifest>) {
-        let res = self
-            .get_running_plugins()
-            .iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .map(|v| v.manifest.clone())
-            .collect::<Vec<PluginManifest>>();
-        let total_count = self.get_running_plugins().len() as u64;
-        (total_count, res)
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum PluginControlError {
+    #[error("plugin '{0}' not found")]
+    NotFound(String),
 
+    #[error("plugin '{0}' is already {1}")]
+    InvalidState(String, &'static str),
+
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl PluginManager {
     pub async fn new(config: PluginHostConfig) -> Result<Self> {
         let mut loader = PluginLoader::new(&config.plugin_directory);
 
-        let _ = loader.scan_plugins().await?;
+        let _ = loader.scan_plugins()?;
 
         Ok(Self {
             config,
-            plugin_loader: loader,
+            plugin_loader: StdRwLock::new(loader),
             running_plugins: Arc::new(DashMap::new()),
             inflight_manager: Arc::new(InflightManager::new()),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
@@ -288,11 +351,201 @@ impl PluginManager {
         })
     }
 
+    pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<PluginManifest> {
+        self.plugin_loader
+            .read()
+            .unwrap()
+            .get_plugin_manifest(plugin_name)
+            .cloned()
+    }
+
+    pub fn rescan_plugins(&self) -> Result<PluginRescanReport> {
+        let previous_discovered = self
+            .plugin_loader
+            .read()
+            .unwrap()
+            .list_plugins()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let mut loader = self.plugin_loader.write().unwrap();
+        let scan_report = loader.scan_plugins()?;
+        let current_discovered = scan_report.discovered_plugins.clone();
+
+        let previous_set = previous_discovered
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let current_set = current_discovered
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let removed = previous_set
+            .difference(&current_set)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Ok(PluginRescanReport {
+            discovered: current_discovered,
+            removed,
+            invalid: scan_report.invalid_plugins,
+        })
+    }
+
+    fn managed_plugin_data(&self) -> HashMap<String, PluginSnapshot> {
+        self.running_plugins
+            .iter()
+            .map(|plugin| {
+                let snapshot = PluginSnapshot {
+                    name: plugin.name.clone(),
+                    manifest: plugin.manifest.clone(),
+                    discovered: false,
+                    managed: true,
+                    state: plugin.state,
+                    healthy: Some(plugin.is_healthy()),
+                    uptime: plugin.start_time.map(|start| start.elapsed()),
+                    restart_count: plugin.restart_count,
+                    last_health_check_ago: plugin
+                        .last_health_check
+                        .map(|last_check| last_check.elapsed()),
+                    ping_response_timeout_count: plugin.ping_response_timeout_count,
+                    initialize_status: plugin.initialize_status.clone(),
+                    capabilities: plugin.capabilities.clone(),
+                    hooks: plugin.hooks.clone(),
+                    last_error: plugin.last_error.clone(),
+                };
+                (plugin.name.clone(), snapshot)
+            })
+            .collect()
+    }
+
+    pub fn list_plugin_snapshots(
+        &self,
+        scope: PluginListScope,
+        state_filter: Option<PluginState>,
+    ) -> Vec<PluginSnapshot> {
+        let managed = self.managed_plugin_data();
+        let discovered_manifests = self.plugin_loader.read().unwrap().list_plugin_manifests();
+        let mut snapshots = BTreeMap::<String, PluginSnapshot>::new();
+
+        if matches!(scope, PluginListScope::Discovered | PluginListScope::All) {
+            for manifest in discovered_manifests {
+                let plugin_name = manifest.plugin.name.clone();
+                let mut snapshot = managed
+                    .get(&plugin_name)
+                    .cloned()
+                    .unwrap_or(PluginSnapshot {
+                        name: plugin_name.clone(),
+                        manifest: manifest.clone(),
+                        discovered: true,
+                        managed: false,
+                        state: PluginState::Discovered,
+                        healthy: None,
+                        uptime: None,
+                        restart_count: 0,
+                        last_health_check_ago: None,
+                        ping_response_timeout_count: 0,
+                        initialize_status: None,
+                        capabilities: Vec::new(),
+                        hooks: Vec::new(),
+                        last_error: None,
+                    });
+                snapshot.discovered = true;
+                snapshot.manifest = manifest;
+                snapshots.insert(plugin_name, snapshot);
+            }
+        }
+
+        if matches!(scope, PluginListScope::Managed | PluginListScope::All) {
+            for (plugin_name, snapshot) in managed {
+                snapshots
+                    .entry(plugin_name)
+                    .and_modify(|existing| {
+                        existing.managed = true;
+                        existing.state = snapshot.state;
+                        existing.healthy = snapshot.healthy;
+                        existing.uptime = snapshot.uptime;
+                        existing.restart_count = snapshot.restart_count;
+                        existing.last_health_check_ago = snapshot.last_health_check_ago;
+                        existing.ping_response_timeout_count = snapshot.ping_response_timeout_count;
+                        existing.initialize_status = snapshot.initialize_status.clone();
+                        existing.capabilities = snapshot.capabilities.clone();
+                        existing.hooks = snapshot.hooks.clone();
+                        existing.last_error = snapshot.last_error.clone();
+                        existing.manifest = snapshot.manifest.clone();
+                    })
+                    .or_insert(snapshot);
+            }
+        }
+
+        snapshots
+            .into_values()
+            .filter(|snapshot| {
+                state_filter
+                    .map(|expected| snapshot.state == expected)
+                    .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    pub fn get_plugin_snapshot(&self, plugin_name: &str) -> Option<PluginSnapshot> {
+        self.list_plugin_snapshots(PluginListScope::All, None)
+            .into_iter()
+            .find(|snapshot| snapshot.name == plugin_name)
+    }
+
+    pub async fn get_plugin_logs(
+        &self,
+        plugin_name: &str,
+        offset: u64,
+        limit: u64,
+        tail: Option<u64>,
+    ) -> std::result::Result<PluginLogsPage, PluginControlError> {
+        let plugin = self
+            .running_plugins
+            .get(plugin_name)
+            .ok_or_else(|| PluginControlError::NotFound(plugin_name.to_string()))?;
+        let logs = plugin.logs.read().await.clone();
+        let total = logs.len() as u64;
+
+        let computed_offset = if let Some(tail) = tail {
+            total.saturating_sub(tail)
+        } else {
+            offset
+        };
+        let computed_limit = if tail.is_some() {
+            total.saturating_sub(computed_offset)
+        } else {
+            limit
+        };
+
+        let lines = logs
+            .into_iter()
+            .skip(computed_offset as usize)
+            .take(computed_limit as usize)
+            .collect::<Vec<_>>();
+
+        Ok(PluginLogsPage {
+            offset: computed_offset,
+            limit: computed_limit,
+            total,
+            lines,
+        })
+    }
+
     pub async fn start_all_plugins(&self) -> Result<()> {
-        let plugin_names = self.plugin_loader.list_plugins();
+        let plugin_names = self
+            .plugin_loader
+            .read()
+            .unwrap()
+            .list_plugins()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
 
         for name in plugin_names {
-            self.start_plugin(name).await?;
+            self.start_plugin(&name).await?;
         }
 
         Ok(())
@@ -363,10 +616,12 @@ impl PluginManager {
                             std::result::Result::Ok(_response) => {
                                 // Plugin is healthy
                                 plugin.reset_health_check();
+                                plugin.last_error = None;
                             }
                             Err(e) => {
                                 println!("Plugin {} heartbeat check failed: {}", plugin.name, e);
                                 plugin.increment_health_check_failure();
+                                plugin.last_error = Some(format!("heartbeat check failed: {}", e));
                             }
                         }
                         if !plugin.is_healthy() {
@@ -390,10 +645,6 @@ impl PluginManager {
         });
 
         *self.heartbeat_handle.lock().unwrap() = Some(handle);
-    }
-
-    pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {
-        self.plugin_loader.get_plugin_manifest(plugin_name)
     }
 
     async fn handle_plugin_connection(
@@ -577,10 +828,17 @@ impl PluginManager {
                                         std::result::Result::Ok(init_response) => {
                                             info!("Plugin initialized with response: {:?}", init_response);
                                             // Process the initialization response
-                                            let auth_code = init_response.auth_code;
+                                            let auth_code = init_response.auth_code.clone();
+                                            let initialize_status = Some(init_response.status.clone());
+                                            let capabilities = init_response.capabilities.clone();
                                             let mut register_hooks = Vec::new();
+                                            let mut hook_infos = Vec::new();
                                             for hook in init_response.hooks {
                                                 let name = &hook.name;
+                                                hook_infos.push(PluginHookInfo {
+                                                    name: name.clone(),
+                                                    priority: hook.priority,
+                                                });
                                                 let hook_type = crate::hook::get_hook_from_name(name);
                                                 if let Some(hook_type) = hook_type {
                                                     register_hooks.push((hook_type, hook.priority));
@@ -595,6 +853,10 @@ impl PluginManager {
                                                 if plugin.auth_code == auth_code {
                                                     plugin.ipc_sender = Some(tx_cmd_sender.clone());
                                                     plugin.state = PluginState::Running;
+                                                    plugin.initialize_status = initialize_status.clone();
+                                                    plugin.capabilities = capabilities.clone();
+                                                    plugin.hooks = hook_infos.clone();
+                                                    plugin.last_error = None;
                                                     hook_registration = Some((
                                                         plugin.name.clone(),
                                                         plugin.auth_code.clone(),
@@ -1372,7 +1634,7 @@ impl PluginManager {
         std::result::Result::Ok(final_result)
     }
 
-    pub async fn stop_plugin(&self, name: &str) -> Result<()> {
+    pub async fn stop_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
         let (abort_tx, log_collector_quit_tx) = {
             let running_plugin = self.running_plugins.get(name);
             if let Some(running_plugin) = running_plugin {
@@ -1382,36 +1644,41 @@ impl PluginManager {
                 ) {
                     match &running_plugin.plugin_abort_tx {
                         None => {
-                            return Err(anyhow::anyhow!(
+                            return Err(PluginControlError::Internal(format!(
                                 "plugin '{}' abort channel not found",
                                 name
-                            ));
+                            )));
                         }
                         Some(abort_tx) => (
                             abort_tx.clone(),
                             running_plugin.plugin_log_collector_quit_tx.clone(),
                         ),
                     }
+                } else if matches!(running_plugin.state, PluginState::Stopping) {
+                    return Err(PluginControlError::InvalidState(
+                        name.to_string(),
+                        PluginState::Stopping.as_str(),
+                    ));
                 } else {
                     return Ok(());
                 }
             } else {
-                return Err(anyhow::anyhow!("plugin '{}' not found", name));
+                return Err(PluginControlError::NotFound(name.to_string()));
             }
         };
 
         if let Some(mut running_plugin) = self.running_plugins.get_mut(name) {
             running_plugin.state = PluginState::Stopping;
+            running_plugin.last_error = None;
         }
 
         info!("stopping plugin '{}'...", name);
         let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
         if let Err(e) = abort_tx.send(notify_sender).await {
-            return Err(anyhow::anyhow!(
+            return Err(PluginControlError::Internal(format!(
                 "failed to send abort signal to plugin '{}': {}",
-                name,
-                e
-            ));
+                name, e
+            )));
         }
         let _ = notify_receiver.recv().await;
 
@@ -1424,48 +1691,125 @@ impl PluginManager {
         Ok(())
     }
 
-    pub async fn restart_plugin(&self, name: &str) -> Result<()> {
-        {
-            let running_plugin = self.running_plugins.get(name);
-            if running_plugin.is_none() {
-                return Err(anyhow::anyhow!("Plugin '{}' not found", name));
-            }
-        }
+    pub async fn restart_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
+        let next_restart_count = self
+            .running_plugins
+            .get(name)
+            .map(|plugin| plugin.restart_count.saturating_add(1))
+            .unwrap_or(1);
 
-        if let Err(e) = self.stop_plugin(name).await {
-            return Err(anyhow::anyhow!(
-                "failed to stop plugin '{}' before restart: {}",
-                name,
-                e
-            ));
-        } else {
-            info!("plugin '{}' stopped successfully, starting...", name);
-            if let Err(e) = self.start_plugin(name).await {
-                return Err(anyhow::anyhow!(
-                    "failed to start plugin '{}' during restart: {}",
-                    name,
-                    e
+        if let Some(plugin) = self.running_plugins.get(name) {
+            if matches!(plugin.state, PluginState::Stopping) {
+                return Err(PluginControlError::InvalidState(
+                    name.to_string(),
+                    PluginState::Stopping.as_str(),
                 ));
             }
-            info!("plugin '{}' restarted successfully", name);
+            drop(plugin);
         }
+
+        let prepared = self.prepare_plugin_start(name)?;
+
+        if self.running_plugins.contains_key(name) {
+            self.stop_plugin(name).await?;
+        }
+
+        info!("plugin '{}' stopped successfully, starting...", name);
+        self.start_prepared_plugin(name, next_restart_count, prepared)
+            .await?;
+        info!("plugin '{}' restarted successfully", name);
 
         Ok(())
     }
 
-    pub async fn start_plugin(&self, name: &str) -> Result<()> {
-        let manifest = self
-            .plugin_loader
-            .get_plugin_manifest(name)
-            .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", name))?
-            .clone();
+    pub async fn start_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
+        let restart_count = self
+            .running_plugins
+            .get(name)
+            .map(|plugin| plugin.restart_count)
+            .unwrap_or(0);
+        self.start_plugin_with_restart_count(name, restart_count)
+            .await
+    }
 
+    async fn start_plugin_with_restart_count(
+        &self,
+        name: &str,
+        restart_count: u32,
+    ) -> std::result::Result<(), PluginControlError> {
+        if let Some(plugin) = self.running_plugins.get(name) {
+            if matches!(
+                plugin.state,
+                PluginState::Running | PluginState::Starting | PluginState::Stopping
+            ) {
+                return Err(PluginControlError::InvalidState(
+                    name.to_string(),
+                    plugin.state.as_str(),
+                ));
+            }
+        }
+
+        let prepared = self.prepare_plugin_start(name)?;
+        self.start_prepared_plugin(name, restart_count, prepared)
+            .await
+    }
+
+    fn prepare_plugin_start(
+        &self,
+        name: &str,
+    ) -> std::result::Result<PreparedPluginStart, PluginControlError> {
         let auth_code = generate_auth_code(12);
+        let (manifest, command) = {
+            let loader = self.plugin_loader.read().unwrap();
+            if !loader.plugin_manifest_path(name).is_file() {
+                return Err(PluginControlError::NotFound(name.to_string()));
+            }
+            let manifest = loader.load_plugin_manifest_from_disk(name).map_err(|e| {
+                PluginControlError::Internal(format!(
+                    "failed to load latest manifest for plugin '{}': {}",
+                    name, e
+                ))
+            })?;
+            let command = loader
+                .get_plugin_command_from_manifest(
+                    name,
+                    &manifest,
+                    &auth_code,
+                    &self.config.local_socket_path,
+                )
+                .map_err(|e| PluginControlError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    PluginControlError::Internal(format!(
+                        "plugin '{}' start command not existed",
+                        name
+                    ))
+                })?;
+            (manifest, command)
+        };
 
-        let mut command = self
-            .plugin_loader
-            .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
-            .ok_or_else(|| anyhow::anyhow!("plugin {} start command not exsited", name))?;
+        Ok(PreparedPluginStart {
+            auth_code,
+            manifest,
+            command,
+        })
+    }
+
+    async fn start_prepared_plugin(
+        &self,
+        name: &str,
+        restart_count: u32,
+        prepared: PreparedPluginStart,
+    ) -> std::result::Result<(), PluginControlError> {
+        let PreparedPluginStart {
+            auth_code,
+            manifest,
+            mut command,
+        } = prepared;
+        let rx_cmd_sender = self
+            .rx_cmd_sender
+            .as_ref()
+            .ok_or_else(|| PluginControlError::Internal("rx_cmd_sender not found".to_string()))?
+            .clone();
 
         let mut process = match command
             .kill_on_drop(true)
@@ -1485,41 +1829,42 @@ impl PluginManager {
                     start_time: Some(std::time::Instant::now()),
                     process_log_handle: None,
                     process_wait_handle: None,
-                    restart_count: 0,
+                    restart_count,
                     last_health_check: None,
                     ipc_sender: None,
                     auth_code,
                     logs: Arc::new(RwLock::new(Vec::new())),
                     ping_response_timeout_count: 0,
+                    initialize_status: None,
+                    capabilities: Vec::new(),
+                    hooks: Vec::new(),
+                    last_error: Some(format!("failed to start plugin '{}': {}", name, e)),
                 };
 
                 {
                     self.running_plugins
                         .insert(name.to_string(), running_plugin);
                 }
-                return Err(anyhow::anyhow!("failed to start plugin '{}': {}", name, e));
+                return Err(PluginControlError::Internal(format!(
+                    "failed to start plugin '{}': {}",
+                    name, e
+                )));
             }
             std::result::Result::Ok(p) => p,
         };
 
-        let stdout = process
+        let stderr = process
             .stderr
             .take()
-            .expect("plugin did not have a handle to stdout");
+            .expect("plugin did not have a handle to stderr");
 
-        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
 
         let borrowed_name = name.to_string();
         let borrowed_auth_code = auth_code.clone();
 
         let (plugin_abort_tx, mut plugin_abort_rx) =
             tokio::sync::mpsc::channel::<tokio::sync::mpsc::Sender<()>>(1);
-
-        let rx_cmd_sender = self
-            .rx_cmd_sender
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("rx_cmd_sender not found"))?
-            .clone();
 
         let process_wait_handle = tokio::spawn(async move {
             let mut pending_notify: Option<tokio::sync::mpsc::Sender<()>> = None;
@@ -1578,14 +1923,14 @@ impl PluginManager {
             tokio::sync::mpsc::channel::<()>(1);
 
         let process_log_handle = tokio::spawn(async move {
-            // Capture plugin stdout into logs
+            // Capture plugin stderr into the in-memory log buffer.
             loop {
                 select! {
                     _ = plugin_log_collector_quit_rx.recv() => {
                         info!("plugin '{}' log collector quit", borrowed_name);
                         break;
                     },
-                    std::result::Result::Ok(Some(line)) = stdout_reader.next_line() => {
+                    std::result::Result::Ok(Some(line)) = stderr_reader.next_line() => {
                         let mut logs_guard = logs_clone.write().await;
                         logs_guard.push(line);
                         if logs_guard.len() > 1000 {
@@ -1606,12 +1951,16 @@ impl PluginManager {
             start_time: Some(std::time::Instant::now()),
             process_log_handle: Some(process_log_handle),
             process_wait_handle: Some(process_wait_handle),
-            restart_count: 0,
+            restart_count,
             last_health_check: None,
             ipc_sender: None,
             auth_code,
             logs,
             ping_response_timeout_count: 0,
+            initialize_status: None,
+            capabilities: Vec::new(),
+            hooks: Vec::new(),
+            last_error: None,
         };
 
         {
