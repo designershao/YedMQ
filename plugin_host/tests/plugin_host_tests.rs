@@ -1028,16 +1028,13 @@ pub async fn when_call_authenticate_hook_plugin_host_should_call_plugin_authenti
         .unwrap();
 
     assert!(result.authenticated);
-
-    let running_plugins = plugin_manager.get_running_plugins();
-
-    let plugin_process = running_plugins.get("mock_plugin_harness").unwrap();
-
-    let logs = plugin_process.logs.read().await;
-
-    let full_logs = logs.join("\n");
-
-    assert!(full_logs.contains("Handling authenticate request"));
+    wait_for_plugin_log(
+        &plugin_manager,
+        "mock_plugin_harness",
+        "Handling authenticate request",
+        TEST_LOG_TIMEOUT,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2346,10 +2343,12 @@ pub async fn when_call_authorize_hook_and_all_plugin_execute_timeout_host_should
 async fn when_plugin_start_failed_plugin_state_should_be_failed() {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
 
-    // Create a plugin directory but with a non-existent executable in the manifest
+    // Create a plugin directory whose executable path exists but is not spawnable.
     let plugin_name = "failed_plugin";
     let plugin_dir = temp_dir.path().join(plugin_name);
     std::fs::create_dir(&plugin_dir).expect("Failed to create plugin dir");
+    std::fs::create_dir(plugin_dir.join("non_existent_executable"))
+        .expect("Failed to create failing executable directory");
 
     let plugin_manifest = r#"[plugin]
 name = "failed_plugin"
@@ -2386,7 +2385,7 @@ executable = "non_existent_executable"
 
     wait_for_listener_start().await;
 
-    // start_plugin will return Err because spawn fails
+    // start_plugin will return Err because spawning a directory path fails.
     let _ = plugin_manager.start_plugin(plugin_name).await;
 
     let running_plugins = plugin_manager.get_running_plugins();

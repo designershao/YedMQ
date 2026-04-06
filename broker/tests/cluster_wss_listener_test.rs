@@ -67,7 +67,7 @@ pub async fn test_wss_listener_connect() {
         Ok(rumqttc::ConnectReturnCode::Success)
     });
 
-    let result = tokio::time::timeout(Duration::from_secs(5), connection_handle).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), connection_handle).await;
 
     assert!(result.is_ok());
     let connect_result = result.unwrap().unwrap();

@@ -113,12 +113,13 @@ impl YedMQApp {
         let api_listen_external = settings.listener.api.external.clone();
 
         let app_cloned = app.clone();
-        actix::spawn(async move {
+        let api_task_join = actix::spawn(async move {
             if let Err(e) =
                 rest_api::run_rest_api_task(&api_listen_external, app_cloned.clone()).await
             {
                 warn!("start api task error: {}", e);
             }
+            Ok(())
         });
         //
 
@@ -190,6 +191,7 @@ impl YedMQApp {
         let mut hn = app.join_handles.lock().await;
 
         hn.push(sys_topic_task_join_handle);
+        hn.push(api_task_join);
         hn.push(tcp_listener_join);
         hn.push(tcp_tls_listener_join);
         hn.push(mqtt_ws_listener_join);

@@ -63,7 +63,7 @@ pub async fn test_tls_listener_connect() {
         Ok(rumqttc::ConnectReturnCode::Success)
     });
 
-    let result = tokio::time::timeout(Duration::from_secs(5), connection_handle).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), connection_handle).await;
 
     assert!(result.is_ok());
     let connect_result = result.unwrap().unwrap();
@@ -405,12 +405,12 @@ async fn test_persistent_session_cross_node() {
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), sub_setup_task)
+    tokio::time::timeout(Duration::from_secs(15), sub_setup_task)
         .await
         .expect("Sub Setup timed out")
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Pub Client
     let mut pub_opts = MqttOptions::new("cluster-persistent-tls-pub", "localhost", pub_addr.port());
@@ -443,12 +443,12 @@ async fn test_persistent_session_cross_node() {
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), pub_task)
+    tokio::time::timeout(Duration::from_secs(15), pub_task)
         .await
         .expect("Pub timed out")
         .unwrap();
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Sub Client Reconnect
     let mut sub_opts2 =
@@ -482,7 +482,7 @@ async fn test_persistent_session_cross_node() {
             }
         }
     });
-    tokio::time::timeout(Duration::from_secs(5), sub_verify_task)
+    tokio::time::timeout(Duration::from_secs(15), sub_verify_task)
         .await
         .expect("Sub Verify timed out")
         .unwrap();

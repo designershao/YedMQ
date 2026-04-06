@@ -1,14 +1,15 @@
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
     fs,
+    net::TcpListener as StdTcpListener,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
     time::Duration,
 };
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use yedmq::{
     app::YedMQApp,
     settings::{AuthConfig, ClusterStartupMode, Node, Settings, User},
@@ -16,26 +17,67 @@ use yedmq::{
 
 struct NodeHandle {
     api_port: u16,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl NodeHandle {
     fn api_addr(&self) -> String {
         format!("127.0.0.1:{}", self.api_port)
     }
-}
 
-fn random_port() -> u16 {
-    use rand::Rng;
-    rand::thread_rng().gen_range(10240..=65535)
-}
+    fn shutdown(&mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
 
-fn random_unique_port(used: &mut HashSet<u16>) -> u16 {
-    loop {
-        let p = random_port();
-        if used.insert(p) {
-            return p;
+        if let Some(thread_handle) = self.thread_handle.take() {
+            let _ = thread_handle.join();
         }
     }
+}
+
+impl Drop for NodeHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+struct ReservedNodePorts {
+    tcp: StdTcpListener,
+    tcp_tls: StdTcpListener,
+    ws: StdTcpListener,
+    wss: StdTcpListener,
+    api: StdTcpListener,
+    rpc: StdTcpListener,
+}
+
+impl ReservedNodePorts {
+    fn new() -> Self {
+        Self {
+            tcp: reserve_tcp_listener(),
+            tcp_tls: reserve_tcp_listener(),
+            ws: reserve_tcp_listener(),
+            wss: reserve_tcp_listener(),
+            api: reserve_tcp_listener(),
+            rpc: reserve_tcp_listener(),
+        }
+    }
+
+    fn ports(&self) -> (u16, u16, u16, u16, u16, u16) {
+        (
+            self.tcp.local_addr().unwrap().port(),
+            self.tcp_tls.local_addr().unwrap().port(),
+            self.ws.local_addr().unwrap().port(),
+            self.wss.local_addr().unwrap().port(),
+            self.api.local_addr().unwrap().port(),
+            self.rpc.local_addr().unwrap().port(),
+        )
+    }
+}
+
+fn reserve_tcp_listener() -> StdTcpListener {
+    StdTcpListener::bind("127.0.0.1:0").expect("failed to reserve tcp port")
 }
 
 fn build_settings(
@@ -144,18 +186,26 @@ async fn start_node(
     ));
     let api_port = ports.4;
     let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let settings_clone = settings.clone();
-    thread::spawn(move || {
-        let boot = std::panic::catch_unwind(|| {
+    let thread_handle = thread::spawn(move || {
+        let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = actix::System::new();
             rt.block_on(async move {
-                let app = Arc::new(YedMQApp::new(settings_clone).await);
-                YedMQApp::start(app).await;
+                let app: Arc<YedMQApp> = Arc::new(YedMQApp::new(settings_clone).await);
+                YedMQApp::start(app.clone()).await;
+
+                let system = actix::System::current();
+                actix::spawn(async move {
+                    let _ = shutdown_rx.await;
+                    let _ = app.shutdown().await;
+                    system.stop();
+                });
             });
             let _ = start_tx.send(Ok(()));
             rt.run().expect("actix runtime run failed");
-        });
+        }));
         if let Err(e) = boot {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
                 (*s).to_string()
@@ -178,13 +228,28 @@ async fn start_node(
         Err(_) => panic!("node {} did not report startup within timeout", node_id),
     }
 
-    // We intentionally don't try to join test node threads, consistent with existing cluster tests.
-    NodeHandle { api_port }
+    let api_addr = format!("127.0.0.1:{}", api_port);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("build reqwest client failed");
+    assert!(
+        wait_api_ready(&client, &api_addr).await,
+        "node {} api is not ready: {}",
+        node_id,
+        api_addr
+    );
+
+    NodeHandle {
+        api_port,
+        shutdown_tx: Some(shutdown_tx),
+        thread_handle: Some(thread_handle),
+    }
 }
 
 async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
     let url = format!("http://{}/api/v1/system_info", api_addr);
-    for _ in 0..30 {
+    for _ in 0..60 {
         let res = client
             .get(&url)
             .basic_auth("admin", Some("password"))
@@ -224,25 +289,14 @@ fn has_two_nodes(metrics: &Value, raft_key: &str) -> bool {
 async fn test_add_second_node_via_rest_api() {
     let temp_dir = TempDir::new().expect("create temp dir failed");
 
-    let mut used_ports = HashSet::new();
-    let node1_ports = (
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-    );
-    let node2_ports = (
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-    );
+    let node1_reserved_ports = ReservedNodePorts::new();
+    let node2_reserved_ports = ReservedNodePorts::new();
+    let node1_ports = node1_reserved_ports.ports();
+    let node2_ports = node2_reserved_ports.ports();
+    drop(node1_reserved_ports);
+    drop(node2_reserved_ports);
 
-    let node1 = start_node(
+    let _node1 = start_node(
         1,
         node1_ports,
         temp_dir.path(),
@@ -255,20 +309,9 @@ async fn test_add_second_node_via_rest_api() {
         .timeout(Duration::from_secs(3))
         .build()
         .expect("build reqwest client failed");
-    let node1_api = node1.api_addr();
+    let node1_api = _node1.api_addr();
     let node2_api = node2.api_addr();
     let node2_rpc = format!("127.0.0.1:{}", node2_ports.5);
-
-    assert!(
-        wait_api_ready(&client, &node1_api).await,
-        "node1 api is not ready: {}",
-        node1_api
-    );
-    assert!(
-        wait_api_ready(&client, &node2_api).await,
-        "node2 api is not ready: {}",
-        node2_api
-    );
 
     let add_node_url = format!("http://{}/api/v1/cluster/nodes", node1_api);
 

@@ -298,6 +298,10 @@ mod tests {
         "#;
 
         fs::write(plugin_dir.join("plugin.toml"), manifest_content)?;
+        #[cfg(windows)]
+        fs::write(plugin_dir.join("test_executable.exe"), b"")?;
+        #[cfg(not(windows))]
+        fs::write(plugin_dir.join("test_executable"), b"")?;
 
         let mut loader = PluginLoader::new(dir.path());
         let plugins = loader.scan_plugins()?;
@@ -311,6 +315,13 @@ mod tests {
         let cmd = loader
             .get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?
             .unwrap();
+        assert!(cmd
+            .as_std()
+            .get_program()
+            .to_str()
+            .unwrap()
+            .ends_with("test_executable.exe"));
+        #[cfg(not(windows))]
         assert!(cmd
             .as_std()
             .get_program()
