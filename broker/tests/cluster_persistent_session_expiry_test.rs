@@ -1,127 +1,182 @@
 use rand::Rng;
-use rumqttc::{AsyncClient, MqttOptions, QoS};
-use std::time::Duration;
-use tokio::time::sleep;
-
-mod cluster_setup;
-use cluster_setup::setup_cluster;
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::thread;
+use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
+use std::{env, fs, path::PathBuf, sync::Arc, thread, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
-use yedmq::app::YedMQApp;
-use yedmq::settings::{Node, Settings};
+use tokio::time::{sleep, timeout};
+use yedmq::{
+    app::YedMQApp,
+    settings::{Node, Settings},
+};
+
+const SESSION_EXPIRY_SWEEP_INTERVAL_SECS: u64 = 30;
+
+async fn wait_for_broker_ready(port: u16) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let address = format!("127.0.0.1:{port}");
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            panic!("broker tcp listener did not become ready on {}", address);
+        }
+
+        match tokio::net::TcpStream::connect(&address).await {
+            Ok(stream) => {
+                drop(stream);
+                return;
+            }
+            Err(_) => sleep(Duration::from_millis(100)).await,
+        }
+    }
+}
+
+async fn wait_for_connect(eventloop: &mut EventLoop) {
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::ConnAck(_))) => return,
+            Ok(_) => continue,
+            Err(e) => panic!("connection failed: {:?}", e),
+        }
+    }
+}
+
+async fn wait_for_suback(eventloop: &mut EventLoop) {
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::SubAck(_))) => return,
+            Ok(_) => continue,
+            Err(e) => panic!("subscribe failed: {:?}", e),
+        }
+    }
+}
+
+async fn wait_for_publish(
+    eventloop: &mut EventLoop,
+    expected_topic: &str,
+    expected_payload: &[u8],
+    timeout_duration: Duration,
+) -> bool {
+    timeout(timeout_duration, async {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    assert_eq!(publish.topic, expected_topic);
+                    assert_eq!(publish.payload.as_ref(), expected_payload);
+                    return true;
+                }
+                Ok(_) => continue,
+                Err(e) => panic!("waiting for publish failed: {:?}", e),
+            }
+        }
+    })
+    .await
+    .is_ok()
+}
+
+async fn subscribe_and_disconnect(mqtt_options: MqttOptions, topic: &str) {
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
+    wait_for_connect(&mut eventloop).await;
+    client.subscribe(topic, QoS::AtLeastOnce).await.unwrap();
+    wait_for_suback(&mut eventloop).await;
+    client.disconnect().await.unwrap();
+}
+
+async fn publish_message(host: &str, port: u16, client_id: &str, topic: &str, payload: &[u8]) {
+    let mqtt_options = MqttOptions::new(client_id, host, port);
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
+    wait_for_connect(&mut eventloop).await;
+    client
+        .publish(topic, QoS::AtLeastOnce, false, payload.to_vec())
+        .await
+        .unwrap();
+
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Packet::PubAck(_))) => break,
+            Ok(_) => continue,
+            Err(e) => panic!("publish failed: {:?}", e),
+        }
+    }
+
+    client.disconnect().await.unwrap();
+}
 
 #[tokio::test]
 async fn test_persistent_session_expiry() {
-    let ctx = setup_cluster().await;
-    let node1 = &ctx.nodes[0];
-    let tcp_addr = &node1.listener.tcp.external;
-    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else {
-        panic!("Invalid addr")
-    };
-    let port: u16 = port.parse().unwrap();
+    let _ = env_logger::builder().is_test(true).try_init();
+    let temp_dir = TempDir::new().unwrap();
+    let node = start_node(1, None, temp_dir.path(), 10).await;
+    let topic = "test/expiry";
 
-    let client_id = "expiry_test_client";
-    let mut mqtt_options = MqttOptions::new(client_id, host, port);
+    let mut mqtt_options = MqttOptions::new("expiry_test_client", "127.0.0.1", node.tcp_port);
     mqtt_options.set_clean_session(false);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
 
-    // 1. Connect and Subscribe
-    {
-        let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        client
-            .subscribe("test/expiry", QoS::AtLeastOnce)
-            .await
-            .unwrap();
+    subscribe_and_disconnect(mqtt_options.clone(), topic).await;
 
-        // Let it process suback
-        let _ = eventloop.poll().await.unwrap();
+    // The expiry sweep runs every 30s. With TTL=10s and a fresh broker start,
+    // one sweep plus a small buffer is enough to observe session cleanup.
+    sleep(Duration::from_secs(SESSION_EXPIRY_SWEEP_INTERVAL_SECS + 5)).await;
 
-        // 2. Disconnect
-        drop(client);
-    }
-
-    println!("Client disconnected, waiting for expiry...");
-
-    // 3. Verify session exists initially (Optional: could check via API if available)
-    // For now, we rely on the passage of time.
-
-    // The default session_ttl in setup_cluster is 60s.
-    // To speed up tests, I should have modified setup_cluster,
-    // but since it's shared, I'll wait 70s or implement a way to override.
-    // Given I cannot easily change setup_cluster without affecting others,
-    // I will assume the developer might want to adjust the test-wide TTL.
-
-    // Safety check: Let's wait long enough for the 60s TTL + 30s check interval.
-    // Note: In a real CI environment, we'd want shorter TTLs.
-    sleep(Duration::from_secs(95)).await;
-
-    // 4. Try to reconnect with clean_session=false and check session_present
-    mqtt_options.set_clean_session(false);
-    let (client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-
-    // If the session was cleared, session_present in ConnAck should be false.
-    // Rumqttc doesn't easily expose session_present in AsyncClient directly in a simple way,
-    // but we can check if subscriptions are still there by seeing if we receive messages
-    // without re-subscribing, OR check logs.
-
-    // A better way: If session was cleared, the cluster should treat this as a NEW session.
-    // We can verify this by checking if the session state exists in Raft.
-
-    let res = client
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
+    wait_for_connect(&mut eventloop).await;
+    client
         .subscribe("test/expiry/check", QoS::AtLeastOnce)
-        .await;
-    assert!(res.is_ok(), "Should be able to connect as a new session");
+        .await
+        .unwrap();
+    wait_for_suback(&mut eventloop).await;
 
-    drop(client);
+    client.disconnect().await.unwrap();
+    node.stop().await;
 }
 
 #[tokio::test]
 async fn test_persistent_session_no_expiry_on_reconnect() {
-    let ctx = setup_cluster().await;
-    let node1 = &ctx.nodes[0];
-    let tcp_addr = &node1.listener.tcp.external;
-    let [host, port] = tcp_addr.split(':').collect::<Vec<_>>()[..] else {
-        panic!("Invalid addr")
-    };
-    let port: u16 = port.parse().unwrap();
+    let _ = env_logger::builder().is_test(true).try_init();
+    let temp_dir = TempDir::new().unwrap();
+    let session_ttl_secs = 20;
+    let node = start_node(1, None, temp_dir.path(), session_ttl_secs).await;
+    let topic = "test/no_expiry";
+    let payload = b"persistent-session-still-active";
 
-    let client_id = "no_expiry_test_client";
-    let mut mqtt_options = MqttOptions::new(client_id, host, port);
+    let mut mqtt_options = MqttOptions::new("no_expiry_test_client", "127.0.0.1", node.tcp_port);
     mqtt_options.set_clean_session(false);
+    mqtt_options.set_keep_alive(Duration::from_secs(5));
 
-    // 1. Connect and Disconnect
-    {
-        let (client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        client
-            .subscribe("test/no_expiry", QoS::AtLeastOnce)
-            .await
-            .unwrap();
-        sleep(Duration::from_secs(1)).await;
-    }
+    subscribe_and_disconnect(mqtt_options.clone(), topic).await;
 
-    // 2. Wait a bit, then reconnect
-    sleep(Duration::from_secs(30)).await;
+    sleep(Duration::from_secs(15)).await;
 
     {
-        println!("Reconnecting client before expiry...");
-        let (_client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-        sleep(Duration::from_secs(2)).await;
-        // Keep it active or disconnect again to reset the timer
+        let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
+        wait_for_connect(&mut eventloop).await;
+        client.disconnect().await.unwrap();
     }
 
-    // 3. Wait past the original 60s deadline
-    println!("Waiting past original expiry deadline...");
-    sleep(Duration::from_secs(40)).await;
+    // This crosses the original expiry deadline and the first cleanup sweep,
+    // but stays within the renewed TTL window after reconnect.
+    sleep(Duration::from_secs(16)).await;
 
-    // 4. Reconnect again. The session should still be there because the 30s-reconnect reset the clock.
-    let (client, _eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
-    let res = client.subscribe("test/no_expiry", QoS::AtLeastOnce).await;
-    assert!(res.is_ok());
+    let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
+    wait_for_connect(&mut eventloop).await;
+
+    publish_message(
+        "127.0.0.1",
+        node.tcp_port,
+        "no_expiry_test_publisher",
+        topic,
+        payload,
+    )
+    .await;
+
+    let received = wait_for_publish(&mut eventloop, topic, payload, Duration::from_secs(3)).await;
+    assert!(
+        received,
+        "reconnecting before expiry should preserve the persistent session subscription"
+    );
+
+    client.disconnect().await.unwrap();
+    node.stop().await;
 }
 
 fn random_port() -> u16 {
@@ -151,6 +206,7 @@ async fn start_node(
     node_id: u64,
     ports: Option<(u16, u16, u16, u16, u16, u16)>,
     base_dir: &std::path::Path,
+    session_ttl: u64,
 ) -> NodeHandle {
     let (tcp, tcp_tls, ws, wss, api, rpc) = ports.unwrap_or_else(|| {
         (
@@ -171,7 +227,6 @@ async fn start_node(
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
     let certs_path = PathBuf::from(crate_root_path).join("tests").join("certs");
-    // We assume certs exist
     let absolute_certs_path = fs::canonicalize(&certs_path).unwrap();
 
     let cluster_node_config = Node {
@@ -266,35 +321,64 @@ async fn start_node(
                 external: format!("127.0.0.1:{}", rpc),
             },
             nodes: vec![cluster_node_config],
-            session_ttl: 10,
+            session_ttl,
             startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,
         },
     };
 
     let (stop_tx, mut stop_rx) = mpsc::channel(1);
+    let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
     let settings = Arc::new(settings);
     let settings_clone = settings.clone();
 
     let join_handle = thread::spawn(move || {
-        let rt = actix::System::new();
-        rt.block_on(async {
-            let app = Arc::new(YedMQApp::new(settings_clone).await);
-            YedMQApp::start(app.clone()).await;
+        let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rt = actix::System::new();
+            rt.block_on(async {
+                let app = Arc::new(YedMQApp::new(settings_clone).await);
+                YedMQApp::start(app.clone()).await;
 
-            let app_clone = app.clone();
-            actix::spawn(async move {
-                stop_rx.recv().await;
-                if let Err(e) = app_clone.shutdown().await {
-                    log::warn!("app shutdown failed: {}", e);
-                }
-                actix::System::current().stop();
+                let app_clone = app.clone();
+                actix::spawn(async move {
+                    stop_rx.recv().await;
+                    if let Err(e) = app_clone.shutdown().await {
+                        log::warn!("app shutdown failed: {}", e);
+                    }
+                    actix::System::current().stop();
+                });
             });
-        });
-        rt.run().unwrap();
+            let _ = start_tx.send(Ok(()));
+            rt.run().unwrap();
+        }));
+
+        if let Err(err) = boot {
+            let message = if let Some(s) = err.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = err.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            let _ = start_tx.send(Err(message));
+        }
     });
 
-    // Give it a moment to start
-    sleep(Duration::from_secs(3)).await;
+    let started =
+        tokio::task::spawn_blocking(move || start_rx.recv_timeout(Duration::from_secs(10)))
+            .await
+            .unwrap();
+    match started {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("node {} failed to start: {}", node_id, err),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("node {} did not report startup within timeout", node_id)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("node {} startup thread exited unexpectedly", node_id)
+        }
+    }
+
+    wait_for_broker_ready(tcp).await;
 
     NodeHandle {
         stop_tx,
@@ -317,14 +401,11 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
         random_port(),
     );
 
-    // 1. Start Broker
     println!("Starting broker for the first time...");
-    let node = start_node(node_id, Some(ports), temp_dir.path()).await;
+    let node = start_node(node_id, Some(ports), temp_dir.path(), 10).await;
     let tcp_port = node.tcp_port;
 
     let client_id = "test_client_restart_bug";
-
-    // 2. Connect Persistent Client
     let mut mqtt_options = MqttOptions::new(client_id, "127.0.0.1", tcp_port);
     mqtt_options.set_clean_session(false);
     mqtt_options.set_keep_alive(Duration::from_secs(5));
@@ -332,58 +413,43 @@ async fn test_persistent_session_abnormal_cleanup_after_restart() {
     {
         println!("Connecting client (1st time)...");
         let (client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
+        wait_for_connect(&mut eventloop).await;
         client
             .subscribe("test/topic", QoS::AtLeastOnce)
             .await
             .unwrap();
-        // Wait for suback
-        loop {
-            let notification = eventloop.poll().await.unwrap();
-            if let rumqttc::Event::Incoming(rumqttc::Packet::SubAck(_)) = notification {
-                break;
-            }
-        }
+        wait_for_suback(&mut eventloop).await;
 
         println!("Disconnecting client (1st time)...");
         client.disconnect().await.unwrap();
     }
 
-    sleep(Duration::from_secs(5)).await;
-
     println!("Stopping broker...");
     node.stop().await;
 
-    sleep(Duration::from_secs(5)).await;
-
     println!("Restarting broker...");
-    let _node = start_node(node_id, Some(ports), temp_dir.path()).await;
-
-    sleep(Duration::from_secs(5)).await;
+    let _node = start_node(node_id, Some(ports), temp_dir.path(), 10).await;
 
     println!("Reconnecting client (check)...");
     let (_client, mut eventloop) = AsyncClient::new(mqtt_options.clone(), 10);
 
-    let disconnect_unexpected = tokio::select! {
-        result =  async {
-            loop {
-                match eventloop.poll().await {
-                    Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(connack))) => {
-                        println!("ConnAck received: {:?}", connack);
-                    }
-                    Ok(rumqttc::Event::Incoming(rumqttc::Packet::Disconnect)) => {
-                        break true;
-                    }
-                    Err(e) => {
-                        println!("Error in event loop: {:?}", e);
-                        break true;
-                    }
-                    _ => {
-                    }
+    let disconnect_unexpected = timeout(Duration::from_secs(10), async {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(connack))) => {
+                    println!("ConnAck received: {:?}", connack);
                 }
+                Ok(Event::Incoming(Packet::Disconnect)) => break true,
+                Err(e) => {
+                    println!("Error in event loop: {:?}", e);
+                    break true;
+                }
+                Ok(_) => {}
             }
-        } => result,
-        _ = sleep(Duration::from_secs(30)) => false
-    };
+        }
+    })
+    .await
+    .unwrap_or(false);
 
     assert!(
         !disconnect_unexpected,
