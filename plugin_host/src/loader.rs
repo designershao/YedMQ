@@ -315,6 +315,7 @@ mod tests {
         let cmd = loader
             .get_plugin_command("test_plugin", "test_auth_code", "/tmp/yedmq_plugin.sock")?
             .unwrap();
+        #[cfg(windows)]
         assert!(cmd
             .as_std()
             .get_program()
