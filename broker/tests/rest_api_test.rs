@@ -230,8 +230,46 @@ async fn ensure_cluster_initialized(api_addr: &str) {
         .basic_auth("admin", Some("password"))
         .send()
         .await;
-    // Wait for leader election and cluster stability
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    wait_for_cluster_ready(api_addr).await;
+}
+
+async fn wait_for_cluster_ready(api_addr: &str) -> Value {
+    let client = reqwest::Client::new();
+    let ready_url = format!("http://{}/api/v1/cluster/ready", api_addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut last_error = "cluster readiness endpoint has not returned success yet".to_string();
+
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cluster did not become ready: {}",
+            last_error
+        );
+
+        match client
+            .get(&ready_url)
+            .basic_auth("admin", Some("password"))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                return response
+                    .json()
+                    .await
+                    .expect("parse cluster ready response failed");
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = format!("status {}, body {}", status, body);
+            }
+            Err(err) => {
+                last_error = err.to_string();
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 async fn get_plugin_detail(api_addr: &str, plugin_name: &str) -> Value {
@@ -311,6 +349,39 @@ async fn test_api_system_info() {
     // Fields are camelCase: clientsConnected, bytesReceived, bytesSent, uptime
     assert!(body.get("clientsConnected").is_some());
     assert!(body.get("uptime").is_some());
+}
+
+#[actix::test]
+async fn test_api_cluster_ready() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+
+    let body = wait_for_cluster_ready(api_addr).await;
+    let cluster_node_ids = body
+        .get("clusterNodeIds")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("clusterNodeIds should be an array");
+
+    assert_eq!(body.get("ready").and_then(Value::as_bool), Some(true));
+    assert_eq!(body.get("nodeId").and_then(Value::as_u64), Some(1001));
+    assert_eq!(cluster_node_ids, vec![Value::from(1001)]);
+    assert_eq!(
+        body.pointer("/checks/topicRaft/ready")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        body.pointer("/checks/sessionActorMapRaft/ready")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        body.pointer("/checks/sessionStateRaft/ready")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
 }
 
 #[actix::test]

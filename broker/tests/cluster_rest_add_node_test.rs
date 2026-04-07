@@ -265,24 +265,41 @@ async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
     false
 }
 
-fn has_two_nodes(metrics: &Value, raft_key: &str) -> bool {
-    let Some(nodes_obj) = metrics
-        .get(raft_key)
-        .and_then(|v| {
-            v.get("membership_config")
-                .or_else(|| v.get("membershipConfig"))
-        })
-        .and_then(|v| {
-            v.get("membership")
-                .and_then(|m| m.get("nodes"))
-                .or_else(|| v.get("nodes"))
-        })
-        .and_then(|v| v.as_object())
-    else {
-        return false;
-    };
-    println!("{} nodes: {:?}", raft_key, nodes_obj.keys());
-    nodes_obj.contains_key("1") && nodes_obj.contains_key("2")
+async fn wait_cluster_ready(client: &reqwest::Client, api_addr: &str) -> Result<Value, String> {
+    let ready_url = format!("http://{}/api/v1/cluster/ready", api_addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut last_error = "cluster readiness endpoint has not returned success yet".to_string();
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_error);
+        }
+
+        match client
+            .get(&ready_url)
+            .basic_auth("admin", Some("password"))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                let body: Value = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("parse ready response failed: {}", err))?;
+                return Ok(body);
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = format!("status {}, body {}", status, body);
+            }
+            Err(err) => {
+                last_error = err.to_string();
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 #[tokio::test]
@@ -359,46 +376,39 @@ async fn test_add_second_node_via_rest_api() {
         ))
     };
 
-    let metrics_url = format!("http://{}/api/v1/cluster/metrics", node1_api);
-    let mut converged = false;
-    let mut last_metrics: Option<Value> = None;
-
-    for _ in 0..20 {
-        let resp = client
-            .get(&metrics_url)
-            .basic_auth("admin", Some("password"))
-            .send()
-            .await;
-        let Ok(resp) = resp else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        };
-        if resp.status() != StatusCode::OK {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        }
-
-        let body: Value = resp.json().await.expect("parse metrics json failed");
-        let ok = has_two_nodes(&body, "topic_raft")
-            && has_two_nodes(&body, "session_actor_map_raft")
-            && has_two_nodes(&body, "session_state_map_raft");
-
-        last_metrics = Some(body);
-        if ok {
-            converged = true;
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-
     if let Some(add_err) = add_err {
         panic!("{}", add_err);
     }
 
-    assert!(
-        converged,
-        "cluster metrics did not show two nodes in all raft groups, last metrics: {}",
-        last_metrics.unwrap_or(Value::Null)
+    let ready_body = wait_cluster_ready(&client, &node1_api)
+        .await
+        .unwrap_or_else(|err| panic!("cluster did not become ready after adding node: {}", err));
+    let cluster_node_ids = ready_body
+        .get("clusterNodeIds")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("clusterNodeIds should be an array");
+
+    assert_eq!(cluster_node_ids, vec![Value::from(1), Value::from(2)]);
+    assert_eq!(
+        ready_body
+            .pointer("/checks/topicRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
+    );
+    assert_eq!(
+        ready_body
+            .pointer("/checks/sessionActorMapRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
+    );
+    assert_eq!(
+        ready_body
+            .pointer("/checks/sessionStateRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
     );
 }

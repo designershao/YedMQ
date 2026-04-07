@@ -158,6 +158,7 @@ pub async fn run_rest_api_task(
             "/api/v1/cluster/metrics",
             axum::routing::get(cluster::metrics),
         )
+        .route("/api/v1/cluster/ready", axum::routing::get(cluster::ready))
         .route(
             "/api/v1/cluster/learners",
             axum::routing::post(cluster::add_learner),

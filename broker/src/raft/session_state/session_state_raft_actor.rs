@@ -2490,6 +2490,18 @@ impl Handler<DirectWriteToRaft> for SessionStateRaftActor {
 #[rtype(result = "Result<RaftMetrics<NodeId,Node>, SessionStateRaftError>")]
 pub struct GetRaftMetrics {}
 
+#[derive(Message)]
+#[rtype(result = "bool")]
+pub struct GetPayloadReady {}
+
+impl Handler<GetPayloadReady> for SessionStateRaftActor {
+    type Result = bool;
+
+    fn handle(&mut self, _msg: GetPayloadReady, _: &mut Self::Context) -> Self::Result {
+        matches!(self.state, ActorState::Running) && self.is_ready.load(Ordering::SeqCst)
+    }
+}
+
 impl Handler<GetRaftMetrics> for SessionStateRaftActor {
     type Result = ResponseActFuture<Self, Result<RaftMetrics<NodeId, Node>, SessionStateRaftError>>;
 
