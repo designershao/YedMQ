@@ -1,5 +1,6 @@
 use log::{info, warn};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
@@ -35,6 +36,35 @@ pub struct YedMQApp {
 }
 
 impl YedMQApp {
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        info!("shutting down YedMQ app");
+
+        if let Err(e) = self.plugin_manager.shutdown().await {
+            warn!("plugin manager shutdown failed: {}", e);
+        }
+
+        let handles = {
+            let mut join_handles = self.join_handles.lock().await;
+            std::mem::take(&mut *join_handles)
+        };
+
+        for handle in &handles {
+            handle.abort();
+        }
+
+        for handle in handles {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(e))) => warn!("background task exited with error: {}", e),
+                Ok(Err(e)) if e.is_cancelled() => {}
+                Ok(Err(e)) => warn!("background task panicked: {:?}", e),
+                Err(_) => warn!("background task shutdown timed out"),
+            }
+        }
+
+        Ok(())
+    }
+
     pub async fn get_cluster_service_rpc_client(
         &self,
         node_id: &NodeId,
@@ -83,12 +113,13 @@ impl YedMQApp {
         let api_listen_external = settings.listener.api.external.clone();
 
         let app_cloned = app.clone();
-        actix::spawn(async move {
+        let api_task_join = actix::spawn(async move {
             if let Err(e) =
                 rest_api::run_rest_api_task(&api_listen_external, app_cloned.clone()).await
             {
                 warn!("start api task error: {}", e);
             }
+            Ok(())
         });
         //
 
@@ -160,6 +191,7 @@ impl YedMQApp {
         let mut hn = app.join_handles.lock().await;
 
         hn.push(sys_topic_task_join_handle);
+        hn.push(api_task_join);
         hn.push(tcp_listener_join);
         hn.push(tcp_tls_listener_join);
         hn.push(mqtt_ws_listener_join);
@@ -177,6 +209,9 @@ impl YedMQApp {
             local_socket_path: settings.plugin.local_socket_path.clone(),
             max_restart_attempts: 5,
             health_check_interval_secs: 10,
+            init_timeout_secs: 5,
+            request_timeout_secs: 5,
+            ping_timeout_secs: 5,
             shutdown_signal: tokio::sync::broadcast::channel(1).0,
             default_authorize_result: settings.plugin.default_authorize_result,
             default_authenticate_result: settings.plugin.default_authenticate_result,

@@ -1,14 +1,15 @@
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
     fs,
+    net::TcpListener as StdTcpListener,
     path::{Path, PathBuf},
     sync::Arc,
     thread,
     time::Duration,
 };
 use tempfile::TempDir;
+use tokio::sync::oneshot;
 use yedmq::{
     app::YedMQApp,
     settings::{AuthConfig, ClusterStartupMode, Node, Settings, User},
@@ -16,26 +17,67 @@ use yedmq::{
 
 struct NodeHandle {
     api_port: u16,
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    thread_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl NodeHandle {
     fn api_addr(&self) -> String {
         format!("127.0.0.1:{}", self.api_port)
     }
-}
 
-fn random_port() -> u16 {
-    use rand::Rng;
-    rand::thread_rng().gen_range(10240..=65535)
-}
+    fn shutdown(&mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
 
-fn random_unique_port(used: &mut HashSet<u16>) -> u16 {
-    loop {
-        let p = random_port();
-        if used.insert(p) {
-            return p;
+        if let Some(thread_handle) = self.thread_handle.take() {
+            let _ = thread_handle.join();
         }
     }
+}
+
+impl Drop for NodeHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+struct ReservedNodePorts {
+    tcp: StdTcpListener,
+    tcp_tls: StdTcpListener,
+    ws: StdTcpListener,
+    wss: StdTcpListener,
+    api: StdTcpListener,
+    rpc: StdTcpListener,
+}
+
+impl ReservedNodePorts {
+    fn new() -> Self {
+        Self {
+            tcp: reserve_tcp_listener(),
+            tcp_tls: reserve_tcp_listener(),
+            ws: reserve_tcp_listener(),
+            wss: reserve_tcp_listener(),
+            api: reserve_tcp_listener(),
+            rpc: reserve_tcp_listener(),
+        }
+    }
+
+    fn ports(&self) -> (u16, u16, u16, u16, u16, u16) {
+        (
+            self.tcp.local_addr().unwrap().port(),
+            self.tcp_tls.local_addr().unwrap().port(),
+            self.ws.local_addr().unwrap().port(),
+            self.wss.local_addr().unwrap().port(),
+            self.api.local_addr().unwrap().port(),
+            self.rpc.local_addr().unwrap().port(),
+        )
+    }
+}
+
+fn reserve_tcp_listener() -> StdTcpListener {
+    StdTcpListener::bind("127.0.0.1:0").expect("failed to reserve tcp port")
 }
 
 fn build_settings(
@@ -69,8 +111,10 @@ fn build_settings(
             },
             tcp_tls: yedmq::settings::TcpTls {
                 external: format!("127.0.0.1:{}", tcp_tls),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
@@ -79,8 +123,10 @@ fn build_settings(
             },
             wss: yedmq::settings::Wss {
                 external: format!("127.0.0.1:{}", wss),
+                cacert_file: "".to_string(),
                 cert_file: "".to_string(),
                 key_file: "".to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
@@ -140,18 +186,26 @@ async fn start_node(
     ));
     let api_port = ports.4;
     let (start_tx, start_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let settings_clone = settings.clone();
-    thread::spawn(move || {
-        let boot = std::panic::catch_unwind(|| {
+    let thread_handle = thread::spawn(move || {
+        let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = actix::System::new();
             rt.block_on(async move {
-                let app = Arc::new(YedMQApp::new(settings_clone).await);
-                YedMQApp::start(app).await;
+                let app: Arc<YedMQApp> = Arc::new(YedMQApp::new(settings_clone).await);
+                YedMQApp::start(app.clone()).await;
+
+                let system = actix::System::current();
+                actix::spawn(async move {
+                    let _ = shutdown_rx.await;
+                    let _ = app.shutdown().await;
+                    system.stop();
+                });
             });
             let _ = start_tx.send(Ok(()));
             rt.run().expect("actix runtime run failed");
-        });
+        }));
         if let Err(e) = boot {
             let msg = if let Some(s) = e.downcast_ref::<&str>() {
                 (*s).to_string()
@@ -174,13 +228,28 @@ async fn start_node(
         Err(_) => panic!("node {} did not report startup within timeout", node_id),
     }
 
-    // We intentionally don't try to join test node threads, consistent with existing cluster tests.
-    NodeHandle { api_port }
+    let api_addr = format!("127.0.0.1:{}", api_port);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("build reqwest client failed");
+    assert!(
+        wait_api_ready(&client, &api_addr).await,
+        "node {} api is not ready: {}",
+        node_id,
+        api_addr
+    );
+
+    NodeHandle {
+        api_port,
+        shutdown_tx: Some(shutdown_tx),
+        thread_handle: Some(thread_handle),
+    }
 }
 
 async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
     let url = format!("http://{}/api/v1/system_info", api_addr);
-    for _ in 0..30 {
+    for _ in 0..60 {
         let res = client
             .get(&url)
             .basic_auth("admin", Some("password"))
@@ -196,49 +265,55 @@ async fn wait_api_ready(client: &reqwest::Client, api_addr: &str) -> bool {
     false
 }
 
-fn has_two_nodes(metrics: &Value, raft_key: &str) -> bool {
-    let Some(nodes_obj) = metrics
-        .get(raft_key)
-        .and_then(|v| {
-            v.get("membership_config")
-                .or_else(|| v.get("membershipConfig"))
-        })
-        .and_then(|v| {
-            v.get("membership")
-                .and_then(|m| m.get("nodes"))
-                .or_else(|| v.get("nodes"))
-        })
-        .and_then(|v| v.as_object())
-    else {
-        return false;
-    };
-    println!("{} nodes: {:?}", raft_key, nodes_obj.keys());
-    nodes_obj.contains_key("1") && nodes_obj.contains_key("2")
+async fn wait_cluster_ready(client: &reqwest::Client, api_addr: &str) -> Result<Value, String> {
+    let ready_url = format!("http://{}/api/v1/cluster/ready", api_addr);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut last_error = "cluster readiness endpoint has not returned success yet".to_string();
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(last_error);
+        }
+
+        match client
+            .get(&ready_url)
+            .basic_auth("admin", Some("password"))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                let body: Value = response
+                    .json()
+                    .await
+                    .map_err(|err| format!("parse ready response failed: {}", err))?;
+                return Ok(body);
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                last_error = format!("status {}, body {}", status, body);
+            }
+            Err(err) => {
+                last_error = err.to_string();
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
 }
 
 #[tokio::test]
 async fn test_add_second_node_via_rest_api() {
     let temp_dir = TempDir::new().expect("create temp dir failed");
 
-    let mut used_ports = HashSet::new();
-    let node1_ports = (
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-    );
-    let node2_ports = (
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-        random_unique_port(&mut used_ports),
-    );
+    let node1_reserved_ports = ReservedNodePorts::new();
+    let node2_reserved_ports = ReservedNodePorts::new();
+    let node1_ports = node1_reserved_ports.ports();
+    let node2_ports = node2_reserved_ports.ports();
+    drop(node1_reserved_ports);
+    drop(node2_reserved_ports);
 
-    let node1 = start_node(
+    let _node1 = start_node(
         1,
         node1_ports,
         temp_dir.path(),
@@ -251,20 +326,9 @@ async fn test_add_second_node_via_rest_api() {
         .timeout(Duration::from_secs(3))
         .build()
         .expect("build reqwest client failed");
-    let node1_api = node1.api_addr();
+    let node1_api = _node1.api_addr();
     let node2_api = node2.api_addr();
     let node2_rpc = format!("127.0.0.1:{}", node2_ports.5);
-
-    assert!(
-        wait_api_ready(&client, &node1_api).await,
-        "node1 api is not ready: {}",
-        node1_api
-    );
-    assert!(
-        wait_api_ready(&client, &node2_api).await,
-        "node2 api is not ready: {}",
-        node2_api
-    );
 
     let add_node_url = format!("http://{}/api/v1/cluster/nodes", node1_api);
 
@@ -312,46 +376,39 @@ async fn test_add_second_node_via_rest_api() {
         ))
     };
 
-    let metrics_url = format!("http://{}/api/v1/cluster/metrics", node1_api);
-    let mut converged = false;
-    let mut last_metrics: Option<Value> = None;
-
-    for _ in 0..20 {
-        let resp = client
-            .get(&metrics_url)
-            .basic_auth("admin", Some("password"))
-            .send()
-            .await;
-        let Ok(resp) = resp else {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        };
-        if resp.status() != StatusCode::OK {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            continue;
-        }
-
-        let body: Value = resp.json().await.expect("parse metrics json failed");
-        let ok = has_two_nodes(&body, "topic_raft")
-            && has_two_nodes(&body, "session_actor_map_raft")
-            && has_two_nodes(&body, "session_state_map_raft");
-
-        last_metrics = Some(body);
-        if ok {
-            converged = true;
-            break;
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-
     if let Some(add_err) = add_err {
         panic!("{}", add_err);
     }
 
-    assert!(
-        converged,
-        "cluster metrics did not show two nodes in all raft groups, last metrics: {}",
-        last_metrics.unwrap_or(Value::Null)
+    let ready_body = wait_cluster_ready(&client, &node1_api)
+        .await
+        .unwrap_or_else(|err| panic!("cluster did not become ready after adding node: {}", err));
+    let cluster_node_ids = ready_body
+        .get("clusterNodeIds")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("clusterNodeIds should be an array");
+
+    assert_eq!(cluster_node_ids, vec![Value::from(1), Value::from(2)]);
+    assert_eq!(
+        ready_body
+            .pointer("/checks/topicRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
+    );
+    assert_eq!(
+        ready_body
+            .pointer("/checks/sessionActorMapRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
+    );
+    assert_eq!(
+        ready_body
+            .pointer("/checks/sessionStateRaft/membershipNodeIds")
+            .and_then(Value::as_array)
+            .cloned(),
+        Some(vec![Value::from(1), Value::from(2)])
     );
 }

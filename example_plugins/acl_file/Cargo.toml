@@ -1,0 +1,22 @@
+[package]
+name = "acl_file"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { version = "4.5.48", features = ["derive"] }
+env_logger = "0.10.1"
+futures = "0.3.31"
+interprocess = { version = "2.2.3", features = ["tokio", "async"] }
+log = "0.4"
+prost = "0.13.4"
+prost-types = "0.13.4"
+serde = { version = "1.0.114", features = ["derive"] }
+serde_json = "1.0.57"
+tokio = { version = "1.29.1", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["codec", "compat"] }
+yedmq-plugin-host = { version = "0.1.0", path = "../../plugin_host" }
+
+[dev-dependencies]
+tempfile = "3.21.0"

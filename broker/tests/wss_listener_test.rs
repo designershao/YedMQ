@@ -1,10 +1,13 @@
-use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use rumqttc::tokio_rustls::rustls::{
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
+    ClientConfig, RootCertStore,
+};
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS, Transport};
 use rustls_pemfile as pemfile;
 use std::io::BufReader;
 use std::{
     env, fs,
-    net::SocketAddr,
+    net::{SocketAddr, TcpListener as StdTcpListener},
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -15,6 +18,7 @@ use yedmq::app::YedMQApp;
 use yedmq::settings::Settings;
 
 static ASYNC_SETUP: OnceCell<TestContext> = OnceCell::const_new();
+static ASYNC_SETUP_MTLS: OnceCell<TestContext> = OnceCell::const_new();
 
 struct TestContext {
     _test_dir: TempDir,
@@ -31,66 +35,128 @@ impl Drop for TestContext {
 }
 
 async fn setup_instance() -> &'static TestContext {
-    ASYNC_SETUP
-        .get_or_init(|| async {
-            env_logger::builder()
-                .filter_level(log::LevelFilter::Info)
-                .format_target(false)
-                .format_timestamp(None)
-                .init();
+    setup_instance_for(&ASYNC_SETUP, false).await
+}
 
-            let original_dir = env::current_dir().unwrap();
+async fn setup_mtls_instance() -> &'static TestContext {
+    setup_instance_for(&ASYNC_SETUP_MTLS, true).await
+}
 
-            let temp_dir = TempDir::new().unwrap();
+async fn setup_instance_for(
+    cell: &'static OnceCell<TestContext>,
+    verify_client_cert: bool,
+) -> &'static TestContext {
+    cell.get_or_init(|| async move {
+        let _ = env_logger::builder()
+            .filter_level(log::LevelFilter::Info)
+            .format_target(false)
+            .format_timestamp(None)
+            .try_init();
 
-            fs::copy("./yedmq.toml", temp_dir.path().join("yedmq.toml")).unwrap();
+        let original_dir = env::current_dir().unwrap();
 
-            env::set_current_dir(temp_dir.path()).unwrap();
+        let temp_dir = TempDir::new().unwrap();
 
-            let test_settings = Arc::new(get_test_settings(2, 10, temp_dir.path()));
+        fs::copy("./yedmq.toml", temp_dir.path().join("yedmq.toml")).unwrap();
 
-            let settings_clone = test_settings.clone();
+        env::set_current_dir(temp_dir.path()).unwrap();
 
-            std::thread::spawn(move || {
-                let rt = actix::System::new();
-                rt.block_on(async {
-                    let app = Arc::new(YedMQApp::new(settings_clone).await);
+        let reserved_ports = ReservedPorts::new();
+        let test_settings = Arc::new(get_test_settings(
+            2,
+            10,
+            temp_dir.path(),
+            &reserved_ports,
+            verify_client_cert,
+        ));
+        drop(reserved_ports);
 
-                    YedMQApp::start(app.clone()).await;
-                });
-                rt.run().unwrap();
+        let settings_clone = test_settings.clone();
+
+        std::thread::spawn(move || {
+            let rt = actix::System::new();
+            rt.block_on(async {
+                let app = Arc::new(YedMQApp::new(settings_clone).await);
+
+                YedMQApp::start(app.clone()).await;
             });
+            rt.run().unwrap();
+        });
 
-            tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-            TestContext {
-                settings: test_settings,
-                original_dir,
-                _test_dir: temp_dir,
-            }
-        })
-        .await
+        TestContext {
+            settings: test_settings,
+            original_dir,
+            _test_dir: temp_dir,
+        }
+    })
+    .await
 }
 
-fn random_tcp_port() -> u16 {
-    use rand::Rng;
-    rand::thread_rng().gen_range(1024..=65535)
+struct ReservedPorts {
+    tcp: StdTcpListener,
+    tcp_tls: StdTcpListener,
+    ws: StdTcpListener,
+    wss: StdTcpListener,
+    rpc: StdTcpListener,
+    api: StdTcpListener,
 }
 
-fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: &Path) -> Settings {
+impl ReservedPorts {
+    fn new() -> Self {
+        Self {
+            tcp: reserve_tcp_listener(),
+            tcp_tls: reserve_tcp_listener(),
+            ws: reserve_tcp_listener(),
+            wss: reserve_tcp_listener(),
+            rpc: reserve_tcp_listener(),
+            api: reserve_tcp_listener(),
+        }
+    }
+
+    fn tcp_port(&self) -> u16 {
+        self.tcp.local_addr().unwrap().port()
+    }
+
+    fn tcp_tls_port(&self) -> u16 {
+        self.tcp_tls.local_addr().unwrap().port()
+    }
+
+    fn ws_port(&self) -> u16 {
+        self.ws.local_addr().unwrap().port()
+    }
+
+    fn wss_port(&self) -> u16 {
+        self.wss.local_addr().unwrap().port()
+    }
+
+    fn rpc_port(&self) -> u16 {
+        self.rpc.local_addr().unwrap().port()
+    }
+
+    fn api_port(&self) -> u16 {
+        self.api.local_addr().unwrap().port()
+    }
+}
+
+fn reserve_tcp_listener() -> StdTcpListener {
+    StdTcpListener::bind("127.0.0.1:0").expect("failed to reserve tcp port")
+}
+
+fn get_test_settings(
+    qos_expired_secs: u64,
+    resend_duration_sec: u64,
+    temp_dir: &Path,
+    reserved_ports: &ReservedPorts,
+    verify_client_cert: bool,
+) -> Settings {
     // Generate a random temporary directory
     fs::create_dir_all(temp_dir).unwrap();
     let test_temp_store_dir = temp_dir.to_str().unwrap().to_string();
 
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
-
-    let tcp_port = random_tcp_port();
-    let wss_port = random_tcp_port();
-
-    let rpc_port = random_tcp_port();
-
-    let api_port = random_tcp_port();
 
     let certs_path = PathBuf::from(crate_root_path).join("tests").join("certs");
     let absolute_certs_path = std::fs::canonicalize(&certs_path).unwrap();
@@ -103,11 +169,16 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {
-                external: format!("0.0.0.0:{}", tcp_port).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.tcp_port()).to_string(),
                 rate_limit: Default::default(),
             },
             tcp_tls: yedmq::settings::TcpTls {
-                external: format!("0.0.0.0:{}", tcp_port + 1).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.tcp_tls_port()).to_string(),
+                cacert_file: absolute_certs_path
+                    .join("ca.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -118,14 +189,20 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                     .to_str()
                     .unwrap()
                     .to_string(),
+                verify_client_cert: false,
                 rate_limit: Default::default(),
             },
             ws: yedmq::settings::Ws {
-                external: format!("0.0.0.0:{}", tcp_port + 2).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.ws_port()).to_string(),
                 rate_limit: Default::default(),
             },
             wss: yedmq::settings::Wss {
-                external: format!("0.0.0.0:{}", wss_port).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.wss_port()).to_string(),
+                cacert_file: absolute_certs_path
+                    .join("ca.crt")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
                 cert_file: absolute_certs_path
                     .join("server.crt")
                     .to_str()
@@ -136,10 +213,11 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
                     .to_str()
                     .unwrap()
                     .to_string(),
+                verify_client_cert,
                 rate_limit: Default::default(),
             },
             api: yedmq::settings::Api {
-                external: format!("0.0.0.0:{}", api_port).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.api_port()).to_string(),
                 auth: yedmq::settings::AuthConfig { users: vec![] },
             },
         },
@@ -162,12 +240,12 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
             heartbeat_interval: 10,
             store_dir: test_temp_store_dir,
             rpc: yedmq::settings::RPC {
-                external: format!("0.0.0.0:{}", rpc_port).to_string(),
+                external: format!("127.0.0.1:{}", reserved_ports.rpc_port()).to_string(),
             },
             nodes: vec![yedmq::settings::Node {
                 id: 1001,
-                rpc_address: format!("0.0.0.0:{}", rpc_port).to_string(),
-                api_address: format!("0.0.0.0:{}", api_port).to_string(),
+                rpc_address: format!("127.0.0.1:{}", reserved_ports.rpc_port()).to_string(),
+                api_address: format!("127.0.0.1:{}", reserved_ports.api_port()).to_string(),
             }],
             session_ttl: 10,
             startup_mode: yedmq::settings::ClusterStartupMode::Bootstrap,
@@ -176,7 +254,7 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
     settings
 }
 
-fn configure_wss() -> Transport {
+fn configure_wss(client_auth: bool) -> Transport {
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let certs_path = PathBuf::from(crate_root_path).join("tests").join("certs");
     let ca_file_path = certs_path.join("ca.crt");
@@ -188,9 +266,18 @@ fn configure_wss() -> Transport {
         root_cert_store.add(cert_result.unwrap()).unwrap();
     }
 
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(root_cert_store)
-        .with_no_client_auth();
+    let config_builder = ClientConfig::builder().with_root_certificates(root_cert_store);
+    let client_config = if client_auth {
+        let certs = CertificateDer::pem_file_iter(certs_path.join("client.crt").to_str().unwrap())
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let key =
+            PrivateKeyDer::from_pem_file(certs_path.join("client.key").to_str().unwrap()).unwrap();
+        config_builder.with_client_auth_cert(certs, key).unwrap()
+    } else {
+        config_builder.with_no_client_auth()
+    };
 
     Transport::wss_with_config(client_config.into())
 }
@@ -220,7 +307,7 @@ pub async fn test_wss_listener_connect() {
         broker_addr.port(),
     );
     options.set_keep_alive(std::time::Duration::from_secs(keep_live_duration_secs));
-    options.set_transport(configure_wss());
+    options.set_transport(configure_wss(false));
 
     let (client, mut eventloop) = AsyncClient::new(options, 10);
 
@@ -256,6 +343,102 @@ pub async fn test_wss_listener_connect() {
     assert_eq!(connect_result.unwrap(), rumqttc::ConnectReturnCode::Success);
 }
 
+#[actix::test]
+pub async fn test_mtls_wss_listener_connect_requires_client_certificate() {
+    let context = setup_mtls_instance().await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr: SocketAddr = context
+        .settings
+        .listener
+        .wss
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
+
+    let mut options = MqttOptions::new(
+        "test_client_for_mtls_wss_missing_cert",
+        format!("wss://localhost:{}/mqtt", broker_addr.port()),
+        broker_addr.port(),
+    );
+    options.set_keep_alive(Duration::from_secs(5));
+    options.set_transport(configure_wss(false));
+
+    let (_client, mut eventloop) = AsyncClient::new(options, 10);
+
+    let connection_handle: tokio::task::JoinHandle<
+        std::result::Result<(), rumqttc::ConnectionError>,
+    > = tokio::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    panic!("mTLS WSS listener accepted a client without a client certificate")
+                }
+                Ok(_) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(5), connection_handle)
+        .await
+        .expect("mTLS WSS handshake should complete");
+
+    assert!(result.unwrap().is_err());
+}
+
+#[actix::test]
+pub async fn test_mtls_wss_listener_connect_with_client_certificate() {
+    let context = setup_mtls_instance().await;
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr: SocketAddr = context
+        .settings
+        .listener
+        .wss
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
+
+    let mut options = MqttOptions::new(
+        "test_client_for_mtls_wss_connect",
+        format!("wss://localhost:{}/mqtt", broker_addr.port()),
+        broker_addr.port(),
+    );
+    options.set_keep_alive(Duration::from_secs(5));
+    options.set_transport(configure_wss(true));
+
+    let (client, mut eventloop) = AsyncClient::new(options, 10);
+
+    let connection_handle = tokio::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(Event::Incoming(Packet::ConnAck(ack))) => {
+                    client.disconnect().await.unwrap();
+                    return Ok(ack.code);
+                }
+                Ok(Event::Incoming(Packet::Disconnect)) => {
+                    return Ok(rumqttc::ConnectReturnCode::Success);
+                }
+                Ok(_) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(5), connection_handle)
+        .await
+        .expect("mTLS WSS connection should not time out");
+
+    let connect_result = result.unwrap();
+    assert!(connect_result.is_ok());
+    assert_eq!(connect_result.unwrap(), rumqttc::ConnectReturnCode::Success);
+}
+
 async fn test_wss_publish_subscribe(qos: QoS) {
     let context = setup_instance().await;
 
@@ -277,7 +460,7 @@ async fn test_wss_publish_subscribe(qos: QoS) {
         broker_addr.port(),
     );
     mqtt_options.set_keep_alive(Duration::from_secs(5));
-    mqtt_options.set_transport(configure_wss());
+    mqtt_options.set_transport(configure_wss(false));
 
     let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
 
@@ -362,7 +545,7 @@ async fn test_wss_retained_message() {
         broker_addr.port(),
     );
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
-    mqtt_options1.set_transport(configure_wss());
+    mqtt_options1.set_transport(configure_wss(false));
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
 
     let task1 = tokio::spawn(async move {
@@ -405,7 +588,7 @@ async fn test_wss_retained_message() {
         broker_addr.port(),
     );
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
-    mqtt_options2.set_transport(configure_wss());
+    mqtt_options2.set_transport(configure_wss(false));
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
 
     let task2 = tokio::spawn(async move {
@@ -462,7 +645,7 @@ async fn test_wss_last_will_message() {
         broker_addr.port(),
     );
     sub_options.set_keep_alive(Duration::from_secs(5));
-    sub_options.set_transport(configure_wss());
+    sub_options.set_transport(configure_wss(false));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
     let (notify_sub_succeed_sender, mut notify_sub_succeed_receiver) =
@@ -510,15 +693,15 @@ async fn test_wss_last_will_message() {
     will_client_options
         .set_keep_alive(Duration::from_secs(2))
         .set_last_will(last_will);
-    will_client_options.set_transport(configure_wss());
+    will_client_options.set_transport(configure_wss(false));
     let (_will_client, mut will_eventloop) = AsyncClient::new(will_client_options, 10);
 
     let will_task = tokio::spawn(async move {
-        let mut connected = false;
-        while !connected {
+        loop {
             match will_eventloop.poll().await {
                 Ok(rumqttc::Event::Incoming(rumqttc::Packet::ConnAck(_))) => {
-                    connected = true;
+                    // Drop the client without sending MQTT DISCONNECT to trigger the will.
+                    return;
                 }
                 Ok(_) => {} // Continue processing other initialization events (such as SubAck, etc.)
                 Err(_e) => {
@@ -526,12 +709,10 @@ async fn test_wss_last_will_message() {
                 }
             }
         }
-
-        tokio::time::sleep(Duration::from_secs(5)).await;
     });
 
     // Wait for the will client to connect
-    tokio::time::timeout(Duration::from_secs(6), will_task)
+    tokio::time::timeout(Duration::from_secs(10), will_task)
         .await
         .expect("Will client task timed out")
         .unwrap();
@@ -566,7 +747,7 @@ async fn test_wss_max_qos_subscription() {
         broker_addr.port(),
     );
     sub_options.set_keep_alive(Duration::from_secs(5));
-    sub_options.set_transport(configure_wss());
+    sub_options.set_transport(configure_wss(false));
     let (sub_client, mut sub_eventloop) = AsyncClient::new(sub_options, 10);
 
     // Publisher
@@ -576,7 +757,7 @@ async fn test_wss_max_qos_subscription() {
         broker_addr.port(),
     );
     pub_options.set_keep_alive(Duration::from_secs(5));
-    pub_options.set_transport(configure_wss());
+    pub_options.set_transport(configure_wss(false));
     let (pub_client, mut pub_eventloop) = AsyncClient::new(pub_options, 10);
 
     let payload = b"message for qos downgrade wss";
@@ -675,7 +856,7 @@ async fn test_persistent_session() {
     let mut mqtt_options1 =
         MqttOptions::new("wss-persistent-client", url.clone(), broker_addr.port());
     mqtt_options1.set_keep_alive(Duration::from_secs(5));
-    mqtt_options1.set_transport(configure_wss());
+    mqtt_options1.set_transport(configure_wss(false));
     mqtt_options1.set_clean_session(false);
     let (client1, mut eventloop1) = AsyncClient::new(mqtt_options1, 10);
 
@@ -712,7 +893,7 @@ async fn test_persistent_session() {
     let mut mqtt_options_pub =
         MqttOptions::new("wss-persistent-publisher", url.clone(), broker_addr.port());
     mqtt_options_pub.set_keep_alive(Duration::from_secs(5));
-    mqtt_options_pub.set_transport(configure_wss());
+    mqtt_options_pub.set_transport(configure_wss(false));
     let (client_pub, mut eventloop_pub) = AsyncClient::new(mqtt_options_pub, 10);
 
     let task_pub = tokio::spawn(async move {
@@ -751,7 +932,7 @@ async fn test_persistent_session() {
     let mut mqtt_options2 =
         MqttOptions::new("wss-persistent-client", url.clone(), broker_addr.port());
     mqtt_options2.set_keep_alive(Duration::from_secs(5));
-    mqtt_options2.set_transport(configure_wss());
+    mqtt_options2.set_transport(configure_wss(false));
     mqtt_options2.set_clean_session(false);
     let (client2, mut eventloop2) = AsyncClient::new(mqtt_options2, 10);
 

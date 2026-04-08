@@ -8,7 +8,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/designershao/YedMQ/actions"><img src="https://github.com/designershao/YedMQ/workflows/CI/badge.svg" alt="CI Status"></a>
   <a href="https://github.com/designershao/YedMQ/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
   <a href="https://github.com/designershao/YedMQ/releases"><img src="https://img.shields.io/github/v/release/designershao/YedMQ" alt="Release"></a>
 </p>
@@ -41,7 +40,30 @@
 
 - [Rust](https://www.rust-lang.org/tools/install) (1.75 or later)
 - Protocol Buffers compiler (`protoc`)
-- Make (optional, for convenience)
+- OpenSSL development headers (`libssl-dev` on Ubuntu/Debian)
+- Make (optional, Unix-like convenience only)
+
+On Ubuntu/Debian, you can install the common system dependencies with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+```
+
+On Windows, install these build dependencies before running `cargo build`:
+
+- `protoc`
+- LLVM/Clang
+
+Some native dependencies in this workspace rely on Clang being discoverable during the build.
+In PowerShell, a typical setup looks like:
+
+```powershell
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:PATH = "$env:LIBCLANG_PATH;$env:PATH"
+```
+
+If your `protoc.exe` directory is not already on `PATH`, add it as well before building.
 
 ### Installation
 
@@ -50,15 +72,18 @@
 ```bash
 git clone https://github.com/designershao/YedMQ.git
 cd YedMQ
-make build-all-release
+cargo build --release -p yedmq
 ```
 
 #### Using Docker
 
 ```bash
 docker pull yedmq/yedmq:latest
-docker run -p 1883:1883 -p 3456:3456 yedmq/yedmq:latest
 ```
+
+The published image ships with the locked-down example configuration from this repository.
+Mount your own `yedmq.toml` into `/opt/yedmq/yedmq.toml` when you want to enable client access
+or expose the management API.
 
 ### Running YedMQ
 
@@ -66,24 +91,92 @@ docker run -p 1883:1883 -p 3456:3456 yedmq/yedmq:latest
    ```bash
    cp yedmq.toml.example yedmq.toml
    ```
+   Windows PowerShell:
+   ```powershell
+   Copy-Item yedmq.toml.example yedmq.toml
+   ```
 
-2. **Edit the configuration** (optional):
+2. **Edit the configuration before first start:**
    ```bash
    vim yedmq.toml
    ```
 
+   The example file is intentionally locked down:
+   - Client access is deny-by-default unless an auth plugin approves the request or you opt into the local fallback below
+   - The management API binds to `127.0.0.1`
+   - No management API users are created automatically
+
+   For a local smoke test without any auth plugin, temporarily change this block:
+   ```toml
+   [plugin]
+   default_authorize_result = true
+   default_authenticate_result = true
+   ```
+   Do not use that fallback in shared or production environments.
+
+   If you need the management API, also add at least one user under `[listener.api.auth]`.
+
 3. **Start the broker:**
    ```bash
-   cd target/release
-   RUST_LOG=info ./yedmq
+   RUST_LOG=info ./target/release/yedmq
+   ```
+   Run the binary from the directory that contains `yedmq.toml`.
+
+   Windows PowerShell:
+   ```powershell
+   $env:RUST_LOG = "info"
+   .\target\release\yedmq.exe
    ```
 
-4. **Test the connection:**
+   Docker:
+   ```bash
+   docker run --rm \
+     -p 1883:1883 \
+     -v "$(pwd)/yedmq.toml:/opt/yedmq/yedmq.toml:ro" \
+     yedmq/yedmq:latest
+   ```
+
+4. **Test the connection** after enabling the local development fallback above or installing an auth plugin:
    ```bash
    # Using mosquitto_pub/sub
    mosquitto_sub -h localhost -t test/topic
    mosquitto_pub -h localhost -t test/topic -m "Hello YedMQ"
    ```
+
+### Authentication And First Run
+
+YedMQ currently has two separate authentication surfaces:
+
+- `[listener.api.auth].users` protects the REST management API only.
+- MQTT client login and topic authorization are evaluated through the plugin hook chain.
+
+That means adding a REST API user does **not** create a MQTT username/password login.
+
+For the current broker behavior, the effective MQTT fallback on first run is controlled by:
+
+```toml
+[plugin]
+default_authenticate_result = false
+default_authorize_result = false
+```
+
+With the shipped defaults, if you start YedMQ without any authentication or ACL plugin, MQTT
+clients will be rejected. This is expected and is meant to prevent accidentally exposing an
+open broker.
+
+For an initial local evaluation, pick one of these approaches:
+
+1. Install an authentication/ACL plugin and let the plugin decide who can connect.
+2. On a local machine only, temporarily set:
+
+```toml
+[plugin]
+default_authenticate_result = true
+default_authorize_result = true
+```
+
+Use the second option only for local smoke tests. For any shared, staged, or production
+deployment, keep the defaults locked down and use a real authentication plugin.
 
 ## 📖 Documentation
 
@@ -155,11 +248,8 @@ See the [Plugin Configuration](https://www.yedmq.com/docs/plugin-configuration) 
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-- 🐛 [Report a Bug](https://github.com/designershao/YedMQ/issues/new?template=bug_report.md)
-- 💡 [Request a Feature](https://github.com/designershao/YedMQ/issues/new?template=feature_request.md)
-- 📖 [Improve Documentation](https://github.com/designershao/YedMQ/tree/main/YedMQ-web-site)
+Bug reports, feature requests, documentation fixes, and pull requests are welcome.
+For larger changes, open a GitHub issue or discussion first so the scope is clear before implementation.
 
 ## 📊 Roadmap
 
@@ -190,7 +280,6 @@ YedMQ is built with excellent open-source projects:
 
 - Website: [www.yedmq.com](https://www.yedmq.com)
 - GitHub Issues: [github.com/designershao/YedMQ/issues](https://github.com/designershao/YedMQ/issues)
-- Discussions: [github.com/designershao/YedMQ/discussions](https://github.com/designershao/YedMQ/discussions)
 
 ---
 

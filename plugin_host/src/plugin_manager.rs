@@ -1,8 +1,20 @@
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use interprocess::local_socket::{tokio::prelude::*, tokio::Stream, ListenerOptions};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt,
+    security_descriptor::{AsSecurityDescriptorMutExt, SecurityDescriptor},
+};
 use log::{debug, error, info, warn};
-use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc, time::Duration};
+#[cfg(windows)]
+use std::ptr;
+use std::{
+    collections::{BTreeMap, HashMap},
+    process::Stdio,
+    sync::{Arc, Mutex, RwLock as StdRwLock},
+    time::Duration,
+};
 
 use prost::Message as _;
 use tokio::{
@@ -14,7 +26,8 @@ use tokio::{
 use tokio_util::codec::Framed;
 
 use crate::{
-    loader::PluginManifest,
+    loader::{InvalidPluginManifest, PluginLoader, PluginManifest},
+    local_socket_name::resolve_local_socket_name,
     plugin_host_config::PluginHostConfig,
     protocol::{
         plugin_protocol::{
@@ -26,9 +39,7 @@ use crate::{
         ProtocolMessageBuilder,
     },
 };
-
-use super::loader::PluginLoader;
-use anyhow::{Ok, Result};
+use anyhow::Result;
 use rand::Rng;
 
 type RequestContext = oneshot::Sender<Result<ProtocolMessage>>;
@@ -63,21 +74,29 @@ impl InflightManager {
         msg: ProtocolMessage,
         timeout_duration: Duration,
     ) -> std::result::Result<ProtocolMessage, InflightError> {
+        let msg_id = msg.id.clone();
         let (resp_sender, resp_receiver) = oneshot::channel();
 
-        self.inflight.insert(msg.id.clone(), resp_sender);
+        self.inflight.insert(msg_id.clone(), resp_sender);
 
-        plugin_ipc_sender
+        if let Err(e) = plugin_ipc_sender
             .send(TxCmd::SendMessage(Box::new(msg)))
-            .await?;
+            .await
+        {
+            self.clean_up(&msg_id);
+            return Err(e.into());
+        }
 
-        match timeout(timeout_duration, resp_receiver).await {
+        let result = match timeout(timeout_duration, resp_receiver).await {
             std::result::Result::Ok(std::result::Result::Ok(response_msg)) => {
                 response_msg.map_err(|_| InflightError::RecvError)
             }
             std::result::Result::Ok(std::result::Result::Err(_)) => Err(InflightError::RecvError),
             std::result::Result::Err(_) => Err(InflightError::Timeout),
-        }
+        };
+
+        self.clean_up(&msg_id);
+        result
     }
 
     /// Clean up inflight request by message ID
@@ -146,6 +165,71 @@ pub enum PluginState {
     Failed,     // Plugin failed to start
 }
 
+impl PluginState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discovered => "discovered",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct PluginHookInfo {
+    pub name: String,
+    pub priority: u32,
+}
+
+#[derive(Clone)]
+pub struct PluginSnapshot {
+    pub name: String,
+    pub manifest: PluginManifest,
+    pub discovered: bool,
+    pub managed: bool,
+    pub state: PluginState,
+    pub healthy: Option<bool>,
+    pub uptime: Option<Duration>,
+    pub restart_count: u32,
+    pub last_health_check_ago: Option<Duration>,
+    pub ping_response_timeout_count: u32,
+    pub initialize_status: Option<String>,
+    pub capabilities: Vec<String>,
+    pub hooks: Vec<PluginHookInfo>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginListScope {
+    Managed,
+    Discovered,
+    All,
+}
+
+#[derive(Clone)]
+pub struct PluginLogsPage {
+    pub offset: u64,
+    pub limit: u64,
+    pub total: u64,
+    pub lines: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct PluginRescanReport {
+    pub discovered: Vec<String>,
+    pub removed: Vec<String>,
+    pub invalid: Vec<InvalidPluginManifest>,
+}
+
+struct PreparedPluginStart {
+    auth_code: String,
+    manifest: PluginManifest,
+    command: tokio::process::Command,
+}
+
 pub struct RunningPlugin {
     pub name: String,
     pub manifest: PluginManifest,
@@ -161,6 +245,10 @@ pub struct RunningPlugin {
     pub ipc_sender: Option<tokio::sync::mpsc::Sender<TxCmd>>,
     pub auth_code: String,
     pub logs: Arc<RwLock<Vec<String>>>,
+    pub initialize_status: Option<String>,
+    pub capabilities: Vec<String>,
+    pub hooks: Vec<PluginHookInfo>,
+    pub last_error: Option<String>,
 }
 
 impl RunningPlugin {
@@ -181,11 +269,14 @@ impl RunningPlugin {
 
 pub struct PluginManager {
     config: PluginHostConfig,
-    plugin_loader: PluginLoader,
+    plugin_loader: StdRwLock<PluginLoader>,
     running_plugins: Arc<DashMap<String, RunningPlugin>>,
     inflight_manager: Arc<InflightManager>,
     hook_manager: Arc<RwLock<crate::hook::manager::HookManager>>,
     rx_cmd_sender: Option<tokio::sync::mpsc::Sender<RxCmd>>,
+    listener_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    heartbeat_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    rx_cmd_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 pub enum TxCmd {
@@ -201,6 +292,7 @@ pub enum RxCmd {
     NormalRecievedMessage(ProtocolMessage),
     PluginStatusChanged {
         plugin_name: String,
+        plugin_auth_code: String,
         plugin_state: PluginState,
         notify_sender: tokio::sync::oneshot::Sender<()>,
     },
@@ -228,43 +320,232 @@ pub enum PluginManagerError {
     PluginAuthenticateTenantIdConflict(String),
 }
 
-impl PluginManager {
-    pub async fn get_plugin_metadata_list_with_pagination(
-        &self,
-        offset: u64,
-        limit: u64,
-    ) -> (u64, Vec<PluginManifest>) {
-        let res = self
-            .get_running_plugins()
-            .iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .map(|v| v.manifest.clone())
-            .collect::<Vec<PluginManifest>>();
-        let total_count = self.get_running_plugins().len() as u64;
-        (total_count, res)
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum PluginControlError {
+    #[error("plugin '{0}' not found")]
+    NotFound(String),
 
+    #[error("plugin '{0}' is already {1}")]
+    InvalidState(String, &'static str),
+
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl PluginManager {
     pub async fn new(config: PluginHostConfig) -> Result<Self> {
         let mut loader = PluginLoader::new(&config.plugin_directory);
 
-        let _ = loader.scan_plugins().await?;
+        let _ = loader.scan_plugins()?;
 
         Ok(Self {
             config,
-            plugin_loader: loader,
+            plugin_loader: StdRwLock::new(loader),
             running_plugins: Arc::new(DashMap::new()),
             inflight_manager: Arc::new(InflightManager::new()),
             hook_manager: Arc::new(RwLock::new(crate::hook::manager::HookManager::new())),
             rx_cmd_sender: None,
+            listener_handle: Mutex::new(None),
+            heartbeat_handle: Mutex::new(None),
+            rx_cmd_handle: Mutex::new(None),
+        })
+    }
+
+    pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<PluginManifest> {
+        self.plugin_loader
+            .read()
+            .unwrap()
+            .get_plugin_manifest(plugin_name)
+            .cloned()
+    }
+
+    pub fn rescan_plugins(&self) -> Result<PluginRescanReport> {
+        let previous_discovered = self
+            .plugin_loader
+            .read()
+            .unwrap()
+            .list_plugins()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let mut loader = self.plugin_loader.write().unwrap();
+        let scan_report = loader.scan_plugins()?;
+        let current_discovered = scan_report.discovered_plugins.clone();
+
+        let previous_set = previous_discovered
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        let current_set = current_discovered
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let removed = previous_set
+            .difference(&current_set)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        Ok(PluginRescanReport {
+            discovered: current_discovered,
+            removed,
+            invalid: scan_report.invalid_plugins,
+        })
+    }
+
+    fn managed_plugin_data(&self) -> HashMap<String, PluginSnapshot> {
+        self.running_plugins
+            .iter()
+            .map(|plugin| {
+                let snapshot = PluginSnapshot {
+                    name: plugin.name.clone(),
+                    manifest: plugin.manifest.clone(),
+                    discovered: false,
+                    managed: true,
+                    state: plugin.state,
+                    healthy: Some(plugin.is_healthy()),
+                    uptime: plugin.start_time.map(|start| start.elapsed()),
+                    restart_count: plugin.restart_count,
+                    last_health_check_ago: plugin
+                        .last_health_check
+                        .map(|last_check| last_check.elapsed()),
+                    ping_response_timeout_count: plugin.ping_response_timeout_count,
+                    initialize_status: plugin.initialize_status.clone(),
+                    capabilities: plugin.capabilities.clone(),
+                    hooks: plugin.hooks.clone(),
+                    last_error: plugin.last_error.clone(),
+                };
+                (plugin.name.clone(), snapshot)
+            })
+            .collect()
+    }
+
+    pub fn list_plugin_snapshots(
+        &self,
+        scope: PluginListScope,
+        state_filter: Option<PluginState>,
+    ) -> Vec<PluginSnapshot> {
+        let managed = self.managed_plugin_data();
+        let discovered_manifests = self.plugin_loader.read().unwrap().list_plugin_manifests();
+        let mut snapshots = BTreeMap::<String, PluginSnapshot>::new();
+
+        if matches!(scope, PluginListScope::Discovered | PluginListScope::All) {
+            for manifest in discovered_manifests {
+                let plugin_name = manifest.plugin.name.clone();
+                let mut snapshot = managed
+                    .get(&plugin_name)
+                    .cloned()
+                    .unwrap_or(PluginSnapshot {
+                        name: plugin_name.clone(),
+                        manifest: manifest.clone(),
+                        discovered: true,
+                        managed: false,
+                        state: PluginState::Discovered,
+                        healthy: None,
+                        uptime: None,
+                        restart_count: 0,
+                        last_health_check_ago: None,
+                        ping_response_timeout_count: 0,
+                        initialize_status: None,
+                        capabilities: Vec::new(),
+                        hooks: Vec::new(),
+                        last_error: None,
+                    });
+                snapshot.discovered = true;
+                snapshot.manifest = manifest;
+                snapshots.insert(plugin_name, snapshot);
+            }
+        }
+
+        if matches!(scope, PluginListScope::Managed | PluginListScope::All) {
+            for (plugin_name, snapshot) in managed {
+                snapshots
+                    .entry(plugin_name)
+                    .and_modify(|existing| {
+                        existing.managed = true;
+                        existing.state = snapshot.state;
+                        existing.healthy = snapshot.healthy;
+                        existing.uptime = snapshot.uptime;
+                        existing.restart_count = snapshot.restart_count;
+                        existing.last_health_check_ago = snapshot.last_health_check_ago;
+                        existing.ping_response_timeout_count = snapshot.ping_response_timeout_count;
+                        existing.initialize_status = snapshot.initialize_status.clone();
+                        existing.capabilities = snapshot.capabilities.clone();
+                        existing.hooks = snapshot.hooks.clone();
+                        existing.last_error = snapshot.last_error.clone();
+                        existing.manifest = snapshot.manifest.clone();
+                    })
+                    .or_insert(snapshot);
+            }
+        }
+
+        snapshots
+            .into_values()
+            .filter(|snapshot| {
+                state_filter
+                    .map(|expected| snapshot.state == expected)
+                    .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    pub fn get_plugin_snapshot(&self, plugin_name: &str) -> Option<PluginSnapshot> {
+        self.list_plugin_snapshots(PluginListScope::All, None)
+            .into_iter()
+            .find(|snapshot| snapshot.name == plugin_name)
+    }
+
+    pub async fn get_plugin_logs(
+        &self,
+        plugin_name: &str,
+        offset: u64,
+        limit: u64,
+        tail: Option<u64>,
+    ) -> std::result::Result<PluginLogsPage, PluginControlError> {
+        let plugin = self
+            .running_plugins
+            .get(plugin_name)
+            .ok_or_else(|| PluginControlError::NotFound(plugin_name.to_string()))?;
+        let logs = plugin.logs.read().await.clone();
+        let total = logs.len() as u64;
+
+        let computed_offset = if let Some(tail) = tail {
+            total.saturating_sub(tail)
+        } else {
+            offset
+        };
+        let computed_limit = if tail.is_some() {
+            total.saturating_sub(computed_offset)
+        } else {
+            limit
+        };
+
+        let lines = logs
+            .into_iter()
+            .skip(computed_offset as usize)
+            .take(computed_limit as usize)
+            .collect::<Vec<_>>();
+
+        Ok(PluginLogsPage {
+            offset: computed_offset,
+            limit: computed_limit,
+            total,
+            lines,
         })
     }
 
     pub async fn start_all_plugins(&self) -> Result<()> {
-        let plugin_names = self.plugin_loader.list_plugins();
+        let plugin_names = self
+            .plugin_loader
+            .read()
+            .unwrap()
+            .list_plugins()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
 
         for name in plugin_names {
-            self.start_plugin(name).await?;
+            self.start_plugin(&name).await?;
         }
 
         Ok(())
@@ -273,21 +554,40 @@ impl PluginManager {
     pub async fn start_heartbeat_check_task(&self) {
         let running_plugins = self.running_plugins.clone();
         let inflight_manager = self.inflight_manager.clone();
+        let hook_manager = self.hook_manager.clone();
         let interval_secs = self.config.health_check_interval_secs;
+        let ping_timeout = self.config.ping_timeout();
+        let mut shutdown_rx = self.config.shutdown_signal.subscribe();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    recv_result = shutdown_rx.recv() => {
+                        match recv_result {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                        }
+                    }
+                    _ = interval.tick() => {}
+                }
 
-                let target_plugins: Vec<(String, tokio::sync::mpsc::Sender<TxCmd>)> =
+                let target_plugins: Vec<(String, String, tokio::sync::mpsc::Sender<TxCmd>)> =
                     running_plugins
                         .iter()
                         .filter_map(|plugin| {
                             if plugin.state == PluginState::Running {
                                 if let Some(ipc_sender) = &plugin.ipc_sender {
-                                    Some((plugin.name.clone(), ipc_sender.clone()))
+                                    Some((
+                                        plugin.name.clone(),
+                                        plugin.auth_code.clone(),
+                                        ipc_sender.clone(),
+                                    ))
                                 } else {
                                     None
                                 }
@@ -297,27 +597,31 @@ impl PluginManager {
                         })
                         .collect();
 
-                for (name, ipc_sender) in target_plugins {
+                for (name, instance_id, ipc_sender) in target_plugins {
                     let ping_message = ProtocolMessageBuilder::new()
                         .with_method(Method::Ping)
                         .with_type(MessageType::Request)
                         .build();
 
-                    let msg_id = ping_message.id.clone();
                     let result = inflight_manager
-                        .send_and_wait(&ipc_sender, ping_message.clone(), Duration::from_secs(5))
+                        .send_and_wait(&ipc_sender, ping_message.clone(), ping_timeout)
                         .await;
 
+                    let mut hook_instance_to_remove = None;
                     if let Some(mut plugin) = running_plugins.get_mut(&name) {
+                        if plugin.auth_code != instance_id {
+                            continue;
+                        }
                         match result {
                             std::result::Result::Ok(_response) => {
                                 // Plugin is healthy
                                 plugin.reset_health_check();
+                                plugin.last_error = None;
                             }
                             Err(e) => {
-                                inflight_manager.clean_up(&msg_id);
                                 println!("Plugin {} heartbeat check failed: {}", plugin.name, e);
                                 plugin.increment_health_check_failure();
+                                plugin.last_error = Some(format!("heartbeat check failed: {}", e));
                             }
                         }
                         if !plugin.is_healthy() {
@@ -326,15 +630,21 @@ impl PluginManager {
                                 plugin.name
                             );
                             plugin.state = PluginState::Failed;
+                            plugin.ipc_sender = None;
+                            hook_instance_to_remove = Some(plugin.auth_code.clone());
                         }
+                    }
+                    if let Some(instance_id) = hook_instance_to_remove {
+                        hook_manager
+                            .write()
+                            .await
+                            .remove_plugin_instance(&instance_id);
                     }
                 }
             }
         });
-    }
 
-    pub fn get_plugin_manifest(&self, plugin_name: &str) -> Option<&PluginManifest> {
-        self.plugin_loader.get_plugin_manifest(plugin_name)
+        *self.heartbeat_handle.lock().unwrap() = Some(handle);
     }
 
     async fn handle_plugin_connection(
@@ -350,6 +660,7 @@ impl PluginManager {
         );
 
         let initialize_request_param = InitializeRequest::new_from_plugin_host_config(config);
+        let init_timeout = config.init_timeout();
 
         tokio::spawn(async move {
             let wrap_initialize_param_to_any = prost_types::Any {
@@ -370,8 +681,7 @@ impl PluginManager {
                 return;
             }
 
-            // ensure the plugin response init response message in 5 seconds
-            match tokio::time::timeout(Duration::from_secs(5), framed.next()).await {
+            match tokio::time::timeout(init_timeout, framed.next()).await {
                 std::result::Result::Ok(Some(std::result::Result::Ok(msg))) => {
                     let protocol_message = ProtocolMessage::decode(msg.payload);
                     println!(
@@ -459,10 +769,10 @@ impl PluginManager {
         Ok(())
     }
 
-    async fn start_handle_plugin_rx_cmd(
+    fn start_handle_plugin_rx_cmd(
         &self,
         mut rx_cmd_receiver: tokio::sync::mpsc::Receiver<RxCmd>,
-    ) -> Result<()> {
+    ) -> tokio::task::JoinHandle<()> {
         let plugins = self.running_plugins.clone();
         let inflight_manager = self.inflight_manager.clone();
         let hook_manager = self.hook_manager.clone();
@@ -474,20 +784,37 @@ impl PluginManager {
                         match msg {
                             Some(RxCmd::PluginStatusChanged{
                                 plugin_name: name,
+                                plugin_auth_code,
                                 plugin_state: state,
                                 notify_sender,
                             }) => {
+                                if matches!(state, PluginState::Stopped | PluginState::Failed) {
+                                    hook_manager
+                                        .write()
+                                        .await
+                                        .remove_plugin_instance(&plugin_auth_code);
+                                }
                                 if let Some(mut plugin) = plugins.get_mut(&name) {
+                                    if plugin.auth_code != plugin_auth_code {
+                                        info!(
+                                            "Ignore stale plugin status change for '{}' with auth_code '{}'",
+                                            name, plugin_auth_code
+                                        );
+                                        let _ = notify_sender.send(());
+                                        continue;
+                                    }
                                     info!("Plugin {} status changed to {:?}", name, state.clone(),);
                                     if state == PluginState::Stopped {
+                                        plugin.plugin_abort_tx = None;
+                                        plugin.plugin_log_collector_quit_tx = None;
                                         plugin.process_log_handle = None;
                                         plugin.process_wait_handle = None;
+                                        plugin.ipc_sender = None;
                                     }
 
                                     plugin.state = state;
-
-                                    let _ = notify_sender.send(());
                                 }
+                                let _ = notify_sender.send(());
                             },
                             Some(RxCmd::InitMessage{msg, tx_cmd_sender}) => {
                                 // Handle initialization message
@@ -501,23 +828,52 @@ impl PluginManager {
                                         std::result::Result::Ok(init_response) => {
                                             info!("Plugin initialized with response: {:?}", init_response);
                                             // Process the initialization response
-                                            let auth_code = init_response.auth_code;
-                                            let register_hooks = init_response.hooks;
+                                            let auth_code = init_response.auth_code.clone();
+                                            let initialize_status = Some(init_response.status.clone());
+                                            let capabilities = init_response.capabilities.clone();
+                                            let mut register_hooks = Vec::new();
+                                            let mut hook_infos = Vec::new();
+                                            for hook in init_response.hooks {
+                                                let name = &hook.name;
+                                                hook_infos.push(PluginHookInfo {
+                                                    name: name.clone(),
+                                                    priority: hook.priority,
+                                                });
+                                                let hook_type = crate::hook::get_hook_from_name(name);
+                                                if let Some(hook_type) = hook_type {
+                                                    register_hooks.push((hook_type, hook.priority));
+                                                } else {
+                                                    warn!("Unknown hook name '{}' from plugin init response", name);
+                                                }
+                                            }
+
+                                            let mut hook_registration = None;
                                             for mut plugin in plugins.iter_mut() {
                                                 // find the plugin with matching auth_code
                                                 if plugin.auth_code == auth_code {
                                                     plugin.ipc_sender = Some(tx_cmd_sender.clone());
                                                     plugin.state = PluginState::Running;
-                                                    for hook in &register_hooks {
-                                                        let name = &hook.name;
-                                                        let hook_type = crate::hook::get_hook_from_name(name);
-                                                        if let Some(hook_type) = hook_type {
-                                                            hook_manager.write().await.register_hook(hook_type, plugin.name.clone(), hook.priority);
-                                                        } else {
-                                                            warn!("Unknown hook name '{}' from plugin '{}'", name, plugin.name);
-                                                        }
-                                                    }
+                                                    plugin.initialize_status = initialize_status.clone();
+                                                    plugin.capabilities = capabilities.clone();
+                                                    plugin.hooks = hook_infos.clone();
+                                                    plugin.last_error = None;
+                                                    hook_registration = Some((
+                                                        plugin.name.clone(),
+                                                        plugin.auth_code.clone(),
+                                                    ));
+                                                    break;
                                                 }
+                                            }
+                                            if let Some((plugin_name, instance_id)) = hook_registration {
+                                                hook_manager
+                                                    .write()
+                                                    .await
+                                                    .replace_plugin_hooks(&plugin_name, &instance_id, &register_hooks);
+                                            } else {
+                                                warn!(
+                                                    "No running plugin matched init auth_code '{}', skip hook registration",
+                                                    auth_code
+                                                );
                                             }
                                         }
                                     }
@@ -567,29 +923,38 @@ impl PluginManager {
                     }
                 }
             }
-        });
-
-        Ok(())
+        })
     }
 
     pub async fn start_listener(&mut self) -> Result<()> {
         let socket_path = self.config.local_socket_path.clone();
 
-        let path = Path::new(&socket_path);
-
-        if path.exists() {
-            std::fs::remove_file(path)?; // remove the existing socket file
+        #[cfg(not(windows))]
+        {
+            let path = std::path::Path::new(&socket_path);
+            if path.exists() {
+                std::fs::remove_file(path)?; // remove the existing socket file
+            }
         }
 
-        let name = socket_path.to_fs_name::<interprocess::local_socket::GenericFilePath>()?;
+        let name = resolve_local_socket_name(&socket_path)?;
 
         let (rx_cmd_sender, rx_cmd_receiver) = tokio::sync::mpsc::channel::<RxCmd>(32);
 
         self.rx_cmd_sender = Some(rx_cmd_sender.clone());
 
-        let _ = self.start_handle_plugin_rx_cmd(rx_cmd_receiver).await;
+        let rx_cmd_handle = self.start_handle_plugin_rx_cmd(rx_cmd_receiver);
+        *self.rx_cmd_handle.lock().unwrap() = Some(rx_cmd_handle);
 
         let opts = ListenerOptions::new().name(name);
+        #[cfg(windows)]
+        let opts = {
+            let mut security_descriptor = SecurityDescriptor::new()?;
+            unsafe {
+                security_descriptor.set_dacl(ptr::null_mut(), false)?;
+            }
+            opts.security_descriptor(security_descriptor)
+        };
 
         let listener = match opts.create_tokio() {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -602,19 +967,95 @@ impl PluginManager {
         };
 
         let config = self.config.clone();
+        let mut shutdown_rx = self.config.shutdown_signal.subscribe();
 
-        tokio::spawn(async move {
+        let listener_handle = tokio::spawn(async move {
             loop {
-                match listener.accept().await {
-                    std::result::Result::Ok(c) => {
-                        info!("Plugin connected, start handling connection");
-                        let _ =
-                            Self::handle_plugin_connection(&config, c, rx_cmd_sender.clone()).await;
+                tokio::select! {
+                    recv_result = shutdown_rx.recv() => {
+                        match recv_result {
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                        }
                     }
-                    Err(_) => continue,
-                };
+                    accept_result = listener.accept() => {
+                        match accept_result {
+                            std::result::Result::Ok(c) => {
+                                info!("Plugin connected, start handling connection");
+                                let _ = Self::handle_plugin_connection(
+                                    &config,
+                                    c,
+                                    rx_cmd_sender.clone(),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                warn!("Plugin listener accept failed: {}", e);
+                                continue;
+                            }
+                        };
+                    }
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                let path = std::path::Path::new(&socket_path);
+                if path.exists() {
+                    if let Err(e) = std::fs::remove_file(path) {
+                        warn!("Failed to remove local socket '{}': {}", socket_path, e);
+                    }
+                }
             }
         });
+
+        *self.listener_handle.lock().unwrap() = Some(listener_handle);
+
+        Ok(())
+    }
+
+    async fn await_background_task(task_name: &str, handle: Option<tokio::task::JoinHandle<()>>) {
+        if let Some(handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(())) => info!("{} exited", task_name),
+                Ok(Err(e)) => warn!("{} panicked: {:?}", task_name, e),
+                Err(_) => warn!("{} shutdown timed out", task_name),
+            }
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<()> {
+        info!("shutting down plugin manager");
+
+        let _ = self.config.shutdown_signal.send(());
+
+        let plugin_names = self
+            .running_plugins
+            .iter()
+            .map(|plugin| plugin.name.clone())
+            .collect::<Vec<_>>();
+
+        for plugin_name in plugin_names {
+            if let Err(e) = self.stop_plugin(&plugin_name).await {
+                warn!("Failed to stop plugin '{}': {}", plugin_name, e);
+            }
+        }
+
+        if let Some(rx_cmd_sender) = &self.rx_cmd_sender {
+            let _ = rx_cmd_sender.send(RxCmd::Shutdown).await;
+        }
+
+        let listener_handle = self.listener_handle.lock().unwrap().take();
+        let heartbeat_handle = self.heartbeat_handle.lock().unwrap().take();
+        let rx_cmd_handle = self.rx_cmd_handle.lock().unwrap().take();
+
+        Self::await_background_task("plugin listener", listener_handle).await;
+        Self::await_background_task("plugin heartbeat task", heartbeat_handle).await;
+        Self::await_background_task("plugin rx task", rx_cmd_handle).await;
 
         Ok(())
     }
@@ -623,40 +1064,59 @@ impl PluginManager {
         self.running_plugins.clone()
     }
 
+    fn get_registered_plugin_sender(
+        &self,
+        registered_hook: &crate::hook::manager::RegisteredHook,
+        hook_name: &str,
+    ) -> Option<(tokio::sync::mpsc::Sender<TxCmd>, String)> {
+        let running_plugin = self.running_plugins.get(&registered_hook.plugin_name)?;
+
+        if running_plugin.auth_code != registered_hook.instance_id {
+            debug!(
+                "Skip stale hook registration for plugin '{}' when calling {} hook",
+                registered_hook.plugin_name, hook_name
+            );
+            return None;
+        }
+
+        if !matches!(running_plugin.state, PluginState::Running) {
+            return None;
+        }
+
+        if let Some(ipc_sender) = running_plugin.ipc_sender.as_ref() {
+            Some((ipc_sender.clone(), running_plugin.name.clone()))
+        } else {
+            error!(
+                "Plugin {} ipc sender not found when calling {} hook",
+                running_plugin.name, hook_name
+            );
+            None
+        }
+    }
+
     pub async fn call_subscribe_removed_hook(&self, subscribe_request: SubscribeRequest) {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::SubscribeRemoved);
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                if let Some(running_plugin) = running_plugin {
-                    if matches!(running_plugin.state, PluginState::Running) {
-                        let subscribe_request_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
-                            value: subscribe_request.encode_to_vec(),
-                        };
+                if let Some((ipc_sender, _plugin_name)) =
+                    self.get_registered_plugin_sender(plugin, "subscribe removed")
+                {
+                    let subscribe_request_any_wrapper = prost_types::Any {
+                        type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
+                        value: subscribe_request.encode_to_vec(),
+                    };
 
-                        let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::SubscriptionAdded)
-                            .with_type(MessageType::Event)
-                            .with_params(subscribe_request_any_wrapper)
-                            .build();
+                    let protocol_message = ProtocolMessageBuilder::new()
+                        .with_method(Method::SubscriptionRemoved)
+                        .with_type(MessageType::Event)
+                        .with_params(subscribe_request_any_wrapper)
+                        .build();
 
-                        match running_plugin.ipc_sender.as_ref() {
-                            Some(ipc_sender) => {
-                                let _ = ipc_sender
-                                    .send(TxCmd::SendMessage(Box::new(protocol_message)))
-                                    .await;
-                            }
-                            None => {
-                                warn!(
-                                    "Plugin {} ipc sender not found when calling subscribe removed hook",
-                                    running_plugin.name
-                                );
-                            }
-                        }
-                    }
+                    let _ = ipc_sender
+                        .send(TxCmd::SendMessage(Box::new(protocol_message)))
+                        .await;
                 }
             }
         }
@@ -668,34 +1128,23 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                if let Some(running_plugin) = running_plugin {
-                    if matches!(running_plugin.state, PluginState::Running) {
-                        let client_connected_event_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::CLIENT_CONNECTED_EVENT_TYPE_URL.to_string(),
-                            value: client_connected_event.encode_to_vec(),
-                        };
+                if let Some((ipc_sender, _plugin_name)) =
+                    self.get_registered_plugin_sender(plugin, "client connected")
+                {
+                    let client_connected_event_any_wrapper = prost_types::Any {
+                        type_url: crate::protocol::CLIENT_CONNECTED_EVENT_TYPE_URL.to_string(),
+                        value: client_connected_event.encode_to_vec(),
+                    };
 
-                        let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::ClientConnected)
-                            .with_type(MessageType::Event)
-                            .with_params(client_connected_event_any_wrapper)
-                            .build();
+                    let protocol_message = ProtocolMessageBuilder::new()
+                        .with_method(Method::ClientConnected)
+                        .with_type(MessageType::Event)
+                        .with_params(client_connected_event_any_wrapper)
+                        .build();
 
-                        match running_plugin.ipc_sender.as_ref() {
-                            Some(ipc_sender) => {
-                                let _ = ipc_sender
-                                    .send(TxCmd::SendMessage(Box::new(protocol_message)))
-                                    .await;
-                            }
-                            None => {
-                                warn!(
-                                    "Plugin {} ipc sender not found when calling client connected hook",
-                                    running_plugin.name
-                                );
-                            }
-                        }
-                    }
+                    let _ = ipc_sender
+                        .send(TxCmd::SendMessage(Box::new(protocol_message)))
+                        .await;
                 }
             }
         }
@@ -710,35 +1159,23 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                if let Some(running_plugin) = running_plugin {
-                    if matches!(running_plugin.state, PluginState::Running) {
-                        let client_disconnected_event_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::CLIENT_DISCONNECTED_EVENT_TYPE_URL
-                                .to_string(),
-                            value: client_disconnected_event.encode_to_vec(),
-                        };
+                if let Some((ipc_sender, _plugin_name)) =
+                    self.get_registered_plugin_sender(plugin, "client disconnected")
+                {
+                    let client_disconnected_event_any_wrapper = prost_types::Any {
+                        type_url: crate::protocol::CLIENT_DISCONNECTED_EVENT_TYPE_URL.to_string(),
+                        value: client_disconnected_event.encode_to_vec(),
+                    };
 
-                        let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::ClientDisconnected)
-                            .with_type(MessageType::Event)
-                            .with_params(client_disconnected_event_any_wrapper)
-                            .build();
+                    let protocol_message = ProtocolMessageBuilder::new()
+                        .with_method(Method::ClientDisconnected)
+                        .with_type(MessageType::Event)
+                        .with_params(client_disconnected_event_any_wrapper)
+                        .build();
 
-                        match running_plugin.ipc_sender.as_ref() {
-                            Some(ipc_sender) => {
-                                let _ = ipc_sender
-                                    .send(TxCmd::SendMessage(Box::new(protocol_message)))
-                                    .await;
-                            }
-                            None => {
-                                warn!(
-                                    "Plugin {} ipc sender not found when calling client disconnected hook",
-                                    running_plugin.name
-                                );
-                            }
-                        }
-                    }
+                    let _ = ipc_sender
+                        .send(TxCmd::SendMessage(Box::new(protocol_message)))
+                        .await;
                 }
             }
         }
@@ -750,34 +1187,23 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                if let Some(running_plugin) = running_plugin {
-                    if matches!(running_plugin.state, PluginState::Running) {
-                        let subscribe_request_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
-                            value: subscribe_request.encode_to_vec(),
-                        };
+                if let Some((ipc_sender, _plugin_name)) =
+                    self.get_registered_plugin_sender(plugin, "subscribe added")
+                {
+                    let subscribe_request_any_wrapper = prost_types::Any {
+                        type_url: crate::protocol::SUBSCRIBE_REQUEST_TYPE_URL.to_string(),
+                        value: subscribe_request.encode_to_vec(),
+                    };
 
-                        let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::SubscriptionAdded)
-                            .with_type(MessageType::Event)
-                            .with_params(subscribe_request_any_wrapper)
-                            .build();
+                    let protocol_message = ProtocolMessageBuilder::new()
+                        .with_method(Method::SubscriptionAdded)
+                        .with_type(MessageType::Event)
+                        .with_params(subscribe_request_any_wrapper)
+                        .build();
 
-                        match running_plugin.ipc_sender.as_ref() {
-                            Some(ipc_sender) => {
-                                let _ = ipc_sender
-                                    .send(TxCmd::SendMessage(Box::new(protocol_message)))
-                                    .await;
-                            }
-                            None => {
-                                warn!(
-                                    "Plugin {} ipc sender not found when calling subscribe added hook",
-                                    running_plugin.name
-                                );
-                            }
-                        }
-                    }
+                    let _ = ipc_sender
+                        .send(TxCmd::SendMessage(Box::new(protocol_message)))
+                        .await;
                 }
             }
         }
@@ -792,35 +1218,24 @@ impl PluginManager {
 
         if let Some(plugins) = plugins {
             for plugin in plugins {
-                let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                if let Some(running_plugin) = running_plugin {
-                    if matches!(running_plugin.state, PluginState::Running) {
-                        let message_publish_request_any_wrapper = prost_types::Any {
-                            type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL
-                                .to_string(),
-                            value: message_publish_request.encode_to_vec(),
-                        };
+                if let Some((ipc_sender, _plugin_name)) =
+                    self.get_registered_plugin_sender(plugin, "message published")
+                {
+                    let message_publish_request_any_wrapper = prost_types::Any {
+                        type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_REQUEST_TYPE_URL
+                            .to_string(),
+                        value: message_publish_request.encode_to_vec(),
+                    };
 
-                        let protocol_message = ProtocolMessageBuilder::new()
-                            .with_method(Method::MessagePublished)
-                            .with_type(MessageType::Event)
-                            .with_params(message_publish_request_any_wrapper)
-                            .build();
+                    let protocol_message = ProtocolMessageBuilder::new()
+                        .with_method(Method::MessagePublished)
+                        .with_type(MessageType::Event)
+                        .with_params(message_publish_request_any_wrapper)
+                        .build();
 
-                        match running_plugin.ipc_sender.as_ref() {
-                            Some(ipc_sender) => {
-                                let _ = ipc_sender
-                                    .send(TxCmd::SendMessage(Box::new(protocol_message)))
-                                    .await;
-                            }
-                            None => {
-                                warn!(
-                                    "Plugin {} ipc sender not found when calling message published hook",
-                                    running_plugin.name
-                                );
-                            }
-                        }
-                    }
+                    let _ = ipc_sender
+                        .send(TxCmd::SendMessage(Box::new(protocol_message)))
+                        .await;
                 }
             }
         }
@@ -837,21 +1252,10 @@ impl PluginManager {
         if let Some(plugins) = plugins {
             for plugin in plugins {
                 let (ipc_sender, plugin_name) = {
-                    let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                    if let Some(running_plugin) = running_plugin {
-                        if matches!(running_plugin.state, PluginState::Running) {
-                            if let Some(ipc_sender) = running_plugin.ipc_sender.as_ref() {
-                                (ipc_sender.clone(), running_plugin.name.clone())
-                            } else {
-                                error!(
-                                    "Plugin {} ipc sender not found when calling on message publish hook",
-                                    running_plugin.name
-                                );
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
+                    if let Some(plugin_sender) =
+                        self.get_registered_plugin_sender(plugin, "on message publish")
+                    {
+                        plugin_sender
                     } else {
                         continue;
                     }
@@ -868,11 +1272,9 @@ impl PluginManager {
                     .with_params(message_publish_request_any_wrapper)
                     .build();
 
-                let msg_id = protocol_message.id.clone();
-
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -905,7 +1307,6 @@ impl PluginManager {
                         }
                     }
                     Err(e) => {
-                        self.inflight_manager.clean_up(&msg_id);
                         warn!("Plugin {} call failed: {}", plugin_name, e);
                         continue;
                     }
@@ -944,21 +1345,10 @@ impl PluginManager {
         if let Some(plugins) = plugins {
             for plugin in plugins {
                 let (ipc_sender, plugin_name) = {
-                    let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                    if let Some(running_plugin) = running_plugin {
-                        if matches!(running_plugin.state, PluginState::Running) {
-                            if let Some(ipc_sender) = running_plugin.ipc_sender.as_ref() {
-                                (ipc_sender.clone(), running_plugin.name.clone())
-                            } else {
-                                error!(
-                                    "Plugin {} ipc sender not found when calling on message subscribe hook",
-                                    running_plugin.name
-                                );
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
+                    if let Some(plugin_sender) =
+                        self.get_registered_plugin_sender(plugin, "on message subscribe")
+                    {
+                        plugin_sender
                     } else {
                         continue;
                     }
@@ -975,11 +1365,9 @@ impl PluginManager {
                     .with_params(subscribe_request_any_wrapper)
                     .build();
 
-                let msg_id = protocol_message.id.clone();
-
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -1020,7 +1408,6 @@ impl PluginManager {
                         }
                     }
                     Err(e) => {
-                        self.inflight_manager.clean_up(&msg_id);
                         warn!("Plugin {} call failed: {}", plugin_name, e);
                         continue;
                     }
@@ -1048,21 +1435,10 @@ impl PluginManager {
         if let Some(plugins) = plugins {
             for plugin in plugins {
                 let (ipc_sender, plugin_name) = {
-                    let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                    if let Some(running_plugin) = running_plugin {
-                        if matches!(running_plugin.state, PluginState::Running) {
-                            if let Some(ipc_sender) = running_plugin.ipc_sender.as_ref() {
-                                (ipc_sender.clone(), running_plugin.name.clone())
-                            } else {
-                                error!(
-                                    "Plugin {} ipc sender not found when calling authorize hook",
-                                    running_plugin.name
-                                );
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
+                    if let Some(plugin_sender) =
+                        self.get_registered_plugin_sender(plugin, "authorize")
+                    {
+                        plugin_sender
                     } else {
                         continue;
                     }
@@ -1078,11 +1454,9 @@ impl PluginManager {
                     .with_params(authorize_request_any_wrapper)
                     .build();
 
-                let msg_id = protocol_message.id.clone();
-
                 let result = self
                     .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
+                    .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
                     .await;
 
                 match result {
@@ -1108,26 +1482,20 @@ impl PluginManager {
                             }
                         }
                     }
-                    Err(e) => {
-                        warn!("Plugin {} response timeout", plugin_name);
-                        self.inflight_manager.clean_up(&msg_id);
-                        match e {
-                            InflightError::Timeout => {
-                                return std::result::Result::Ok(AuthorizeResult {
-                                    authorized: false,
-                                    reason: Some(format!(
-                                        "Plugin {} response timeout",
-                                        plugin_name
-                                    )),
-                                    modified_context: HashMap::new(),
-                                });
-                            }
-                            _ => {
-                                warn!("Plugin {} call failed: {}", plugin_name, e);
-                                continue;
-                            }
+                    Err(e) => match e {
+                        InflightError::Timeout => {
+                            warn!("Plugin {} response timeout", plugin_name);
+                            return std::result::Result::Ok(AuthorizeResult {
+                                authorized: false,
+                                reason: Some(format!("Plugin {} response timeout", plugin_name)),
+                                modified_context: HashMap::new(),
+                            });
                         }
-                    }
+                        _ => {
+                            warn!("Plugin {} call failed: {}", plugin_name, e);
+                            continue;
+                        }
+                    },
                 }
             }
             std::result::Result::Ok(final_result)
@@ -1148,217 +1516,303 @@ impl PluginManager {
         authenticate_request: AuthenticateRequest,
     ) -> std::result::Result<AuthenticateResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
-        let plugins = hook_manager.get_hooks(&crate::hook::Hook::Authenticate);
+        let Some(plugins) = hook_manager.get_hooks(&crate::hook::Hook::Authenticate) else {
+            debug!("no plugins registered for OnAuthenticate hook");
+            return std::result::Result::Ok(AuthenticateResult {
+                authenticated: self.config.default_authenticate_result,
+                error_reason: None,
+                tenant_id: None,
+            });
+        };
+
         let mut final_result = AuthenticateResult {
-            authenticated: true,
+            authenticated: false,
             error_reason: None,
             tenant_id: None,
         };
         let mut is_first_called = true;
+        let mut called_any_plugin = false;
 
-        if let Some(plugins) = plugins {
-            for plugin in plugins {
-                let (ipc_sender, plugin_name) = {
-                    let running_plugin = self.running_plugins.get(&plugin.plugin_name);
-                    if let Some(running_plugin) = running_plugin {
-                        if matches!(running_plugin.state, PluginState::Running) {
-                            info!("Authenticate plugin: {}", running_plugin.name);
-                            if let Some(ipc_sender) = running_plugin.ipc_sender.as_ref() {
-                                (ipc_sender.clone(), running_plugin.name.clone())
-                            } else {
-                                error!(
-                                    "Plugin {} ipc sender not found when calling authenticate hook",
-                                    running_plugin.name
-                                );
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                };
+        for plugin in plugins {
+            let (ipc_sender, plugin_name) = {
+                if let Some(plugin_sender) =
+                    self.get_registered_plugin_sender(plugin, "authenticate")
+                {
+                    called_any_plugin = true;
+                    info!("Authenticate plugin: {}", plugin_sender.1);
+                    plugin_sender
+                } else {
+                    continue;
+                }
+            };
 
-                let authenticate_request_any_wrapper = prost_types::Any {
-                    type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
-                    value: authenticate_request.encode_to_vec(),
-                };
-                let protocol_message = ProtocolMessageBuilder::new()
-                    .with_method(Method::Authenticate)
-                    .with_params(authenticate_request_any_wrapper)
-                    .build();
+            let authenticate_request_any_wrapper = prost_types::Any {
+                type_url: crate::protocol::AUTHENTICATE_REQUEST_TYPE_URL.to_string(),
+                value: authenticate_request.encode_to_vec(),
+            };
+            let protocol_message = ProtocolMessageBuilder::new()
+                .with_method(Method::Authenticate)
+                .with_params(authenticate_request_any_wrapper)
+                .build();
 
-                let msg_id = protocol_message.id.clone();
+            let result = self
+                .inflight_manager
+                .send_and_wait(&ipc_sender, protocol_message, self.config.request_timeout())
+                .await;
 
-                let result = self
-                    .inflight_manager
-                    .send_and_wait(&ipc_sender, protocol_message, Duration::from_secs(5))
-                    .await;
-
-                match result {
-                    std::result::Result::Ok(response) => {
-                        if let Some(result) = response.result {
-                            if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
-                                match AuthenticateResponse::decode(result.value.as_slice()) {
-                                    Err(e) => {
-                                        warn!(
-                                            "Failed to decode authenticate response: {} drop it",
-                                            e
-                                        );
-                                        continue;
-                                    }
-                                    std::result::Result::Ok(authenticate_response) => {
-                                        if authenticate_response.authenticated {
-                                            if !is_first_called {
-                                                if authenticate_response.tenant_id
-                                                    != final_result.tenant_id
-                                                {
-                                                    return std::result::Result::Ok(
-                                                        AuthenticateResult {
-                                                            authenticated: false,
-                                                            error_reason: Some(
-                                                                "Tenant ID mismatch".to_string(),
-                                                            ),
-                                                            tenant_id: None,
-                                                        },
-                                                    );
-                                                }
-                                            } else {
-                                                is_first_called = false;
+            match result {
+                std::result::Result::Ok(response) => {
+                    if let Some(result) = response.result {
+                        if result.type_url == crate::protocol::AUTHENTICATE_RESPONSE_TYPE_URL {
+                            match AuthenticateResponse::decode(result.value.as_slice()) {
+                                Err(e) => {
+                                    warn!("Failed to decode authenticate response: {} drop it", e);
+                                    continue;
+                                }
+                                std::result::Result::Ok(authenticate_response) => {
+                                    if authenticate_response.authenticated {
+                                        if !is_first_called {
+                                            if authenticate_response.tenant_id
+                                                != final_result.tenant_id
+                                            {
+                                                return std::result::Result::Ok(
+                                                    AuthenticateResult {
+                                                        authenticated: false,
+                                                        error_reason: Some(
+                                                            "Tenant ID mismatch".to_string(),
+                                                        ),
+                                                        tenant_id: None,
+                                                    },
+                                                );
                                             }
-                                            final_result.authenticated = true;
-                                            final_result.error_reason = None;
-                                            final_result.tenant_id =
-                                                authenticate_response.tenant_id.clone();
-                                            continue;
                                         } else {
-                                            return std::result::Result::Ok(AuthenticateResult {
-                                                authenticated: authenticate_response.authenticated,
-                                                error_reason: authenticate_response.error_reason,
-                                                tenant_id: authenticate_response.tenant_id,
-                                            });
+                                            is_first_called = false;
                                         }
+                                        final_result.authenticated = true;
+                                        final_result.error_reason = None;
+                                        final_result.tenant_id =
+                                            authenticate_response.tenant_id.clone();
+                                        continue;
+                                    } else {
+                                        return std::result::Result::Ok(AuthenticateResult {
+                                            authenticated: authenticate_response.authenticated,
+                                            error_reason: authenticate_response.error_reason,
+                                            tenant_id: authenticate_response.tenant_id,
+                                        });
                                     }
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        self.inflight_manager.clean_up(&msg_id);
-                        match e {
-                            InflightError::Timeout => {
-                                warn!("Plugin {} response timeout", plugin_name);
-                                return std::result::Result::Ok(AuthenticateResult {
-                                    authenticated: false,
-                                    error_reason: Some(format!(
-                                        "Plugin {} response timeout",
-                                        plugin_name
-                                    )),
-                                    tenant_id: None,
-                                });
-                            }
-                            _ => {
-                                warn!("Plugin {} call failed: {}", plugin_name, e);
-                                continue;
-                            }
-                        }
-                    }
                 }
+                Err(e) => match e {
+                    InflightError::Timeout => {
+                        warn!("Plugin {} response timeout", plugin_name);
+                        return std::result::Result::Ok(AuthenticateResult {
+                            authenticated: false,
+                            error_reason: Some(format!("Plugin {} response timeout", plugin_name)),
+                            tenant_id: None,
+                        });
+                    }
+                    _ => {
+                        warn!("Plugin {} call failed: {}", plugin_name, e);
+                        continue;
+                    }
+                },
             }
-            std::result::Result::Ok(final_result)
-        } else {
-            debug!("no plugins registered for OnAuthenticate hook");
-            std::result::Result::Ok(AuthenticateResult {
-                authenticated: self.config.default_authenticate_result,
+        }
+
+        if !called_any_plugin {
+            warn!("authenticate hooks are registered but no active plugin instances are available");
+            return std::result::Result::Ok(AuthenticateResult {
+                authenticated: false,
                 error_reason: None,
                 tenant_id: None,
-            })
+            });
         }
+
+        std::result::Result::Ok(final_result)
     }
 
-    pub async fn stop_plugin(&self, name: &str) -> Result<()> {
-        let abort_tx = {
+    pub async fn stop_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
+        let (abort_tx, log_collector_quit_tx) = {
             let running_plugin = self.running_plugins.get(name);
             if let Some(running_plugin) = running_plugin {
-                if running_plugin.state == PluginState::Running {
+                if matches!(
+                    running_plugin.state,
+                    PluginState::Running | PluginState::Starting
+                ) {
                     match &running_plugin.plugin_abort_tx {
                         None => {
-                            return Err(anyhow::anyhow!(
+                            return Err(PluginControlError::Internal(format!(
                                 "plugin '{}' abort channel not found",
                                 name
-                            ));
+                            )));
                         }
-                        Some(abort_tx) => abort_tx.clone(),
+                        Some(abort_tx) => (
+                            abort_tx.clone(),
+                            running_plugin.plugin_log_collector_quit_tx.clone(),
+                        ),
                     }
+                } else if matches!(running_plugin.state, PluginState::Stopping) {
+                    return Err(PluginControlError::InvalidState(
+                        name.to_string(),
+                        PluginState::Stopping.as_str(),
+                    ));
                 } else {
                     return Ok(());
                 }
             } else {
-                return Err(anyhow::anyhow!("plugin '{}' not found", name));
+                return Err(PluginControlError::NotFound(name.to_string()));
             }
         };
+
+        if let Some(mut running_plugin) = self.running_plugins.get_mut(name) {
+            running_plugin.state = PluginState::Stopping;
+            running_plugin.last_error = None;
+        }
 
         info!("stopping plugin '{}'...", name);
         let (notify_sender, mut notify_receiver) = tokio::sync::mpsc::channel::<()>(1);
         if let Err(e) = abort_tx.send(notify_sender).await {
-            return Err(anyhow::anyhow!(
+            return Err(PluginControlError::Internal(format!(
                 "failed to send abort signal to plugin '{}': {}",
-                name,
-                e
-            ));
+                name, e
+            )));
         }
         let _ = notify_receiver.recv().await;
+
+        if let Some(log_collector_quit_tx) = log_collector_quit_tx {
+            let _ = log_collector_quit_tx.send(()).await;
+        }
 
         info!("plugin '{}' stopped successfully", name);
 
         Ok(())
     }
 
-    pub async fn restart_plugin(&self, name: &str) -> Result<()> {
-        {
-            let running_plugin = self.running_plugins.get(name);
-            if running_plugin.is_none() {
-                return Err(anyhow::anyhow!("Plugin '{}' not found", name));
-            }
-        }
+    pub async fn restart_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
+        let next_restart_count = self
+            .running_plugins
+            .get(name)
+            .map(|plugin| plugin.restart_count.saturating_add(1))
+            .unwrap_or(1);
 
-        if let Err(e) = self.stop_plugin(name).await {
-            return Err(anyhow::anyhow!(
-                "failed to stop plugin '{}' before restart: {}",
-                name,
-                e
-            ));
-        } else {
-            info!("plugin '{}' stopped successfully, starting...", name);
-            if let Err(e) = self.start_plugin(name).await {
-                return Err(anyhow::anyhow!(
-                    "failed to start plugin '{}' during restart: {}",
-                    name,
-                    e
+        if let Some(plugin) = self.running_plugins.get(name) {
+            if matches!(plugin.state, PluginState::Stopping) {
+                return Err(PluginControlError::InvalidState(
+                    name.to_string(),
+                    PluginState::Stopping.as_str(),
                 ));
             }
-            info!("plugin '{}' restarted successfully", name);
+            drop(plugin);
         }
+
+        let prepared = self.prepare_plugin_start(name)?;
+
+        if self.running_plugins.contains_key(name) {
+            self.stop_plugin(name).await?;
+        }
+
+        info!("plugin '{}' stopped successfully, starting...", name);
+        self.start_prepared_plugin(name, next_restart_count, prepared)
+            .await?;
+        info!("plugin '{}' restarted successfully", name);
 
         Ok(())
     }
 
-    pub async fn start_plugin(&self, name: &str) -> Result<()> {
-        let manifest = self
-            .plugin_loader
-            .get_plugin_manifest(name)
-            .ok_or_else(|| anyhow::anyhow!("plugin '{}' not found", name))?
+    pub async fn start_plugin(&self, name: &str) -> std::result::Result<(), PluginControlError> {
+        let restart_count = self
+            .running_plugins
+            .get(name)
+            .map(|plugin| plugin.restart_count)
+            .unwrap_or(0);
+        self.start_plugin_with_restart_count(name, restart_count)
+            .await
+    }
+
+    async fn start_plugin_with_restart_count(
+        &self,
+        name: &str,
+        restart_count: u32,
+    ) -> std::result::Result<(), PluginControlError> {
+        if let Some(plugin) = self.running_plugins.get(name) {
+            if matches!(
+                plugin.state,
+                PluginState::Running | PluginState::Starting | PluginState::Stopping
+            ) {
+                return Err(PluginControlError::InvalidState(
+                    name.to_string(),
+                    plugin.state.as_str(),
+                ));
+            }
+        }
+
+        let prepared = self.prepare_plugin_start(name)?;
+        self.start_prepared_plugin(name, restart_count, prepared)
+            .await
+    }
+
+    fn prepare_plugin_start(
+        &self,
+        name: &str,
+    ) -> std::result::Result<PreparedPluginStart, PluginControlError> {
+        let auth_code = generate_auth_code(12);
+        let (manifest, command) = {
+            let loader = self.plugin_loader.read().unwrap();
+            if !loader.plugin_manifest_path(name).is_file() {
+                return Err(PluginControlError::NotFound(name.to_string()));
+            }
+            let manifest = loader.load_plugin_manifest_from_disk(name).map_err(|e| {
+                PluginControlError::Internal(format!(
+                    "failed to load latest manifest for plugin '{}': {}",
+                    name, e
+                ))
+            })?;
+            let command = loader
+                .get_plugin_command_from_manifest(
+                    name,
+                    &manifest,
+                    &auth_code,
+                    &self.config.local_socket_path,
+                )
+                .map_err(|e| PluginControlError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    PluginControlError::Internal(format!(
+                        "plugin '{}' start command not existed",
+                        name
+                    ))
+                })?;
+            (manifest, command)
+        };
+
+        Ok(PreparedPluginStart {
+            auth_code,
+            manifest,
+            command,
+        })
+    }
+
+    async fn start_prepared_plugin(
+        &self,
+        name: &str,
+        restart_count: u32,
+        prepared: PreparedPluginStart,
+    ) -> std::result::Result<(), PluginControlError> {
+        let PreparedPluginStart {
+            auth_code,
+            manifest,
+            mut command,
+        } = prepared;
+        let rx_cmd_sender = self
+            .rx_cmd_sender
+            .as_ref()
+            .ok_or_else(|| PluginControlError::Internal("rx_cmd_sender not found".to_string()))?
             .clone();
 
-        let auth_code = generate_auth_code(12);
-
-        let mut command = self
-            .plugin_loader
-            .get_plugin_command(name, &auth_code, &self.config.local_socket_path)?
-            .ok_or_else(|| anyhow::anyhow!("plugin {} start command not exsited", name))?;
-
         let mut process = match command
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1375,40 +1829,42 @@ impl PluginManager {
                     start_time: Some(std::time::Instant::now()),
                     process_log_handle: None,
                     process_wait_handle: None,
-                    restart_count: 0,
+                    restart_count,
                     last_health_check: None,
                     ipc_sender: None,
                     auth_code,
                     logs: Arc::new(RwLock::new(Vec::new())),
                     ping_response_timeout_count: 0,
+                    initialize_status: None,
+                    capabilities: Vec::new(),
+                    hooks: Vec::new(),
+                    last_error: Some(format!("failed to start plugin '{}': {}", name, e)),
                 };
 
                 {
                     self.running_plugins
                         .insert(name.to_string(), running_plugin);
                 }
-                return Err(anyhow::anyhow!("failed to start plugin '{}': {}", name, e));
+                return Err(PluginControlError::Internal(format!(
+                    "failed to start plugin '{}': {}",
+                    name, e
+                )));
             }
             std::result::Result::Ok(p) => p,
         };
 
-        let stdout = process
+        let stderr = process
             .stderr
             .take()
-            .expect("plugin did not have a handle to stdout");
+            .expect("plugin did not have a handle to stderr");
 
-        let mut stdout_reader = BufReader::new(stdout).lines();
+        let mut stderr_reader = BufReader::new(stderr).lines();
 
         let borrowed_name = name.to_string();
+        let borrowed_auth_code = auth_code.clone();
 
         let (plugin_abort_tx, mut plugin_abort_rx) =
             tokio::sync::mpsc::channel::<tokio::sync::mpsc::Sender<()>>(1);
-
-        let rx_cmd_sender = self
-            .rx_cmd_sender
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("rx_cmd_sender not found"))?
-            .clone();
 
         let process_wait_handle = tokio::spawn(async move {
             let mut pending_notify: Option<tokio::sync::mpsc::Sender<()>> = None;
@@ -1428,6 +1884,7 @@ impl PluginManager {
                         let (changed_notify_sender, changed_notify_receiver) = tokio::sync::oneshot::channel::<()>();
                         let _ = rx_cmd_sender.send(RxCmd::PluginStatusChanged{
                             plugin_name: borrowed_name,
+                            plugin_auth_code: borrowed_auth_code.clone(),
                             plugin_state: PluginState::Stopped,
                             notify_sender: changed_notify_sender
                         }).await;
@@ -1466,14 +1923,14 @@ impl PluginManager {
             tokio::sync::mpsc::channel::<()>(1);
 
         let process_log_handle = tokio::spawn(async move {
-            // Capture plugin stdout into logs
+            // Capture plugin stderr into the in-memory log buffer.
             loop {
                 select! {
                     _ = plugin_log_collector_quit_rx.recv() => {
                         info!("plugin '{}' log collector quit", borrowed_name);
                         break;
                     },
-                    std::result::Result::Ok(Some(line)) = stdout_reader.next_line() => {
+                    std::result::Result::Ok(Some(line)) = stderr_reader.next_line() => {
                         let mut logs_guard = logs_clone.write().await;
                         logs_guard.push(line);
                         if logs_guard.len() > 1000 {
@@ -1494,12 +1951,16 @@ impl PluginManager {
             start_time: Some(std::time::Instant::now()),
             process_log_handle: Some(process_log_handle),
             process_wait_handle: Some(process_wait_handle),
-            restart_count: 0,
+            restart_count,
             last_health_check: None,
             ipc_sender: None,
             auth_code,
             logs,
             ping_response_timeout_count: 0,
+            initialize_status: None,
+            capabilities: Vec::new(),
+            hooks: Vec::new(),
+            last_error: None,
         };
 
         {
@@ -1512,4 +1973,84 @@ impl PluginManager {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn create_test_config(base_dir: &std::path::Path, socket_name: &str) -> PluginHostConfig {
+        let plugin_dir = base_dir.join("plugins");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let (shutdown_signal, _) = tokio::sync::broadcast::channel(1);
+
+        PluginHostConfig {
+            broker_version: "test".to_string(),
+            broker_node_id: 1,
+            cluster_name: "test-cluster".to_string(),
+            plugin_directory: plugin_dir.to_string_lossy().into_owned(),
+            local_socket_path: base_dir.join(socket_name).to_string_lossy().into_owned(),
+            max_restart_attempts: 1,
+            health_check_interval_secs: 1,
+            init_timeout_secs: 1,
+            request_timeout_secs: 1,
+            ping_timeout_secs: 1,
+            shutdown_signal,
+            default_authorize_result: false,
+            default_authenticate_result: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_and_wait_should_cleanup_inflight_after_timeout() {
+        let inflight_manager = InflightManager::new();
+        let (tx_cmd_sender, mut tx_cmd_receiver) = tokio::sync::mpsc::channel::<TxCmd>(1);
+        let protocol_message = ProtocolMessageBuilder::new()
+            .with_method(Method::Ping)
+            .with_type(MessageType::Request)
+            .build();
+
+        let recv_handle = tokio::spawn(async move { tx_cmd_receiver.recv().await });
+
+        let result = inflight_manager
+            .send_and_wait(&tx_cmd_sender, protocol_message, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(result, Err(InflightError::Timeout)));
+        assert_eq!(inflight_manager.inflight.len(), 0);
+
+        let _ = recv_handle.await;
+    }
+
+    #[tokio::test]
+    async fn send_and_wait_should_cleanup_inflight_after_send_error() {
+        let inflight_manager = InflightManager::new();
+        let (tx_cmd_sender, tx_cmd_receiver) = tokio::sync::mpsc::channel::<TxCmd>(1);
+        drop(tx_cmd_receiver);
+
+        let protocol_message = ProtocolMessageBuilder::new()
+            .with_method(Method::Ping)
+            .with_type(MessageType::Request)
+            .build();
+
+        let result = inflight_manager
+            .send_and_wait(&tx_cmd_sender, protocol_message, Duration::from_millis(10))
+            .await;
+
+        assert!(matches!(result, Err(InflightError::SendError(_))));
+        assert_eq!(inflight_manager.inflight.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_should_release_listener_for_reuse_of_same_socket_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path(), "plugin_host.sock");
+
+        let mut first_manager = PluginManager::new(config.clone()).await.unwrap();
+        first_manager.start_listener().await.unwrap();
+        first_manager.shutdown().await.unwrap();
+
+        let mut second_manager = PluginManager::new(config).await.unwrap();
+        second_manager.start_listener().await.unwrap();
+        second_manager.shutdown().await.unwrap();
+    }
+}

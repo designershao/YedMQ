@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/yedmq
 
 COPY --from=builder /build/target/release/yedmq /usr/local/bin/yedmq
-COPY broker/yedmq.toml /opt/yedmq/yedmq.toml
+COPY yedmq.toml.example /opt/yedmq/yedmq.toml
 
 RUN mkdir -p /opt/yedmq/plugins /var/lib/yedmq/store /var/lib/yedmq/clock
 

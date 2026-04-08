@@ -1,0 +1,78 @@
+{
+  "authenticate": {
+    "rules": [
+      {
+        "action": "allow",
+        "tenant": "public",
+        "username": [
+          "super"
+        ],
+        "password": [
+          "super123"
+        ],
+        "client_ip": [
+          "%"
+        ]
+      },
+      {
+        "action": "allow",
+        "tenant": "public",
+        "username": [
+          "normal"
+        ],
+        "password": [
+          "normal123"
+        ],
+        "client_ip": [
+          "192.168.1.10"
+        ]
+      }
+    ]
+  },
+  "authorize": {
+    "rules": [
+      {
+        "action": "allow",
+        "tenant": [
+          "public"
+        ],
+        "username": [
+          "super"
+        ],
+        "subscribe": [
+          "%"
+        ],
+        "publish": [
+          "%"
+        ]
+      },
+      {
+        "action": "deny",
+        "tenant": [
+          "public"
+        ],
+        "username": [
+          "normal"
+        ],
+        "subscribe": [
+          "/a/b"
+        ],
+        "publish": [
+          "/a/b"
+        ]
+      },
+      {
+        "action": "allow",
+        "tenant": [
+          "public"
+        ],
+        "username": [
+          "%"
+        ],
+        "subscribe": [
+          "/a/b"
+        ]
+      }
+    ]
+  }
+}

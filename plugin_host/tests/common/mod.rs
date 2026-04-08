@@ -79,6 +79,7 @@ fn default_auth_config() -> AuthenticateConfig {
         tenant_id: Some("default_tenant".to_string()),
         continue_chain: true,
         delay_secs: None,
+        record_file: None,
     }
 }
 
@@ -134,6 +135,9 @@ pub struct AuthenticateConfig {
 
     /// optional delay in seconds before responding
     pub delay_secs: Option<u64>,
+
+    /// optional file path used by tests to record authenticate handling
+    pub record_file: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -189,74 +193,23 @@ pub struct HookConfig {
 
 pub fn get_mock_plugin_path() -> PathBuf {
     let cargo_target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target");
-    cargo_target_dir.join("debug").join("mock_plugin_harness")
+    cargo_target_dir.join("debug").join(format!(
+        "mock_plugin_harness{}",
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 
 #[allow(clippy::unwrap_used)]
-pub fn setup_test_plugins(plugins_test_dir: &TempDir, mock_config: MockConfig) {
-    let mock_plugin_dir = plugins_test_dir.path().join("mock_plugin_harness");
-    std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
-
-    let mock_plugin_exe = get_mock_plugin_path();
-    let mock_plugin_harness_dir = plugins_test_dir.path().join("mock_plugin_harness");
-    std::fs::create_dir_all(&mock_plugin_harness_dir)
-        .expect("Failed to create mock plugin harness dir");
-    std::fs::copy(
-        mock_plugin_exe,
-        mock_plugin_harness_dir.join("mock_plugin_harness"),
-    )
-    .expect("Failed to copy mock plugin exe");
-
-    let mock_config_json = serde_json::to_string_pretty(&mock_config);
-
+pub fn write_mock_plugin_manifest(
+    plugins_test_dir: &TempDir,
+    plugin_name: &str,
+    mock_config: &MockConfig,
+) {
+    let mock_plugin_dir = plugins_test_dir.path().join(plugin_name);
+    let executable_name = format!("{}{}", plugin_name, std::env::consts::EXE_SUFFIX);
+    let mock_config_json = serde_json::to_string_pretty(mock_config).unwrap();
     let mock_plugin_manifest = format!(
         r###"[plugin]
-name = "mock_plugin_harness"
-version = "0.1.0"
-description = "A test plugin"
-author = "Test Author"
-license = "MIT"
-homepage = "http://test.com"
-repository = "https://github.com"
-
-[runtime]
-type = "process"
-executable = "mock_plugin_harness"
-args = ["--config", {:?}]
-env = {{}}
-working_dir = "."
-timeout_secs = 12
-    "###,
-        mock_config_json.unwrap()
-    );
-
-    std::fs::write(mock_plugin_dir.join("plugin.toml"), mock_plugin_manifest)
-        .expect("Failed to write mock plugin manifest");
-}
-
-#[allow(clippy::unwrap_used)]
-pub fn setup_mutiple_test_plugins(
-    plugins_test_dir: &TempDir,
-    mock_config_map: HashMap<String, MockConfig>,
-) {
-    for (plugin_name, v) in mock_config_map {
-        let mock_plugin_dir = plugins_test_dir.path().join(plugin_name.clone());
-        std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
-
-        let mock_plugin_exe = get_mock_plugin_path();
-        let mock_plugin_harness_dir = plugins_test_dir.path().join(plugin_name.clone());
-        std::fs::create_dir_all(&mock_plugin_harness_dir)
-            .expect("Failed to create mock plugin harness dir");
-        std::fs::copy(
-            mock_plugin_exe,
-            mock_plugin_harness_dir.join(plugin_name.clone()),
-        )
-        .expect("Failed to copy mock plugin exe");
-
-        let mock_config_json = serde_json::to_string_pretty(&v);
-
-        let mock_plugin_manifest = format!(
-            r###"[plugin]
 name = {:?}
 version = "0.1.0"
 description = "A test plugin"
@@ -272,13 +225,51 @@ args = ["--config", {:?}]
 env = {{}}
 working_dir = "."
 timeout_secs = 12
-        "###,
-            plugin_name.clone(),
-            plugin_name.clone(),
-            mock_config_json.unwrap()
-        );
+    "###,
+        plugin_name, executable_name, mock_config_json
+    );
 
-        std::fs::write(mock_plugin_dir.join("plugin.toml"), mock_plugin_manifest)
-            .expect("Failed to write mock plugin manifest");
+    std::fs::write(mock_plugin_dir.join("plugin.toml"), mock_plugin_manifest)
+        .expect("Failed to write mock plugin manifest");
+}
+
+#[allow(clippy::unwrap_used)]
+pub fn setup_test_plugins(plugins_test_dir: &TempDir, mock_config: MockConfig) {
+    let mock_plugin_dir = plugins_test_dir.path().join("mock_plugin_harness");
+    std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
+
+    let mock_plugin_exe = get_mock_plugin_path();
+    let executable_name = format!("mock_plugin_harness{}", std::env::consts::EXE_SUFFIX);
+    let mock_plugin_harness_dir = plugins_test_dir.path().join("mock_plugin_harness");
+    std::fs::create_dir_all(&mock_plugin_harness_dir)
+        .expect("Failed to create mock plugin harness dir");
+    std::fs::copy(
+        mock_plugin_exe,
+        mock_plugin_harness_dir.join(&executable_name),
+    )
+    .expect("Failed to copy mock plugin exe");
+    write_mock_plugin_manifest(plugins_test_dir, "mock_plugin_harness", &mock_config);
+}
+
+#[allow(clippy::unwrap_used)]
+pub fn setup_mutiple_test_plugins(
+    plugins_test_dir: &TempDir,
+    mock_config_map: HashMap<String, MockConfig>,
+) {
+    for (plugin_name, v) in mock_config_map {
+        let mock_plugin_dir = plugins_test_dir.path().join(plugin_name.clone());
+        std::fs::create_dir(&mock_plugin_dir).expect("Failed to create mock plugin dir");
+
+        let mock_plugin_exe = get_mock_plugin_path();
+        let executable_name = format!("{}{}", plugin_name, std::env::consts::EXE_SUFFIX);
+        let mock_plugin_harness_dir = plugins_test_dir.path().join(plugin_name.clone());
+        std::fs::create_dir_all(&mock_plugin_harness_dir)
+            .expect("Failed to create mock plugin harness dir");
+        std::fs::copy(
+            mock_plugin_exe,
+            mock_plugin_harness_dir.join(&executable_name),
+        )
+        .expect("Failed to copy mock plugin exe");
+        write_mock_plugin_manifest(plugins_test_dir, &plugin_name, &v);
     }
 }

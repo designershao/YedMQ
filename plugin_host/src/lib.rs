@@ -1,5 +1,6 @@
 pub mod hook;
 pub mod loader;
+pub mod local_socket_name;
 pub mod plugin_host_config;
 pub mod plugin_manager;
 pub mod protocol;

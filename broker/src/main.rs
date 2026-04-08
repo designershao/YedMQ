@@ -20,15 +20,21 @@ async fn main() {
 
     let app = Arc::new(YedMQApp::new(settings.clone()).await);
 
-    YedMQApp::start(app).await;
+    YedMQApp::start(app.clone()).await;
 
     match signal::ctrl_c().await {
         Ok(()) => {
             info!("signal received, shutting down");
-            // TODO: add shut down logic
+            if let Err(e) = app.shutdown().await {
+                warn!("shutdown error: {}", e);
+            }
+            System::current().stop();
         }
         Err(e) => {
             warn!("signal error: {}", e);
+            if let Err(shutdown_error) = app.shutdown().await {
+                warn!("shutdown error: {}", shutdown_error);
+            }
             System::current().stop();
         }
     };

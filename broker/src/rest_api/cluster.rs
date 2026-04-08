@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use actix::SystemService;
 use axum::{extract::State, http::StatusCode, Json};
@@ -38,6 +38,147 @@ pub struct AddClusterNodeRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChangeMembersRequest {
     members: Vec<u64>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterReadyResponse {
+    pub ready: bool,
+    pub node_id: u64,
+    pub cluster_node_ids: Vec<u64>,
+    pub checks: ClusterReadyChecks,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterReadyChecks {
+    pub topic_raft: RaftGroupReadyStatus,
+    pub session_actor_map_raft: RaftGroupReadyStatus,
+    pub session_state_raft: SessionStateReadyStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RaftGroupReadyStatus {
+    pub ready: bool,
+    pub leader_id: Option<u64>,
+    pub membership_node_ids: Vec<u64>,
+    pub missing_cluster_node_ids: Vec<u64>,
+    pub extra_cluster_node_ids: Vec<u64>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStateReadyStatus {
+    pub ready: bool,
+    pub leader_id: Option<u64>,
+    pub membership_node_ids: Vec<u64>,
+    pub missing_cluster_node_ids: Vec<u64>,
+    pub extra_cluster_node_ids: Vec<u64>,
+    pub payload_ready: bool,
+    pub reason: Option<String>,
+}
+
+fn build_not_ready_status(reason: impl Into<String>) -> RaftGroupReadyStatus {
+    RaftGroupReadyStatus {
+        ready: false,
+        leader_id: None,
+        membership_node_ids: Vec::new(),
+        missing_cluster_node_ids: Vec::new(),
+        extra_cluster_node_ids: Vec::new(),
+        reason: Some(reason.into()),
+    }
+}
+
+fn evaluate_raft_metrics(metrics: &RaftMetrics<u64, Node>) -> RaftGroupReadyStatus {
+    let mut membership_node_ids: Vec<u64> = metrics
+        .membership_config
+        .nodes()
+        .map(|(node_id, _)| *node_id)
+        .collect();
+    membership_node_ids.sort_unstable();
+    membership_node_ids.dedup();
+
+    let reason = if metrics.current_leader.is_none() {
+        Some("no leader elected".to_string())
+    } else if membership_node_ids.is_empty() {
+        Some("membership is empty".to_string())
+    } else {
+        None
+    };
+
+    RaftGroupReadyStatus {
+        ready: reason.is_none(),
+        leader_id: metrics.current_leader,
+        membership_node_ids,
+        missing_cluster_node_ids: Vec::new(),
+        extra_cluster_node_ids: Vec::new(),
+        reason,
+    }
+}
+
+fn combine_reason(base: Option<String>, extra: Option<String>) -> Option<String> {
+    match (base, extra) {
+        (Some(base), Some(extra)) => Some(format!("{base}; {extra}")),
+        (Some(base), None) => Some(base),
+        (None, Some(extra)) => Some(extra),
+        (None, None) => None,
+    }
+}
+
+fn derive_cluster_node_ids(statuses: &[&RaftGroupReadyStatus]) -> Vec<u64> {
+    statuses
+        .iter()
+        .find_map(|status| {
+            if status.membership_node_ids.is_empty() {
+                None
+            } else {
+                Some(status.membership_node_ids.clone())
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn apply_cluster_node_ids(
+    mut status: RaftGroupReadyStatus,
+    cluster_node_ids: &[u64],
+) -> RaftGroupReadyStatus {
+    let membership_node_set: BTreeSet<u64> = status.membership_node_ids.iter().copied().collect();
+    let cluster_node_set: BTreeSet<u64> = cluster_node_ids.iter().copied().collect();
+
+    let missing_cluster_node_ids: Vec<u64> = cluster_node_ids
+        .iter()
+        .copied()
+        .filter(|node_id| !membership_node_set.contains(node_id))
+        .collect();
+    let extra_cluster_node_ids: Vec<u64> = status
+        .membership_node_ids
+        .iter()
+        .copied()
+        .filter(|node_id| !cluster_node_set.contains(node_id))
+        .collect();
+
+    let membership_reason = if cluster_node_ids.is_empty() {
+        Some("cluster membership is unavailable".to_string())
+    } else if !missing_cluster_node_ids.is_empty() || !extra_cluster_node_ids.is_empty() {
+        Some(format!(
+            "membership differs from cluster nodes; missing {:?}, extra {:?}",
+            missing_cluster_node_ids, extra_cluster_node_ids
+        ))
+    } else {
+        None
+    };
+
+    status.ready = status.ready
+        && !cluster_node_ids.is_empty()
+        && missing_cluster_node_ids.is_empty()
+        && extra_cluster_node_ids.is_empty();
+    status.missing_cluster_node_ids = missing_cluster_node_ids;
+    status.extra_cluster_node_ids = extra_cluster_node_ids;
+    status.reason = combine_reason(status.reason, membership_reason);
+    status
 }
 
 async fn post_json_with_auth<T: Serialize>(
@@ -791,6 +932,114 @@ pub async fn change_membership(
     }
 
     (StatusCode::OK, String::new())
+}
+
+pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<ClusterReadyResponse>) {
+    let topic_raft_actor_addr =
+        crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
+    let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
+    let session_state_raft_actor_addr =
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry(
+        );
+
+    let topic_raft_base = match topic_raft_actor_addr
+        .send(crate::raft::topic::topic_raft_actor::GetRaftMetrics {})
+        .await
+    {
+        Ok(Ok(metrics)) => evaluate_raft_metrics(&metrics),
+        Ok(Err(err)) => build_not_ready_status(format!("topic raft unavailable: {}", err)),
+        Err(err) => build_not_ready_status(format!("TopicRaftActor unavailable: {}", err)),
+    };
+
+    let session_actor_map_raft_base = match session_actor_map_raft_actor_addr
+        .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetRaftMetrics {})
+        .await
+    {
+        Ok(Ok(metrics)) => evaluate_raft_metrics(&metrics),
+        Ok(Err(err)) => {
+            build_not_ready_status(format!("session actor map raft unavailable: {}", err))
+        }
+        Err(err) => {
+            build_not_ready_status(format!("SessionActorMapRaftActor unavailable: {}", err))
+        }
+    };
+
+    let session_state_raft_base = match session_state_raft_actor_addr
+        .send(crate::raft::session_state::session_state_raft_actor::GetRaftMetrics {})
+        .await
+    {
+        Ok(Ok(metrics)) => evaluate_raft_metrics(&metrics),
+        Ok(Err(err)) => build_not_ready_status(format!("session state raft unavailable: {}", err)),
+        Err(err) => build_not_ready_status(format!("SessionStateRaftActor unavailable: {}", err)),
+    };
+
+    let cluster_node_ids = derive_cluster_node_ids(&[
+        &topic_raft_base,
+        &session_actor_map_raft_base,
+        &session_state_raft_base,
+    ]);
+
+    let topic_raft = apply_cluster_node_ids(topic_raft_base, &cluster_node_ids);
+    let session_actor_map_raft =
+        apply_cluster_node_ids(session_actor_map_raft_base, &cluster_node_ids);
+    let session_state_raft_base =
+        apply_cluster_node_ids(session_state_raft_base, &cluster_node_ids);
+
+    let (payload_ready, payload_reason) = match session_state_raft_actor_addr
+        .send(crate::raft::session_state::session_state_raft_actor::GetPayloadReady {})
+        .await
+    {
+        Ok(true) => (true, None),
+        Ok(false) => (
+            false,
+            Some("session state payload store is not ready".to_string()),
+        ),
+        Err(err) => (
+            false,
+            Some(format!("SessionStateRaftActor unavailable: {}", err)),
+        ),
+    };
+
+    let session_state_raft = SessionStateReadyStatus {
+        ready: session_state_raft_base.ready && payload_ready,
+        leader_id: session_state_raft_base.leader_id,
+        membership_node_ids: session_state_raft_base.membership_node_ids.clone(),
+        missing_cluster_node_ids: session_state_raft_base.missing_cluster_node_ids.clone(),
+        extra_cluster_node_ids: session_state_raft_base.extra_cluster_node_ids.clone(),
+        payload_ready,
+        reason: combine_reason(session_state_raft_base.reason.clone(), payload_reason),
+    };
+
+    let mut reasons = Vec::new();
+    if let Some(reason) = &topic_raft.reason {
+        reasons.push(format!("topic_raft: {}", reason));
+    }
+    if let Some(reason) = &session_actor_map_raft.reason {
+        reasons.push(format!("session_actor_map_raft: {}", reason));
+    }
+    if let Some(reason) = &session_state_raft.reason {
+        reasons.push(format!("session_state_raft: {}", reason));
+    }
+
+    let response = ClusterReadyResponse {
+        ready: topic_raft.ready && session_actor_map_raft.ready && session_state_raft.ready,
+        node_id: app.settings.cluster.node_id,
+        cluster_node_ids,
+        checks: ClusterReadyChecks {
+            topic_raft,
+            session_actor_map_raft,
+            session_state_raft,
+        },
+        reasons,
+    };
+
+    let status = if response.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (status, Json(response))
 }
 
 pub async fn metrics(

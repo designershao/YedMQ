@@ -13,8 +13,8 @@ pub struct Settings {
 #[derive(Debug, PartialEq, Default)]
 pub enum DefaultAuthenticationValue {
     #[default]
-    Allow,
     Deny,
+    Allow,
 }
 
 impl<'de> Deserialize<'de> for DefaultAuthenticationValue {
@@ -34,8 +34,8 @@ impl<'de> Deserialize<'de> for DefaultAuthenticationValue {
 #[derive(Debug, PartialEq, Default)]
 pub enum DefaultAuthorizationValue {
     #[default]
-    Allow,
     Deny,
+    Allow,
 }
 
 impl<'de> Deserialize<'de> for DefaultAuthorizationValue {
@@ -105,9 +105,10 @@ impl Default for Plugin {
     fn default() -> Self {
         Self {
             dir: "./plugins".to_string(),
-            default_authenticate_result: true,
-            default_authorize_result: true,
-            local_socket_path: "/tmp/yedmq_plugin_host.sock".to_string(),
+            default_authenticate_result: false,
+            default_authorize_result: false,
+            local_socket_path: yedmq_plugin_host::local_socket_name::default_local_socket_path()
+                .to_string(),
         }
     }
 }
@@ -143,8 +144,10 @@ pub struct Listener {
 #[serde(default)]
 pub struct TcpTls {
     pub external: String,
+    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String,
+    pub verify_client_cert: bool,
     pub rate_limit: RateLimit,
 }
 
@@ -152,8 +155,10 @@ impl Default for TcpTls {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:8883".to_string(),
+            cacert_file: "".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            verify_client_cert: false,
             rate_limit: RateLimit::default(),
         }
     }
@@ -179,8 +184,10 @@ impl Default for Ws {
 #[serde(default)]
 pub struct Wss {
     pub external: String,
+    pub cacert_file: String,
     pub cert_file: String,
     pub key_file: String,
+    pub verify_client_cert: bool,
     pub rate_limit: RateLimit,
 }
 
@@ -188,8 +195,10 @@ impl Default for Wss {
     fn default() -> Self {
         Self {
             external: "0.0.0.0:8084".to_string(),
+            cacert_file: "".to_string(),
             cert_file: "".to_string(),
             key_file: "".to_string(),
+            verify_client_cert: false,
             rate_limit: RateLimit::default(),
         }
     }
@@ -285,7 +294,7 @@ pub struct RPC {
 impl Default for RPC {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:3457".to_string(),
+            external: "127.0.0.1:3457".to_string(),
         }
     }
 }
@@ -311,7 +320,7 @@ pub struct User {
 impl Default for Api {
     fn default() -> Self {
         Self {
-            external: "0.0.0.0:3456".to_string(),
+            external: "127.0.0.1:3456".to_string(),
             auth: AuthConfig::default(),
         }
     }
@@ -320,25 +329,36 @@ impl Default for Api {
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
         let s = Config::builder()
-            .set_default("mqtt.default_authentication", "allow")?
-            .set_default("mqtt.default_authorization", "allow")?
+            .set_default("mqtt.default_authentication", "deny")?
+            .set_default("mqtt.default_authorization", "deny")?
             .set_default("mqtt.sys_topic_interval_secs", 10)?
+            .set_default("mqtt.max_message_size", yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)?
             .set_default("session.qos_expired_secs", 10)?
             .set_default("session.packet_resend_interval_secs", 10)?
             .set_default("session.session_clock_path", "./clock")?
             .set_default("plugin.dir", "./plugins")?
+            .set_default(
+                "plugin.local_socket_path",
+                yedmq_plugin_host::local_socket_name::default_local_socket_path(),
+            )?
+            .set_default("plugin.default_authorize_result", false)?
+            .set_default("plugin.default_authenticate_result", false)?
             .set_default("listener.tcp.external", "0.0.0.0:1883")?
             .set_default("listener.tcp_tls.external", "0.0.0.0:8883")?
+            .set_default("listener.tcp_tls.cacert_file", "")?
             .set_default("listener.tcp_tls.cert_file", "")?
             .set_default("listener.tcp_tls.key_file", "")?
+            .set_default("listener.tcp_tls.verify_client_cert", false)?
             .set_default("listener.ws.external", "0.0.0.0:8083")?
             .set_default("listener.wss.external", "0.0.0.0:8084")?
+            .set_default("listener.wss.cacert_file", "")?
             .set_default("listener.wss.cert_file", "")?
             .set_default("listener.wss.key_file", "")?
-            .set_default("listener.api.external", "0.0.0.0:3456")?
+            .set_default("listener.wss.verify_client_cert", false)?
+            .set_default("listener.api.external", "127.0.0.1:3456")?
             .set_default("cluster.cluster_name", "YedMQ")?
             .set_default("cluster.heartbeat_interval", 10)?
-            .set_default("cluster.rpc.external", "0.0.0.0:3457")?
+            .set_default("cluster.rpc.external", "127.0.0.1:3457")?
             .set_default("cluster.session_ttl", 10)?
             .set_default("cluster.startup_mode", "bootstrap")?
             .add_source(File::with_name("/etc/yedmq/config.toml").required(false))
@@ -359,11 +379,11 @@ mod tests {
         assert_eq!(10, s.session.packet_resend_interval_secs);
         assert_eq!("0.0.0.0:1883", s.listener.tcp.external);
         assert_eq!(
-            DefaultAuthenticationValue::Allow,
+            DefaultAuthenticationValue::Deny,
             s.mqtt.default_authentication
         );
         assert_eq!(
-            DefaultAuthorizationValue::Allow,
+            DefaultAuthorizationValue::Deny,
             s.mqtt.default_authorization
         );
         assert_eq!(1001, s.cluster.nodes[0].id);

@@ -66,21 +66,19 @@ async fn basic_auth_middleware(
                     })?;
 
                     if let Ok(decoded_str) = std::str::from_utf8(&decoded) {
-                        let parts: Vec<&str> = decoded_str.split(":").collect();
-                        if parts.len() == 2 {
-                            let username = parts[0];
-                            let password = parts[1];
-
-                            if state
-                                .settings
-                                .listener
-                                .api
-                                .auth
-                                .users
-                                .iter()
-                                .any(|user| user.username == username && user.password == password)
-                            {
-                                return Ok(next.run(req).await);
+                        match decoded_str.split_once(":") {
+                            Some((username, password)) => {
+                                if state.settings.listener.api.auth.users.iter().any(|user| {
+                                    user.username == username && user.password == password
+                                }) {
+                                    return Ok(next.run(req).await);
+                                }
+                            }
+                            None => {
+                                return Err((
+                                    StatusCode::UNAUTHORIZED,
+                                    "Invalid authorization header format".to_string(),
+                                ))
                             }
                         }
                     }
@@ -104,6 +102,30 @@ pub async fn run_rest_api_task(
 
     let app = axum::Router::new()
         .route("/api/v1/plugins", axum::routing::get(plugin::plugin_list))
+        .route(
+            "/api/v1/plugins/rescan",
+            axum::routing::post(plugin::plugin_rescan),
+        )
+        .route(
+            "/api/v1/plugins/:plugin_name",
+            axum::routing::get(plugin::plugin_detail),
+        )
+        .route(
+            "/api/v1/plugins/:plugin_name/start",
+            axum::routing::post(plugin::plugin_start),
+        )
+        .route(
+            "/api/v1/plugins/:plugin_name/stop",
+            axum::routing::post(plugin::plugin_stop),
+        )
+        .route(
+            "/api/v1/plugins/:plugin_name/restart",
+            axum::routing::post(plugin::plugin_restart),
+        )
+        .route(
+            "/api/v1/plugins/:plugin_name/logs",
+            axum::routing::get(plugin::plugin_logs),
+        )
         .route(
             "/api/v1/:tenant_id/topics",
             axum::routing::get(topic::topic_list),
@@ -136,6 +158,7 @@ pub async fn run_rest_api_task(
             "/api/v1/cluster/metrics",
             axum::routing::get(cluster::metrics),
         )
+        .route("/api/v1/cluster/ready", axum::routing::get(cluster::ready))
         .route(
             "/api/v1/cluster/learners",
             axum::routing::post(cluster::add_learner),

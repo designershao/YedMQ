@@ -1,4 +1,4 @@
-use crate::session::session_actor::{GetSessionInfo, SessionActorMessage};
+use crate::session::session_actor::{AcceptRoutedPublish, GetSessionInfo, SessionActorMessage};
 use crate::session::session_actor_map_storage::SessionVersion;
 use actix::Recipient;
 use dashmap::DashMap;
@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 pub struct SessionActorRecipientWrapper {
     pub session_actor_message_recipient: Recipient<SessionActorMessage>,
+    pub accept_routed_publish_recipient: Recipient<AcceptRoutedPublish>,
     pub get_session_info_recipient: Recipient<GetSessionInfo>,
     pub session_version: SessionVersion,
 }
@@ -38,6 +39,19 @@ impl SessionRegistry {
         if let Some(tenant_sessions) = self.sessions.get(tenant_id) {
             if let Some(wrapper) = tenant_sessions.get(client_id) {
                 return Some(wrapper.session_actor_message_recipient.clone());
+            }
+        }
+        None
+    }
+
+    pub fn get_accept_routed_publish(
+        &self,
+        tenant_id: &str,
+        client_id: &str,
+    ) -> Option<Recipient<AcceptRoutedPublish>> {
+        if let Some(tenant_sessions) = self.sessions.get(tenant_id) {
+            if let Some(wrapper) = tenant_sessions.get(client_id) {
+                return Some(wrapper.accept_routed_publish_recipient.clone());
             }
         }
         None
