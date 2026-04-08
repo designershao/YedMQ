@@ -280,7 +280,6 @@ YedMQ is built with excellent open-source projects:
 
 - Website: [www.yedmq.com](https://www.yedmq.com)
 - GitHub Issues: [github.com/designershao/YedMQ/issues](https://github.com/designershao/YedMQ/issues)
-- Discussions: [github.com/designershao/YedMQ/discussions](https://github.com/designershao/YedMQ/discussions)
 
 ---
 
