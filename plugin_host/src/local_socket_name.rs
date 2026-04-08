@@ -14,10 +14,9 @@ pub fn resolve_local_socket_name(raw: &str) -> Result<Name<'static>> {
     #[cfg(not(windows))]
     {
         let name = raw.to_string();
-        return name
-            .clone()
+        name.clone()
             .to_fs_name::<GenericFilePath>()
-            .with_context(|| format!("invalid local socket path: {name}"));
+            .with_context(|| format!("invalid local socket path: {name}"))
     }
 }
 
