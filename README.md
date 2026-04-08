@@ -40,7 +40,30 @@
 
 - [Rust](https://www.rust-lang.org/tools/install) (1.75 or later)
 - Protocol Buffers compiler (`protoc`)
+- OpenSSL development headers (`libssl-dev` on Ubuntu/Debian)
 - Make (optional, Unix-like convenience only)
+
+On Ubuntu/Debian, you can install the common system dependencies with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+```
+
+On Windows, install these build dependencies before running `cargo build`:
+
+- `protoc`
+- LLVM/Clang
+
+Some native dependencies in this workspace rely on Clang being discoverable during the build.
+In PowerShell, a typical setup looks like:
+
+```powershell
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
+$env:PATH = "$env:LIBCLANG_PATH;$env:PATH"
+```
+
+If your `protoc.exe` directory is not already on `PATH`, add it as well before building.
 
 ### Installation
 
