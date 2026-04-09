@@ -6,9 +6,9 @@ pub fn resolve_local_socket_name(raw: &str) -> Result<Name<'static>> {
     {
         let normalized = normalize_local_socket_path(raw);
         let error_context = normalized.clone();
-        return normalized
+        normalized
             .to_fs_name::<GenericFilePath>()
-            .with_context(|| format!("invalid Windows named pipe path: {error_context}"));
+            .with_context(|| format!("invalid Windows named pipe path: {error_context}"))
     }
 
     #[cfg(not(windows))]

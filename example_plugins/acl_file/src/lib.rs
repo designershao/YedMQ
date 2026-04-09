@@ -297,7 +297,7 @@ where
             expected_type_url
         );
     }
-    Ok(T::decode(params.value.as_slice()).context("failed to decode request payload")?)
+    T::decode(params.value.as_slice()).context("failed to decode request payload")
 }
 
 fn response_message<T>(request: &ProtocolMessage, type_url: &str, payload: T) -> ProtocolMessage
