@@ -302,7 +302,7 @@ impl RouterActor {
     }
 
     async fn publish_to_local_subscribers(
-        tenant_id: &String,
+        tenant_id: &str,
         packet: &MqttPacketV3,
         topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         session_registry: SessionRegistry,
@@ -311,7 +311,7 @@ impl RouterActor {
             let topic = &publish_packet.variable_header.topic_name;
             let res = topic_raft_actor_addr
                 .send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
-                    tenant_id: tenant_id.clone(),
+                    tenant_id: tenant_id.to_string(),
                     topic: topic.clone(),
                 })
                 .await?;
