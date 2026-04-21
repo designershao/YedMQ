@@ -45,7 +45,7 @@ pub enum RouterActorError {
     ),
 
     #[error("get subscribers error: {0}")]
-    GetSubscribersError(#[from] crate::topic::TopicError),
+    GetSubscribersError(#[from] crate::topic::TopicStorageError),
 
     #[error("serialization error: {0}")]
     SerializationError(String),

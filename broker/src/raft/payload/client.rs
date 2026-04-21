@@ -3,10 +3,29 @@ use crate::protobuf::raft_payload::{
     BulkSyncDataRequest, BulkSyncStartRequest, FetchRequest, PayloadManifestItem,
 };
 use crate::raft::payload::store::{PayloadKey, PayloadStore};
+use crate::raft::GRPCBusinessError;
 use bytes::Bytes;
 use log::{info, warn};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
+
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum PayloadClientError {
+    #[error("gRPC error: {0}")]
+    GRPC(#[from] tonic::Status),
+
+    #[error("gRPC connect error: {0}")]
+    GRPCConnect(String),
+
+    #[error("gRPC business error: {0}")]
+    GRPCBusiness(GRPCBusinessError),
+
+    #[error("local payload error: {0}")]
+    PayloadError(String),
+
+    #[error("payload not found on the remote node")]
+    PayloadNotFound,
+}
 
 pub struct PayloadClient {
     store: Arc<dyn PayloadStore>,
@@ -23,28 +42,47 @@ impl PayloadClient {
         Self { store }
     }
 
-    pub async fn fetch_and_store(&self, addr: &str, key: PayloadKey) -> anyhow::Result<()> {
-        let mut client = PayloadServiceClient::connect(format!("http://{}", addr)).await?;
+    pub async fn fetch_and_store(
+        &self,
+        addr: &str,
+        key: PayloadKey,
+    ) -> Result<(), PayloadClientError> {
+        let mut client = PayloadServiceClient::connect(format!("http://{}", addr))
+            .await
+            .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
         let resp = client
             .fetch_payload(FetchRequest { key: key.clone() })
             .await?;
 
         let inner = resp.into_inner();
         if inner.found {
-            self.store.put(&key, Bytes::from(inner.data)).await?;
+            self.store
+                .put(&key, Bytes::from(inner.data))
+                .await
+                .map_err(|e| PayloadClientError::PayloadError(e.to_string()))?;
             Ok(())
         } else {
-            anyhow::bail!("Payload not found on remote: {}", key)
+            Err(PayloadClientError::PayloadNotFound)
         }
     }
 
-    pub async fn replicate(&self, addr: &str, key: PayloadKey, term: u64) -> anyhow::Result<()> {
+    pub async fn replicate(
+        &self,
+        addr: &str,
+        key: PayloadKey,
+        term: u64,
+    ) -> Result<(), PayloadClientError> {
         let data = self
             .store
             .get(&key)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Payload not found locally: {}", key))?;
-        let mut client = PayloadServiceClient::connect(format!("http://{}", addr)).await?;
+            .await
+            .map_err(|e| PayloadClientError::PayloadError(e.to_string()))?
+            .ok_or_else(|| {
+                PayloadClientError::PayloadError(format!("Payload not found locally: {}", key))
+            })?;
+        let mut client = PayloadServiceClient::connect(format!("http://{}", addr))
+            .await
+            .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
         let resp = client
             .replicate_payload(crate::protobuf::raft_payload::ReplicateRequest {
                 key,
@@ -55,7 +93,9 @@ impl PayloadClient {
         if resp.into_inner().success {
             Ok(())
         } else {
-            anyhow::bail!("Replication failed on remote")
+            Err(PayloadClientError::PayloadError(
+                "unexpected error".to_string(),
+            ))
         }
     }
 

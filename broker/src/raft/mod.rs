@@ -8,6 +8,35 @@ pub mod topic;
 
 pub type NodeId = u64;
 
+#[derive(Clone, Debug)]
+pub struct GRPCBusinessError {
+    code: crate::protobuf::ErrorCode,
+
+    message: String,
+
+    node: String,
+}
+
+impl std::fmt::Display for GRPCBusinessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "node: {}, code: {:?}, message: {}",
+            self.node, self.code, self.message
+        )
+    }
+}
+
+impl From<crate::protobuf::ErrorDetail> for GRPCBusinessError {
+    fn from(value: crate::protobuf::ErrorDetail) -> Self {
+        Self {
+            code: value.code(),
+            message: value.message,
+            node: value.node,
+        }
+    }
+}
+
 pub trait NodeTrait {
     fn rpc_addr(&self) -> &String;
 

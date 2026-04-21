@@ -31,7 +31,7 @@ use crate::{
             types::{SessionStateRequest, SessionStateResponse, SessionStateTypeConfig},
             SessionStateRaft,
         },
-        Node, NodeId,
+        GRPCBusinessError, Node, NodeId,
     },
     session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError},
 };
@@ -74,7 +74,16 @@ pub enum SessionStateRaftError {
     RaftStorageError(#[from] StorageError<NodeId>),
 
     #[error("gRPC error: {0}")]
-    GRPC(String),
+    GRPC(#[from] tonic::Status),
+
+    #[error("gRPC connect error: {0}")]
+    GRPCConnect(String),
+
+    #[error("gRPC business error: {0}")]
+    GRPCBusiness(GRPCBusinessError),
+
+    #[error("Serialization error: {0}")]
+    Serialize(String),
 
     #[error("Actor not initialized")]
     NotInitialized,
@@ -226,17 +235,19 @@ impl SessionStateRaftActor {
     async fn try_local_linearizable_read(
         raft: &SessionStateRaft,
     ) -> Result<(), SessionStateRaftError> {
-        raft.ensure_linearizable().await.map_err(|e| {
-            log::error!("Failed to ensure linearizable read: {}", e);
-            if let Some(leader) = e.forward_to_leader() {
-                SessionStateRaftError::NotLeader {
-                    leader: leader.leader_node.clone(),
+        match raft.ensure_linearizable().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let Some(leader) = e.forward_to_leader() {
+                    Err(SessionStateRaftError::NotLeader {
+                        leader: leader.leader_node.clone(),
+                    })
+                } else {
+                    log::error!("Failed to ensure linearizable read: {}", e);
+                    Err(SessionStateRaftError::NotLeader { leader: None })
                 }
-            } else {
-                SessionStateRaftError::NotLeader { leader: None }
             }
-        })?;
-        Ok(())
+        }
     }
 
     async fn try_local_write(
@@ -313,10 +324,14 @@ impl SessionStateRaftActor {
                                     leader_node.rpc_addr,
                                     e
                                 );
-                                return Err(SessionStateRaftError::GRPC(format!(
-                                    "Payload push failed: {}",
-                                    e
-                                )));
+                                let grpc_bussiness_error = GRPCBusinessError {
+                                    code: crate::protobuf::ErrorCode::InternalError,
+                                    message: format!("push payload error {}", e.to_string()),
+                                    node: "UNKNOWN".to_string(),
+                                };
+                                return Err(SessionStateRaftError::GRPCBusiness(
+                                    grpc_bussiness_error,
+                                ));
                             }
                             log::info!("Forwarding: payload key {} pushed successfully", k);
                         }
@@ -346,40 +361,33 @@ impl SessionStateRaftActor {
     ) -> Result<ClientWriteResponse<SessionStateTypeConfig>, SessionStateRaftError> {
         let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
             .await
-            .map_err(|e| {
-                log::error!("Failed to connect to leader {}", e);
-                SessionStateRaftError::GRPC(e.to_string())
-            })?;
+            .map_err(|e| SessionStateRaftError::GRPCConnect(e.to_string()))?;
 
-        let data = serde_json::to_string(&msg).map_err(|e| {
-            log::error!("Failed to serialize raft write request: {}", e);
-            SessionStateRaftError::GRPC(format!("serialize raft request failed: {}", e))
-        })?;
+        let data = serde_json::to_string(&msg)
+            .map_err(|e| SessionStateRaftError::Serialize(e.to_string()))?;
 
         let request = WriteRequest {
             data,
             raft_type: RaftType::SessionState.into(),
         };
 
-        let res = client.write(request).await.map_err(|e| {
-            log::error!("Failed to send write request to leader: {}", e);
-            SessionStateRaftError::GRPC(e.to_string())
-        })?;
+        let res = client.write(request).await?;
 
         let inner_res = res.into_inner();
         if inner_res.success {
             let res = inner_res.data;
-            serde_json::from_str(&res).map_err(|e| {
-                log::error!("Failed to deserialize raft write response: {}", e);
-                SessionStateRaftError::GRPC(format!("deserialize raft response failed: {}", e))
-            })
+            serde_json::from_str(&res).map_err(|e| SessionStateRaftError::Serialize(e.to_string()))
         } else {
-            let error_message = inner_res
-                .error
-                .map(|error| error.message)
-                .filter(|message| !message.is_empty())
-                .unwrap_or_else(|| "remote raft write failed without error detail".to_string());
-            Err(SessionStateRaftError::GRPC(error_message))
+            if let Some(err_inner) = inner_res.error {
+                let bussiness_err = GRPCBusinessError::from(err_inner);
+                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
+            } else {
+                Err(SessionStateRaftError::GRPCBusiness(GRPCBusinessError {
+                    code: crate::protobuf::ErrorCode::Unknown,
+                    message: "Missing error payload".to_string(),
+                    node: "UNKNOW".to_string(),
+                }))
+            }
         }
     }
 
@@ -778,10 +786,7 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                 Err(SessionStateRaftError::NotLeader { leader }) => {
                                     log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                                     if let Some(leader_node) = leader {
-                                        let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr.clone())).await.map_err(|e| {
-                                            log::error!("Failed to connect to leader {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
-                                        })?;
+                                        let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr.clone())).await.map_err(|e| SessionStateRaftError::GRPCConnect(e.to_string()))?;
                                         let response = client
                                             .get_session_state(crate::protobuf::GetSessionStateRequest {
                                                 tenant_id: msg.tenant_id,
@@ -789,13 +794,11 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                             })
                                             .await
                                             .map_err(|e| {
-                                                log::error!("Failed to get session state from leader: {}", e);
-                                                SessionStateRaftError::GRPC(e.to_string())
+                                                SessionStateRaftError::GRPC(e)
                                             })?;
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(payload) = inner.payload {
-                                                println!("Got session state from leader: {}", payload);
                                                 match serde_json::from_str(&payload) {
                                                     Ok(Some(session_state)) => Ok(Some(session_state)),
                                                     Ok(None) => Ok(None),
@@ -808,22 +811,26 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                                 Ok(None)
                                             }
                                         } else {
-                                            let error_message = inner
-                                                .error
-                                                .map(|error| error.message)
-                                                .filter(|message| !message.is_empty())
-                                                .unwrap_or_else(|| {
-                                                    "get session state failed without error detail"
-                                                        .to_string()
-                                                });
-                                            Err(SessionStateRaftError::GRPC(error_message))
+                                            if let Some(err_inner) = inner.error {
+                                                let bussiness_err =
+                                                    GRPCBusinessError::from(err_inner);
+                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
+                                            } else {
+                                                Err(SessionStateRaftError::GRPCBusiness(
+                                                    GRPCBusinessError {
+                                                        code: crate::protobuf::ErrorCode::Unknown,
+                                                        message: "Missing error payload"
+                                                            .to_string(),
+                                                        node: "UNKNOW".to_string(),
+                                                    },
+                                                ))
+                                            }
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to ensure linearizable read: {}", e);
                                     Err(e)
                                 }
                             }
@@ -1647,8 +1654,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                     log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                                     if let Some(leader_node) = leader {
                                         let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
-                                            log::error!("Failed to connect to leader {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
+                                            SessionStateRaftError::GRPCConnect(e.to_string())
                                         })?;
                                         let response = client.get_current_inflight_packet(
                                             crate::protobuf::GetCurrentInflightPacketRequest {
@@ -1656,16 +1662,12 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                 client_id: msg.client_id,
                                                 packet_id: u32::from(msg.packet_id),
                                             }
-                                        ).await.map_err(|e| {
-                                            log::error!("Failed to get current inflight packet from leader: {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
-                                        })?;
+                                        ).await?;
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(packet) = inner.packet {
                                                 let packet = serde_json::from_str(&packet).map_err(|e| {
-                                                    log::error!("Failed to deserialize current inflight packet: {}", e);
-                                                    SessionStateRaftError::GRPC(format!(
+                                                    SessionStateRaftError::Serialize(format!(
                                                         "deserialize current inflight packet failed: {}",
                                                         e
                                                     ))
@@ -1675,22 +1677,26 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                 Ok(None)
                                             }
                                         } else {
-                                            let error_message = inner
-                                                .error
-                                                .map(|error| error.message)
-                                                .filter(|message| !message.is_empty())
-                                                .unwrap_or_else(|| {
-                                                    "get current inflight packet failed without error detail"
-                                                        .to_string()
-                                                });
-                                            Err(SessionStateRaftError::GRPC(error_message))
+                                            if let Some(err_inner) = inner.error {
+                                                let bussiness_err =
+                                                    GRPCBusinessError::from(err_inner);
+                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
+                                            } else {
+                                                Err(SessionStateRaftError::GRPCBusiness(
+                                                    GRPCBusinessError {
+                                                        code: crate::protobuf::ErrorCode::Unknown,
+                                                        message: "Missing error payload"
+                                                            .to_string(),
+                                                        node: "UNKNOW".to_string(),
+                                                    },
+                                                ))
+                                            }
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
                                     }
                                 }
                                 Err(e) => {
-                                    log::error!("Failed to ensure linearizable read: {}", e);
                                     Err(e)
                                 }
                             }
@@ -1933,8 +1939,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                 Err(SessionStateRaftError::NotLeader { leader: leader_node }) => {
                                     if let Some(leader_node) = leader_node {
                                         let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
-                                            log::error!("Failed to connect to leader {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
+                                            SessionStateRaftError::GRPCConnect(e.to_string())
                                         })?;
 
                                         let request = crate::protobuf::GetNextInflightPacketRequest {
@@ -1943,16 +1948,13 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                             packet_id: u32::from(msg.packet_id),
                                         };
 
-                                        let response = client.get_next_inflight_packet(request).await.map_err(|e| {
-                                            log::error!("Failed to get next inflight packet: {}", e);
-                                            SessionStateRaftError::GRPC(e.to_string())
-                                        })?;
+                                        let response = client.get_next_inflight_packet(request).await?;
                                         let inner = response.into_inner();
                                         if inner.success {
                                             if let Some(packet) = inner.packet {
                                                 let packet = serde_json::from_str(&packet).map_err(|e| {
                                                     log::error!("Failed to deserialize next inflight packet: {}", e);
-                                                    SessionStateRaftError::GRPC(format!(
+                                                    SessionStateRaftError::Serialize(format!(
                                                         "deserialize next inflight packet failed: {}",
                                                         e
                                                     ))
@@ -1962,22 +1964,26 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                                 Ok(None)
                                             }
                                         } else {
-                                            let error_message = inner
-                                                .error
-                                                .map(|error| error.message)
-                                                .filter(|message| !message.is_empty())
-                                                .unwrap_or_else(|| {
-                                                    "get next inflight packet failed without error detail"
-                                                        .to_string()
-                                                });
-                                            Err(SessionStateRaftError::GRPC(error_message))
+                                            if let Some(err_inner) = inner.error {
+                                                let bussiness_err =
+                                                    GRPCBusinessError::from(err_inner);
+                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
+                                            } else {
+                                                Err(SessionStateRaftError::GRPCBusiness(
+                                                    GRPCBusinessError {
+                                                        code: crate::protobuf::ErrorCode::Unknown,
+                                                        message: "Missing error payload"
+                                                            .to_string(),
+                                                        node: "UNKNOW".to_string(),
+                                                    },
+                                                ))
+                                            }
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
                                     }
                                 }
-                                Err(e) => {
-                                    log::error!("Failed to ensure linearizable read: {}", e);
+                                Err(_e) => {
                                     Err(SessionStateRaftError::NotLeader { leader: None })
                                 }
                             }

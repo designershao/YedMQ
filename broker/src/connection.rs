@@ -44,6 +44,24 @@ fn build_rate_limiter(rate_limit: &RateLimit) -> Option<ConnectionRateLimiter> {
     ))
 }
 
+fn is_transient_initial_connect_error(error: &ConnectionError) -> bool {
+    match error {
+        ConnectionError::SessionManagerServiceUnavailable(message) => {
+            message.contains("newer session has existed")
+                || message.contains("Session version rejected")
+        }
+        _ => false,
+    }
+}
+
+fn log_initial_connect_error(error: &ConnectionError) {
+    if is_transient_initial_connect_error(error) {
+        warn!("handle initial connect transiently rejected: {}", error);
+    } else {
+        error!("handle initial connect error: {}", error);
+    }
+}
+
 #[derive(Message)]
 #[rtype(result = "()")]
 pub enum NetworkEvent {
@@ -455,7 +473,7 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    let connack_packet = match e {
+                                    let connack_packet = match &e {
                                         ConnectionError::UnsupportedProtocolVersion { .. } => {
                                             ConnAckPacketBuilder::new()
                                                 .set_return_code(ConnackReturnCode::UnsupportedProtocolVersion)
@@ -474,13 +492,13 @@ where
                                                 .build()
                                         }
                                         ConnectionError::SessionManagerServiceUnavailable(e) => {
-                                            error!("handle initial connect error: {}", e);
+                                            log_initial_connect_error(&ConnectionError::SessionManagerServiceUnavailable(e.clone()));
                                             ConnAckPacketBuilder::new()
                                                 .set_return_code(ConnackReturnCode::ServerUnavailable)
                                                 .build()
                                         }
                                         _ => {
-                                            error!("handle initial connect error: {}", e);
+                                            log_initial_connect_error(&e);
                                             ConnAckPacketBuilder::new()
                                                 .set_return_code(ConnackReturnCode::ServerUnavailable)
                                                 .build()

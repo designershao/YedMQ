@@ -105,6 +105,38 @@ pub struct SessionActorMapRaftActor {
 }
 
 impl SessionActorMapRaftActor {
+    fn is_transient_remote_leader_error(message: &str) -> bool {
+        message.contains("transport error") || message.contains("Connection refused")
+    }
+
+    fn parse_session_version(value: &str) -> Option<SessionVersion> {
+        let (counter, node_id) = value.trim().split_once('-')?;
+        Some(SessionVersion::new(
+            counter.trim().parse().ok()?,
+            node_id.trim().parse().ok()?,
+        ))
+    }
+
+    fn parse_remote_error(message: &str) -> Option<SessionActorMapRaftError> {
+        let prefix = "Session version rejected, current: ";
+        let rest = message.strip_prefix(prefix)?;
+        let (current, existing) = rest.split_once(", existing: ")?;
+
+        Some(SessionActorMapRaftError::SessionVersionRejected {
+            current_version: Self::parse_session_version(current)?,
+            existing_version: Self::parse_session_version(existing)?,
+        })
+    }
+
+    fn log_remote_leader_error(operation: &str, error: &impl std::fmt::Display) {
+        let message = error.to_string();
+        if Self::is_transient_remote_leader_error(&message) {
+            log::warn!("{}: {}", operation, message);
+        } else {
+            log::error!("{}: {}", operation, message);
+        }
+    }
+
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
         session_clock: Arc<SessionClock>,
@@ -170,17 +202,19 @@ impl SessionActorMapRaftActor {
     async fn try_local_linearizable_read(
         raft: &SessionActorMapRaft,
     ) -> Result<(), SessionActorMapRaftError> {
-        raft.ensure_linearizable().await.map_err(|e| {
-            log::error!("Failed to ensure linearizable read: {}", e);
-            if let Some(leader) = e.forward_to_leader() {
-                SessionActorMapRaftError::NotLeader {
-                    leader: leader.leader_node.clone(),
+        match raft.ensure_linearizable().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let Some(leader) = e.forward_to_leader() {
+                    Err(SessionActorMapRaftError::NotLeader {
+                        leader: leader.leader_node.clone(),
+                    })
+                } else {
+                    log::error!("Failed to ensure linearizable read: {}", e);
+                    Err(SessionActorMapRaftError::NotLeader { leader: None })
                 }
-            } else {
-                SessionActorMapRaftError::NotLeader { leader: None }
             }
-        })?;
-        Ok(())
+        }
     }
 
     async fn try_local_write(
@@ -247,7 +281,7 @@ impl SessionActorMapRaftActor {
         let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
             .await
             .map_err(|e| {
-                log::error!("Failed to connect to leader {}", e);
+                Self::log_remote_leader_error("Failed to connect to leader", &e);
                 SessionActorMapRaftError::GRPC(e.to_string())
             })?;
 
@@ -262,7 +296,11 @@ impl SessionActorMapRaftActor {
         };
 
         let res = client.write(request).await.map_err(|e| {
-            log::error!("Failed to send write request to leader: {}", e);
+            if let Some(parsed_error) = Self::parse_remote_error(e.message()) {
+                return parsed_error;
+            }
+
+            Self::log_remote_leader_error("Failed to send write request to leader", &e);
             SessionActorMapRaftError::GRPC(e.to_string())
         })?;
 
@@ -276,12 +314,13 @@ impl SessionActorMapRaftActor {
                 ))
             })
         } else {
-            Err(SessionActorMapRaftError::GRPC(
-                inner_res
-                    .error
-                    .map(|err| err.message)
-                    .unwrap_or_else(|| "remote raft write failed without error detail".to_string()),
-            ))
+            let message = inner_res
+                .error
+                .map(|err| err.message)
+                .unwrap_or_else(|| "remote raft write failed without error detail".to_string());
+
+            Err(Self::parse_remote_error(&message)
+                .unwrap_or(SessionActorMapRaftError::GRPC(message)))
         }
     }
 
@@ -778,7 +817,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                 log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                                 if let Some(leader_node) = leader {
                                     let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
-                                        log::error!("Failed to connect to leader: {}", e);
+                                        Self::log_remote_leader_error("Failed to connect to leader", &e);
                                         SessionActorMapRaftError::GRPC(e.to_string())
                                     })?;
                                     let response = client
@@ -788,7 +827,7 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                         })
                                         .await
                                         .map_err(|e| {
-                                            log::error!("Failed to get session actor map from leader: {}", e);
+                                            Self::log_remote_leader_error("Failed to get session actor map from leader", &e);
                                             SessionActorMapRaftError::GRPC(e.to_string())
                                         })?;
                                     let inner_res = response.into_inner();

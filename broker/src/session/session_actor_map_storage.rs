@@ -5,7 +5,7 @@ use std::{
     time::SystemTime,
 };
 
-use log::{debug, warn};
+use log::debug;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 
@@ -247,7 +247,10 @@ impl SessionActorMapStorage {
                         session_id, tenant_id, version
                     );
                 } else {
-                    warn!("reject stale unregister for {}, current version is {}, request version is {}", session_id, existing.version, version);
+                    debug!(
+                        "reject stale unregister for {}, current version is {}, request version is {}",
+                        session_id, existing.version, version
+                    );
                 }
             }
         }
