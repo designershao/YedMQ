@@ -80,15 +80,13 @@ impl YedMQApp {
             return None;
         };
 
-        let endpoint =
-            tonic::transport::Endpoint::from_shared(format!("http://{}", node.rpc_addr.clone()))
-                .expect("invalid rpc address")
-                .connect_timeout(std::time::Duration::from_secs(5));
-
-        match endpoint.connect().await {
+        match crate::rpc::grpc_client::lazy_channel_with_connect_timeout(
+            &node.rpc_addr,
+            std::time::Duration::from_secs(5),
+        ) {
             Ok(channel) => Some(ClusterServiceClient::new(channel)),
             Err(e) => {
-                warn!("failed to connect to rpc client {}: {}", node_id, e);
+                warn!("failed to create rpc client {}: {}", node_id, e);
                 None
             }
         }

@@ -750,11 +750,9 @@ async fn call_force_disconnect(
         .await
         .ok_or_else(|| SessionManagerError::NodeNotFound(node_id.to_string()))?;
 
-    let addr = format!("http://{}", node.rpc_addr);
-
-    let mut client =
-        crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone())
-            .await?;
+    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::new(
+        crate::rpc::grpc_client::lazy_channel(&node.rpc_addr)?,
+    );
 
     for i in 0..max_retries {
         info!(

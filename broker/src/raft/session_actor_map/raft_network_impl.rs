@@ -36,15 +36,10 @@ impl NetworkConnection {
     async fn c<E: std::error::Error + DeserializeOwned>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        let addr = format!("http://{}", self.node.rpc_addr);
-        let endpoint = addr
-            .parse()
+        let channel = crate::rpc::grpc_client::lazy_channel(&self.node.rpc_addr)
             .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
-        match Channel::builder(endpoint).connect().await {
-            Ok(channel) => Ok(RaftServiceClient::new(channel)),
-            Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
-        }
+        Ok(RaftServiceClient::new(channel))
     }
 }
 

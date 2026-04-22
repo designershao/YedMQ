@@ -41,17 +41,17 @@ fn map_topic_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotLeader { leader: None }
         | crate::raft::topic::topic_raft_actor::TopicRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: topic raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: topic raft not initialized", action))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotReady(message) => {
-            Status::unavailable(format!("{} failed: {}", action, message))
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::InvalidTopicName { topic } => {
             grpc_status::business_status(
@@ -95,8 +95,11 @@ fn map_topic_raft_error(
         ),
         crate::raft::topic::topic_raft_actor::TopicRaftError::TopicStorageError(
             TopicStorageError::InternalError(message),
-        ) => Status::internal(message),
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        ) => grpc_status::fatal_status(tonic::Code::Internal, message),
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -110,19 +113,21 @@ fn map_session_state_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotLeader {
             leader: None,
         }
         | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: session state raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: session state raft not initialized", action))
         }
-        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotReady(message)
-        | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::ServiceUnavailable(message)
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotReady(message) => {
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
+        }
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::ServiceUnavailable(message)
         | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
@@ -148,7 +153,7 @@ fn map_session_state_raft_error(
         ),
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPCBusiness(err) => {
             grpc_status::business_status(
-                tonic::Code::FailedPrecondition,
+                err.grpc_code(),
                 grpc_status::business_detail(err.code(), err.message(), err.node()),
             )
         }
@@ -156,12 +161,21 @@ fn map_session_state_raft_error(
             status
         }
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::Serialize(message) => {
-            Status::internal(format!("{} serialization failed: {}", action, message))
+            grpc_status::fatal_status(
+                tonic::Code::Internal,
+                format!("{} serialization failed: {}", action, message),
+            )
         }
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::UnexpectedResponseType(message) => {
-            Status::internal(format!("{} returned unexpected response: {}", action, message))
+            grpc_status::fatal_status(
+                tonic::Code::Internal,
+                format!("{} returned unexpected response: {}", action, message),
+            )
         }
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -175,19 +189,22 @@ fn map_session_actor_map_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotLeader {
             leader: None,
         }
         | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: session actor map raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: session actor map raft not initialized", action))
         }
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotReady(message)
-        | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::ServiceUnavailable(message) => {
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotReady(message) => {
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
+        }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::ServiceUnavailable(message)
+        | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
@@ -217,17 +234,31 @@ fn map_session_actor_map_raft_error(
                 "session_actor_map_raft".to_string(),
             ),
         ),
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPC(message) => {
-            if message.contains("transport error") || message.contains("Connection refused") {
-                Status::unavailable(format!("{} failed: {}", action, message))
-            } else {
-                Status::internal(format!("{} failed: {}", action, message))
-            }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCBusiness(err) => {
+            grpc_status::business_status(
+                err.grpc_code(),
+                grpc_status::business_detail(err.code(), err.message(), err.node()),
+            )
+        }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPC(status) => {
+            status
+        }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::Serialize(message) => {
+            grpc_status::fatal_status(
+                tonic::Code::Internal,
+                format!("{} serialization failed: {}", action, message),
+            )
         }
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::UnexpectedResponseType(message) => {
-            Status::internal(format!("{} returned unexpected response: {}", action, message))
+            grpc_status::fatal_status(
+                tonic::Code::Internal,
+                format!("{} returned unexpected response: {}", action, message),
+            )
         }
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -250,7 +281,7 @@ impl ClusterService for ClusterServiceImpl {
             .send(store_offline_message_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to store offline message: {}", e)))?
-            .map_err(|e| Status::internal(format!("Error in storing offline message: {}", e)))?;
+            .map_err(|e| map_session_state_raft_error("store offline message", e))?;
 
         Ok(Response::new(StoreOfflineMessageResponse {}))
     }
@@ -270,7 +301,7 @@ impl ClusterService for ClusterServiceImpl {
             .send(pop_offline_message_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to pop offline message: {}", e)))?
-            .map_err(|e| Status::internal(format!("Error in popping offline message: {}", e)))?;
+            .map_err(|e| map_session_state_raft_error("pop offline message", e))?;
 
         Ok(Response::new(PopOfflineMessageResponse {
             packet_key: res.0,
@@ -350,7 +381,7 @@ impl ClusterService for ClusterServiceImpl {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
         let packet_id = u16::try_from(inner.packet_id)
-            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
+            .map_err(|_| grpc_status::invalid_argument_status("packet_id exceeds MQTT u16 range", "cluster_service"))?;
         let register_inflight_rx_packet_actor =
             session_state_raft_actor::RegisterInflightRxPacket {
                 tenant_id: inner.tenant_id.clone(),
@@ -376,7 +407,7 @@ impl ClusterService for ClusterServiceImpl {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
         let packet_id = u16::try_from(inner.packet_id)
-            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
+            .map_err(|_| grpc_status::invalid_argument_status("packet_id exceeds MQTT u16 range", "cluster_service"))?;
         let register_inflight_tx_packet_actor =
             session_state_raft_actor::RegisterInflightTxPacket {
                 tenant_id: inner.tenant_id.clone(),
@@ -400,7 +431,7 @@ impl ClusterService for ClusterServiceImpl {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
         let packet_id = u16::try_from(inner.packet_id)
-            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
+            .map_err(|_| grpc_status::invalid_argument_status("packet_id exceeds MQTT u16 range", "cluster_service"))?;
         let advance_inflight_state_actor = session_state_raft_actor::AdvanceInflightState {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
@@ -421,7 +452,7 @@ impl ClusterService for ClusterServiceImpl {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
         let packet_id = u16::try_from(inner.packet_id)
-            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
+            .map_err(|_| grpc_status::invalid_argument_status("packet_id exceeds MQTT u16 range", "cluster_service"))?;
         let get_current_inflight_packet_actor =
             session_state_raft_actor::GetCurrentInflightPacket {
                 tenant_id: inner.tenant_id.clone(),
@@ -451,7 +482,7 @@ impl ClusterService for ClusterServiceImpl {
         let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
         let inner = request.into_inner();
         let packet_id = u16::try_from(inner.packet_id)
-            .map_err(|_| Status::invalid_argument("packet_id exceeds MQTT u16 range"))?;
+            .map_err(|_| grpc_status::invalid_argument_status("packet_id exceeds MQTT u16 range", "cluster_service"))?;
         let get_next_inflight_packet_actor = session_state_raft_actor::GetNextInflightPacket {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
@@ -552,7 +583,10 @@ impl ClusterService for ClusterServiceImpl {
             crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
         let inner = request.into_inner();
         let retain_publish_message = serde_json::from_str(&inner.payload).map_err(|e| {
-            Status::invalid_argument(format!("Invalid retain publish message format: {}", e))
+            grpc_status::invalid_argument_status(
+                format!("Invalid retain publish message format: {}", e),
+                "cluster_service",
+            )
         })?;
         let register_retain_publish_message_actor =
             crate::raft::topic::topic_raft_actor::RegisterRetainPublishPacket {
@@ -633,8 +667,9 @@ impl ClusterService for ClusterServiceImpl {
                 node_id: s.node_id,
             },
             None => {
-                return Err(Status::invalid_argument(
+                return Err(grpc_status::invalid_argument_status(
                     "Session version is required for registering session actor map",
+                    "cluster_service",
                 ));
             }
         };
@@ -667,8 +702,9 @@ impl ClusterService for ClusterServiceImpl {
                 node_id: s.node_id,
             },
             None => {
-                return Err(Status::invalid_argument(
+                return Err(grpc_status::invalid_argument_status(
                     "Session version is required for unregistering session actor map",
+                    "cluster_service",
                 ));
             }
         };
@@ -742,7 +778,12 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<crate::protobuf::RoutePacketResponse>, Status> {
         let inner = request.into_inner();
         let packet: MqttPacketV3 = serde_json::from_str(&inner.payload)
-            .map_err(|e| Status::invalid_argument(format!("Invalid packet format: {}", e)))?;
+            .map_err(|e| {
+                grpc_status::invalid_argument_status(
+                    format!("Invalid packet format: {}", e),
+                    "cluster_service",
+                )
+            })?;
 
         let router_actor = if let MqttPacketV3::Publish(ref publish) = packet {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -816,7 +857,10 @@ impl ClusterService for ClusterServiceImpl {
             .map_err(|e| match e {
                 crate::session::session_manager_actor::SessionManagerError::SessionNotExisted(
                     client_id,
-                ) => Status::not_found(format!("Session not existed: {}", client_id)),
+                ) => grpc_status::not_found_status(
+                    format!("Session not existed: {}", client_id),
+                    "session_manager",
+                ),
                 _ => Status::internal(format!("Error in getting session info: {}", e)),
             })?;
 
@@ -846,5 +890,58 @@ impl ClusterService for ClusterServiceImpl {
         Ok(Response::new(crate::protobuf::GetSessionInfoResponse {
             payload: Some(payload),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_session_state_raft_error_preserves_remote_business_code() {
+        let status = map_session_state_raft_error(
+            "op",
+            crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPCBusiness(
+                crate::raft::GRPCBusinessError::new(
+                    tonic::Code::AlreadyExists,
+                    grpc_status::business_detail(
+                        crate::protobuf::ErrorCode::PacketIdentifierAlreadyExists,
+                        "duplicate packet",
+                        "session_state_raft",
+                    ),
+                ),
+            ),
+        );
+        let parsed = grpc_status::decode_status(&status);
+
+        assert_eq!(status.code(), tonic::Code::AlreadyExists);
+        assert_eq!(parsed.error_kind.as_deref(), Some(grpc_status::ERROR_KIND_BUSINESS));
+        assert_eq!(
+            parsed.detail.as_ref().map(|detail| detail.code()),
+            Some(crate::protobuf::ErrorCode::PacketIdentifierAlreadyExists)
+        );
+    }
+
+    #[test]
+    fn map_session_actor_map_raft_error_publishes_leader_node_metadata() {
+        let status = map_session_actor_map_raft_error(
+            "op",
+            crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotLeader {
+                leader: Some(crate::raft::Node {
+                    node_id: Some(7),
+                    rpc_addr: "10.0.0.7:9080".to_string(),
+                    api_addr: String::new(),
+                }),
+            },
+        );
+        let parsed = grpc_status::decode_status(&status);
+
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            parsed.error_kind.as_deref(),
+            Some(grpc_status::ERROR_KIND_LEADER_REDIRECT)
+        );
+        assert_eq!(parsed.leader_node_id, Some(7));
+        assert_eq!(parsed.leader_addr.as_deref(), Some("10.0.0.7:9080"));
     }
 }

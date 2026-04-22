@@ -57,8 +57,8 @@ impl TopicService {
     async fn connect_cluster_client(
         leader_addr: &str,
     ) -> Result<ClusterServiceClient<Channel>, TopicServiceError> {
-        ClusterServiceClient::connect(format!("http://{}", leader_addr))
-            .await
+        crate::rpc::grpc_client::lazy_channel(leader_addr)
+            .map(ClusterServiceClient::new)
             .map_err(|e| TopicServiceError::GRPCConnect(e.to_string()))
     }
 

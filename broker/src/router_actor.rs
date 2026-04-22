@@ -255,8 +255,8 @@ impl RouterActor {
         dest_addr: &str,
         request: crate::protobuf::RoutePacketRequest,
     ) -> Result<(), RouterActorError> {
-        let mut cluster_client = ClusterServiceClient::connect(format!("http://{}", dest_addr))
-            .await
+        let mut cluster_client = crate::rpc::grpc_client::lazy_channel(dest_addr)
+            .map(ClusterServiceClient::new)
             .map_err(|e| RouterActorError::GRPC(e.to_string()))?;
         cluster_client
             .route_packet(Request::new(request))

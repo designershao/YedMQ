@@ -28,7 +28,7 @@ use crate::{
             raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig,
             SessionActorMapRaft,
         },
-        Node, NodeId,
+        GRPCBusinessError, Node, NodeId,
     },
     rpc::grpc_status,
     session::session_actor_map_storage::{SessionActorMapStorage, SessionClock, SessionVersion},
@@ -69,7 +69,16 @@ pub enum SessionActorMapRaftError {
     RaftFatalError(#[from] Fatal<NodeId>),
 
     #[error("gRPC error: {0}")]
-    GRPC(String),
+    GRPC(#[from] tonic::Status),
+
+    #[error("gRPC connect error: {0}")]
+    GRPCConnect(String),
+
+    #[error("gRPC business error: {0}")]
+    GRPCBusiness(GRPCBusinessError),
+
+    #[error("Serialization error: {0}")]
+    Serialize(String),
 
     #[error("Actor not initialized")]
     NotInitialized,
@@ -129,18 +138,26 @@ impl SessionActorMapRaftActor {
         })
     }
 
-    fn leader_node_from_rpc_addr(rpc_addr: String) -> Node {
-        Node {
+    fn leader_node_from_status(parsed: &grpc_status::ParsedStatus) -> Option<Node> {
+        parsed.leader_addr.clone().map(|rpc_addr| Node {
+            node_id: parsed.leader_node_id,
             rpc_addr,
             api_addr: String::new(),
-        }
+        })
     }
 
-    fn map_remote_business_error(detail: crate::protobuf::ErrorDetail) -> SessionActorMapRaftError {
+    fn map_remote_business_error(
+        grpc_code: tonic::Code,
+        detail: crate::protobuf::ErrorDetail,
+    ) -> SessionActorMapRaftError {
         match detail.code() {
             crate::protobuf::ErrorCode::SessionVersionRejected => {
                 Self::parse_remote_error(&detail.message)
-                    .unwrap_or_else(|| SessionActorMapRaftError::GRPC(detail.message))
+                    .unwrap_or_else(|| {
+                        SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
+                            grpc_code, detail,
+                        ))
+                    })
             }
             crate::protobuf::ErrorCode::SessionTenantNotFound => {
                 let tenant_id = detail
@@ -150,7 +167,7 @@ impl SessionActorMapRaftActor {
                     .to_string();
                 SessionActorMapRaftError::TenantNotFound { tenant_id }
             }
-            _ => SessionActorMapRaftError::GRPC(detail.message),
+            _ => SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(grpc_code, detail)),
         }
     }
 
@@ -159,14 +176,22 @@ impl SessionActorMapRaftActor {
 
         if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_LEADER_REDIRECT) {
             return SessionActorMapRaftError::NotLeader {
-                leader: parsed.leader_addr.map(Self::leader_node_from_rpc_addr),
+                leader: Self::leader_node_from_status(&parsed),
             };
         }
 
         if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_BUSINESS) {
             if let Some(detail) = parsed.detail {
-                return Self::map_remote_business_error(detail);
+                return Self::map_remote_business_error(status.code(), detail);
             }
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_NO_LEADER) {
+            return SessionActorMapRaftError::NoLeaderAvailable;
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_NOT_READY) {
+            return SessionActorMapRaftError::NotReady(status.message().to_string());
         }
 
         let message = status.to_string();
@@ -175,7 +200,7 @@ impl SessionActorMapRaftActor {
         {
             SessionActorMapRaftError::ServiceUnavailable(status.message().to_string())
         } else {
-            SessionActorMapRaftError::GRPC(message)
+            SessionActorMapRaftError::GRPC(status)
         }
     }
 
@@ -235,6 +260,7 @@ impl SessionActorMapRaftActor {
             cluster_nodes.insert(
                 item.id,
                 Node {
+                    node_id: Some(item.id),
                     rpc_addr: item.rpc_address.to_string(),
                     api_addr: item.api_address.to_string(),
                 },
@@ -329,16 +355,16 @@ impl SessionActorMapRaftActor {
         leader_addr: String,
         msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
-        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
-            .await
+        let mut client = crate::rpc::grpc_client::lazy_channel(&leader_addr)
+            .map(RaftServiceClient::new)
             .map_err(|e| {
-                Self::log_remote_leader_error("Failed to connect to leader", &e);
-                SessionActorMapRaftError::GRPC(e.to_string())
+                Self::log_remote_leader_error("Failed to create leader client", &e);
+                SessionActorMapRaftError::GRPCConnect(e.to_string())
             })?;
 
         let data = serde_json::to_string(&msg).map_err(|e| {
             log::error!("Failed to serialize raft write request: {}", e);
-            SessionActorMapRaftError::GRPC(format!("serialize raft request failed: {e}"))
+            SessionActorMapRaftError::Serialize(format!("serialize raft request failed: {e}"))
         })?;
 
         let request = WriteRequest {
@@ -858,17 +884,16 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                                         leader
                                     );
                                     if let Some(leader_node) = leader {
-                                        let mut client = ClusterServiceClient::connect(format!(
-                                            "http://{}",
-                                            leader_node.rpc_addr
-                                        ))
-                                        .await
+                                        let mut client = crate::rpc::grpc_client::lazy_channel(
+                                            &leader_node.rpc_addr,
+                                        )
+                                        .map(ClusterServiceClient::new)
                                         .map_err(|e| {
                                             Self::log_remote_leader_error(
-                                                "Failed to connect to leader",
+                                                "Failed to create leader client",
                                                 &e,
                                             );
-                                            SessionActorMapRaftError::GRPC(e.to_string())
+                                            SessionActorMapRaftError::GRPCConnect(e.to_string())
                                         })?;
                                         let response = client
                                             .get_session_actor_map(
@@ -1075,6 +1100,7 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
                         cluster_nodes.insert(
                             item.id,
                             Node {
+                                node_id: Some(item.id),
                                 rpc_addr: item.rpc_address.to_string(),
                                 api_addr: item.api_address.to_string(),
                             },
@@ -1510,6 +1536,59 @@ impl Handler<GetClusterNodes> for SessionActorMapRaftActor {
             ActorState::Stopped => Err(SessionActorMapRaftError::NotReady(
                 "Actor is stopped".to_string(),
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_remote_status_reads_leader_redirect_metadata() {
+        let status = grpc_status::leader_redirect_status("redirect", "10.0.0.4:9080", Some(4));
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::NotLeader {
+                leader: Some(leader),
+            } => {
+                assert_eq!(leader.node_id, Some(4));
+                assert_eq!(leader.rpc_addr, "10.0.0.4:9080");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_remote_status_distinguishes_no_leader_and_not_ready() {
+        assert!(matches!(
+            SessionActorMapRaftActor::map_remote_status(grpc_status::no_leader_status("no leader")),
+            SessionActorMapRaftError::NoLeaderAvailable
+        ));
+
+        assert!(matches!(
+            SessionActorMapRaftActor::map_remote_status(grpc_status::not_ready_status("not ready")),
+            SessionActorMapRaftError::NotReady(message) if message == "not ready"
+        ));
+    }
+
+    #[test]
+    fn map_remote_status_preserves_business_grpc_code() {
+        let status = grpc_status::business_status(
+            tonic::Code::InvalidArgument,
+            grpc_status::business_detail(
+                crate::protobuf::ErrorCode::InvalidArgument,
+                "bad request",
+                "session_actor_map_raft",
+            ),
+        );
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::GRPCBusiness(err) => {
+                assert_eq!(err.grpc_code(), tonic::Code::InvalidArgument);
+                assert_eq!(err.code(), crate::protobuf::ErrorCode::InvalidArgument);
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }

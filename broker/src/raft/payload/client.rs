@@ -47,8 +47,8 @@ impl PayloadClient {
         addr: &str,
         key: PayloadKey,
     ) -> Result<(), PayloadClientError> {
-        let mut client = PayloadServiceClient::connect(format!("http://{}", addr))
-            .await
+        let mut client = crate::rpc::grpc_client::lazy_channel(addr)
+            .map(PayloadServiceClient::new)
             .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
         let resp = client
             .fetch_payload(FetchRequest { key: key.clone() })
@@ -80,8 +80,8 @@ impl PayloadClient {
             .ok_or_else(|| {
                 PayloadClientError::PayloadError(format!("Payload not found locally: {}", key))
             })?;
-        let mut client = PayloadServiceClient::connect(format!("http://{}", addr))
-            .await
+        let mut client = crate::rpc::grpc_client::lazy_channel(addr)
+            .map(PayloadServiceClient::new)
             .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
         let resp = client
             .replicate_payload(crate::protobuf::raft_payload::ReplicateRequest {
@@ -104,7 +104,7 @@ impl PayloadClient {
         addr: &str,
         manifest: Vec<(PayloadKey, u64, u32)>,
     ) -> anyhow::Result<()> {
-        let mut client = PayloadServiceClient::connect(format!("http://{}", addr)).await?;
+        let mut client = PayloadServiceClient::new(crate::rpc::grpc_client::lazy_channel(addr)?);
 
         let proto_manifest = manifest
             .into_iter()

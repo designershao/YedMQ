@@ -10,6 +10,8 @@ pub type NodeId = u64;
 
 #[derive(Clone, Debug)]
 pub struct GRPCBusinessError {
+    grpc_code: tonic::Code,
+
     code: crate::protobuf::ErrorCode,
 
     message: String,
@@ -18,6 +20,19 @@ pub struct GRPCBusinessError {
 }
 
 impl GRPCBusinessError {
+    pub fn new(grpc_code: tonic::Code, value: crate::protobuf::ErrorDetail) -> Self {
+        Self {
+            grpc_code,
+            code: value.code(),
+            message: value.message,
+            node: value.node,
+        }
+    }
+
+    pub fn grpc_code(&self) -> tonic::Code {
+        self.grpc_code
+    }
+
     pub fn code(&self) -> crate::protobuf::ErrorCode {
         self.code
     }
@@ -43,11 +58,7 @@ impl std::fmt::Display for GRPCBusinessError {
 
 impl From<crate::protobuf::ErrorDetail> for GRPCBusinessError {
     fn from(value: crate::protobuf::ErrorDetail) -> Self {
-        Self {
-            code: value.code(),
-            message: value.message,
-            node: value.node,
-        }
+        Self::new(tonic::Code::FailedPrecondition, value)
     }
 }
 
@@ -59,6 +70,8 @@ pub trait NodeTrait {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Node {
+    #[serde(default)]
+    pub node_id: Option<NodeId>,
     pub rpc_addr: String,
     pub api_addr: String,
 }
@@ -77,8 +90,8 @@ impl Display for Node {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Node {{ rpc_addr: {}, api_addr: {} }}",
-            self.rpc_addr, self.api_addr
+            "Node {{ node_id: {:?}, rpc_addr: {}, api_addr: {} }}",
+            self.node_id, self.rpc_addr, self.api_addr
         )
     }
 }

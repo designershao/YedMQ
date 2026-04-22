@@ -24,17 +24,17 @@ fn map_topic_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotLeader { leader: None }
         | crate::raft::topic::topic_raft_actor::TopicRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: topic raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: topic raft not initialized", action))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::NotReady(message) => {
-            Status::unavailable(format!("{} failed: {}", action, message))
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
         }
         crate::raft::topic::topic_raft_actor::TopicRaftError::InvalidTopicName { topic } => {
             grpc_status::business_status(
@@ -46,7 +46,10 @@ fn map_topic_raft_error(
                 ),
             )
         }
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -60,19 +63,22 @@ fn map_session_actor_map_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotLeader {
             leader: None,
         }
         | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: session actor map raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: session actor map raft not initialized", action))
         }
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotReady(message)
-        | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::ServiceUnavailable(message) => {
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::NotReady(message) => {
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
+        }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::ServiceUnavailable(message)
+        | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
@@ -102,14 +108,22 @@ fn map_session_actor_map_raft_error(
                 "session_actor_map_raft".to_string(),
             ),
         ),
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPC(message) => {
-            if message.contains("transport error") || message.contains("Connection refused") {
-                Status::unavailable(format!("{} failed: {}", action, message))
-            } else {
-                Status::internal(format!("{} failed: {}", action, message))
-            }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCBusiness(err) => {
+            grpc_status::business_status(
+                err.grpc_code(),
+                grpc_status::business_detail(err.code(), err.message(), err.node()),
+            )
         }
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPC(status) => {
+            status
+        }
+        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::Serialize(message) => {
+            Status::internal(format!("{} serialization failed: {}", action, message))
+        }
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -123,19 +137,21 @@ fn map_session_state_raft_error(
         } => grpc_status::leader_redirect_status(
             format!("{} requires leader handling at {}", action, leader.rpc_addr),
             leader.rpc_addr,
-            None,
+            leader.node_id,
         ),
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotLeader {
             leader: None,
         }
         | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NoLeaderAvailable => {
-            Status::unavailable(format!("{} failed: no leader available", action))
+            grpc_status::no_leader_status(format!("{} failed: no leader available", action))
         }
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotInitialized => {
-            Status::unavailable(format!("{} failed: session state raft not initialized", action))
+            grpc_status::not_ready_status(format!("{} failed: session state raft not initialized", action))
         }
-        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotReady(message)
-        | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::ServiceUnavailable(message)
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotReady(message) => {
+            grpc_status::not_ready_status(format!("{} failed: {}", action, message))
+        }
+        crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::ServiceUnavailable(message)
         | crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
@@ -161,14 +177,17 @@ fn map_session_state_raft_error(
         ),
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPCBusiness(err) => {
             grpc_status::business_status(
-                tonic::Code::FailedPrecondition,
+                err.grpc_code(),
                 grpc_status::business_detail(err.code(), err.message(), err.node()),
             )
         }
         crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::GRPC(status) => {
             status
         }
-        other => Status::internal(format!("{} failed: {}", action, other)),
+        other => grpc_status::fatal_status(
+            tonic::Code::Internal,
+            format!("{} failed: {}", action, other),
+        ),
     }
 }
 
@@ -185,7 +204,12 @@ impl RaftService for RustServiceImpl {
                 let topic_raft_actor_addr =
                     crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
                 let command: crate::raft::topic::types::Request = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let res = topic_raft_actor_addr
                     .send(crate::raft::topic::topic_raft_actor::DirectWriteToRaft { command })
                     .await;
@@ -207,7 +231,10 @@ impl RaftService for RustServiceImpl {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
                 let command: crate::raft::session_actor_map::types::SessionActorMapRequest =
                     serde_json::from_str(&inner.data).map_err(|e| {
-                        Status::invalid_argument(format!("Invalid JSON data: {}", e))
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
                     })?;
                 let res = session_actor_map_raft_actor_addr
                     .send(crate::raft::session_actor_map::session_actor_map_raft_actor::DirectWriteToRaft {
@@ -236,7 +263,10 @@ impl RaftService for RustServiceImpl {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
                 let command: crate::raft::session_state::types::SessionStateRequest =
                     serde_json::from_str(&inner.data).map_err(|e| {
-                        Status::invalid_argument(format!("Invalid JSON data: {}", e))
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
                     })?;
                 let res = session_state_raft_actor_addr
                     .send(
@@ -272,7 +302,12 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let append_entries_message = crate::raft::session_actor_map::session_actor_map_raft_actor::AppendEntriesRequestMessage {
                     payload
                 };
@@ -302,7 +337,12 @@ impl RaftService for RustServiceImpl {
                 let topic_raft_actor_addr =
                     crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let append_entries_message =
                     crate::raft::topic::topic_raft_actor::AppendEntriesRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(append_entries_message).await;
@@ -326,7 +366,12 @@ impl RaftService for RustServiceImpl {
                 let payload: openraft::raft::AppendEntriesRequest<
                     crate::raft::session_state::types::SessionStateTypeConfig,
                 > = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
 
                 // Intercept and ensure payloads are present before passing to RaftCore
                 // This resolves the race condition between side-channel replication and log replication.
@@ -358,7 +403,7 @@ impl RaftService for RustServiceImpl {
                             if !found {
                                 let msg = format!("Payload missing for key: {} after retry (AppendEntries). RPC aborted.", k);
                                 error!("{}", msg);
-                                return Err(Status::failed_precondition(msg));
+                                return Err(grpc_status::not_ready_status(msg));
                             } else {
                                 // log::debug!("Interceptor payload check PASSED for key: {}", k);
                             }
@@ -397,7 +442,12 @@ impl RaftService for RustServiceImpl {
                 let topic_raft_actor_addr =
                     crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let vote_message =
                     crate::raft::topic::topic_raft_actor::VoteRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(vote_message).await;
@@ -418,7 +468,12 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let vote_message = crate::raft::session_actor_map::session_actor_map_raft_actor::VoteRequestMessage {
                     payload
                 };
@@ -442,7 +497,12 @@ impl RaftService for RustServiceImpl {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let vote_message =
                     crate::raft::session_state::session_state_raft_actor::VoteRequestMessage {
                         payload,
@@ -476,7 +536,12 @@ impl RaftService for RustServiceImpl {
                 let topic_raft_actor_addr =
                     crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let install_snapshot_message =
                     crate::raft::topic::topic_raft_actor::InstallSnapshotRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(install_snapshot_message).await;
@@ -497,7 +562,12 @@ impl RaftService for RustServiceImpl {
             crate::protobuf::RaftType::SessionActorMap => {
                 let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let install_snapshot_message = crate::raft::session_actor_map::session_actor_map_raft_actor::InstallSnapshotRequestMessage {
                     payload
                 };
@@ -523,7 +593,12 @@ impl RaftService for RustServiceImpl {
                 let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
 
                 let payload = serde_json::from_str(&inner.data)
-                    .map_err(|e| Status::invalid_argument(format!("Invalid JSON data: {}", e)))?;
+                    .map_err(|e| {
+                        grpc_status::invalid_argument_status(
+                            format!("Invalid JSON data: {}", e),
+                            "raft_service",
+                        )
+                    })?;
                 let install_snapshot_message = crate::raft::session_state::session_state_raft_actor::InstallSnapshotRequestMessage {
                     payload
                 };

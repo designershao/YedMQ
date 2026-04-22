@@ -50,15 +50,10 @@ impl NetworkConnection {
     async fn c<E: std::error::Error + DeserializeOwned>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        let addr = format!("http://{}", self.node.rpc_addr);
-        let endpoint = addr
-            .parse()
+        let channel = crate::rpc::grpc_client::lazy_channel(&self.node.rpc_addr)
             .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
-        match Channel::builder(endpoint).connect().await {
-            Ok(channel) => Ok(RaftServiceClient::new(channel)),
-            Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
-        }
+        Ok(RaftServiceClient::new(channel))
     }
 }
 
@@ -127,12 +122,13 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         // 3. Synchronous Batching: Payload Push First -> Then Log Append
         // This prevents the "Payload missing" race condition at the Follower.
         if !batch_entries.is_empty() {
-            let addr = format!("http://{}", self.node.rpc_addr);
             // Connect and Replicate
             let payload_result = async {
-                let mut client = PayloadServiceClient::connect(addr)
-                    .await
-                    .map_err(|e| NetworkError::new(&e))?;
+                let mut client =
+                    PayloadServiceClient::new(crate::rpc::grpc_client::lazy_channel(
+                        &self.node.rpc_addr,
+                    )
+                    .map_err(|e| NetworkError::new(&e))?);
 
                 log::info!(
                     "Sending ReplicateBatchRequest with {} entries to {}",

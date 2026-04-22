@@ -135,6 +135,7 @@ impl TopicRaftActor {
             cluster_nodes.insert(
                 item.id,
                 Node {
+                    node_id: Some(item.id),
                     rpc_addr: item.rpc_address.to_string(),
                     api_addr: item.api_address.to_string(),
                 },
@@ -1166,6 +1167,7 @@ impl Handler<InitRaftClusterMessage> for TopicRaftActor {
                         cluster_nodes.insert(
                             item.id,
                             Node {
+                                node_id: Some(item.id),
                                 rpc_addr: item.rpc_address.to_string(),
                                 api_addr: item.api_address.to_string(),
                             },
