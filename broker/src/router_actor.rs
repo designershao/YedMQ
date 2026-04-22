@@ -10,14 +10,13 @@ use yedmq_mqtt::{v3::publish::PublishPacket, MqttPacketV3};
 use crate::metric::Metric;
 use crate::node_resolver::NodeResolver;
 use crate::raft::payload::PayloadStore;
-use crate::raft::session_actor_map::session_actor_map_raft_actor::{
-    GetSessionActorMapLinearizable, SessionActorMapRaftActor,
-};
 use crate::route_store::JsonRocksDBStore;
 use crate::session::session_actor::{AcceptRoutedPublish, SessionActorMessage};
+use crate::session::session_actor_map_service::SessionActorMapService;
 use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionActorMapStorage};
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
+use crate::topic::topic_service::TopicService;
 use crate::topic::topic_storage::TopicStorage;
 use crate::{
     protobuf::cluster_service_client::ClusterServiceClient,
@@ -46,6 +45,9 @@ pub enum RouterActorError {
 
     #[error("get subscribers error: {0}")]
     GetSubscribersError(#[from] crate::topic::TopicStorageError),
+
+    #[error("topic service error: {0}")]
+    TopicServiceError(String),
 
     #[error("serialization error: {0}")]
     SerializationError(String),
@@ -358,18 +360,11 @@ impl RouterActor {
             };
 
             if subscriptions.is_empty() {
-                let subscriptions_res = context
-                    .topic_raft_actor
-                    .send(
-                        crate::raft::topic::topic_raft_actor::GetSubscriptionsEnsureLinearizable {
-                            tenant_id: tenant_id.to_string(),
-                            topic: topic.clone(),
-                        },
-                    )
-                    .await?;
-                subscriptions = subscriptions_res
-                    .map_err(|e| RouterActorError::TopicRaftError(Box::new(e)))?
-                    .subscriptions;
+                let subscriptions_res = TopicService::new(context.topic_raft_actor.clone())
+                    .get_subscriptions_linearizable(tenant_id.to_string(), topic.clone())
+                    .await
+                    .map_err(|e| RouterActorError::TopicServiceError(e.to_string()))?;
+                subscriptions = subscriptions_res.subscriptions;
             }
 
             if subscriptions.is_empty() {
@@ -393,14 +388,14 @@ impl RouterActor {
                 let session_actor_map = match session_actor_map {
                     Some(session_actor_map) => Some(session_actor_map),
                     None => {
-                        let remote = SessionActorMapRaftActor::from_registry()
-                            .send(GetSessionActorMapLinearizable {
-                                tenant_id: tenant_id.to_string(),
-                                client_id: item.client_identifier.clone(),
-                            })
-                            .await?;
+                        let remote = SessionActorMapService::from_registry()
+                            .get_session_actor_map_linearizable(
+                                tenant_id.to_string(),
+                                item.client_identifier.clone(),
+                            )
+                            .await
+                            .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?;
                         remote
-                            .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?
                     }
                 };
 

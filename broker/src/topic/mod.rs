@@ -1,3 +1,4 @@
+pub mod topic_service;
 pub mod topic_storage;
 
 #[derive(Debug, thiserror::Error, Clone)]

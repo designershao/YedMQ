@@ -15,9 +15,8 @@ use openraft::{
 use parking_lot::RwLock;
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::{protobuf::cluster_service_client::ClusterServiceClient, raft::GRPCBusinessError};
 use crate::{
-    protobuf::{raft_service_client::RaftServiceClient, RaftType, WriteRequest},
+    raft::GRPCBusinessError,
     raft::{
         topic::{raft_network_impl::Network, store::new_storage, types::TopicRaft},
         Node, NodeId,
@@ -207,49 +206,13 @@ impl TopicRaftActor {
         raft: &TopicRaft,
         request: crate::raft::topic::types::Request,
     ) -> Result<(), TopicRaftError> {
-        match Self::try_local_write(raft, request.clone()).await {
+        match Self::try_local_write(raft, request).await {
             Ok(_) => Ok(()),
-            Err(TopicRaftError::NotLeader { leader }) => {
-                log::debug!("Not leader, forwarding request to leader: {:?}", leader);
-                if let Some(leader_node) = leader {
-                    Self::forward_to_leader(leader_node.rpc_addr, request).await
-                } else {
-                    Err(TopicRaftError::NoLeaderAvailable)
-                }
-            }
             Err(e) => {
                 log::error!("Failed to handle raft write: {}", e);
                 Err(e)
             }
         }
-    }
-
-    async fn forward_to_leader(
-        current_leader_rpc_addr: String,
-        msg: crate::raft::topic::types::Request,
-    ) -> Result<(), TopicRaftError> {
-        Self::send_to_remote_actor(current_leader_rpc_addr, msg).await
-    }
-
-    async fn send_to_remote_actor(
-        leader_addr: String,
-        msg: crate::raft::topic::types::Request,
-    ) -> Result<(), TopicRaftError> {
-        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
-            .await
-            .map_err(|e| TopicRaftError::GRPCConnect(e.to_string()))?;
-
-        let data =
-            serde_json::to_string(&msg).map_err(|e| TopicRaftError::Serialize(e.to_string()))?;
-
-        let request = WriteRequest {
-            data,
-            raft_type: RaftType::Topic.into(),
-        };
-
-        client.write(request).await?;
-
-        Ok(())
     }
 }
 
@@ -713,39 +676,6 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                         Err(TopicRaftError::NotInitialized)
                                     }
                                 }
-                                Err(TopicRaftError::NotLeader { leader }) => {
-                                    if let Some(leader) = leader {
-                                        let mut client = ClusterServiceClient::connect(format!(
-                                            "http://{}",
-                                            leader.rpc_addr.clone()
-                                        ))
-                                        .await
-                                        .map_err(|e| TopicRaftError::GRPCConnect(e.to_string()))?;
-                                        client
-                                            .get_subscribers_by_topic(
-                                                crate::protobuf::GetSubscribersByTopicRequest {
-                                                    tenant_id: msg.tenant_id,
-                                                    topic: msg.topic,
-                                                },
-                                            )
-                                            .await
-                                            .map_err(|e| TopicRaftError::GRPC(e))
-                                            .map(|response| {
-                                                let subscriptions = response
-                                                    .into_inner()
-                                                    .payload
-                                                    .into_iter()
-                                                    .map(|x| SubscriptionInfo {
-                                                        client_identifier: x.client_id,
-                                                        qos: x.qos as u8,
-                                                    })
-                                                    .collect();
-                                                GetSubscriptionsResponse { subscriptions }
-                                            })
-                                    } else {
-                                        Err(TopicRaftError::NoLeaderAvailable)
-                                    }
-                                }
                                 Err(e) => {
                                     log::error!("Failed to ensure linearizable read: {}", e);
                                     Err(e)
@@ -866,60 +796,6 @@ impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
                                         Ok(packets)
                                     } else {
                                         Err(TopicRaftError::NotInitialized)
-                                    }
-                                }
-                                Err(TopicRaftError::NotLeader { leader }) => {
-                                    if let Some(leader) = leader {
-                                        let mut client = ClusterServiceClient::connect(format!(
-                                            "http://{}",
-                                            leader.rpc_addr.clone()
-                                        ))
-                                        .await
-                                        .map_err(|e| TopicRaftError::GRPCConnect(e.to_string()))?;
-                                        let response = client
-                                            .get_retain_publish_message(
-                                                crate::protobuf::GetRetainPublishMessageRequest {
-                                                    tenant_id: msg.tenant_id,
-                                                    topic: msg.topic,
-                                                },
-                                            )
-                                            .await?;
-
-                                        let inner = response.into_inner();
-                                        if inner.success {
-                                            if let Some(payload) = inner.payload {
-                                                // Deserialize payload to Vec<Arc<MqttPacketV3>>
-                                                let packets: Vec<Arc<MqttPacketV3>> =
-                                                    serde_json::from_str(&payload).map_err(
-                                                        |e| {
-                                                            TopicRaftError::Serialize(format!(
-                                                                "Failed to deserialize payload: {}",
-                                                                e
-                                                            ))
-                                                        },
-                                                    )?;
-                                                Ok(packets)
-                                            } else {
-                                                Ok(vec![])
-                                            }
-                                        } else {
-                                            if let Some(err_inner) = inner.error {
-                                                let bussiness_err =
-                                                    GRPCBusinessError::from(err_inner);
-                                                Err(TopicRaftError::GRPCBusiness(bussiness_err))
-                                            } else {
-                                                Err(TopicRaftError::GRPCBusiness(
-                                                    GRPCBusinessError {
-                                                        code: crate::protobuf::ErrorCode::Unknown,
-                                                        message: "Missing error payload"
-                                                            .to_string(),
-                                                        node: "UNKNOW".to_string(),
-                                                    },
-                                                ))
-                                            }
-                                        }
-                                    } else {
-                                        Err(TopicRaftError::NoLeaderAvailable)
                                     }
                                 }
                                 Err(e) => {

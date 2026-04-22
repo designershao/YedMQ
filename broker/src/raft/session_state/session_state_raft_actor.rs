@@ -33,6 +33,7 @@ use crate::{
         },
         GRPCBusinessError, Node, NodeId,
     },
+    rpc::grpc_status,
     session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError},
 };
 
@@ -165,6 +166,48 @@ impl SystemService for SessionStateRaftActor {
 impl Supervised for SessionStateRaftActor {}
 
 impl SessionStateRaftActor {
+    fn leader_node_from_rpc_addr(rpc_addr: String) -> Node {
+        Node {
+            rpc_addr,
+            api_addr: String::new(),
+        }
+    }
+
+    fn map_remote_business_error(detail: crate::protobuf::ErrorDetail) -> SessionStateRaftError {
+        match detail.code() {
+            crate::protobuf::ErrorCode::SessionStateNotFound => {
+                SessionStateRaftError::SessionStateNotExisted(detail.message)
+            }
+            crate::protobuf::ErrorCode::PacketIdentifierAlreadyExists => {
+                SessionStateRaftError::InflightError(InflightError::PacketIdentifierHasExisted)
+            }
+            _ => SessionStateRaftError::GRPCBusiness(GRPCBusinessError::from(detail)),
+        }
+    }
+
+    fn map_remote_status(status: tonic::Status) -> SessionStateRaftError {
+        let parsed = grpc_status::decode_status(&status);
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_LEADER_REDIRECT) {
+            return SessionStateRaftError::NotLeader {
+                leader: parsed.leader_addr.map(Self::leader_node_from_rpc_addr),
+            };
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_BUSINESS) {
+            if let Some(detail) = parsed.detail {
+                return Self::map_remote_business_error(detail);
+            }
+        }
+
+        match status.code() {
+            tonic::Code::Unavailable => {
+                SessionStateRaftError::ServiceUnavailable(status.message().to_string())
+            }
+            _ => SessionStateRaftError::GRPC(status),
+        }
+    }
+
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
         payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
@@ -371,24 +414,14 @@ impl SessionStateRaftActor {
             raft_type: RaftType::SessionState.into(),
         };
 
-        let res = client.write(request).await?;
+        let res = client
+            .write(request)
+            .await
+            .map_err(Self::map_remote_status)?;
 
         let inner_res = res.into_inner();
-        if inner_res.success {
-            let res = inner_res.data;
-            serde_json::from_str(&res).map_err(|e| SessionStateRaftError::Serialize(e.to_string()))
-        } else {
-            if let Some(err_inner) = inner_res.error {
-                let bussiness_err = GRPCBusinessError::from(err_inner);
-                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
-            } else {
-                Err(SessionStateRaftError::GRPCBusiness(GRPCBusinessError {
-                    code: crate::protobuf::ErrorCode::Unknown,
-                    message: "Missing error payload".to_string(),
-                    node: "UNKNOW".to_string(),
-                }))
-            }
-        }
+        serde_json::from_str(&inner_res.data)
+            .map_err(|e| SessionStateRaftError::Serialize(e.to_string()))
     }
 
     fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
@@ -769,8 +802,10 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                         if let Some(raft_instance) = raft.get() {
                             match Self::try_local_linearizable_read(raft_instance).await {
                                 Ok(_) => {
-                                    if let Some(session_state_storage) = session_state_storage.get() {
-                                        let session_state_storage = session_state_storage.read().await;
+                                    if let Some(session_state_storage) = session_state_storage.get()
+                                    {
+                                        let session_state_storage =
+                                            session_state_storage.read().await;
                                         let session_state = session_state_storage
                                             .get_session_state(&msg.tenant_id, &msg.client_id)
                                             .await;
@@ -784,60 +819,55 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
                                     }
                                 }
                                 Err(SessionStateRaftError::NotLeader { leader }) => {
-                                    log::debug!("Not leader, forwarding request to leader: {:?}", leader);
+                                    log::debug!(
+                                        "Not leader, forwarding request to leader: {:?}",
+                                        leader
+                                    );
                                     if let Some(leader_node) = leader {
-                                        let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr.clone())).await.map_err(|e| SessionStateRaftError::GRPCConnect(e.to_string()))?;
+                                        let mut client = ClusterServiceClient::connect(format!(
+                                            "http://{}",
+                                            leader_node.rpc_addr.clone()
+                                        ))
+                                        .await
+                                        .map_err(|e| {
+                                            SessionStateRaftError::GRPCConnect(e.to_string())
+                                        })?;
                                         let response = client
-                                            .get_session_state(crate::protobuf::GetSessionStateRequest {
-                                                tenant_id: msg.tenant_id,
-                                                client_id: msg.client_id,
-                                            })
+                                            .get_session_state(
+                                                crate::protobuf::GetSessionStateRequest {
+                                                    tenant_id: msg.tenant_id,
+                                                    client_id: msg.client_id,
+                                                },
+                                            )
                                             .await
-                                            .map_err(|e| {
-                                                SessionStateRaftError::GRPC(e)
-                                            })?;
+                                            .map_err(Self::map_remote_status)?;
                                         let inner = response.into_inner();
-                                        if inner.success {
-                                            if let Some(payload) = inner.payload {
-                                                match serde_json::from_str(&payload) {
-                                                    Ok(Some(session_state)) => Ok(Some(session_state)),
-                                                    Ok(None) => Ok(None),
-                                                    Err(e) => {
-                                                        log::error!("Failed to deserialize session state: {}", e);
-                                                        Ok(None)
-                                                    }
+                                        if let Some(payload) = inner.payload {
+                                            match serde_json::from_str(&payload) {
+                                                Ok(Some(session_state)) => Ok(Some(session_state)),
+                                                Ok(None) => Ok(None),
+                                                Err(e) => {
+                                                    log::error!(
+                                                        "Failed to deserialize session state: {}",
+                                                        e
+                                                    );
+                                                    Ok(None)
                                                 }
-                                            } else {
-                                                Ok(None)
                                             }
                                         } else {
-                                            if let Some(err_inner) = inner.error {
-                                                let bussiness_err =
-                                                    GRPCBusinessError::from(err_inner);
-                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
-                                            } else {
-                                                Err(SessionStateRaftError::GRPCBusiness(
-                                                    GRPCBusinessError {
-                                                        code: crate::protobuf::ErrorCode::Unknown,
-                                                        message: "Missing error payload"
-                                                            .to_string(),
-                                                        node: "UNKNOW".to_string(),
-                                                    },
-                                                ))
-                                            }
+                                            Ok(None)
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
                                     }
                                 }
-                                Err(e) => {
-                                    Err(e)
-                                }
+                                Err(e) => Err(e),
                             }
                         } else {
                             Err(SessionStateRaftError::NotInitialized)
                         }
-                    }.into_actor(self)
+                    }
+                    .into_actor(self),
                 )
             }
             ActorState::Failed(e) => {
@@ -1662,35 +1692,18 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                 client_id: msg.client_id,
                                                 packet_id: u32::from(msg.packet_id),
                                             }
-                                        ).await?;
+                                        ).await.map_err(Self::map_remote_status)?;
                                         let inner = response.into_inner();
-                                        if inner.success {
-                                            if let Some(packet) = inner.packet {
-                                                let packet = serde_json::from_str(&packet).map_err(|e| {
-                                                    SessionStateRaftError::Serialize(format!(
-                                                        "deserialize current inflight packet failed: {}",
-                                                        e
-                                                    ))
-                                                })?;
-                                                Ok(Some(packet))
-                                            } else {
-                                                Ok(None)
-                                            }
-                                        } else {
-                                            if let Some(err_inner) = inner.error {
-                                                let bussiness_err =
-                                                    GRPCBusinessError::from(err_inner);
-                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
-                                            } else {
-                                                Err(SessionStateRaftError::GRPCBusiness(
-                                                    GRPCBusinessError {
-                                                        code: crate::protobuf::ErrorCode::Unknown,
-                                                        message: "Missing error payload"
-                                                            .to_string(),
-                                                        node: "UNKNOW".to_string(),
-                                                    },
+                                        if let Some(packet) = inner.packet {
+                                            let packet = serde_json::from_str(&packet).map_err(|e| {
+                                                SessionStateRaftError::Serialize(format!(
+                                                    "deserialize current inflight packet failed: {}",
+                                                    e
                                                 ))
-                                            }
+                                            })?;
+                                            Ok(Some(packet))
+                                        } else {
+                                            Ok(None)
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)
@@ -1948,36 +1961,22 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                             packet_id: u32::from(msg.packet_id),
                                         };
 
-                                        let response = client.get_next_inflight_packet(request).await?;
+                                        let response = client
+                                            .get_next_inflight_packet(request)
+                                            .await
+                                            .map_err(Self::map_remote_status)?;
                                         let inner = response.into_inner();
-                                        if inner.success {
-                                            if let Some(packet) = inner.packet {
-                                                let packet = serde_json::from_str(&packet).map_err(|e| {
-                                                    log::error!("Failed to deserialize next inflight packet: {}", e);
-                                                    SessionStateRaftError::Serialize(format!(
-                                                        "deserialize next inflight packet failed: {}",
-                                                        e
-                                                    ))
-                                                })?;
-                                                Ok(Some(packet))
-                                            } else {
-                                                Ok(None)
-                                            }
-                                        } else {
-                                            if let Some(err_inner) = inner.error {
-                                                let bussiness_err =
-                                                    GRPCBusinessError::from(err_inner);
-                                                Err(SessionStateRaftError::GRPCBusiness(bussiness_err))
-                                            } else {
-                                                Err(SessionStateRaftError::GRPCBusiness(
-                                                    GRPCBusinessError {
-                                                        code: crate::protobuf::ErrorCode::Unknown,
-                                                        message: "Missing error payload"
-                                                            .to_string(),
-                                                        node: "UNKNOW".to_string(),
-                                                    },
+                                        if let Some(packet) = inner.packet {
+                                            let packet = serde_json::from_str(&packet).map_err(|e| {
+                                                log::error!("Failed to deserialize next inflight packet: {}", e);
+                                                SessionStateRaftError::Serialize(format!(
+                                                    "deserialize next inflight packet failed: {}",
+                                                    e
                                                 ))
-                                            }
+                                            })?;
+                                            Ok(Some(packet))
+                                        } else {
+                                            Ok(None)
                                         }
                                     } else {
                                         Err(SessionStateRaftError::NoLeaderAvailable)

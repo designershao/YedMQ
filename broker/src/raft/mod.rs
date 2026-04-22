@@ -17,6 +17,20 @@ pub struct GRPCBusinessError {
     node: String,
 }
 
+impl GRPCBusinessError {
+    pub fn code(&self) -> crate::protobuf::ErrorCode {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+}
+
 impl std::fmt::Display for GRPCBusinessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
