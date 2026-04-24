@@ -4,6 +4,8 @@ use std::sync::Arc;
 use actix::prelude::*;
 use actix::Actor;
 use log::error;
+use tokio::sync::oneshot;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 use crate::protobuf::cluster_service_server::ClusterServiceServer;
@@ -15,6 +17,7 @@ pub struct RpcActor {
     router_actors: Vec<Addr<RouterActor>>,
     settings: Arc<Settings>,
     payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
+    ready_tx: Option<oneshot::Sender<Result<(), String>>>,
 }
 
 impl RpcActor {
@@ -22,11 +25,13 @@ impl RpcActor {
         router_actors: Vec<Addr<RouterActor>>,
         settings: Arc<Settings>,
         payload_store: Arc<dyn crate::raft::payload::PayloadStore>,
+        ready_tx: oneshot::Sender<Result<(), String>>,
     ) -> Self {
         RpcActor {
             router_actors,
             settings,
             payload_store,
+            ready_tx: Some(ready_tx),
         }
     }
 }
@@ -47,6 +52,7 @@ impl Actor for RpcActor {
         };
         let router_actors = self.router_actors.clone();
         let payload_store = self.payload_store.clone();
+        let ready_tx = self.ready_tx.take();
         ctx.spawn(
             async move {
                 let cluster_service = crate::rpc::cluster_service::ClusterServiceImpl {
@@ -56,16 +62,36 @@ impl Actor for RpcActor {
                     store: payload_store.clone()
                 };
                 let payload_service = crate::raft::payload::PayloadServiceImpl::new(payload_store);
+                let listener = match tokio::net::TcpListener::bind(cluster_rpc_external).await {
+                    Ok(listener) => {
+                        log::info!("RPC Server listening on {}", cluster_rpc_external);
+                        if let Some(ready_tx) = ready_tx {
+                            let _ = ready_tx.send(Ok(()));
+                        }
+                        listener
+                    }
+                    Err(e) => {
+                        let message = format!(
+                            "RPC Server failed to bind on {}: {}",
+                            cluster_rpc_external, e
+                        );
+                        error!("{}", message);
+                        if let Some(ready_tx) = ready_tx {
+                            let _ = ready_tx.send(Err(message));
+                        }
+                        std::process::exit(1);
+                    }
+                };
 
                 match Server::builder()
                     .add_service(ClusterServiceServer::new(cluster_service))
                     .add_service(RaftServiceServer::new(rpc_service))
                     .add_service(crate::protobuf::raft_payload::payload_service_server::PayloadServiceServer::new(payload_service))
-                    .serve(cluster_rpc_external)
+                    .serve_with_incoming(TcpListenerStream::new(listener))
                     .await {
                     Ok(_) => {
                         log::info!(
-                            "RPC Server started successfully on {}",
+                            "RPC Server stopped on {}",
                             cluster_rpc_external
                         );
                     }

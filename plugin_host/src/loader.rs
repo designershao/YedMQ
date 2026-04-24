@@ -217,7 +217,6 @@ impl PluginLoader {
                     #[cfg(not(windows))]
                     let exe_path = plugin_dir.join(executable);
 
-
                     #[cfg(windows)]
                     if exe_path.extension().is_none() && !exe_path.exists() {
                         let candidate = exe_path.with_extension("exe");

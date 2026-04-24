@@ -132,11 +132,7 @@ pub fn fatal_status(code: Code, message: impl Into<String>) -> Status {
 pub fn invalid_argument_status(message: impl Into<String>, node: impl Into<String>) -> Status {
     business_status(
         Code::InvalidArgument,
-        business_detail(
-            crate::protobuf::ErrorCode::InvalidArgument,
-            message,
-            node,
-        ),
+        business_detail(crate::protobuf::ErrorCode::InvalidArgument, message, node),
     )
 }
 
@@ -187,7 +183,10 @@ mod tests {
         let parsed = decode_status(&status);
 
         assert_eq!(status.code(), Code::FailedPrecondition);
-        assert_eq!(parsed.error_kind.as_deref(), Some(ERROR_KIND_LEADER_REDIRECT));
+        assert_eq!(
+            parsed.error_kind.as_deref(),
+            Some(ERROR_KIND_LEADER_REDIRECT)
+        );
         assert_eq!(parsed.leader_node_id, Some(3));
         assert_eq!(parsed.leader_addr.as_deref(), Some("10.0.0.3:9080"));
         assert!(parsed.detail.is_none());
@@ -206,9 +205,18 @@ mod tests {
         let parsed = decode_status(&status);
 
         assert_eq!(parsed.error_kind.as_deref(), Some(ERROR_KIND_BUSINESS));
-        assert_eq!(parsed.detail.as_ref().map(|detail| detail.code()), Some(crate::protobuf::ErrorCode::InvalidArgument));
-        assert_eq!(parsed.detail.as_ref().map(|detail| detail.message.as_str()), Some("bad request"));
-        assert_eq!(parsed.detail.as_ref().map(|detail| detail.node.as_str()), Some("cluster_service"));
+        assert_eq!(
+            parsed.detail.as_ref().map(|detail| detail.code()),
+            Some(crate::protobuf::ErrorCode::InvalidArgument)
+        );
+        assert_eq!(
+            parsed.detail.as_ref().map(|detail| detail.message.as_str()),
+            Some("bad request")
+        );
+        assert_eq!(
+            parsed.detail.as_ref().map(|detail| detail.node.as_str()),
+            Some("cluster_service")
+        );
     }
 
     #[test]

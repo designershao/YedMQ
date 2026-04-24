@@ -73,8 +73,8 @@ struct RouteRetryConfig {
 impl Default for RouteRetryConfig {
     fn default() -> Self {
         Self {
-            max_retry_count: 3,
-            retry_interval_seconds: 30,
+            max_retry_count: 120,
+            retry_interval_seconds: 1,
             cleanup_interval_seconds: 300,
             message_ttl_seconds: 86400,
         }
@@ -255,9 +255,11 @@ impl RouterActor {
         dest_addr: &str,
         request: crate::protobuf::RoutePacketRequest,
     ) -> Result<(), RouterActorError> {
-        let mut cluster_client = crate::rpc::grpc_client::lazy_channel(dest_addr)
-            .map(ClusterServiceClient::new)
-            .map_err(|e| RouterActorError::GRPC(e.to_string()))?;
+        let mut cluster_client =
+            crate::rpc::grpc_client::connected_channel(dest_addr, Duration::from_secs(1))
+                .await
+                .map(ClusterServiceClient::new)
+                .map_err(|e| RouterActorError::GRPC(e.to_string()))?;
         cluster_client
             .route_packet(Request::new(request))
             .await
@@ -596,6 +598,15 @@ impl RouterActor {
                     .put(&item.route_id, &item)
                     .await
                     .map_err(|e| RouterActorError::RouteStoreError(e.to_string()))?;
+                warn!(
+                    "durable route outbox dispatch failed: route_id={}, dest_node_id={}, dest_rpc_addr={}, attempt={}, retry_at={}, error={}",
+                    item.route_id,
+                    item.dest_node_id,
+                    dest_node.rpc_addr,
+                    item.attempts,
+                    item.retry_at,
+                    err
+                );
                 Err(err)
             }
         }

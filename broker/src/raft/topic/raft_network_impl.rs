@@ -6,6 +6,7 @@ use openraft::raft::{
 };
 use openraft::{RaftNetwork, RaftNetworkFactory};
 use serde::de::DeserializeOwned;
+use std::time::Duration;
 use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
@@ -36,8 +37,10 @@ impl NetworkConnection {
     async fn c<E: std::error::Error + DeserializeOwned>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        let channel = crate::rpc::grpc_client::lazy_channel(&self.node.rpc_addr)
-            .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
+        let channel =
+            crate::rpc::grpc_client::connected_channel(&self.node.rpc_addr, Duration::from_secs(1))
+                .await
+                .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
         Ok(RaftServiceClient::new(channel))
     }

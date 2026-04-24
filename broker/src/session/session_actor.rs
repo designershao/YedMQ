@@ -605,7 +605,9 @@ async fn deliver_outbound_publish(
             .as_ref()
             .ok_or_else(|| SessionActorError::DeliveryError("payload store missing".to_string()))?;
         let key = uuid::Uuid::new_v4().to_string();
-        let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+        let mut stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+        let mut stored_packet_needs_refresh = false;
+        let data = serde_json::to_vec(&stored_packet)
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
         store
             .put(&key, bytes::Bytes::from(data))
@@ -622,6 +624,8 @@ async fn deliver_outbound_publish(
                 if matches!(e, InflightError::PacketIdentifierHasExisted) {
                     if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
                         publish_packet.variable_header.packet_identifier = Some(new_id);
+                        stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+                        stored_packet_needs_refresh = true;
                         session_state_guard
                             .inflight
                             .register_with_tx_packet(new_id, qos, key.clone())
@@ -656,6 +660,8 @@ async fn deliver_outbound_publish(
                         };
                         if let Some(new_id) = new_id {
                             publish_packet.variable_header.packet_identifier = Some(new_id);
+                            stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+                            stored_packet_needs_refresh = true;
                             context
                                 .session_state_service
                                 .register_inflight_tx_packet(
@@ -677,6 +683,19 @@ async fn deliver_outbound_publish(
                     }
                 }
             }
+        }
+
+        if stored_packet_needs_refresh {
+            let data = serde_json::to_vec(&stored_packet)
+                .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+            store
+                .put(&key, bytes::Bytes::from(data))
+                .await
+                .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+            debug!(
+                "session {} outbound publish stored with reallocated packet id",
+                context.client_id
+            );
         }
 
         conn.send(ConnectionActorMessage::WritePacketToClient(
@@ -725,6 +744,77 @@ async fn deliver_outbound_publish(
     }
 
     Ok(())
+}
+
+async fn collect_inflight_retry_packets(
+    inflight_entries: Vec<(u16, String, InflightState)>,
+    payload_store: Option<Arc<dyn PayloadStore>>,
+) -> Vec<MqttPacketV3> {
+    let mut retry_packets = Vec::new();
+
+    for (packet_id, key, state) in inflight_entries {
+        match state {
+            InflightState::WaitPubcomp => {
+                retry_packets.push(MqttPacketV3::Pubrel(PubRelPacket::new(packet_id)));
+            }
+            InflightState::WaitPubrel => {
+                retry_packets.push(MqttPacketV3::Pubrec(PubRecPacket::new(packet_id)));
+            }
+            InflightState::WaitPubrec | InflightState::WaitPuback => {
+                let Some(store) = &payload_store else {
+                    warn!(
+                        "skip inflight publish retry for packet {} because payload store is missing",
+                        packet_id
+                    );
+                    continue;
+                };
+
+                match store.get(&key).await {
+                    Ok(Some(data)) => match serde_json::from_slice::<MqttPacketV3>(&data) {
+                        Ok(mut packet) => {
+                            packet.set_dup(1);
+                            retry_packets.push(packet);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "skip inflight publish retry for packet {} because payload decode failed: {}",
+                                packet_id, e
+                            );
+                        }
+                    },
+                    Ok(None) => {
+                        warn!(
+                            "skip inflight publish retry for packet {} because payload {} is missing",
+                            packet_id, key
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "skip inflight publish retry for packet {} because payload load failed: {}",
+                            packet_id, e
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    retry_packets
+}
+
+async fn write_inflight_retry_packets(
+    conn: Recipient<ConnectionActorMessage>,
+    packets: Vec<MqttPacketV3>,
+) {
+    for packet in packets {
+        if let Err(e) = conn
+            .send(ConnectionActorMessage::WritePacketToClient(packet))
+            .await
+        {
+            warn!("inflight retry write to connection actor failed: {}", e);
+        }
+    }
 }
 
 async fn do_handle_unsubscribe(
@@ -1956,51 +2046,30 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::InflightRetry => {
                 let session_state = self.state.clone();
-                let session_actor_addr = ctx.address();
                 let payload_store = self.payload_store.clone();
+                let conn = self.conn_recipient.clone();
                 self.register_inflight_retry_timer(ctx);
                 ctx.spawn(
                     async move {
-                        let mut session_state_guard = session_state.write().await;
-                        let packets = session_state_guard
-                            .inflight
-                            .get_all_expired_packet_keys_and_refresh_expired_time();
+                        let inflight_entries = {
+                            let mut session_state_guard = session_state.write().await;
+                            session_state_guard
+                                .inflight
+                                .get_all_expired_packet_keys_and_refresh_expired_time()
+                                .into_iter()
+                                .filter_map(|(packet_id, key)| {
+                                    session_state_guard
+                                        .inflight
+                                        .get_inflight_current_state(packet_id)
+                                        .map(|state| (packet_id, key, state))
+                                })
+                                .collect::<Vec<_>>()
+                        };
 
-                        if let Some(store) = &payload_store {
-                            for (packet_id, key) in packets {
-                                let state = session_state_guard
-                                    .inflight
-                                    .get_inflight_current_state(packet_id);
-
-                                match state {
-                                    Some(InflightState::WaitPubcomp) => {
-                                        let packet =
-                                            MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
-                                        session_actor_addr
-                                            .do_send(SessionActorMessage::OutboundMessage(packet));
-                                    }
-                                    Some(InflightState::WaitPubrel) => {
-                                        let packet =
-                                            MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
-                                        session_actor_addr
-                                            .do_send(SessionActorMessage::OutboundMessage(packet));
-                                    }
-                                    Some(InflightState::WaitPubrec)
-                                    | Some(InflightState::WaitPuback) => {
-                                        if let Ok(Some(data)) = store.get(&key).await {
-                                            if let Ok(mut packet) =
-                                                serde_json::from_slice::<MqttPacketV3>(&data)
-                                            {
-                                                packet.set_dup(1);
-                                                session_actor_addr.do_send(
-                                                    SessionActorMessage::OutboundMessage(packet),
-                                                );
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
+                        let retry_packets =
+                            collect_inflight_retry_packets(inflight_entries, payload_store).await;
+                        if let Some(conn) = conn {
+                            write_inflight_retry_packets(conn, retry_packets).await;
                         }
                     }
                     .into_actor(self),
@@ -2232,46 +2301,29 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
 
     fn handle(&mut self, _msg: AllInflightRetryImmediate, ctx: &mut Self::Context) -> Self::Result {
         let session_state = self.state.clone();
-        let session_actor_addr = ctx.address();
         let payload_store = self.payload_store.clone();
+        let conn = self.conn_recipient.clone();
         ctx.spawn(
             async move {
-                let mut session_state_guard = session_state.write().await;
-                let packets = session_state_guard
-                    .inflight
-                    .get_all_packet_keys_and_refresh_expired_time();
+                let inflight_entries = {
+                    let mut session_state_guard = session_state.write().await;
+                    session_state_guard
+                        .inflight
+                        .get_all_packet_keys_and_refresh_expired_time()
+                        .into_iter()
+                        .filter_map(|(packet_id, key)| {
+                            session_state_guard
+                                .inflight
+                                .get_inflight_current_state(packet_id)
+                                .map(|state| (packet_id, key, state))
+                        })
+                        .collect::<Vec<_>>()
+                };
 
-                if let Some(store) = &payload_store {
-                    for (packet_id, key) in packets {
-                        let state = session_state_guard
-                            .inflight
-                            .get_inflight_current_state(packet_id);
-
-                        match state {
-                            Some(InflightState::WaitPubcomp) => {
-                                let packet = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
-                                session_actor_addr
-                                    .do_send(SessionActorMessage::OutboundMessage(packet));
-                            }
-                            Some(InflightState::WaitPubrel) => {
-                                let packet = MqttPacketV3::Pubrec(PubRecPacket::new(packet_id));
-                                session_actor_addr
-                                    .do_send(SessionActorMessage::OutboundMessage(packet));
-                            }
-                            Some(InflightState::WaitPubrec) | Some(InflightState::WaitPuback) => {
-                                if let Ok(Some(data)) = store.get(&key).await {
-                                    if let Ok(mut packet) =
-                                        serde_json::from_slice::<MqttPacketV3>(&data)
-                                    {
-                                        packet.set_dup(1);
-                                        session_actor_addr
-                                            .do_send(SessionActorMessage::OutboundMessage(packet));
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                let retry_packets =
+                    collect_inflight_retry_packets(inflight_entries, payload_store).await;
+                if let Some(conn) = conn {
+                    write_inflight_retry_packets(conn, retry_packets).await;
                 }
             }
             .into_actor(self),

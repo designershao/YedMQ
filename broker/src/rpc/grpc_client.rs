@@ -82,6 +82,16 @@ pub fn lazy_channel_with_connect_timeout(
     global_pool().channel_with_connect_timeout(addr, Some(timeout))
 }
 
+pub async fn connected_channel(
+    addr: &str,
+    timeout: Duration,
+) -> Result<Channel, tonic::transport::Error> {
+    Endpoint::from_shared(format!("http://{addr}"))?
+        .connect_timeout(timeout)
+        .connect()
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,11 +113,8 @@ mod tests {
         pool.clear();
 
         let _default = lazy_channel("127.0.0.1:9080").expect("default channel should be created");
-        let _timed = lazy_channel_with_connect_timeout(
-            "127.0.0.1:9080",
-            Duration::from_secs(5),
-        )
-        .expect("timed channel should be created");
+        let _timed = lazy_channel_with_connect_timeout("127.0.0.1:9080", Duration::from_secs(5))
+            .expect("timed channel should be created");
 
         assert_eq!(pool.len(), 2);
     }

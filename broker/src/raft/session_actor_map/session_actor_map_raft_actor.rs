@@ -152,12 +152,11 @@ impl SessionActorMapRaftActor {
     ) -> SessionActorMapRaftError {
         match detail.code() {
             crate::protobuf::ErrorCode::SessionVersionRejected => {
-                Self::parse_remote_error(&detail.message)
-                    .unwrap_or_else(|| {
-                        SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
-                            grpc_code, detail,
-                        ))
-                    })
+                Self::parse_remote_error(&detail.message).unwrap_or_else(|| {
+                    SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
+                        grpc_code, detail,
+                    ))
+                })
             }
             crate::protobuf::ErrorCode::SessionTenantNotFound => {
                 let tenant_id = detail

@@ -9,6 +9,7 @@ use tokio::try_join;
 
 use crate::{
     app::YedMQApp,
+    protobuf::{cluster_service_client::ClusterServiceClient, GetSessionInfoRequest},
     raft::{
         session_actor_map::session_actor_map_raft_actor, session_state::session_state_raft_actor,
         Node,
@@ -56,6 +57,7 @@ pub struct ClusterReadyChecks {
     pub topic_raft: RaftGroupReadyStatus,
     pub session_actor_map_raft: RaftGroupReadyStatus,
     pub session_state_raft: SessionStateReadyStatus,
+    pub cluster_rpc: ClusterRpcReadyStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,6 +80,14 @@ pub struct SessionStateReadyStatus {
     pub missing_cluster_node_ids: Vec<u64>,
     pub extra_cluster_node_ids: Vec<u64>,
     pub payload_ready: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterRpcReadyStatus {
+    pub ready: bool,
+    pub rpc_addr: String,
     pub reason: Option<String>,
 }
 
@@ -179,6 +189,76 @@ fn apply_cluster_node_ids(
     status.extra_cluster_node_ids = extra_cluster_node_ids;
     status.reason = combine_reason(status.reason, membership_reason);
     status
+}
+
+async fn probe_local_cluster_rpc(app: &YedMQApp) -> ClusterRpcReadyStatus {
+    let rpc_addr = app.settings.cluster.rpc.external.clone();
+    let channel = match crate::rpc::grpc_client::connected_channel(
+        &rpc_addr,
+        std::time::Duration::from_millis(500),
+    )
+    .await
+    {
+        Ok(channel) => channel,
+        Err(err) => {
+            return ClusterRpcReadyStatus {
+                ready: false,
+                rpc_addr,
+                reason: Some(format!("failed to create cluster rpc client: {}", err)),
+            };
+        }
+    };
+
+    let mut client = ClusterServiceClient::new(channel);
+    let request = tonic::Request::new(GetSessionInfoRequest {
+        tenant_id: "__yedmq_ready_probe__".to_string(),
+        client_id: "__yedmq_ready_probe__".to_string(),
+    });
+
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(800),
+        client.get_session_info(request),
+    )
+    .await
+    {
+        Ok(Ok(_)) => ClusterRpcReadyStatus {
+            ready: true,
+            rpc_addr,
+            reason: None,
+        },
+        Ok(Err(status)) => {
+            let parsed = crate::rpc::grpc_status::decode_status(&status);
+            let message = status.to_string();
+            let transport_unavailable = matches!(
+                status.code(),
+                tonic::Code::Unavailable | tonic::Code::Unknown
+            ) && (message.contains("transport error")
+                || message.contains("tcp connect error")
+                || message.contains("Service was not ready"));
+            let application_not_ready =
+                parsed.error_kind.as_deref() == Some(crate::rpc::grpc_status::ERROR_KIND_NOT_READY);
+
+            if transport_unavailable || application_not_ready {
+                ClusterRpcReadyStatus {
+                    ready: false,
+                    rpc_addr,
+                    reason: Some(format!("cluster rpc probe failed: {}", status)),
+                }
+            } else {
+                // Any non-transport application response proves the ClusterService is reachable.
+                ClusterRpcReadyStatus {
+                    ready: true,
+                    rpc_addr,
+                    reason: None,
+                }
+            }
+        }
+        Err(_) => ClusterRpcReadyStatus {
+            ready: false,
+            rpc_addr,
+            reason: Some("cluster rpc probe timed out".to_string()),
+        },
+    }
 }
 
 async fn post_json_with_auth<T: Serialize>(
@@ -1009,6 +1089,7 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
         payload_ready,
         reason: combine_reason(session_state_raft_base.reason.clone(), payload_reason),
     };
+    let cluster_rpc = probe_local_cluster_rpc(&app).await;
 
     let mut reasons = Vec::new();
     if let Some(reason) = &topic_raft.reason {
@@ -1020,15 +1101,22 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
     if let Some(reason) = &session_state_raft.reason {
         reasons.push(format!("session_state_raft: {}", reason));
     }
+    if let Some(reason) = &cluster_rpc.reason {
+        reasons.push(format!("cluster_rpc: {}", reason));
+    }
 
     let response = ClusterReadyResponse {
-        ready: topic_raft.ready && session_actor_map_raft.ready && session_state_raft.ready,
+        ready: topic_raft.ready
+            && session_actor_map_raft.ready
+            && session_state_raft.ready
+            && cluster_rpc.ready,
         node_id: app.settings.cluster.node_id,
         cluster_node_ids,
         checks: ClusterReadyChecks {
             topic_raft,
             session_actor_map_raft,
             session_state_raft,
+            cluster_rpc,
         },
         reasons,
     };
