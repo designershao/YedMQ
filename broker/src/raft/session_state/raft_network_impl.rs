@@ -5,7 +5,6 @@ use openraft::raft::{
     VoteRequest, VoteResponse,
 };
 use openraft::{RaftNetwork, RaftNetworkFactory};
-use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tonic::transport::Channel;
 
@@ -48,16 +47,31 @@ impl NetworkConnection {
         }
     }
 
-    async fn c<E: std::error::Error + DeserializeOwned>(
+    fn c<E: std::error::Error>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        let channel =
-            crate::rpc::grpc_client::connected_channel(&self.node.rpc_addr, Duration::from_secs(1))
-                .await
-                .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
+        let channel = crate::rpc::grpc_client::lazy_channel_with_connect_timeout(
+            &self.node.rpc_addr,
+            Duration::from_secs(1),
+        )
+        .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
         Ok(RaftServiceClient::new(channel))
     }
+}
+
+fn map_grpc_status<E: std::error::Error>(status: tonic::Status) -> RPCError<NodeId, Node, E> {
+    if status.code() == tonic::Code::Unavailable {
+        RPCError::Unreachable(Unreachable::new(&status))
+    } else {
+        RPCError::Network(NetworkError::new(&status))
+    }
+}
+
+fn map_grpc_response<T, E: std::error::Error>(
+    resp: Result<tonic::Response<T>, tonic::Status>,
+) -> Result<T, RPCError<NodeId, Node, E>> {
+    resp.map(|resp| resp.into_inner()).map_err(map_grpc_status)
 }
 
 use crate::protobuf::raft_payload::payload_service_client::PayloadServiceClient;
@@ -71,10 +85,9 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
         // 1. Heartbeat Fast-Path: Non-blocking
         if req.entries.is_empty() {
-            let mut c = self.c().await?;
+            let mut c = self.c()?;
             let resp = c.append_entries(req).await;
-            let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-            let mes = resp.into_inner();
+            let mes = map_grpc_response(resp)?;
             let resp = serde_json::from_str(&mes.data)
                 .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
             return Ok(resp);
@@ -169,10 +182,9 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         }
 
         // 4. Log Append
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
         let resp = c.append_entries(req).await;
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str::<AppendEntriesResponse<NodeId>>(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
@@ -187,11 +199,10 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
         let resp = c.install_snapshot(req).await;
 
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         Ok(resp)
@@ -202,7 +213,7 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         req: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
 
         let data =
             serde_json::to_string(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
@@ -213,8 +224,7 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         let request = tonic::Request::new(mes);
         let resp = c.vote(request).await;
 
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
