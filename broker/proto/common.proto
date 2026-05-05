@@ -41,6 +41,18 @@ enum ErrorCode {
   PAYLOAD_MISSING = 3003;
 }
 
+message SessionVersionConflictDetail {
+
+  uint64 current_counter = 1;
+
+  uint64 current_node_id = 2;
+
+  uint64 existing_counter = 3;
+
+  uint64 existing_node_id = 4;
+
+}
+
 message ErrorDetail {
 
   ErrorCode code = 1;
@@ -48,5 +60,7 @@ message ErrorDetail {
   string message = 2;
 
   string node = 3;
+
+  SessionVersionConflictDetail session_version_conflict = 4;
 
 }

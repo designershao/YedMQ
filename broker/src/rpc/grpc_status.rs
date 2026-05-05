@@ -66,7 +66,33 @@ pub fn business_detail(
         code: code as i32,
         message: message.into(),
         node: node.into(),
+        session_version_conflict: None,
     }
+}
+
+pub fn session_version_rejected_detail(
+    current_counter: u64,
+    current_node_id: u64,
+    existing_counter: u64,
+    existing_node_id: u64,
+    node: impl Into<String>,
+) -> crate::protobuf::ErrorDetail {
+    let message = format!(
+        "Session version rejected, current: {}-{}, existing: {}-{}",
+        current_counter, current_node_id, existing_counter, existing_node_id
+    );
+    let mut detail = business_detail(
+        crate::protobuf::ErrorCode::SessionVersionRejected,
+        message,
+        node,
+    );
+    detail.session_version_conflict = Some(crate::protobuf::SessionVersionConflictDetail {
+        current_counter,
+        current_node_id,
+        existing_counter,
+        existing_node_id,
+    });
+    detail
 }
 
 pub fn business_status(status_code: Code, detail: crate::protobuf::ErrorDetail) -> Status {
@@ -217,6 +243,26 @@ mod tests {
             parsed.detail.as_ref().map(|detail| detail.node.as_str()),
             Some("cluster_service")
         );
+    }
+
+    #[test]
+    fn session_version_rejected_detail_round_trips_structured_fields() {
+        let status = business_status(
+            Code::FailedPrecondition,
+            session_version_rejected_detail(11, 2, 9, 1, "session_actor_map_raft"),
+        );
+        let parsed = decode_status(&status);
+        let conflict = parsed
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.session_version_conflict.as_ref())
+            .expect("missing session version conflict detail");
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(conflict.current_counter, 11);
+        assert_eq!(conflict.current_node_id, 2);
+        assert_eq!(conflict.existing_counter, 9);
+        assert_eq!(conflict.existing_node_id, 1);
     }
 
     #[test]

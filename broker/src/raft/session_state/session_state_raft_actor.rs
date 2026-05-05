@@ -47,9 +47,6 @@ pub enum ActorState {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SessionStateRaftError {
-    #[error("Invalid topic name: {topic}")]
-    InvalidTopicName { topic: String },
-
     #[error("Not leader, current leader: {leader:?}")]
     NotLeader { leader: Option<Node> },
 

@@ -86,15 +86,11 @@ fn map_session_actor_map_raft_error(
             existing_version,
         } => grpc_status::business_status(
             tonic::Code::FailedPrecondition,
-            grpc_status::business_detail(
-                crate::protobuf::ErrorCode::SessionVersionRejected,
-                format!(
-                    "Session version rejected, current: {}-{}, existing: {}-{}",
-                    current_version.counter,
-                    current_version.node_id,
-                    existing_version.counter,
-                    existing_version.node_id
-                ),
+            grpc_status::session_version_rejected_detail(
+                current_version.counter,
+                current_version.node_id,
+                existing_version.counter,
+                existing_version.node_id,
                 "session_actor_map_raft".to_string(),
             ),
         ),
@@ -213,9 +209,6 @@ impl RaftService for RustServiceImpl {
                 let res = topic_raft_actor_addr
                     .send(crate::raft::topic::topic_raft_actor::DirectWriteToRaft { command })
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res =
                     res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
                 match res {
@@ -241,9 +234,6 @@ impl RaftService for RustServiceImpl {
                         command
                     })
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
                     Status::internal(format!("Write to session actor map raft error {}", e))
                 })?;
@@ -275,9 +265,6 @@ impl RaftService for RustServiceImpl {
                         },
                     )
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
                     Status::internal(format!("Write to session state raft error {}", e))
                 })?;
@@ -313,12 +300,12 @@ impl RaftService for RustServiceImpl {
                 let res = session_actor_map_raft_actor_addr
                     .send(append_entries_message)
                     .await;
-                if let Err(e) = res {
-                    error!("append_entries SessionActorMap error: {}", e);
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session actor map raft error {}", e))
+                    error!("append_entries SessionActorMap error: {}", e);
+                    Status::internal(format!(
+                        "Append entries to session actor map raft error {}",
+                        e
+                    ))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::AppendEntriesResponse {
@@ -344,11 +331,9 @@ impl RaftService for RustServiceImpl {
                 let append_entries_message =
                     crate::raft::topic::topic_raft_actor::AppendEntriesRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(append_entries_message).await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
-                let res =
-                    res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
+                let res = res.map_err(|e| {
+                    Status::internal(format!("Append entries to topic raft error {}", e))
+                })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::AppendEntriesResponse {
                         data: serde_json::to_string(&res).map_err(|e| {
@@ -414,11 +399,8 @@ impl RaftService for RustServiceImpl {
                 let res = session_state_raft_actor_addr
                     .send(append_entries_message)
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session state raft error {}", e))
+                    Status::internal(format!("Append entries to session state raft error {}", e))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::AppendEntriesResponse {
@@ -447,11 +429,8 @@ impl RaftService for RustServiceImpl {
                 let vote_message =
                     crate::raft::topic::topic_raft_actor::VoteRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(vote_message).await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res =
-                    res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
+                    res.map_err(|e| Status::internal(format!("Topic raft vote error {}", e)))?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::VoteResponse {
                         data: serde_json::to_string(&res).map_err(|e| {
@@ -473,11 +452,8 @@ impl RaftService for RustServiceImpl {
                     payload
                 };
                 let res = session_actor_map_raft_actor_addr.send(vote_message).await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session actor map raft error {}", e))
+                    Status::internal(format!("Session actor map raft vote error {}", e))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::VoteResponse {
@@ -502,11 +478,8 @@ impl RaftService for RustServiceImpl {
                         payload,
                     };
                 let res = session_state_raft_actor_addr.send(vote_message).await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session state raft error {}", e))
+                    Status::internal(format!("Session state raft vote error {}", e))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::VoteResponse {
@@ -538,11 +511,9 @@ impl RaftService for RustServiceImpl {
                 let install_snapshot_message =
                     crate::raft::topic::topic_raft_actor::InstallSnapshotRequestMessage { payload };
                 let res = topic_raft_actor_addr.send(install_snapshot_message).await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
-                let res =
-                    res.map_err(|e| Status::internal(format!("Write to topic raft error {}", e)))?;
+                let res = res.map_err(|e| {
+                    Status::internal(format!("Install snapshot to topic raft error {}", e))
+                })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::InstallSnapshotResponse {
                         data: serde_json::to_string(&res).map_err(|e| {
@@ -566,11 +537,11 @@ impl RaftService for RustServiceImpl {
                 let res = session_actor_map_raft_actor_addr
                     .send(install_snapshot_message)
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session actor map raft error {}", e))
+                    Status::internal(format!(
+                        "Install snapshot to session actor map raft error {}",
+                        e
+                    ))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::InstallSnapshotResponse {
@@ -596,11 +567,11 @@ impl RaftService for RustServiceImpl {
                 let res = session_state_raft_actor_addr
                     .send(install_snapshot_message)
                     .await;
-                if let Err(e) = res {
-                    return Err(Status::internal(e.to_string()));
-                }
                 let res = res.map_err(|e| {
-                    Status::internal(format!("Write to session state raft error {}", e))
+                    Status::internal(format!(
+                        "Install snapshot to session state raft error {}",
+                        e
+                    ))
                 })?;
                 match res {
                     Ok(res) => Ok(Response::new(crate::protobuf::InstallSnapshotResponse {

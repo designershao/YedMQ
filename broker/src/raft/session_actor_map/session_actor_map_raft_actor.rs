@@ -44,9 +44,6 @@ pub enum ActorState {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SessionActorMapRaftError {
-    #[error("Invalid topic name: {topic}")]
-    InvalidTopicName { topic: String },
-
     #[error("Not leader, current leader: {leader:?}")]
     NotLeader { leader: Option<Node> },
 
@@ -138,6 +135,15 @@ impl SessionActorMapRaftActor {
         })
     }
 
+    fn map_session_version_conflict(
+        detail: &crate::protobuf::SessionVersionConflictDetail,
+    ) -> SessionActorMapRaftError {
+        SessionActorMapRaftError::SessionVersionRejected {
+            current_version: SessionVersion::new(detail.current_counter, detail.current_node_id),
+            existing_version: SessionVersion::new(detail.existing_counter, detail.existing_node_id),
+        }
+    }
+
     fn leader_node_from_status(parsed: &grpc_status::ParsedStatus) -> Option<Node> {
         parsed.leader_addr.clone().map(|rpc_addr| Node {
             node_id: parsed.leader_node_id,
@@ -152,11 +158,15 @@ impl SessionActorMapRaftActor {
     ) -> SessionActorMapRaftError {
         match detail.code() {
             crate::protobuf::ErrorCode::SessionVersionRejected => {
-                Self::parse_remote_error(&detail.message).unwrap_or_else(|| {
-                    SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
-                        grpc_code, detail,
-                    ))
-                })
+                if let Some(conflict) = detail.session_version_conflict.as_ref() {
+                    Self::map_session_version_conflict(conflict)
+                } else {
+                    Self::parse_remote_error(&detail.message).unwrap_or_else(|| {
+                        SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
+                            grpc_code, detail,
+                        ))
+                    })
+                }
             }
             crate::protobuf::ErrorCode::SessionTenantNotFound => {
                 let tenant_id = detail
@@ -1586,6 +1596,27 @@ mod tests {
             SessionActorMapRaftError::GRPCBusiness(err) => {
                 assert_eq!(err.grpc_code(), tonic::Code::InvalidArgument);
                 assert_eq!(err.code(), crate::protobuf::ErrorCode::InvalidArgument);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_remote_status_reads_structured_session_version_conflict() {
+        let mut detail =
+            grpc_status::session_version_rejected_detail(12, 3, 10, 2, "session_actor_map_raft");
+        detail.message = "wording changed but structure remains".to_string();
+        let status = grpc_status::business_status(tonic::Code::FailedPrecondition, detail);
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::SessionVersionRejected {
+                current_version,
+                existing_version,
+            } => {
+                assert_eq!(current_version.counter, 12);
+                assert_eq!(current_version.node_id, 3);
+                assert_eq!(existing_version.counter, 10);
+                assert_eq!(existing_version.node_id, 2);
             }
             other => panic!("unexpected error: {other:?}"),
         }

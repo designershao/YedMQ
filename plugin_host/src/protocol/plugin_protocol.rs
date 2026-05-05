@@ -38,8 +38,10 @@ pub struct ProtocolMessage {
     ///
     /// Metadata
     #[prost(map = "string, string", tag = "15")]
-    pub metadata:
-        ::std::collections::HashMap<::prost::alloc::string::String, ::prost::alloc::string::String>,
+    pub metadata: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ::prost::alloc::string::String,
+    >,
 }
 /// Error information
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -315,7 +317,10 @@ pub struct StatsRequest {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StatsResponse {
     #[prost(map = "string, message", tag = "1")]
-    pub metrics: ::std::collections::HashMap<::prost::alloc::string::String, MetricValue>,
+    pub metrics: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        MetricValue,
+    >,
     #[prost(message, optional, tag = "2")]
     pub timestamp: ::core::option::Option<::prost_types::Timestamp>,
 }

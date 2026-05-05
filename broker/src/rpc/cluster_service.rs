@@ -212,15 +212,11 @@ fn map_session_actor_map_raft_error(
             existing_version,
         } => grpc_status::business_status(
             tonic::Code::FailedPrecondition,
-            grpc_status::business_detail(
-                crate::protobuf::ErrorCode::SessionVersionRejected,
-                format!(
-                    "Session version rejected, current: {}-{}, existing: {}-{}",
-                    current_version.counter,
-                    current_version.node_id,
-                    existing_version.counter,
-                    existing_version.node_id
-                ),
+            grpc_status::session_version_rejected_detail(
+                current_version.counter,
+                current_version.node_id,
+                existing_version.counter,
+                existing_version.node_id,
                 "session_actor_map_raft".to_string(),
             ),
         ),

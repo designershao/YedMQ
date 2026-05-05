@@ -1381,7 +1381,20 @@ impl Handler<DirectWriteToRaft> for TopicRaftActor {
                 Box::pin(
                     async move {
                         if let Some(raft_instance) = raft.get() {
-                            let res = raft_instance.client_write(msg.command).await?;
+                            let res =
+                                raft_instance.client_write(msg.command).await.map_err(|e| {
+                                    if let RaftError::APIError(
+                                        openraft::error::ClientWriteError::ForwardToLeader(e_inner),
+                                    ) = e
+                                    {
+                                        TopicRaftError::NotLeader {
+                                            leader: e_inner.leader_node,
+                                        }
+                                    } else {
+                                        log::warn!("failed to write command to topic raft: {}", e);
+                                        TopicRaftError::RaftClientWriteError(e)
+                                    }
+                                })?;
                             Ok(res)
                         } else {
                             Err(TopicRaftError::NotReady("Initializing".to_string()))
