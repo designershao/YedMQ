@@ -1,5 +1,8 @@
+pub mod admin_client;
 pub mod app;
 pub mod arbiter_pool;
+pub mod cli;
+pub mod config_check;
 pub mod connection;
 pub mod inflight;
 pub mod listener;
@@ -15,6 +18,7 @@ pub mod session;
 pub mod settings;
 mod timer_actor;
 pub mod topic;
+pub mod version;
 
 pub mod protobuf {
     tonic::include_proto!("yedmqpb");

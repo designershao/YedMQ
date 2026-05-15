@@ -49,6 +49,7 @@ governor = "0.10.4"
 dashmap = "=6.1.0"
 parking_lot = { version = "0.12.5", features = ["serde"] }
 tokio-stream = { version = "0.1.17", features = ["net", "sync"] }
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 rumqttc = { version = "0.24.0", default-features = false, features = ["use-rustls", "websocket"] }

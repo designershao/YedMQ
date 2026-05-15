@@ -53,6 +53,38 @@ pub struct ClusterReadyResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClusterStatusResponse {
+    pub cluster_name: String,
+    pub node_id: u64,
+    pub ready: bool,
+    pub health: String,
+    pub members: Vec<ClusterMemberStatus>,
+    pub raft_groups: Vec<RaftGroupStatus>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterMemberStatus {
+    pub node_id: u64,
+    pub rpc_address: String,
+    pub api_address: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RaftGroupStatus {
+    pub name: String,
+    pub ready: bool,
+    pub leader_id: Option<u64>,
+    pub membership_node_ids: Vec<u64>,
+    pub payload_ready: Option<bool>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClusterReadyChecks {
     pub topic_raft: RaftGroupReadyStatus,
     pub session_actor_map_raft: RaftGroupReadyStatus,
@@ -71,7 +103,7 @@ pub struct RaftGroupReadyStatus {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStateReadyStatus {
     pub ready: bool,
@@ -1014,7 +1046,7 @@ pub async fn change_membership(
     (StatusCode::OK, String::new())
 }
 
-pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<ClusterReadyResponse>) {
+pub(super) async fn build_cluster_ready_response(app: &Arc<YedMQApp>) -> ClusterReadyResponse {
     let topic_raft_actor_addr =
         crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
     let session_actor_map_raft_actor_addr = crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
@@ -1089,7 +1121,7 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
         payload_ready,
         reason: combine_reason(session_state_raft_base.reason.clone(), payload_reason),
     };
-    let cluster_rpc = probe_local_cluster_rpc(&app).await;
+    let cluster_rpc = probe_local_cluster_rpc(app).await;
 
     let mut reasons = Vec::new();
     if let Some(reason) = &topic_raft.reason {
@@ -1105,7 +1137,7 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
         reasons.push(format!("cluster_rpc: {}", reason));
     }
 
-    let response = ClusterReadyResponse {
+    ClusterReadyResponse {
         ready: topic_raft.ready
             && session_actor_map_raft.ready
             && session_state_raft.ready
@@ -1119,6 +1151,83 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
             cluster_rpc,
         },
         reasons,
+    }
+}
+
+pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<ClusterReadyResponse>) {
+    let response = build_cluster_ready_response(&app).await;
+
+    let status = if response.ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (status, Json(response))
+}
+
+pub async fn status(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<ClusterStatusResponse>) {
+    let ready = build_cluster_ready_response(&app).await;
+    let settings = app.settings.clone();
+    let members = settings
+        .cluster
+        .nodes
+        .iter()
+        .map(|node| ClusterMemberStatus {
+            node_id: node.id,
+            rpc_address: node.rpc_address.clone(),
+            api_address: node.api_address.clone(),
+            status: if node.id == settings.cluster.node_id {
+                "local".to_string()
+            } else {
+                "configured".to_string()
+            },
+        })
+        .collect();
+
+    let response = ClusterStatusResponse {
+        cluster_name: settings.cluster.cluster_name.clone(),
+        node_id: ready.node_id,
+        ready: ready.ready,
+        health: if ready.ready {
+            "healthy".to_string()
+        } else {
+            "degraded".to_string()
+        },
+        members,
+        raft_groups: vec![
+            raft_group_status("topic", &ready.checks.topic_raft, None),
+            raft_group_status(
+                "sessionActorMap",
+                &ready.checks.session_actor_map_raft,
+                None,
+            ),
+            raft_group_status(
+                "sessionState",
+                &RaftGroupReadyStatus {
+                    ready: ready.checks.session_state_raft.ready,
+                    leader_id: ready.checks.session_state_raft.leader_id,
+                    membership_node_ids: ready
+                        .checks
+                        .session_state_raft
+                        .membership_node_ids
+                        .clone(),
+                    missing_cluster_node_ids: ready
+                        .checks
+                        .session_state_raft
+                        .missing_cluster_node_ids
+                        .clone(),
+                    extra_cluster_node_ids: ready
+                        .checks
+                        .session_state_raft
+                        .extra_cluster_node_ids
+                        .clone(),
+                    reason: ready.checks.session_state_raft.reason.clone(),
+                },
+                Some(ready.checks.session_state_raft.payload_ready),
+            ),
+        ],
+        reasons: ready.reasons,
     };
 
     let status = if response.ready {
@@ -1128,6 +1237,21 @@ pub async fn ready(State(app): State<Arc<YedMQApp>>) -> (StatusCode, Json<Cluste
     };
 
     (status, Json(response))
+}
+
+fn raft_group_status(
+    name: &str,
+    status: &RaftGroupReadyStatus,
+    payload_ready: Option<bool>,
+) -> RaftGroupStatus {
+    RaftGroupStatus {
+        name: name.to_string(),
+        ready: status.ready,
+        leader_id: status.leader_id,
+        membership_node_ids: status.membership_node_ids.clone(),
+        payload_ready,
+        reason: status.reason.clone(),
+    }
 }
 
 pub async fn metrics(

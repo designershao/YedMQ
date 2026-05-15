@@ -11,9 +11,11 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod broker;
 mod client;
 mod cluster;
 mod message;
+mod node;
 mod plugin;
 mod system;
 mod topic;
@@ -154,11 +156,17 @@ pub async fn run_rest_api_task(
             "/api/v1/system_info",
             axum::routing::get(system::system_info),
         )
+        .route("/api/v1/node/status", axum::routing::get(node::status))
+        .route("/api/v1/broker/stats", axum::routing::get(broker::stats))
         .route(
             "/api/v1/cluster/metrics",
             axum::routing::get(cluster::metrics),
         )
         .route("/api/v1/cluster/ready", axum::routing::get(cluster::ready))
+        .route(
+            "/api/v1/cluster/status",
+            axum::routing::get(cluster::status),
+        )
         .route(
             "/api/v1/cluster/learners",
             axum::routing::post(cluster::add_learner),

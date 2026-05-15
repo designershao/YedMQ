@@ -1,4 +1,6 @@
-use config::{Config, ConfigError, File};
+use std::path::Path;
+
+use config::{Config, ConfigError, File, FileFormat};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
@@ -328,10 +330,15 @@ impl Default for Api {
 
 impl Settings {
     pub fn new() -> Result<Self, ConfigError> {
-        let s = Config::builder()
+        Self::load(None)
+    }
+
+    pub fn load(config_path: Option<&Path>) -> Result<Self, ConfigError> {
+        let mut builder = Config::builder()
             .set_default("mqtt.default_authentication", "deny")?
             .set_default("mqtt.default_authorization", "deny")?
             .set_default("mqtt.sys_topic_interval_secs", 10)?
+            .set_default("mqtt.inflight_retry_interval_secs", 10)?
             .set_default("mqtt.max_message_size", yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)?
             .set_default("session.qos_expired_secs", 10)?
             .set_default("session.packet_resend_interval_secs", 10)?
@@ -356,14 +363,25 @@ impl Settings {
             .set_default("listener.wss.key_file", "")?
             .set_default("listener.wss.verify_client_cert", false)?
             .set_default("listener.api.external", "127.0.0.1:3456")?
+            .set_default("listener.api.auth.users", Vec::<String>::new())?
             .set_default("cluster.cluster_name", "YedMQ")?
             .set_default("cluster.heartbeat_interval", 10)?
             .set_default("cluster.rpc.external", "127.0.0.1:3457")?
             .set_default("cluster.session_ttl", 10)?
-            .set_default("cluster.startup_mode", "bootstrap")?
-            .add_source(File::with_name("/etc/yedmq/config.toml").required(false))
-            .add_source(File::with_name("./yedmq.toml"))
-            .build()?;
+            .set_default("cluster.startup_mode", "bootstrap")?;
+
+        builder = match config_path {
+            Some(path) => builder.add_source(
+                File::from(path.to_path_buf())
+                    .format(FileFormat::Toml)
+                    .required(true),
+            ),
+            None => builder
+                .add_source(File::with_name("/etc/yedmq/config.toml").required(false))
+                .add_source(File::with_name("./yedmq.toml")),
+        };
+
+        let s = builder.build()?;
         s.try_deserialize()
     }
 }
@@ -371,6 +389,8 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_settings_load() {
@@ -387,5 +407,33 @@ mod tests {
             s.mqtt.default_authorization
         );
         assert_eq!(1001, s.cluster.nodes[0].id);
+    }
+
+    #[test]
+    fn test_settings_load_from_explicit_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("custom.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[cluster]
+node_id = 2002
+nodes = [{{ id = 2002, rpc_address = "127.0.0.1:4457", api_address = "127.0.0.1:4456" }}]
+store_dir = "{store_dir}"
+
+[cluster.rpc]
+external = "127.0.0.1:4457"
+"#,
+                store_dir = temp_dir.path().join("store").display()
+            ),
+        )
+        .unwrap();
+
+        let s = Settings::load(Some(&config_path)).unwrap();
+
+        assert_eq!(2002, s.cluster.node_id);
+        assert_eq!("127.0.0.1:4457", s.cluster.rpc.external);
+        assert_eq!(10, s.mqtt.inflight_retry_interval_secs);
     }
 }
