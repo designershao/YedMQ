@@ -13,7 +13,7 @@ use openraft::{
     Config, RaftMetrics,
 };
 use parking_lot::RwLock;
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::Packet;
 
 use crate::{
     raft::GRPCBusinessError,
@@ -426,7 +426,7 @@ impl Handler<Unsubscribe> for TopicRaftActor {
 pub struct RegisterRetainPublishPacket {
     pub tenant_id: String,
     pub client_id: String,
-    pub publish_packet: MqttPacketV3,
+    pub publish_packet: Packet,
 }
 
 impl Handler<RegisterRetainPublishPacket> for TopicRaftActor {
@@ -705,14 +705,14 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+#[rtype(result = "Result<Vec<Arc<Packet>>, TopicRaftError>")]
 pub struct GetRetainPublishPacket {
     pub tenant_id: String,
     pub topic: String,
 }
 
 impl Handler<GetRetainPublishPacket> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Vec<Arc<Packet>>, TopicRaftError>>;
 
     fn handle(&mut self, msg: GetRetainPublishPacket, _: &mut Self::Context) -> Self::Result {
         match &self.state {
@@ -760,14 +760,14 @@ impl Handler<GetRetainPublishPacket> for TopicRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>")]
+#[rtype(result = "Result<Vec<Arc<Packet>>, TopicRaftError>")]
 pub struct GetRetainPublishPacketEnsureLinearizable {
     pub tenant_id: String,
     pub topic: String,
 }
 
 impl Handler<GetRetainPublishPacketEnsureLinearizable> for TopicRaftActor {
-    type Result = ResponseActFuture<Self, Result<Vec<Arc<MqttPacketV3>>, TopicRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Vec<Arc<Packet>>, TopicRaftError>>;
 
     fn handle(
         &mut self,

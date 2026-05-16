@@ -5,7 +5,7 @@ use std::{
 
 use actix::Addr;
 use bytes::Bytes;
-use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+use yedmq_mqtt::packet::{Packet, Properties, ProtocolVersion, Publish};
 
 use crate::router_actor::{self, RouterActor};
 
@@ -143,6 +143,20 @@ impl SysTopicTask {
         self.router_actor = Some(router_actor);
     }
 
+    fn sys_publish(topic_name: String, payload: Bytes) -> Packet {
+        Packet::Publish(Publish {
+            protocol_version: ProtocolVersion::V3_1_1,
+            topic_name,
+            payload,
+            qos: 0,
+            retain: false,
+            dup: false,
+            packet_identifier: None,
+            properties: Properties::default(),
+            expires_at_unix_secs: None,
+        })
+    }
+
     pub async fn run(&self) {
         let clients_connected_topic = "$SYS/broker/clients/connected".to_string();
         let broker_bytes_sent_topic = "$SYS/broker/bytes/sent".to_string();
@@ -186,57 +200,47 @@ impl SysTopicTask {
                 .subscriptions_count
                 .load(std::sync::atomic::Ordering::SeqCst);
 
-            let clients_connected_packet = PublishPacketBuilder::new(
+            let clients_connected_packet = Self::sys_publish(
                 clients_connected_topic.clone(),
                 Bytes::copy_from_slice(vec![clients_connected.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let bytes_received_packet = PublishPacketBuilder::new(
+            );
+            let bytes_received_packet = Self::sys_publish(
                 broker_bytes_received_topic.clone(),
                 Bytes::copy_from_slice(vec![bytes_received.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let bytes_sent_packet = PublishPacketBuilder::new(
+            );
+            let bytes_sent_packet = Self::sys_publish(
                 broker_bytes_sent_topic.clone(),
                 Bytes::copy_from_slice(vec![bytes_sent.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let uptime_packet = PublishPacketBuilder::new(
+            );
+            let uptime_packet = Self::sys_publish(
                 broker_uptime_topic.clone(),
                 Bytes::copy_from_slice(vec![metric.get_uptime().to_le_bytes()[0]].as_slice()),
-            )
-            .build();
+            );
 
-            let packets_received_packet = PublishPacketBuilder::new(
+            let packets_received_packet = Self::sys_publish(
                 packets_received_topic.clone(),
                 Bytes::copy_from_slice(vec![packets_received.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let packets_sent_packet = PublishPacketBuilder::new(
+            );
+            let packets_sent_packet = Self::sys_publish(
                 packets_sent_topic.clone(),
                 Bytes::copy_from_slice(vec![packets_sent.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let messages_received_packet = PublishPacketBuilder::new(
+            );
+            let messages_received_packet = Self::sys_publish(
                 messages_received_topic.clone(),
                 Bytes::copy_from_slice(vec![messages_received.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let messages_sent_packet = PublishPacketBuilder::new(
+            );
+            let messages_sent_packet = Self::sys_publish(
                 messages_sent_topic.clone(),
                 Bytes::copy_from_slice(vec![messages_sent.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let messages_dropped_packet = PublishPacketBuilder::new(
+            );
+            let messages_dropped_packet = Self::sys_publish(
                 messages_dropped_topic.clone(),
                 Bytes::copy_from_slice(vec![messages_dropped.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
-            let subscriptions_count_packet = PublishPacketBuilder::new(
+            );
+            let subscriptions_count_packet = Self::sys_publish(
                 subscriptions_count_topic.clone(),
                 Bytes::copy_from_slice(vec![subscriptions_count.to_le_bytes()[0]].as_slice()),
-            )
-            .build();
+            );
 
             let router_actor_addr = self
                 .router_actor
@@ -258,9 +262,7 @@ impl SysTopicTask {
             ];
 
             for packet in packets {
-                router_actor_addr.do_send(router_actor::RoutePacketToAllTenants {
-                    packet: yedmq_mqtt::MqttPacketV3::Publish(packet),
-                });
+                router_actor_addr.do_send(router_actor::RoutePacketToAllTenants { packet });
             }
         }
     }

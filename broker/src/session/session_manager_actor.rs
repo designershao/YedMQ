@@ -20,7 +20,7 @@ use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::Packet;
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
@@ -511,7 +511,7 @@ impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
 pub struct SendMessageToSession {
     pub tenant_id: String,
     pub client_id: String,
-    pub packet: MqttPacketV3,
+    pub packet: Packet,
 }
 
 impl Handler<SendMessageToSession> for SessionManagerActor {

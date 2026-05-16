@@ -3,7 +3,7 @@ use std::sync::Arc;
 use actix::{Addr, MailboxError, SystemService};
 use thiserror::Error;
 use tonic::transport::Channel;
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::Packet;
 
 use crate::protobuf::cluster_service_client::ClusterServiceClient;
 use crate::protobuf::{
@@ -14,6 +14,9 @@ use crate::raft::topic::topic_raft_actor::{
     CleanRetainPublishPacket, GetRetainPublishPacketEnsureLinearizable,
     GetSubscriptionsEnsureLinearizable, GetSubscriptionsResponse, RegisterRetainPublishPacket,
     Subscribe, TopicRaftActor, TopicRaftError, Unsubscribe,
+};
+use crate::stored_packet::{
+    deserialize_stored_packet_list_from_str, serialize_stored_packet_to_string,
 };
 
 #[derive(Debug, Error)]
@@ -138,7 +141,7 @@ impl TopicService {
         &self,
         tenant_id: String,
         client_id: String,
-        publish_packet: MqttPacketV3,
+        publish_packet: Packet,
     ) -> Result<(), TopicServiceError> {
         let result = self
             .topic_raft_actor
@@ -154,7 +157,7 @@ impl TopicService {
             Err(TopicRaftError::NotLeader {
                 leader: Some(leader),
             }) => {
-                let payload = serde_json::to_string(&publish_packet)
+                let payload = serialize_stored_packet_to_string(&publish_packet)
                     .map_err(|e| TopicServiceError::Serialize(e.to_string()))?;
                 let mut client = Self::connect_cluster_client(&leader.rpc_addr).await?;
                 client
@@ -245,7 +248,7 @@ impl TopicService {
         &self,
         tenant_id: String,
         topic: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicServiceError> {
+    ) -> Result<Vec<Arc<Packet>>, TopicServiceError> {
         let result = self
             .topic_raft_actor
             .send(GetRetainPublishPacketEnsureLinearizable {
@@ -264,7 +267,7 @@ impl TopicService {
                     .get_retain_publish_message(GetRetainPublishMessageRequest { tenant_id, topic })
                     .await?;
                 match response.into_inner().payload {
-                    Some(payload) => serde_json::from_str(&payload)
+                    Some(payload) => deserialize_stored_packet_list_from_str(&payload)
                         .map_err(|e| TopicServiceError::Serialize(e.to_string())),
                     None => Ok(vec![]),
                 }

@@ -118,14 +118,15 @@ or expose the management API.
 
 3. **Start the broker:**
    ```bash
-   RUST_LOG=info ./target/release/yedmq
+   RUST_LOG=info ./target/release/yedmq start -c yedmq.toml
    ```
-   Run the binary from the directory that contains `yedmq.toml`.
+   Running `./target/release/yedmq` without a subcommand is still supported and starts the broker
+   with the default configuration search path.
 
    Windows PowerShell:
    ```powershell
    $env:RUST_LOG = "info"
-   .\target\release\yedmq.exe
+   .\target\release\yedmq.exe start -c yedmq.toml
    ```
 
    Docker:
@@ -177,6 +178,34 @@ default_authorize_result = true
 
 Use the second option only for local smoke tests. For any shared, staged, or production
 deployment, keep the defaults locked down and use a real authentication plugin.
+
+## CLI Operations
+
+The `yedmq` binary also provides basic operational commands:
+
+```bash
+./target/release/yedmq version
+./target/release/yedmq config check -c yedmq.toml
+```
+
+Status commands call the REST management API, which listens on `127.0.0.1:3456` by default and
+requires a user under `[listener.api.auth].users`.
+
+```bash
+export YEDMQ_API_USER=admin
+export YEDMQ_API_PASSWORD=replace_me
+
+./target/release/yedmq node status
+./target/release/yedmq cluster status
+./target/release/yedmq broker stats --output json
+```
+
+For scripts that should avoid putting the password in process arguments:
+
+```bash
+printf '%s' 'replace_me' | \
+  ./target/release/yedmq cluster status --user admin --password-stdin
+```
 
 ## 📖 Documentation
 

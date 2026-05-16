@@ -16,7 +16,7 @@ use openraft::{
     Config, RaftMetrics, StorageError,
 };
 use tokio::sync::RwLock;
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::{Ack, Packet, Properties, ProtocolVersion, ReasonCode};
 
 use crate::{
     inflight::InflightError,
@@ -35,7 +35,17 @@ use crate::{
     },
     rpc::grpc_status,
     session::session_state_storage::{SessionState, SessionStateStorage, SessionStateStorageError},
+    stored_packet::deserialize_stored_packet,
 };
+
+fn success_ack(packet_identifier: u16) -> Ack {
+    Ack {
+        protocol_version: ProtocolVersion::V3_1_1,
+        packet_identifier,
+        reason_code: ReasonCode::Success,
+        properties: Properties::default(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum ActorState {
@@ -1474,7 +1484,7 @@ impl Handler<AdvanceInflightState> for SessionStateRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+#[rtype(result = "Result<Option<Packet>, SessionStateRaftError>")]
 pub struct GetCurrentInflightPacket {
     pub tenant_id: String,
     pub client_id: String,
@@ -1482,7 +1492,7 @@ pub struct GetCurrentInflightPacket {
 }
 
 impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Option<Packet>, SessionStateRaftError>>;
 
     fn handle(&mut self, msg: GetCurrentInflightPacket, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
@@ -1521,19 +1531,11 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
 
                                 match state {
                                     Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                        let packet = MqttPacketV3::Pubrel(
-                                            yedmq_mqtt::v3::pubrel::PubRelPacket::new(
-                                                msg.packet_id,
-                                            ),
-                                        );
+                                        let packet = Packet::Pubrel(success_ack(msg.packet_id));
                                         Ok(Some(packet))
                                     }
                                     Some(crate::inflight::InflightState::WaitPubrel) => {
-                                        let packet = MqttPacketV3::Pubrec(
-                                            yedmq_mqtt::v3::pubrec::PubRecPacket::new(
-                                                msg.packet_id,
-                                            ),
-                                        );
+                                        let packet = Packet::Pubrec(success_ack(msg.packet_id));
                                         Ok(Some(packet))
                                     }
                                     Some(crate::inflight::InflightState::WaitPubrec)
@@ -1544,9 +1546,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
                                                 .ok_or(SessionStateRaftError::NotInitialized)?;
                                             match store.get(&key).await {
                                                 Ok(Some(data)) => {
-                                                    match serde_json::from_slice::<MqttPacketV3>(
-                                                        &data,
-                                                    ) {
+                                                    match deserialize_stored_packet(&data) {
                                                         Ok(mut packet) => {
                                                             packet.set_dup(1);
                                                             Ok(Some(packet))
@@ -1607,7 +1607,7 @@ impl Handler<GetCurrentInflightPacket> for SessionStateRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+#[rtype(result = "Result<Option<Packet>, SessionStateRaftError>")]
 pub struct GetCurrentInflightPacketLinearizable {
     pub tenant_id: String,
     pub client_id: String,
@@ -1615,7 +1615,7 @@ pub struct GetCurrentInflightPacketLinearizable {
 }
 
 impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Option<Packet>, SessionStateRaftError>>;
 
     fn handle(
         &mut self,
@@ -1649,11 +1649,11 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
 
                                         match state {
                                             Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(msg.packet_id));
+                                                let packet = Packet::Pubrel(success_ack(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrel) => {
-                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(msg.packet_id));
+                                                let packet = Packet::Pubrec(success_ack(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrec)
@@ -1662,7 +1662,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
                                                     let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
                                                     match store.get(&key).await {
                                                         Ok(Some(data)) => {
-                                                            match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                            match deserialize_stored_packet(&data) {
                                                                 Ok(mut packet) => {
                                                                     packet.set_dup(1);
                                                                     Ok(Some(packet))
@@ -1748,7 +1748,7 @@ impl Handler<GetCurrentInflightPacketLinearizable> for SessionStateRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+#[rtype(result = "Result<Option<Packet>, SessionStateRaftError>")]
 pub struct GetNextInflightPacket {
     pub tenant_id: String,
     pub client_id: String,
@@ -1756,7 +1756,7 @@ pub struct GetNextInflightPacket {
 }
 
 impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Option<Packet>, SessionStateRaftError>>;
 
     fn handle(&mut self, msg: GetNextInflightPacket, _: &mut Context<Self>) -> Self::Result {
         match &self.state {
@@ -1794,19 +1794,11 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
 
                                 match state {
                                     Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                        let packet = MqttPacketV3::Pubrel(
-                                            yedmq_mqtt::v3::pubrel::PubRelPacket::new(
-                                                msg.packet_id,
-                                            ),
-                                        );
+                                        let packet = Packet::Pubrel(success_ack(msg.packet_id));
                                         Ok(Some(packet))
                                     }
                                     Some(crate::inflight::InflightState::WaitPubrel) => {
-                                        let packet = MqttPacketV3::Pubrec(
-                                            yedmq_mqtt::v3::pubrec::PubRecPacket::new(
-                                                msg.packet_id,
-                                            ),
-                                        );
+                                        let packet = Packet::Pubrec(success_ack(msg.packet_id));
                                         Ok(Some(packet))
                                     }
                                     Some(crate::inflight::InflightState::WaitPubrec)
@@ -1817,9 +1809,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
                                                 .ok_or(SessionStateRaftError::NotInitialized)?;
                                             match store.get(&key).await {
                                                 Ok(Some(data)) => {
-                                                    match serde_json::from_slice::<MqttPacketV3>(
-                                                        &data,
-                                                    ) {
+                                                    match deserialize_stored_packet(&data) {
                                                         Ok(mut packet) => {
                                                             packet.set_dup(1);
                                                             Ok(Some(packet))
@@ -1880,7 +1870,7 @@ impl Handler<GetNextInflightPacket> for SessionStateRaftActor {
 }
 
 #[derive(Message)]
-#[rtype(result = "Result<Option<MqttPacketV3>, SessionStateRaftError>")]
+#[rtype(result = "Result<Option<Packet>, SessionStateRaftError>")]
 pub struct GetNextInflightPacketLinearizable {
     pub tenant_id: String,
     pub client_id: String,
@@ -1888,7 +1878,7 @@ pub struct GetNextInflightPacketLinearizable {
 }
 
 impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
-    type Result = ResponseActFuture<Self, Result<Option<MqttPacketV3>, SessionStateRaftError>>;
+    type Result = ResponseActFuture<Self, Result<Option<Packet>, SessionStateRaftError>>;
 
     fn handle(
         &mut self,
@@ -1922,11 +1912,11 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
 
                                         match state {
                                             Some(crate::inflight::InflightState::WaitPubcomp) => {
-                                                let packet = MqttPacketV3::Pubrel(yedmq_mqtt::v3::pubrel::PubRelPacket::new(msg.packet_id));
+                                                let packet = Packet::Pubrel(success_ack(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrel) => {
-                                                let packet = MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(msg.packet_id));
+                                                let packet = Packet::Pubrec(success_ack(msg.packet_id));
                                                 Ok(Some(packet))
                                             }
                                             Some(crate::inflight::InflightState::WaitPubrec)
@@ -1935,7 +1925,7 @@ impl Handler<GetNextInflightPacketLinearizable> for SessionStateRaftActor {
                                                     let store = payload_store.get().ok_or(SessionStateRaftError::NotInitialized)?;
                                                     match store.get(&key).await {
                                                         Ok(Some(data)) => {
-                                                            match serde_json::from_slice::<MqttPacketV3>(&data) {
+                                                            match deserialize_stored_packet(&data) {
                                                                 Ok(mut packet) => {
                                                                     packet.set_dup(1);
                                                                     Ok(Some(packet))

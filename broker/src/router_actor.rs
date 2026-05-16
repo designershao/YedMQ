@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tonic::Request;
-use yedmq_mqtt::{v3::publish::PublishPacket, MqttPacketV3};
+use yedmq_mqtt::packet::{Packet, Publish};
 
 use crate::metric::Metric;
 use crate::node_resolver::NodeResolver;
@@ -16,6 +16,9 @@ use crate::session::session_actor_map_service::SessionActorMapService;
 use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionActorMapStorage};
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
+use crate::stored_packet::{
+    deserialize_stored_packet, serialize_stored_packet, serialize_stored_packet_to_string,
+};
 use crate::topic::topic_service::TopicService;
 use crate::topic::topic_storage::TopicStorage;
 use crate::{
@@ -216,38 +219,33 @@ impl RouterActor {
         format!("{prefix}:{route_id}")
     }
 
-    fn should_route_durably(packet: &MqttPacketV3) -> bool {
+    fn should_route_durably(packet: &Packet) -> bool {
         matches!(
             packet,
-            MqttPacketV3::Publish(publish_packet)
-                if publish_packet.fix_header.qos.unwrap_or_default() >= 1
+            Packet::Publish(publish_packet) if publish_packet.qos >= 1
         )
     }
 
-    fn adjust_publish_for_subscriber(
-        publish_packet: &PublishPacket,
-        subscriber_qos: u8,
-    ) -> PublishPacket {
+    fn adjust_publish_for_subscriber(publish_packet: &Publish, subscriber_qos: u8) -> Publish {
         let mut publish_packet = publish_packet.clone();
-        if publish_packet.fix_header.qos.unwrap_or_default() >= subscriber_qos.into() {
-            if subscriber_qos == 0 && publish_packet.fix_header.qos.unwrap_or_default() > 0 {
-                publish_packet.fix_header.qos = Some(0);
-                publish_packet.variable_header.packet_identifier = None;
-                publish_packet.fix_header.remaining_length =
-                    publish_packet.fix_header.remaining_length.saturating_sub(2);
+        if publish_packet.qos >= subscriber_qos {
+            if subscriber_qos == 0 && publish_packet.qos > 0 {
+                publish_packet.qos = 0;
+                publish_packet.packet_identifier = None;
             } else {
-                publish_packet.fix_header.qos = Some(subscriber_qos.into());
+                publish_packet.qos = subscriber_qos;
             }
         }
         publish_packet
     }
 
-    async fn serialize_packet(packet: &MqttPacketV3) -> Result<Vec<u8>, RouterActorError> {
-        serde_json::to_vec(packet).map_err(|e| RouterActorError::SerializationError(e.to_string()))
+    async fn serialize_packet(packet: &Packet) -> Result<Vec<u8>, RouterActorError> {
+        serialize_stored_packet(packet)
+            .map_err(|e| RouterActorError::SerializationError(e.to_string()))
     }
 
-    async fn deserialize_packet(bytes: &[u8]) -> Result<MqttPacketV3, RouterActorError> {
-        serde_json::from_slice(bytes)
+    async fn deserialize_packet(bytes: &[u8]) -> Result<Packet, RouterActorError> {
+        deserialize_stored_packet(bytes)
             .map_err(|e| RouterActorError::SerializationError(e.to_string()))
     }
 
@@ -270,7 +268,7 @@ impl RouterActor {
     fn route_to_local_session(
         tenant_id: &str,
         client_id: &str,
-        packet: MqttPacketV3,
+        packet: Packet,
         session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
         if let Some(recipient) = session_registry.get_session(tenant_id, client_id) {
@@ -287,7 +285,7 @@ impl RouterActor {
     async fn route_to_local_session_durable(
         tenant_id: &str,
         client_id: &str,
-        packet: MqttPacketV3,
+        packet: Packet,
         session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
         let recipient = session_registry
@@ -307,12 +305,12 @@ impl RouterActor {
 
     async fn publish_to_local_subscribers(
         tenant_id: &str,
-        packet: &MqttPacketV3,
+        packet: &Packet,
         topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
-        if let MqttPacketV3::Publish(publish_packet) = packet {
-            let topic = &publish_packet.variable_header.topic_name;
+        if let Packet::Publish(publish_packet) = packet {
+            let topic = &publish_packet.topic_name;
             let res = topic_raft_actor_addr
                 .send(crate::raft::topic::topic_raft_actor::GetSubscriptions {
                     tenant_id: tenant_id.to_string(),
@@ -328,7 +326,7 @@ impl RouterActor {
                         Self::route_to_local_session(
                             tenant_id,
                             &item.client_identifier,
-                            MqttPacketV3::Publish(publish_packet),
+                            Packet::Publish(publish_packet),
                             session_registry.clone(),
                         )?;
                     }
@@ -344,10 +342,10 @@ impl RouterActor {
     async fn route(
         context: RouteContext,
         tenant_id: &str,
-        packet: &MqttPacketV3,
+        packet: &Packet,
     ) -> Result<(), RouterActorError> {
-        if let MqttPacketV3::Publish(publish_packet) = packet {
-            let topic = &publish_packet.variable_header.topic_name;
+        if let Packet::Publish(publish_packet) = packet {
+            let topic = &publish_packet.topic_name;
 
             let mut subscriptions = {
                 let local_topic_storage = context.local_topic_storage.read();
@@ -405,7 +403,7 @@ impl RouterActor {
                     continue;
                 };
 
-                let adjusted_packet = MqttPacketV3::Publish(Self::adjust_publish_for_subscriber(
+                let adjusted_packet = Packet::Publish(Self::adjust_publish_for_subscriber(
                     publish_packet,
                     item.qos,
                 ));
@@ -453,7 +451,7 @@ impl RouterActor {
         dest_node_id: NodeId,
         target_client_id: String,
         target_qos: u8,
-        packet: MqttPacketV3,
+        packet: Packet,
     ) -> Result<(), RouterActorError> {
         let route_id = uuid::Uuid::new_v4().to_string();
         let packet_key = Self::build_packet_key("route-outbox", &route_id);
@@ -573,7 +571,7 @@ impl RouterActor {
         let packet = Self::deserialize_packet(&packet_bytes).await?;
         let request = crate::protobuf::RoutePacketRequest {
             tenant_id: item.tenant_id.clone(),
-            payload: serde_json::to_string(&packet)
+            payload: serialize_stored_packet_to_string(&packet)
                 .map_err(|e| RouterActorError::SerializationError(e.to_string()))?,
             route_id: item.route_id.clone(),
             source_node_id: item.source_node_id,
@@ -619,7 +617,7 @@ impl RouterActor {
         dest_node_id: NodeId,
         target_client_id: String,
         target_qos: u8,
-        packet: MqttPacketV3,
+        packet: Packet,
     ) {
         actix::spawn(async move {
             let Some(dest_node) = node_resolver
@@ -632,7 +630,7 @@ impl RouterActor {
 
             let request = crate::protobuf::RoutePacketRequest {
                 tenant_id,
-                payload: match serde_json::to_string(&packet) {
+                payload: match serialize_stored_packet_to_string(&packet) {
                     Ok(payload) => payload,
                     Err(e) => {
                         warn!("Failed to serialize best-effort route packet: {}", e);
@@ -912,7 +910,7 @@ impl RouterActor {
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RoutePacket {
     pub tenant_id: String,
-    pub packet: MqttPacketV3,
+    pub packet: Packet,
 }
 
 impl Handler<RoutePacket> for RouterActor {
@@ -950,7 +948,7 @@ impl Handler<RoutePacket> for RouterActor {
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RouteFromOtherNode {
     pub tenant_id: String,
-    pub packet: MqttPacketV3,
+    pub packet: Packet,
     pub route_id: String,
     pub source_node_id: NodeId,
     pub target_client_id: String,
@@ -1011,7 +1009,7 @@ impl Handler<RouteFromOtherNode> for RouterActor {
 #[derive(Message)]
 #[rtype(result = "Result<(), RouterActorError>")]
 pub struct RoutePacketToAllTenants {
-    pub packet: MqttPacketV3,
+    pub packet: Packet,
 }
 
 impl Handler<RoutePacketToAllTenants> for RouterActor {
@@ -1055,7 +1053,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use tokio::time::{sleep, Duration};
-    use yedmq_mqtt::v3::publish::PublishPacketBuilder;
+    use yedmq_mqtt::{v3::publish::PublishPacketBuilder, MqttPacketV3};
 
     use crate::metric::Metric;
     use crate::raft::payload::RocksDBPayloadStore;
@@ -1068,7 +1066,7 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct DeliveredPackets {
-        packets: Arc<Mutex<Vec<MqttPacketV3>>>,
+        packets: Arc<Mutex<Vec<Packet>>>,
     }
 
     impl DeliveredPackets {
@@ -1076,7 +1074,7 @@ mod tests {
             self.packets.lock().unwrap().len()
         }
 
-        fn push(&self, packet: MqttPacketV3) {
+        fn push(&self, packet: Packet) {
             self.packets.lock().unwrap().push(packet);
         }
     }
@@ -1124,13 +1122,13 @@ mod tests {
         }
     }
 
-    fn build_publish_packet(topic: &str, qos: u8, payload: &[u8]) -> MqttPacketV3 {
-        MqttPacketV3::Publish(
+    fn build_publish_packet(topic: &str, qos: u8, payload: &[u8]) -> Packet {
+        Packet::from(MqttPacketV3::Publish(
             PublishPacketBuilder::new(topic.to_string(), Bytes::copy_from_slice(payload))
                 .qos(qos)
                 .packet_identifier(42)
                 .build(),
-        )
+        ))
     }
 
     fn build_test_settings(temp_dir: &TempDir, nodes: Vec<crate::settings::Node>) -> Arc<Settings> {

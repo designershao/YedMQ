@@ -9,6 +9,7 @@ use self::v3::fixed_header;
 
 pub mod packet;
 pub mod v3;
+pub mod v5;
 
 pub const MQTT_MAX_MESSAGE_SIZE: u32 = 268435456;
 

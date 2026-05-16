@@ -22,21 +22,9 @@ use tokio::sync::{
     mpsc::{self, Sender},
     RwLock,
 };
-use yedmq_mqtt::{
-    v3::{
-        disconnect::DisconnectPacket,
-        pingresp::PingrespPacket,
-        puback::PubAckPacket,
-        pubcomp::PubCompPacket,
-        publish::{PublishPacket, PublishPacketBuilder},
-        pubrec::PubRecPacket,
-        pubrel::PubRelPacket,
-        suback::SubackPacket,
-        subscribe::SubscribePacket,
-        unsuback::UnSubackPacket,
-        unsubscribe::UnsubscribePacket,
-    },
-    MqttPacketV3,
+use yedmq_mqtt::packet::{
+    Ack, Packet, Properties, ProtocolVersion, Publish, ReasonCode, Suback, Subscribe, Unsuback,
+    Unsubscribe,
 };
 use yedmq_plugin_host::{
     plugin_manager::{AuthorizeResult, PluginManager},
@@ -50,6 +38,7 @@ use crate::{
     raft::payload::PayloadError,
     router_actor::RouterActor,
     session::session_state_service::SessionStateService,
+    stored_packet::{deserialize_stored_packet, serialize_stored_packet},
     topic::topic_service::TopicService,
 };
 
@@ -221,6 +210,30 @@ fn get_protobuf_now_timestamp() -> Timestamp {
     }
 }
 
+fn success_ack(packet_identifier: u16) -> Ack {
+    Ack {
+        protocol_version: ProtocolVersion::V3_1_1,
+        packet_identifier,
+        reason_code: ReasonCode::Success,
+        properties: Properties::default(),
+    }
+}
+
+fn granted_qos_reason(qos: u8) -> ReasonCode {
+    match qos {
+        0 => ReasonCode::GrantedQos0,
+        1 => ReasonCode::GrantedQos1,
+        2 => ReasonCode::GrantedQos2,
+        _ => ReasonCode::UnspecifiedError,
+    }
+}
+
+fn publish_topic_hash(topic: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(topic, &mut hasher);
+    std::hash::Hasher::finish(&hasher)
+}
+
 pub struct SessionInfo {
     pub tenant_identifier: String,
 
@@ -305,9 +318,9 @@ struct AllInflightRetryImmediate {}
 #[derive(Message)]
 #[rtype(result = "()")]
 pub enum SessionActorMessage {
-    InboundPacket(MqttPacketV3),
+    InboundPacket(Packet),
 
-    OutboundMessage(MqttPacketV3),
+    OutboundMessage(Packet),
 
     KeepAliveExpired,
 
@@ -339,7 +352,7 @@ pub enum SessionActorMessage {
 #[derive(Message)]
 #[rtype(result = "Result<(), SessionActorError>")]
 pub struct AcceptRoutedPublish {
-    pub packet: MqttPacketV3,
+    pub packet: Packet,
 }
 
 #[derive(Message)]
@@ -489,7 +502,7 @@ impl Actor for SessionActor {
                             };
 
                             if let Some(data) = data {
-                                 if let Ok(packet) = serde_json::from_slice::<MqttPacketV3>(&data) {
+                                 if let Ok(packet) = deserialize_stored_packet(&data) {
                                       session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
                                  }
                             } else {
@@ -523,15 +536,15 @@ impl Actor for SessionActor {
 }
 
 struct HandleSubscribeResult {
-    retain_messages: Vec<Arc<MqttPacketV3>>,
+    retain_messages: Vec<Arc<Packet>>,
 
-    suback_packet: SubackPacket,
+    suback_packet: Suback,
 
     succeed_subscriptions: Vec<(String, QoS)>,
 }
 
 struct HandleUnSubscribeResult {
-    unsuback_packet: UnSubackPacket,
+    unsuback_packet: Unsuback,
 
     succeed_unsubscriptions: Vec<String>,
 }
@@ -549,7 +562,7 @@ enum HandlePublishError {
 }
 
 struct HandlePublishResult {
-    inflight_packet: Option<MqttPacketV3>,
+    inflight_packet: Option<Packet>,
 }
 
 struct HandlePublishContext {
@@ -575,39 +588,47 @@ struct OutboundPublishDeliveryContext {
 }
 
 async fn deliver_outbound_publish(
-    mut publish_packet: PublishPacket,
+    mut publish_packet: Publish,
     context: OutboundPublishDeliveryContext,
 ) -> Result<(), SessionActorError> {
-    let qos = publish_packet.fix_header.qos.unwrap_or(0) as u8;
+    let qos = publish_packet.qos;
 
     if matches!(context.activity_state, ActivityState::Active) {
         let conn = context.conn.ok_or(SessionActorError::ConnectionNotSet)?;
         if qos == 0 {
             conn.send(ConnectionActorMessage::WritePacketToClient(
-                MqttPacketV3::Publish(publish_packet),
+                Packet::Publish(publish_packet),
             ))
             .await?
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
             return Ok(());
         }
 
-        let packet_id = publish_packet
-            .variable_header
-            .packet_identifier
+        if publish_packet.packet_identifier.is_none() {
+            let packet_id = {
+                let mut session_state_guard = context.session_state.write().await;
+                session_state_guard.inflight.allocate_packet_id()
+            }
             .ok_or_else(|| {
                 SessionActorError::DeliveryError(
-                    "QoS > 0 publish packet missing packet identifier".to_string(),
+                    "failed to allocate new inflight packet id".to_string(),
                 )
             })?;
+            publish_packet.packet_identifier = Some(packet_id);
+        }
+
+        let packet_id = publish_packet
+            .packet_identifier
+            .expect("packet id allocated");
 
         let store = context
             .payload_store
             .as_ref()
             .ok_or_else(|| SessionActorError::DeliveryError("payload store missing".to_string()))?;
         let key = uuid::Uuid::new_v4().to_string();
-        let mut stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+        let mut stored_packet = Packet::Publish(publish_packet.clone());
         let mut stored_packet_needs_refresh = false;
-        let data = serde_json::to_vec(&stored_packet)
+        let data = serialize_stored_packet(&stored_packet)
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
         store
             .put(&key, bytes::Bytes::from(data))
@@ -623,8 +644,8 @@ async fn deliver_outbound_publish(
             {
                 if matches!(e, InflightError::PacketIdentifierHasExisted) {
                     if let Some(new_id) = session_state_guard.inflight.allocate_packet_id() {
-                        publish_packet.variable_header.packet_identifier = Some(new_id);
-                        stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+                        publish_packet.packet_identifier = Some(new_id);
+                        stored_packet = Packet::Publish(publish_packet.clone());
                         stored_packet_needs_refresh = true;
                         session_state_guard
                             .inflight
@@ -659,8 +680,8 @@ async fn deliver_outbound_publish(
                             session_state_guard.inflight.allocate_packet_id()
                         };
                         if let Some(new_id) = new_id {
-                            publish_packet.variable_header.packet_identifier = Some(new_id);
-                            stored_packet = MqttPacketV3::Publish(publish_packet.clone());
+                            publish_packet.packet_identifier = Some(new_id);
+                            stored_packet = Packet::Publish(publish_packet.clone());
                             stored_packet_needs_refresh = true;
                             context
                                 .session_state_service
@@ -686,7 +707,7 @@ async fn deliver_outbound_publish(
         }
 
         if stored_packet_needs_refresh {
-            let data = serde_json::to_vec(&stored_packet)
+            let data = serialize_stored_packet(&stored_packet)
                 .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
             store
                 .put(&key, bytes::Bytes::from(data))
@@ -699,7 +720,7 @@ async fn deliver_outbound_publish(
         }
 
         conn.send(ConnectionActorMessage::WritePacketToClient(
-            MqttPacketV3::Publish(publish_packet),
+            Packet::Publish(publish_packet),
         ))
         .await?
         .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
@@ -716,7 +737,7 @@ async fn deliver_outbound_publish(
         .as_ref()
         .ok_or_else(|| SessionActorError::DeliveryError("payload store missing".to_string()))?;
     let key = uuid::Uuid::new_v4().to_string();
-    let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+    let data = serialize_stored_packet(&Packet::Publish(publish_packet.clone()))
         .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
     store
         .put(&key, bytes::Bytes::from(data))
@@ -749,16 +770,16 @@ async fn deliver_outbound_publish(
 async fn collect_inflight_retry_packets(
     inflight_entries: Vec<(u16, String, InflightState)>,
     payload_store: Option<Arc<dyn PayloadStore>>,
-) -> Vec<MqttPacketV3> {
+) -> Vec<Packet> {
     let mut retry_packets = Vec::new();
 
     for (packet_id, key, state) in inflight_entries {
         match state {
             InflightState::WaitPubcomp => {
-                retry_packets.push(MqttPacketV3::Pubrel(PubRelPacket::new(packet_id)));
+                retry_packets.push(Packet::Pubrel(success_ack(packet_id)));
             }
             InflightState::WaitPubrel => {
-                retry_packets.push(MqttPacketV3::Pubrec(PubRecPacket::new(packet_id)));
+                retry_packets.push(Packet::Pubrec(success_ack(packet_id)));
             }
             InflightState::WaitPubrec | InflightState::WaitPuback => {
                 let Some(store) = &payload_store else {
@@ -770,7 +791,7 @@ async fn collect_inflight_retry_packets(
                 };
 
                 match store.get(&key).await {
-                    Ok(Some(data)) => match serde_json::from_slice::<MqttPacketV3>(&data) {
+                    Ok(Some(data)) => match deserialize_stored_packet(&data) {
                         Ok(mut packet) => {
                             packet.set_dup(1);
                             retry_packets.push(packet);
@@ -805,7 +826,7 @@ async fn collect_inflight_retry_packets(
 
 async fn write_inflight_retry_packets(
     conn: Recipient<ConnectionActorMessage>,
-    packets: Vec<MqttPacketV3>,
+    packets: Vec<Packet>,
 ) {
     for packet in packets {
         if let Err(e) = conn
@@ -818,27 +839,23 @@ async fn write_inflight_retry_packets(
 }
 
 async fn do_handle_unsubscribe(
-    unsubscribe_packet: UnsubscribePacket,
+    unsubscribe_packet: Unsubscribe,
     client_info: &Client,
     topic_service: TopicService,
 ) -> HandleUnSubscribeResult {
-    let unsub_topic_filters = &unsubscribe_packet.payload.topic_filters;
+    let unsub_topic_filters = &unsubscribe_packet.topics;
     let mut succeed_unsubscriptions = vec![];
     {
         for topic in unsub_topic_filters {
             let tenant_id = client_info.tenant_id.clone();
             let client_id = client_info.client_identifier.clone();
             if let Err(e) = topic_service
-                .unsubscribe(
-                    tenant_id.clone(),
-                    client_id.clone(),
-                    topic.topic_name.clone(),
-                )
+                .unsubscribe(tenant_id.clone(), client_id.clone(), topic.clone())
                 .await
             {
                 error!(
                     "session {} unsubscribe topic {} error: {}",
-                    client_info.client_identifier, topic.topic_name, e
+                    client_info.client_identifier, topic, e
                 );
             }
             // warning: even if the unsubscription fails in raft layer,
@@ -846,12 +863,15 @@ async fn do_handle_unsubscribe(
             // this may cause inconsistency between session state and topic state in raft,
             // but mqtt 3.1.1 protocol does not specify the behavior when unsubscription fails,
             // and this can avoid client being stuck in retry loop when raft layer is unavailable
-            succeed_unsubscriptions.push(topic.topic_name.clone());
+            succeed_unsubscriptions.push(topic.clone());
         }
     }
-    let unsuback_packet = yedmq_mqtt::v3::unsuback::UnSubackPacket::new(
-        unsubscribe_packet.variable_header.packet_identifier,
-    );
+    let unsuback_packet = Unsuback {
+        protocol_version: unsubscribe_packet.protocol_version,
+        packet_identifier: unsubscribe_packet.packet_identifier,
+        reason_codes: vec![ReasonCode::Success; succeed_unsubscriptions.len().max(1)],
+        properties: Properties::default(),
+    };
     HandleUnSubscribeResult {
         unsuback_packet,
         succeed_unsubscriptions,
@@ -859,7 +879,7 @@ async fn do_handle_unsubscribe(
 }
 
 async fn do_handle_publish(
-    publish_packet: PublishPacket,
+    publish_packet: Publish,
     context: HandlePublishContext,
 ) -> Result<HandlePublishResult, HandlePublishError> {
     let authorize_request = AuthorizeRequest {
@@ -872,8 +892,8 @@ async fn do_handle_publish(
             .clone()
             .unwrap_or("".to_string()),
         action: AuthAction::Publish.into(),
-        topic: publish_packet.variable_header.topic_name.clone(),
-        qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
+        topic: publish_packet.topic_name.clone(),
+        qos: publish_packet.qos as u32,
         context: None,
     };
 
@@ -905,11 +925,11 @@ async fn do_handle_publish(
             message: Some(MqttMessage {
                 tenant_id: context.client_info.tenant_id.clone(),
                 client_id: context.client_info.client_identifier.clone(),
-                topic: publish_packet.variable_header.topic_name.clone(),
-                payload: publish_packet.payload.payload.to_vec(),
-                qos: publish_packet.fix_header.qos.unwrap_or(0) as u32,
-                retain: publish_packet.fix_header.retain.unwrap_or(false),
-                dup: publish_packet.fix_header.dup.unwrap_or(0) == 1,
+                topic: publish_packet.topic_name.clone(),
+                payload: publish_packet.payload.to_vec(),
+                qos: publish_packet.qos as u32,
+                retain: publish_packet.retain,
+                dup: publish_packet.dup,
                 publish_time: None,
                 properties: None,
                 message_id: None,
@@ -924,25 +944,25 @@ async fn do_handle_publish(
 
         let mut session_state_guard = context.session_state.write().await;
 
-        if publish_packet.fix_header.qos > Some(0) {
+        if publish_packet.qos > 0 {
             debug!(
                 "client {} start process packet {:?} ",
                 context.client_info.client_identifier,
                 publish_packet.clone()
             );
 
-            let packet_id = match publish_packet.variable_header.packet_identifier {
+            let packet_id = match publish_packet.packet_identifier {
                 Some(id) => id,
                 None => {
                     warn!("Packet ID is required for QoS > 0");
                     return Err(HandlePublishError::PacketIdNotExist);
                 }
             };
-            let qos = publish_packet.fix_header.qos.unwrap_or(0) as u8;
+            let qos = publish_packet.qos;
 
             let key = if let Some(store) = &context.payload_store {
                 let k = uuid::Uuid::new_v4().to_string();
-                let data = serde_json::to_vec(&MqttPacketV3::Publish(publish_packet.clone()))
+                let data = serialize_stored_packet(&Packet::Publish(publish_packet.clone()))
                     .map_err(|e| {
                         HandlePublishError::PayloadStoreError(PayloadError::Serialization(
                             e.to_string(),
@@ -985,24 +1005,24 @@ async fn do_handle_publish(
             }
 
             let packet = if qos == 1 {
-                MqttPacketV3::Puback(yedmq_mqtt::v3::puback::PubAckPacket::new(packet_id))
+                Packet::Puback(success_ack(packet_id))
             } else {
-                MqttPacketV3::Pubrec(yedmq_mqtt::v3::pubrec::PubRecPacket::new(packet_id))
+                Packet::Pubrec(success_ack(packet_id))
             };
             result.inflight_packet = Some(packet);
         }
 
         // process retain messages
-        if publish_packet.fix_header.retain == Some(true) {
+        if publish_packet.retain {
             // register retain publish packet
 
             // if publish packet paloyd is empty , clean retained publish packet
-            if publish_packet.payload.payload.is_empty() {
+            if publish_packet.payload.is_empty() {
                 if let Err(e) = context
                     .topic_service
                     .clean_retain_publish_packet(
                         context.client_info.tenant_id.clone(),
-                        publish_packet.variable_header.topic_name.clone(),
+                        publish_packet.topic_name.clone(),
                     )
                     .await
                 {
@@ -1014,7 +1034,7 @@ async fn do_handle_publish(
                     .register_retain_publish_packet(
                         context.client_info.tenant_id.clone(),
                         context.client_info.client_identifier.clone(),
-                        MqttPacketV3::Publish(publish_packet.clone()),
+                        Packet::Publish(publish_packet.clone()),
                     )
                     .await
                 {
@@ -1025,15 +1045,13 @@ async fn do_handle_publish(
         }
         //
         // select router actor based on topic
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&publish_packet.variable_header.topic_name, &mut hasher);
-        let hash = std::hash::Hasher::finish(&hasher);
+        let hash = publish_topic_hash(&publish_packet.topic_name);
         let router_actor = &context.router_actors[hash as usize % context.router_actors.len()];
 
         router_actor
             .send(crate::router_actor::RoutePacket {
                 tenant_id: context.client_info.tenant_id.clone(),
-                packet: MqttPacketV3::Publish(publish_packet.clone()),
+                packet: Packet::Publish(publish_packet.clone()),
             })
             .await
             .map_err(|e| HandlePublishError::RouteError(e.to_string()))?
@@ -1044,7 +1062,7 @@ async fn do_handle_publish(
 }
 
 async fn do_handle_subscribe(
-    subscribe_packet: &SubscribePacket,
+    subscribe_packet: &Subscribe,
     client_info: &Client,
     plugin_manager: Arc<PluginManager>,
     topic_service: TopicService,
@@ -1053,16 +1071,16 @@ async fn do_handle_subscribe(
 
     let client_id = client_info.client_identifier.clone();
 
-    let subscriptions = &subscribe_packet.payload.topic_filters;
+    let subscriptions = &subscribe_packet.topics;
 
-    let mut retain_messages: Vec<Arc<MqttPacketV3>> = vec![];
+    let mut retain_messages: Vec<Arc<Packet>> = vec![];
 
-    let mut return_code: Vec<yedmq_mqtt::v3::suback::ReturnCode> = vec![];
+    let mut return_code: Vec<ReasonCode> = vec![];
 
     let mut succeed_subscriptions: Vec<(String, QoS)> = vec![];
 
     for i in 0..subscriptions.len() {
-        let topic = subscribe_packet.payload.topic_filters[i].clone();
+        let topic = subscribe_packet.topics[i].clone();
         let authorize_request = AuthorizeRequest {
             tenant_id: tenant_id.clone(),
             client_id: client_id.clone(),
@@ -1072,7 +1090,7 @@ async fn do_handle_subscribe(
                 .clone()
                 .unwrap_or("".to_string()),
             action: AuthAction::Subscribe.into(),
-            topic: topic.topic_name.clone(),
+            topic: topic.topic_filter.clone(),
             qos: topic.qos.into(),
             context: None,
         };
@@ -1091,32 +1109,19 @@ async fn do_handle_subscribe(
                 .subscribe(
                     tenant_id.clone(),
                     client_id.clone(),
-                    topic.topic_name.clone(),
+                    topic.topic_filter.clone(),
                     topic.qos,
                 )
                 .await
             {
                 Ok(()) => {
-                    succeed_subscriptions.push((topic.topic_name.clone(), topic.qos.into()));
-                    match topic.qos {
-                        0 => {
-                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos0);
-                        }
-                        1 => {
-                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos1);
-                        }
-                        2 => {
-                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::MaxQos2);
-                        }
-                        _ => {
-                            return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
-                        }
-                    }
+                    succeed_subscriptions.push((topic.topic_filter.clone(), topic.qos.into()));
+                    return_code.push(granted_qos_reason(topic.qos));
 
                     match topic_service
                         .get_retain_publish_packets_linearizable(
                             tenant_id.clone(),
-                            topic.topic_name.clone(),
+                            topic.topic_filter.clone(),
                         )
                         .await
                     {
@@ -1126,7 +1131,7 @@ async fn do_handle_subscribe(
                         Err(e) => {
                             warn!(
                                 "Failed to get retain publish packet for session {} subscribe topic {}, error: {}",
-                                client_id, topic.topic_name, e
+                                client_id, topic.topic_filter, e
                             );
                         }
                     }
@@ -1134,18 +1139,20 @@ async fn do_handle_subscribe(
                 Err(e) => {
                     warn!(
                         "session {} subscribe topic {} error: {}",
-                        client_id, topic.topic_name, e
+                        client_id, topic.topic_filter, e
                     );
-                    return_code.push(yedmq_mqtt::v3::suback::ReturnCode::Failure);
+                    return_code.push(ReasonCode::UnspecifiedError);
                 }
             }
         }
     }
 
-    let suback_packet = SubackPacket::new(
-        subscribe_packet.variable_header.packet_identifier,
-        return_code,
-    );
+    let suback_packet = Suback {
+        protocol_version: subscribe_packet.protocol_version,
+        packet_identifier: subscribe_packet.packet_identifier,
+        reason_codes: return_code,
+        properties: Properties::default(),
+    };
 
     HandleSubscribeResult {
         succeed_subscriptions,
@@ -1371,7 +1378,7 @@ impl SessionActor {
 
     fn handle_publish(
         &mut self,
-        publish_packet: PublishPacket,
+        publish_packet: Publish,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.metric.increase_messages_received();
@@ -1411,7 +1418,7 @@ impl SessionActor {
                                 ));
 
                                 // If it was a Puback (QoS 1 Receiver completion), trigger cleanup
-                                if matches!(packet, MqttPacketV3::Puback(_)) {
+                                if matches!(packet, Packet::Puback(_)) {
                                     if clean_session {
                                         actix::spawn(async move {
                                             Self::cleanup_local_finished_items(
@@ -1454,7 +1461,7 @@ impl SessionActor {
 
     fn handle_subscribe(
         &mut self,
-        subscribe_packet: SubscribePacket,
+        subscribe_packet: Subscribe,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let plugin_manager = self.plugin_manager.clone();
@@ -1480,25 +1487,26 @@ impl SessionActor {
             .await;
             for (i, packet) in res.retain_messages.into_iter().enumerate() {
                 let packet = (*packet).clone();
-                if let MqttPacketV3::Publish(mut p) = packet {
-                    let retained_msg_qos = p.fix_header.qos.unwrap_or(0);
-                    let min_qos = cmp::min(
-                        retained_msg_qos,
-                        subscribe_packet.payload.topic_filters[i].qos as i32,
-                    );
+                if let Packet::Publish(mut p) = packet {
+                    let retained_msg_qos = p.qos;
+                    let requested_qos = subscribe_packet
+                        .topics
+                        .get(i)
+                        .map(|topic| topic.qos)
+                        .unwrap_or(retained_msg_qos);
+                    let min_qos = cmp::min(retained_msg_qos, requested_qos);
                     if min_qos == 0 && retained_msg_qos > 0 {
-                        p.variable_header.packet_identifier = None;
-                        p.fix_header.remaining_length -= 2;
+                        p.packet_identifier = None;
                     }
-                    p.fix_header.qos = Some(min_qos);
+                    p.qos = min_qos;
                     conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                        MqttPacketV3::Publish(p),
+                        Packet::Publish(p),
                     ));
                 }
             }
-            conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                yedmq_mqtt::MqttPacketV3::Suback(res.suback_packet),
-            ));
+            conn.do_send(ConnectionActorMessage::WritePacketToClient(Packet::Suback(
+                res.suback_packet,
+            )));
 
             let client_info_ref = &client_info;
             let tenant_id = &client_info_ref.tenant_id;
@@ -1546,14 +1554,14 @@ impl SessionActor {
     fn handle_pingreq(&mut self) {
         if let Some(recipient) = &self.conn_recipient {
             recipient.do_send(ConnectionActorMessage::WritePacketToClient(
-                yedmq_mqtt::MqttPacketV3::Pingresp(PingrespPacket::new()),
+                Packet::Pingresp,
             ));
         }
     }
 
     fn handle_unsubscribe(
         &mut self,
-        unsubscribe_packet: UnsubscribePacket,
+        unsubscribe_packet: Unsubscribe,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         let conn = if let Some(recipient) = &self.conn_recipient {
@@ -1597,18 +1605,14 @@ impl SessionActor {
                 }
             }
             conn.do_send(ConnectionActorMessage::WritePacketToClient(
-                yedmq_mqtt::MqttPacketV3::Unsuback(res.unsuback_packet),
+                Packet::Unsuback(res.unsuback_packet),
             ));
         }
         .into_actor(self)
         .wait(ctx);
     }
 
-    fn handle_pubrel(
-        &mut self,
-        pubrel_packet: PubRelPacket,
-        ctx: &mut <SessionActor as Actor>::Context,
-    ) {
+    fn handle_pubrel(&mut self, pubrel_packet: Ack, ctx: &mut <SessionActor as Actor>::Context) {
         let session_state = self.state.clone();
         let conn = if let Some(recipient) = &self.conn_recipient {
             recipient.clone()
@@ -1622,10 +1626,10 @@ impl SessionActor {
 
         async move {
             let mut session_state_guard = session_state.write().await;
-            let packet_id = pubrel_packet.variable_header.packet_identifier;
+            let packet_id = pubrel_packet.packet_identifier;
 
             // Generate Pubcomp response
-            let pubcomp = MqttPacketV3::Pubcomp(PubCompPacket::new(packet_id));
+            let pubcomp = Packet::Pubcomp(success_ack(packet_id));
 
             if let Err(e) = conn
                 .send(ConnectionActorMessage::WritePacketToClient(pubcomp))
@@ -1671,11 +1675,7 @@ impl SessionActor {
         .wait(ctx);
     }
 
-    fn handle_pubrec(
-        &mut self,
-        pubrec_packet: PubRecPacket,
-        ctx: &mut <SessionActor as Actor>::Context,
-    ) {
+    fn handle_pubrec(&mut self, pubrec_packet: Ack, ctx: &mut <SessionActor as Actor>::Context) {
         let session_state = self.state.clone();
         let conn = if let Some(recipient) = &self.conn_recipient {
             recipient.clone()
@@ -1687,10 +1687,10 @@ impl SessionActor {
         let session_state_service = self.session_state_service.clone();
 
         async move {
-            let packet_id = pubrec_packet.variable_header.packet_identifier;
+            let packet_id = pubrec_packet.packet_identifier;
 
             // Generate Pubrel command
-            let pubrel = MqttPacketV3::Pubrel(PubRelPacket::new(packet_id));
+            let pubrel = Packet::Pubrel(success_ack(packet_id));
 
             if let Err(e) = conn
                 .send(ConnectionActorMessage::WritePacketToClient(pubrel))
@@ -1723,11 +1723,7 @@ impl SessionActor {
         .wait(ctx);
     }
 
-    fn handle_puback(
-        &mut self,
-        puback_packet: PubAckPacket,
-        ctx: &mut <SessionActor as Actor>::Context,
-    ) {
+    fn handle_puback(&mut self, puback_packet: Ack, ctx: &mut <SessionActor as Actor>::Context) {
         let session_state = self.state.clone();
         let clean_session = self.clean_session;
         let client_info = self.get_plugin_client_info();
@@ -1735,7 +1731,7 @@ impl SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
-            let packet_id = puback_packet.variable_header.packet_identifier;
+            let packet_id = puback_packet.packet_identifier;
 
             if clean_session {
                 let mut session_state_guard = session_state.write().await;
@@ -1786,13 +1782,7 @@ impl SessionActor {
         .wait(ctx);
     }
 
-    fn handle_pubcomp(
-        &mut self,
-
-        pubcomp_packet: PubCompPacket,
-
-        ctx: &mut <SessionActor as Actor>::Context,
-    ) {
+    fn handle_pubcomp(&mut self, pubcomp_packet: Ack, ctx: &mut <SessionActor as Actor>::Context) {
         let session_state = self.state.clone();
 
         let clean_session = self.clean_session;
@@ -1804,7 +1794,7 @@ impl SessionActor {
         let payload_store = self.payload_store.clone();
 
         async move {
-            let packet_id = pubcomp_packet.variable_header.packet_identifier;
+            let packet_id = pubcomp_packet.packet_identifier;
 
             if clean_session {
                 let mut session_state_guard = session_state.write().await;
@@ -1860,7 +1850,7 @@ impl SessionActor {
 
     fn handle_disconnect(
         &mut self,
-        _disconnect_packet: DisconnectPacket,
+        _disconnect_packet: yedmq_mqtt::packet::Disconnect,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.clean_will_message();
@@ -1928,21 +1918,23 @@ impl SessionActor {
         let router_actors = self.router_actors.clone();
         async move {
             if let Some(will_message) = will_message {
-                let publish_packet = PublishPacketBuilder::new(
-                    will_message.will_topic.clone(),
-                    Bytes::copy_from_slice(will_message.will_message.as_slice()),
-                )
-                .retain(will_message.will_retain)
-                .qos(will_message.will_qos)
-                .build();
+                let publish_packet = Publish {
+                    protocol_version: ProtocolVersion::V3_1_1,
+                    topic_name: will_message.will_topic.clone(),
+                    payload: Bytes::copy_from_slice(will_message.will_message.as_slice()),
+                    qos: will_message.will_qos,
+                    retain: will_message.will_retain,
+                    dup: false,
+                    packet_identifier: None,
+                    properties: Properties::default(),
+                    expires_at_unix_secs: None,
+                };
 
-                let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                std::hash::Hash::hash(&will_message.will_topic, &mut hasher);
-                let hash = std::hash::Hasher::finish(&hasher);
+                let hash = publish_topic_hash(&will_message.will_topic);
                 let router_actor = &router_actors[hash as usize % router_actors.len()];
                 router_actor.do_send(crate::router_actor::RoutePacket {
                     tenant_id,
-                    packet: MqttPacketV3::Publish(publish_packet),
+                    packet: Packet::Publish(publish_packet),
                 });
             }
         }
@@ -1964,38 +1956,38 @@ impl Handler<SessionActorMessage> for SessionActor {
                     timer_type: TimerType::KeepAlive,
                 });
                 match packet {
-                    MqttPacketV3::Pingreq(_) => {
+                    Packet::Pingreq => {
                         self.handle_pingreq();
                     }
-                    MqttPacketV3::Subscribe(subscribe_packet) => {
+                    Packet::Subscribe(subscribe_packet) => {
                         self.handle_subscribe(subscribe_packet, ctx);
                     }
-                    MqttPacketV3::Unsubscribe(unsubscribe_packet) => {
+                    Packet::Unsubscribe(unsubscribe_packet) => {
                         self.handle_unsubscribe(unsubscribe_packet, ctx);
                     }
-                    MqttPacketV3::Publish(publish_packet) => {
+                    Packet::Publish(publish_packet) => {
                         self.handle_publish(publish_packet, ctx);
                     }
-                    MqttPacketV3::Puback(puback_packet) => {
+                    Packet::Puback(puback_packet) => {
                         self.handle_puback(puback_packet, ctx);
                     }
-                    MqttPacketV3::Pubrec(pubrec_packet) => {
+                    Packet::Pubrec(pubrec_packet) => {
                         self.handle_pubrec(pubrec_packet, ctx);
                     }
-                    MqttPacketV3::Pubrel(pubrel_packet) => {
+                    Packet::Pubrel(pubrel_packet) => {
                         self.handle_pubrel(pubrel_packet, ctx);
                     }
-                    MqttPacketV3::Pubcomp(pubcomp_packet) => {
+                    Packet::Pubcomp(pubcomp_packet) => {
                         self.handle_pubcomp(pubcomp_packet, ctx);
                     }
-                    MqttPacketV3::Disconnect(disconnect_packet) => {
+                    Packet::Disconnect(disconnect_packet) => {
                         self.handle_disconnect(disconnect_packet, ctx);
                     }
                     _ => {}
                 }
             }
             SessionActorMessage::OutboundMessage(packet) => {
-                if let MqttPacketV3::Publish(publish_packet) = packet {
+                if let Packet::Publish(publish_packet) = packet {
                     self.metric.increase_messages_sent();
                     self.session_metrics.increase_messages_sent();
                     let delivery_context = OutboundPublishDeliveryContext {
@@ -2160,9 +2152,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         if let Some(store) = &payload_store {
                             match store.get(&key).await {
                                 Ok(Some(data)) => {
-                                    if let Ok(packet) =
-                                        serde_json::from_slice::<MqttPacketV3>(&data)
-                                    {
+                                    if let Ok(packet) = deserialize_stored_packet(&data) {
                                         session_actor_addr
                                             .do_send(SessionActorMessage::OutboundMessage(packet));
                                     }
@@ -2282,7 +2272,7 @@ impl Handler<AcceptRoutedPublish> for SessionActor {
         Box::pin(
             async move {
                 match msg.packet {
-                    MqttPacketV3::Publish(publish_packet) => {
+                    Packet::Publish(publish_packet) => {
                         deliver_outbound_publish(publish_packet, delivery_context).await
                     }
                     other => Err(SessionActorError::DeliveryError(format!(

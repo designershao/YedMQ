@@ -22,10 +22,11 @@ use crate::router_actor::{RouteFromOtherNode, RouterActor};
 use crate::rpc::grpc_status;
 use crate::session::session_actor_map_storage::SessionVersion;
 use crate::session::session_manager_actor::SessionManagerActor;
+use crate::stored_packet::deserialize_stored_packet_from_str;
 use crate::topic::TopicStorageError;
 use actix::{Addr, SystemService};
 use tonic::{Request, Response, Status};
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::Packet;
 
 pub struct ClusterServiceImpl {
     pub router_actors: Vec<Addr<RouterActor>>,
@@ -598,12 +599,13 @@ impl ClusterService for ClusterServiceImpl {
         let topic_raft_actor_addr =
             crate::raft::topic::topic_raft_actor::TopicRaftActor::from_registry();
         let inner = request.into_inner();
-        let retain_publish_message = serde_json::from_str(&inner.payload).map_err(|e| {
-            grpc_status::invalid_argument_status(
-                format!("Invalid retain publish message format: {}", e),
-                "cluster_service",
-            )
-        })?;
+        let retain_publish_message =
+            deserialize_stored_packet_from_str(&inner.payload).map_err(|e| {
+                grpc_status::invalid_argument_status(
+                    format!("Invalid retain publish message format: {}", e),
+                    "cluster_service",
+                )
+            })?;
         let register_retain_publish_message_actor =
             crate::raft::topic::topic_raft_actor::RegisterRetainPublishPacket {
                 tenant_id: inner.tenant_id.clone(),
@@ -793,16 +795,16 @@ impl ClusterService for ClusterServiceImpl {
         request: Request<crate::protobuf::RoutePacketRequest>,
     ) -> Result<Response<crate::protobuf::RoutePacketResponse>, Status> {
         let inner = request.into_inner();
-        let packet: MqttPacketV3 = serde_json::from_str(&inner.payload).map_err(|e| {
+        let packet = deserialize_stored_packet_from_str(&inner.payload).map_err(|e| {
             grpc_status::invalid_argument_status(
                 format!("Invalid packet format: {}", e),
                 "cluster_service",
             )
         })?;
 
-        let router_actor = if let MqttPacketV3::Publish(ref publish) = packet {
+        let router_actor = if let Packet::Publish(ref publish) = packet {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            std::hash::Hash::hash(&publish.variable_header.topic_name, &mut hasher);
+            std::hash::Hash::hash(&publish.topic_name, &mut hasher);
             let hash = std::hash::Hasher::finish(&hasher);
             &self.router_actors[hash as usize % self.router_actors.len()]
         } else {

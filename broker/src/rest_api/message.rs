@@ -15,8 +15,7 @@ use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 use log::error;
 use serde::{Deserialize, Serialize};
-use yedmq_mqtt::v3::publish::PublishPacketBuilder;
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::{Packet, Properties, ProtocolVersion, Publish};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -185,14 +184,22 @@ pub async fn publish_message(
     };
 
     let router = app.service_registry.routers.first();
-    let publish_packet = PublishPacketBuilder::new(payload.topic, payload_bytes)
-        .qos(payload.qos)
-        .build();
+    let publish_packet = Publish {
+        protocol_version: ProtocolVersion::V3_1_1,
+        topic_name: payload.topic,
+        payload: payload_bytes,
+        qos: payload.qos,
+        retain: payload.retain,
+        dup: false,
+        packet_identifier: None,
+        properties: Properties::default(),
+        expires_at_unix_secs: None,
+    };
     router
         .expect("router actor not found")
         .do_send(RoutePacket {
             tenant_id,
-            packet: MqttPacketV3::Publish(publish_packet),
+            packet: Packet::Publish(publish_packet),
         });
     StatusCode::OK.into_response()
 }

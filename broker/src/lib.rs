@@ -16,6 +16,7 @@ pub mod rpc;
 pub mod service_registry;
 pub mod session;
 pub mod settings;
+pub mod stored_packet;
 mod timer_actor;
 pub mod topic;
 pub mod version;

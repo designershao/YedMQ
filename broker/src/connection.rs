@@ -13,6 +13,7 @@ use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use yedmq_mqtt::packet::Packet;
 use yedmq_mqtt::v3::connack::{ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
@@ -267,7 +268,7 @@ pub enum DisconnectReason {
 #[derive(Message, Debug)]
 #[rtype(result = "Result<(), ConnectionError>")]
 pub enum ConnectionActorMessage {
-    WritePacketToClient(MqttPacketV3),
+    WritePacketToClient(Packet),
     Disconnect(DisconnectReason),
 }
 
@@ -393,7 +394,7 @@ where
 
                                     if let Err(e) = read_addr
                                         .send(ConnectionActorMessage::WritePacketToClient(
-                                            yedmq_mqtt::MqttPacketV3::Connack(connack),
+                                            Packet::from(yedmq_mqtt::MqttPacketV3::Connack(connack)),
                                         ))
                                         .await {
                                         error!("send connack packet error, connection may be closed: {}", e);
@@ -420,6 +421,7 @@ where
                                                 }
 
                                                 let is_publish = matches!(packet, MqttPacketV3::Publish(_));
+                                                let packet = Packet::from(packet);
                                                 if is_publish {
                                                     if let Some(limiter) = rate_limiter.as_ref() {
                                                         match limiter.check() {
@@ -506,7 +508,7 @@ where
                                     };
                                     if let Err(e) = read_addr
                                         .send(ConnectionActorMessage::WritePacketToClient(
-                                            yedmq_mqtt::MqttPacketV3::Connack(connack_packet),
+                                            Packet::from(yedmq_mqtt::MqttPacketV3::Connack(connack_packet)),
                                         ))
                                         .await {
                                         error!("send connack packet error: {}", e);
@@ -867,7 +869,8 @@ where
                     return Err(ConnectionError::ConnectionClosed);
                 }
 
-                // write to buffer
+                let packet = MqttPacketV3::try_from(packet)
+                    .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
                 packet.encode(&mut self.encode_buffer);
                 //let bytes = packet.to_bytes();
                 //self.encode_buffer.extend_from_slice(&bytes);
@@ -939,7 +942,6 @@ where
 
             NetworkEvent::ClientDisconnected => {
                 info!("Client disconnected from peer {}", self.peer_addr);
-                self.disconnected_normally = true;
                 self.handle_disconnection(ctx, "Client closed connection".to_string());
             }
         }

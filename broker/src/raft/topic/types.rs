@@ -1,7 +1,7 @@
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
-use yedmq_mqtt::MqttPacketV3;
+use yedmq_mqtt::packet::Packet;
 
 use crate::raft::Node;
 
@@ -25,7 +25,7 @@ pub enum Request {
     RegisterRetainPublishPacket {
         tenant_id: String,
         source_client_identifier: String,
-        publish_packet: MqttPacketV3,
+        publish_packet: Packet,
     },
     CleanRetainPublishPacket {
         tenant_id: String,

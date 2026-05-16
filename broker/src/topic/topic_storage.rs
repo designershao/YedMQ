@@ -4,9 +4,10 @@ use parking_lot::RwLock;
 
 use base64::{engine::general_purpose, Engine};
 use log::warn;
-use serde::{Deserialize, Serialize};
-use yedmq_mqtt::MqttPacketV3;
+use serde::{Deserialize, Deserializer, Serialize};
+use yedmq_mqtt::packet::Packet;
 
+use crate::stored_packet::deserialize_stored_packet;
 use crate::topic::TopicStorageError;
 
 pub type TopicPaginationResult = (u64, Vec<(String, String, u8)>);
@@ -95,7 +96,7 @@ struct TopicStorageNode {
 
     subscriptions: RwLock<HashMap<String, Arc<Subscription>>>,
 
-    retain_publish_packet: Option<Arc<MqttPacketV3>>,
+    retain_publish_packet: Option<Arc<Packet>>,
 
     leaves: Arc<RwLock<HashMap<String, Arc<RwLock<TopicStorageNode>>>>>,
 }
@@ -168,7 +169,7 @@ impl TopicStorageNode {
         out
     }
 
-    pub fn set_retain_publish_message(&mut self, publish_packet: MqttPacketV3) {
+    pub fn set_retain_publish_message(&mut self, publish_packet: Packet) {
         self.retain_publish_packet = Some(Arc::new(publish_packet));
     }
 
@@ -559,7 +560,7 @@ impl TopicStorage {
     fn recursion_retain_publish_packet(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
-        publish_packet: MqttPacketV3,
+        publish_packet: Packet,
     ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -636,8 +637,8 @@ impl TopicStorage {
     fn recursion_get_retain_packet(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_patterns: Vec<String>,
-    ) -> Vec<Arc<MqttPacketV3>> {
-        let mut result: Vec<Arc<MqttPacketV3>> = vec![];
+    ) -> Vec<Arc<Packet>> {
+        let mut result: Vec<Arc<Packet>> = vec![];
         if !topic_patterns.is_empty() {
             let topic_pattern = &topic_patterns[0];
             if topic_pattern == &"#".to_string() {
@@ -669,7 +670,7 @@ impl TopicStorage {
         result
     }
 
-    fn collect_retain_subtree(topic_node: Arc<RwLock<TopicStorageNode>>) -> Vec<Arc<MqttPacketV3>> {
+    fn collect_retain_subtree(topic_node: Arc<RwLock<TopicStorageNode>>) -> Vec<Arc<Packet>> {
         let (retain_packet, leaves) = {
             let node = topic_node.read();
             let retain_packet = node.retain_publish_packet.clone();
@@ -677,7 +678,7 @@ impl TopicStorage {
             (retain_packet, leaves)
         };
 
-        let mut result: Vec<Arc<MqttPacketV3>> = vec![];
+        let mut result: Vec<Arc<Packet>> = vec![];
         if let Some(packet) = retain_packet {
             result.push(packet);
         }
@@ -691,7 +692,7 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         topic_filter: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicStorageError> {
+    ) -> Result<Vec<Arc<Packet>>, TopicStorageError> {
         if !test_topic(&topic_filter) {
             return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
         }
@@ -714,11 +715,11 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         source_client_identifier: String,
-        publish_packet: &MqttPacketV3,
+        publish_packet: &Packet,
     ) -> Result<(), TopicStorageError> {
-        if let MqttPacketV3::Publish(publish_packet) = publish_packet {
-            let topic_filter = publish_packet.variable_header.topic_name.clone();
-            if !test_topic(&publish_packet.variable_header.topic_name) {
+        if let Packet::Publish(publish_packet) = publish_packet {
+            let topic_filter = publish_packet.topic_name.clone();
+            if !test_topic(&publish_packet.topic_name) {
                 return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
             }
 
@@ -730,7 +731,7 @@ impl TopicStorage {
                 let result = Self::recursion_retain_publish_packet(
                     tenant_topic_root.clone(),
                     topic_patterns,
-                    MqttPacketV3::Publish(publish_packet.clone()),
+                    Packet::Publish(publish_packet.clone()),
                 );
                 if let Err(e) = result {
                     Err(e)
@@ -740,10 +741,10 @@ impl TopicStorage {
                     let retain_message_recorder_optional =
                         retain_message_recorder.get_mut(&tenant_id);
                     if let Some(retain_message_recorder_item) = retain_message_recorder_optional {
-                        let qos = publish_packet.fix_header.qos.unwrap_or(0);
+                        let qos = publish_packet.qos;
                         retain_message_recorder_item.insert(
-                            publish_packet.variable_header.topic_name.clone(),
-                            (source_client_identifier, qos as u8),
+                            publish_packet.topic_name.clone(),
+                            (source_client_identifier, qos),
                         );
                     }
                     //
@@ -769,8 +770,24 @@ impl TopicStorage {
 struct SerializableTopicStorageNode {
     topic_parttern: String,
     subscriptions: HashMap<String, Subscription>,
-    retain_publish_packet: Option<MqttPacketV3>,
+    #[serde(default, deserialize_with = "deserialize_optional_retained_packet")]
+    retain_publish_packet: Option<Packet>,
     leaves: HashMap<String, SerializableTopicStorageNode>,
+}
+
+fn deserialize_optional_retained_packet<'de, D>(deserializer: D) -> Result<Option<Packet>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let bytes = serde_json::to_vec(&value).map_err(serde::de::Error::custom)?;
+    deserialize_stored_packet(&bytes)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -788,14 +805,14 @@ mod tests {
             fixed_header::FixHeader,
             publish::{Payload, PublishPacket, VariableHeader},
         },
-        PacketType,
+        MqttPacketV3, PacketType,
     };
 
     use super::*;
     use bytes::Bytes;
     use std::thread;
 
-    fn build_retain_publish_packet(topic_name: &str) -> MqttPacketV3 {
+    fn build_retain_publish_packet(topic_name: &str) -> Packet {
         let fix_header = FixHeader {
             packet_type: PacketType::PUBLISH,
             qos: Some(1),
@@ -818,7 +835,41 @@ mod tests {
             payload,
         };
 
-        MqttPacketV3::Publish(publish_packet)
+        Packet::from(MqttPacketV3::Publish(publish_packet))
+    }
+
+    #[test]
+    fn serializable_topic_storage_node_reads_legacy_mqtt3_retained_packet() {
+        let legacy_packet = MqttPacketV3::Publish(
+            yedmq_mqtt::v3::publish::PublishPacketBuilder::new(
+                "legacy/retain".to_string(),
+                Bytes::from_static(b"payload"),
+            )
+            .qos(1)
+            .packet_identifier(9)
+            .retain(true)
+            .build(),
+        );
+        let value = serde_json::json!({
+            "topic_parttern": "legacy",
+            "subscriptions": {},
+            "retain_publish_packet": legacy_packet,
+            "leaves": {}
+        });
+
+        let node: SerializableTopicStorageNode =
+            serde_json::from_value(value).expect("deserialize legacy retained packet");
+
+        match node.retain_publish_packet {
+            Some(Packet::Publish(publish)) => {
+                assert_eq!(publish.topic_name, "legacy/retain");
+                assert_eq!(publish.payload, Bytes::from_static(b"payload"));
+                assert_eq!(publish.qos, 1);
+                assert_eq!(publish.packet_identifier, Some(9));
+                assert!(publish.retain);
+            }
+            other => panic!("expected retained publish packet, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1263,7 +1314,7 @@ mod tests {
         let mut topics = retain_packet
             .iter()
             .filter_map(|packet| match &**packet {
-                MqttPacketV3::Publish(p) => Some(p.variable_header.topic_name.clone()),
+                Packet::Publish(p) => Some(p.topic_name.clone()),
                 _ => None,
             })
             .collect::<Vec<String>>();

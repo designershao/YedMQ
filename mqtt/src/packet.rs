@@ -293,6 +293,26 @@ impl Packet {
             Packet::Pingreq | Packet::Pingresp | Packet::Auth(_) => None,
         }
     }
+
+    pub fn set_dup(&mut self, dup: i32) {
+        if let Packet::Publish(packet) = self {
+            packet.dup = dup != 0;
+        }
+    }
+
+    pub fn publish(&self) -> Option<&Publish> {
+        match self {
+            Packet::Publish(packet) => Some(packet),
+            _ => None,
+        }
+    }
+
+    pub fn publish_mut(&mut self) -> Option<&mut Publish> {
+        match self {
+            Packet::Publish(packet) => Some(packet),
+            _ => None,
+        }
+    }
 }
 
 impl From<MqttPacketV3> for Packet {
