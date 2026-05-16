@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use self::v3::fixed_header;
 
+pub mod packet;
 pub mod v3;
 
 pub const MQTT_MAX_MESSAGE_SIZE: u32 = 268435456;
@@ -29,7 +30,7 @@ pub enum PacketType {
     DISCONNECT,
 }
 
-trait MqttPacket {
+trait WirePacket {
     fn to_bytes(&self) -> BytesMut;
 
     fn encode(&self, buffer: &mut BytesMut);

@@ -1,6 +1,6 @@
 use super::fixed_header::{self, FixHeader};
-use crate::{v3::common::parse_utf8, MqttPacket, PacketType};
-use ::bytes::{BufMut, BytesMut};
+use crate::{v3::common::parse_utf8, PacketType, WirePacket};
+use bytes::{BufMut, BytesMut};
 use nom::bits::streaming::take;
 use nom::{
     bits,
@@ -582,7 +582,7 @@ impl Payload {
     }
 }
 
-impl MqttPacket for ConnectPacket {
+impl WirePacket for ConnectPacket {
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_bytes = self.variable_header.to_bytes();
@@ -614,7 +614,7 @@ mod tests {
             connect::{protocol_level, ConnectPacketBuilder},
             fixed_header::FixHeader,
         },
-        MqttPacket, PacketType,
+        PacketType, WirePacket,
     };
 
     use super::{connect_flags, parse, payload, protocol_name, ConnectPacket};

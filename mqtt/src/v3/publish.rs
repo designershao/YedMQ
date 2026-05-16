@@ -1,4 +1,4 @@
-use crate::{MqttPacket, PacketType};
+use crate::{PacketType, WirePacket};
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     combinator::{map, map_res, rest, verify},
@@ -273,7 +273,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PublishPacket> {
     */
 }
 
-impl MqttPacket for PublishPacket {
+impl WirePacket for PublishPacket {
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();

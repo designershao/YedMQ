@@ -1,5 +1,5 @@
-use ::bytes::BytesMut;
 use bytes::BufMut;
+use bytes::BytesMut;
 use nom::bytes::streaming::take;
 use nom::{
     combinator::{flat_map, map, map_res},
@@ -9,7 +9,7 @@ use nom::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MqttPacket, PacketType};
+use crate::{PacketType, WirePacket};
 
 use super::fixed_header::{self, FixHeader};
 
@@ -153,7 +153,7 @@ impl VariableHeader {
     }
 }
 
-impl MqttPacket for ConnAckPacket {
+impl WirePacket for ConnAckPacket {
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();

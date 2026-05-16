@@ -2,7 +2,7 @@ use bytes::BytesMut;
 use nom::{combinator::map, IResult};
 use serde::{Deserialize, Serialize};
 
-use crate::MqttPacket;
+use crate::WirePacket;
 
 use super::fixed_header::{self, FixHeader};
 
@@ -38,7 +38,7 @@ pub fn parse(input: &[u8]) -> IResult<&[u8], PingreqPacket> {
     })(input)
 }
 
-impl MqttPacket for PingreqPacket {
+impl WirePacket for PingreqPacket {
     fn to_bytes(&self) -> BytesMut {
         self.fix_header.to_bytes()
     }

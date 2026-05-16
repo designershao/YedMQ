@@ -1,4 +1,4 @@
-use crate::{MqttPacket, PacketType};
+use crate::{PacketType, WirePacket};
 use bytes::{BufMut, BytesMut};
 use nom::{
     combinator::{flat_map, map, map_res},
@@ -48,7 +48,7 @@ impl VariableHeader {
     }
 }
 
-impl MqttPacket for UnSubackPacket {
+impl WirePacket for UnSubackPacket {
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.fix_header.to_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();

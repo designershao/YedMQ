@@ -1,5 +1,5 @@
 use crate::PacketType;
-use ::bytes::{BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 use nom::bits::{bits, streaming::take};
 use nom::bytes::streaming::take_while_m_n;
 use nom::sequence::tuple;

@@ -2,7 +2,7 @@ use super::{
     common::parse_utf8_complete,
     fixed_header::{self, FixHeader},
 };
-use crate::{MqttPacket, PacketType};
+use crate::{PacketType, WirePacket};
 use bytes::{BufMut, BytesMut};
 use nom::{
     combinator::{flat_map, map, map_res},
@@ -185,7 +185,7 @@ impl UnsubscribePacket {
     }
 }
 
-impl MqttPacket for UnsubscribePacket {
+impl WirePacket for UnsubscribePacket {
     fn to_bytes(&self) -> BytesMut {
         let fix_header_bytes = self.get_fix_header_bytes();
         let variable_header_bytes = self.variable_header.to_bytes();
