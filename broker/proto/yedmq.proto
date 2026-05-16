@@ -1,6 +1,5 @@
 syntax = "proto3";
 
-import "raft_protocol.proto";
 import "common.proto";
 
 package yedmqpb;
@@ -87,10 +86,7 @@ message StoreOfflineMessageRequest {
 }
 
 // Response for storing an offline message.
-message StoreOfflineMessageResponse {
-    bool success = 1;         // Operation success flag
-    ErrorDetail error = 2;    // Error details if any
-}
+message StoreOfflineMessageResponse {}
 
 // Request to pop an offline message for a client.
 message PopOfflineMessageRequest {
@@ -100,10 +96,8 @@ message PopOfflineMessageRequest {
 
 // Response for popping an offline message.
 message PopOfflineMessageResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    optional string packet_key = 3; // The popped message key
-    optional bytes packet_data = 4; // The popped message payload data
+    optional string packet_key = 1; // The popped message key
+    optional bytes packet_data = 2; // The popped message payload data
 }
 
 // Request to get the session state for a client.
@@ -114,10 +108,8 @@ message GetSessionStateRequest {
 
 // Response for getting the session state.
 message GetSessionStateResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    optional string payload = 3; // Session state data
-    optional uint64 disconnected_at = 4; // Timestamp when the session was disconnected
+    optional string payload = 1; // Session state data
+    optional uint64 disconnected_at = 2; // Timestamp when the session was disconnected
 }
 
 // Request to create a session state for a client.
@@ -129,10 +121,7 @@ message CreateSessionStateRequest {
 }
 
 // Response for creating a session state.
-message CreateSessionStateResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message CreateSessionStateResponse {}
 
 // Request to delete a session state for a client.
 message DeleteSessionStateRequest {
@@ -141,10 +130,7 @@ message DeleteSessionStateRequest {
 }
 
 // Response for deleting a session state.
-message DeleteSessionStateResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message DeleteSessionStateResponse {}
 
 // Request to register a received inflight packet.
 message RegisterInflightRxPacketRequest {
@@ -156,10 +142,7 @@ message RegisterInflightRxPacketRequest {
 }
 
 // Response for registering a received inflight packet.
-message RegisterInflightRxPacketResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message RegisterInflightRxPacketResponse {}
 
 // Request to register a transmitted inflight packet.
 message RegisterInflightTxPacketRequest {
@@ -171,10 +154,7 @@ message RegisterInflightTxPacketRequest {
 }
 
 // Response for registering a transmitted inflight packet.
-message RegisterInflightTxPacketResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message RegisterInflightTxPacketResponse {}
 
 // Request to advance the state of an inflight packet.
 message AdvanceInflightStateRequest {
@@ -184,10 +164,7 @@ message AdvanceInflightStateRequest {
 }
 
 // Response for advancing the inflight packet state.
-message AdvanceInflightStateResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message AdvanceInflightStateResponse {}
 
 // Request to get the current inflight packet.
 message GetCurrentInflightPacketRequest {
@@ -198,9 +175,7 @@ message GetCurrentInflightPacketRequest {
 
 // Response for getting the current inflight packet.
 message GetCurrentInflightPacketResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    optional string packet = 3; // Packet data
+    optional string packet = 1; // Packet data
 }
 
 // Request to get the next inflight packet.
@@ -212,9 +187,7 @@ message GetNextInflightPacketRequest {
 
 // Response for getting the next inflight packet.
 message GetNextInflightPacketResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    optional string packet = 3; // Packet data
+    optional string packet = 1; // Packet data
 }
 
 // Request to subscribe a client to a topic.
@@ -227,10 +200,7 @@ message SubscribeTopicRequest {
 }
 
 // Response for subscribing to a topic.
-message SubscribeTopicResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message SubscribeTopicResponse {}
 
 // Request to unsubscribe a client from a topic.
 message UnsubscribeTopicRequest {
@@ -240,10 +210,7 @@ message UnsubscribeTopicRequest {
 }
 
 // Response for unsubscribing from a topic.
-message UnsubscribeTopicResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message UnsubscribeTopicResponse {}
 
 // Request to get all subscribers for a topic.
 message GetSubscribersByTopicRequest {
@@ -259,9 +226,7 @@ message Subscriber {
 
 // Response for getting subscribers by topic.
 message GetSubscribersByTopicResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    repeated Subscriber payload = 3; // List of subscribers
+    repeated Subscriber payload = 1; // List of subscribers
 }
 
 // Request to register a retained publish message.
@@ -272,10 +237,7 @@ message RegisterRetainPublishMessageRequest {
 }
 
 // Response for registering a retained publish message.
-message RegisterRetainPublishMessageResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message RegisterRetainPublishMessageResponse {}
 
 // Request to get a retained publish message.
 message GetRetainPublishMessageRequest {
@@ -285,9 +247,7 @@ message GetRetainPublishMessageRequest {
 
 // Response for getting a retained publish message.
 message GetRetainPublishMessageResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-    optional string payload = 3; // The retained message payload
+    optional string payload = 1; // The retained message payload
 }
 
 // Request to clean a retained publish message.
@@ -297,10 +257,7 @@ message CleanRetainPublishMessageRequest {
 }
 
 // Response for cleaning a retained publish message.
-message CleanRetainPublishMessageResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message CleanRetainPublishMessageResponse {}
 
 // Session version information.
 message SessionVersion {
@@ -317,10 +274,7 @@ message RegisterSessionActorMapRequest {
 }
 
 // Response for registering a session actor mapping.
-message RegisterSessionActorMapResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message RegisterSessionActorMapResponse {}
 
 // Request to unregister a session actor mapping.
 message UnregisterSessionActorMapRequest {
@@ -330,10 +284,7 @@ message UnregisterSessionActorMapRequest {
 }
 
 // Response for unregistering a session actor mapping.
-message UnregisterSessionActorMapResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message UnregisterSessionActorMapResponse {}
 
 // Request to renew a session lease.
 message RenewSessionLeaseRequest {
@@ -342,10 +293,7 @@ message RenewSessionLeaseRequest {
 }
 
 // Response for renewing a session lease.
-message RenewSessionLeaseResponse {
-    bool success = 1;
-    ErrorDetail error = 2;
-}
+message RenewSessionLeaseResponse {}
 
 // Request to get the session actor map for a client.
 message GetSessionActorMapRequest {
@@ -355,9 +303,7 @@ message GetSessionActorMapRequest {
 
 // Response for getting the session actor map.
 message GetSessionActorMapResponse {
-    bool success = 1; // Operation success flag
-    ErrorDetail error = 2; // Error details if any
-    optional string payload = 3;
+    optional string payload = 1;
 }
 
 message RoutePacketRequest {
@@ -370,20 +316,14 @@ message RoutePacketRequest {
     uint64 expiry_at = 7; // Expiry timestamp in unix seconds
 }
 
-message RoutePacketResponse {
-    bool success = 1; // Operation success flag
-    ErrorDetail error = 2; // Error details if any
-}
+message RoutePacketResponse {}
 
 message ForceStopSessionActorRequest {
     string tenant_id = 1; // Tenant identifier
     string client_id = 2; // Client identifier
 }
 
-message ForceStopSessionActorResponse {
-    bool success = 1; // Operation success flag
-    ErrorDetail error = 2; // Error details if any
-}
+message ForceStopSessionActorResponse {}
 
 message GetSessionInfoRequest {
     string tenant_id = 1; // Tenant identifier
@@ -425,7 +365,5 @@ message SessionInfo {
 }
 
 message GetSessionInfoResponse {
-    bool success = 1; // Operation success flag
-    ErrorDetail error = 2; // Error details if any
-    optional SessionInfo payload = 3; // Session metrics data
+    optional SessionInfo payload = 1; // Session metrics data
 }

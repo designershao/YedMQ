@@ -233,7 +233,9 @@ impl PluginLoader {
                         );
                     }
 
-                    let mut cmd = Command::new(&exe_path);
+                    let abs_path = std::fs::canonicalize(exe_path.clone())?;
+
+                    let mut cmd = Command::new(&abs_path);
 
                     if let Some(working_dir) = &manifest.runtime.working_dir {
                         let working_dir_path = plugin_dir.join(working_dir);
@@ -244,9 +246,11 @@ impl PluginLoader {
                                 working_dir_path.display()
                             );
                         }
-                        cmd.current_dir(working_dir_path);
+                        let working_dir_abs_path = std::fs::canonicalize(working_dir_path)?;
+                        cmd.current_dir(working_dir_abs_path);
                     } else {
-                        cmd.current_dir(&plugin_dir);
+                        let plugin_dir_abs_path = std::fs::canonicalize(plugin_dir)?;
+                        cmd.current_dir(&plugin_dir_abs_path);
                     }
 
                     cmd.env("RUST_LOG", "info");

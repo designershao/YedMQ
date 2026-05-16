@@ -1,7 +1,8 @@
+pub mod topic_service;
 pub mod topic_storage;
 
 #[derive(Debug, thiserror::Error, Clone)]
-pub enum TopicError {
+pub enum TopicStorageError {
     #[error("topic {0} not found")]
     TopicNotFound(String),
 

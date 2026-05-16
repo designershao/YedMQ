@@ -385,6 +385,92 @@ async fn test_api_cluster_ready() {
 }
 
 #[actix::test]
+async fn test_api_node_status() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+    let _ = wait_for_cluster_ready(api_addr).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/node/status", api_addr);
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body.get("nodeId").and_then(Value::as_u64), Some(1001));
+    assert_eq!(
+        body.get("clusterName").and_then(Value::as_str),
+        Some("YedMQTest")
+    );
+    assert!(body
+        .pointer("/listeners/api")
+        .and_then(Value::as_str)
+        .is_some());
+    assert_eq!(
+        body.get("clusterReady").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[actix::test]
+async fn test_api_cluster_status() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+    let _ = wait_for_cluster_ready(api_addr).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/cluster/status", api_addr);
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body.get("clusterName").and_then(Value::as_str),
+        Some("YedMQTest")
+    );
+    assert_eq!(body.get("ready").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        body.get("raftGroups")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(3)
+    );
+}
+
+#[actix::test]
+async fn test_api_broker_stats() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let client = reqwest::Client::new();
+    let api_addr = &context.settings.listener.api.external;
+    let url = format!("http://{}/api/v1/broker/stats", api_addr);
+
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.get("clientsConnected").is_some());
+    assert!(body.get("packetsReceived").is_some());
+    assert!(body.get("uptimeSeconds").is_some());
+}
+
+#[actix::test]
 async fn test_api_unauthorized() {
     let _guard = plugin_api_lock().lock().await;
     let context = setup_instance().await;

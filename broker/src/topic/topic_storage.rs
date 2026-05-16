@@ -7,7 +7,7 @@ use log::warn;
 use serde::{Deserialize, Serialize};
 use yedmq_mqtt::MqttPacketV3;
 
-use crate::topic::TopicError;
+use crate::topic::TopicStorageError;
 
 pub type TopicPaginationResult = (u64, Vec<(String, String, u8)>);
 
@@ -251,13 +251,15 @@ impl TopicStorage {
         tenant_identifier: &str,
         offset: u64,
         limit: u64,
-    ) -> Result<TopicPaginationResult, TopicError> {
+    ) -> Result<TopicPaginationResult, TopicStorageError> {
         if !self
             .retain_message_recorder
             .read()
             .contains_key(tenant_identifier)
         {
-            Err(TopicError::TenantNotFound(tenant_identifier.to_string()))
+            Err(TopicStorageError::TenantNotFound(
+                tenant_identifier.to_string(),
+            ))
         } else {
             let retain_message_recorder = self.retain_message_recorder.read();
             match retain_message_recorder.get(tenant_identifier) {
@@ -283,7 +285,7 @@ impl TopicStorage {
         tenant_id: &str,
         offset: u64,
         limit: u64,
-    ) -> Result<TopicPaginationResult, TopicError> {
+    ) -> Result<TopicPaginationResult, TopicStorageError> {
         let topic_info_recorder = self.topic_info_recorder.read();
         match topic_info_recorder.get(tenant_id) {
             Some(items) => {
@@ -299,7 +301,7 @@ impl TopicStorage {
                 let total = items.len();
                 Ok((total as u64, result_items))
             }
-            None => Err(TopicError::TenantNotFound(tenant_id.to_string())),
+            None => Err(TopicStorageError::TenantNotFound(tenant_id.to_string())),
         }
     }
 
@@ -387,9 +389,9 @@ impl TopicStorage {
         client_identifier: String,
         topic_filter: String,
         qos: u8,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if !test_topic(&topic_filter) {
-            return Err(TopicError::InvalidTopicFilter(topic_filter));
+            return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
         }
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -416,7 +418,7 @@ impl TopicStorage {
                 Ok(())
             }
         } else {
-            Err(TopicError::TenantNotFound(tenant_id))
+            Err(TopicStorageError::TenantNotFound(tenant_id))
         }
     }
 
@@ -425,7 +427,7 @@ impl TopicStorage {
         mut topic_partterns: Vec<String>,
         client_identifier: String,
         qos: u8,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -447,7 +449,7 @@ impl TopicStorage {
         tenant_id: &str,
         client_identifier: &str,
         topic_filter: &str,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
@@ -470,7 +472,7 @@ impl TopicStorage {
                 Ok(())
             }
         } else {
-            Err(TopicError::TenantNotFound(tenant_id.to_string()))
+            Err(TopicStorageError::TenantNotFound(tenant_id.to_string()))
         }
     }
 
@@ -478,7 +480,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
         client_identifier: &str,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
@@ -490,7 +492,7 @@ impl TopicStorage {
                     client_identifier,
                 )
             } else {
-                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
+                Err(TopicStorageError::TopicNotFound(topic_pattern.to_string()))
             }
         } else {
             topic_node.write().remove_subscription(client_identifier);
@@ -502,7 +504,7 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         msg_topic: String,
-    ) -> Result<Vec<Arc<Subscription>>, TopicError> {
+    ) -> Result<Vec<Arc<Subscription>>, TopicStorageError> {
         let topic_patterns: Vec<String> = msg_topic.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
@@ -513,7 +515,7 @@ impl TopicStorage {
                 topic_patterns,
             ))
         } else {
-            Err(TopicError::TenantNotFound(tenant_id))
+            Err(TopicStorageError::TenantNotFound(tenant_id))
         }
     }
 
@@ -558,7 +560,7 @@ impl TopicStorage {
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
         publish_packet: MqttPacketV3,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node
@@ -581,7 +583,7 @@ impl TopicStorage {
     fn recursion_clean_retain_publish_packet(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
             let topic_node_next = topic_node.write().get_leaf(topic_pattern.to_string());
@@ -589,7 +591,7 @@ impl TopicStorage {
                 let topic_patterns_rest = topic_partterns.drain(1..).collect();
                 Self::recursion_clean_retain_publish_packet(topic_node_next, topic_patterns_rest)
             } else {
-                Err(TopicError::TopicNotFound(topic_pattern.to_string()))
+                Err(TopicStorageError::TopicNotFound(topic_pattern.to_string()))
             }
         } else {
             topic_node.write().clean_retain_publish_message();
@@ -602,7 +604,7 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         topic_filter: &String,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
@@ -627,7 +629,7 @@ impl TopicStorage {
                 Ok(())
             }
         } else {
-            Err(TopicError::TenantNotFound(tenant_id))
+            Err(TopicStorageError::TenantNotFound(tenant_id))
         }
     }
 
@@ -689,9 +691,9 @@ impl TopicStorage {
         &self,
         tenant_id: String,
         topic_filter: String,
-    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicError> {
+    ) -> Result<Vec<Arc<MqttPacketV3>>, TopicStorageError> {
         if !test_topic(&topic_filter) {
-            return Err(TopicError::InvalidTopicFilter(topic_filter));
+            return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
         }
 
         let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -703,7 +705,7 @@ impl TopicStorage {
                 Self::recursion_get_retain_packet(tenant_topic_root.clone(), topic_patterns);
             Ok(retain_packets)
         } else {
-            Err(TopicError::TenantNotFound(tenant_id))
+            Err(TopicStorageError::TenantNotFound(tenant_id))
         }
     }
 
@@ -713,11 +715,11 @@ impl TopicStorage {
         tenant_id: String,
         source_client_identifier: String,
         publish_packet: &MqttPacketV3,
-    ) -> Result<(), TopicError> {
+    ) -> Result<(), TopicStorageError> {
         if let MqttPacketV3::Publish(publish_packet) = publish_packet {
             let topic_filter = publish_packet.variable_header.topic_name.clone();
             if !test_topic(&publish_packet.variable_header.topic_name) {
-                return Err(TopicError::InvalidTopicFilter(topic_filter));
+                return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
             }
 
             let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
@@ -748,7 +750,7 @@ impl TopicStorage {
                     Ok(())
                 }
             } else {
-                Err(TopicError::TenantNotFound(tenant_id))
+                Err(TopicStorageError::TenantNotFound(tenant_id))
             }
         } else {
             Ok(())
@@ -1088,7 +1090,7 @@ mod tests {
         );
 
         match result.unwrap_err() {
-            TopicError::InvalidTopicFilter(msg) => {
+            TopicStorageError::InvalidTopicFilter(msg) => {
                 if msg != "sport+" {
                     panic!("Unexpected error message: {}", msg);
                 }
@@ -1104,7 +1106,7 @@ mod tests {
         );
 
         match result.unwrap_err() {
-            TopicError::InvalidTopicFilter(msg) => {
+            TopicStorageError::InvalidTopicFilter(msg) => {
                 if msg != "sport+" {
                     panic!("Unexpected error message: {}", msg);
                 }

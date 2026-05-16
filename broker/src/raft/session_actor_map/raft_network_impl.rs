@@ -5,7 +5,7 @@ use openraft::raft::{
     VoteRequest, VoteResponse,
 };
 use openraft::{RaftNetwork, RaftNetworkFactory};
-use serde::de::DeserializeOwned;
+use std::time::Duration;
 use tonic::transport::Channel;
 
 use crate::protobuf::raft_service_client::RaftServiceClient;
@@ -33,19 +33,31 @@ impl NetworkConnection {
         NetworkConnection { node: node.clone() }
     }
 
-    async fn c<E: std::error::Error + DeserializeOwned>(
+    fn c<E: std::error::Error>(
         &mut self,
     ) -> Result<RaftServiceClient<Channel>, RPCError<NodeId, Node, E>> {
-        let addr = format!("http://{}", self.node.rpc_addr);
-        let endpoint = addr
-            .parse()
-            .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
+        let channel = crate::rpc::grpc_client::lazy_channel_with_connect_timeout(
+            &self.node.rpc_addr,
+            Duration::from_secs(1),
+        )
+        .map_err(|e| RPCError::Unreachable(Unreachable::new(&e)))?;
 
-        match Channel::builder(endpoint).connect().await {
-            Ok(channel) => Ok(RaftServiceClient::new(channel)),
-            Err(e) => Err(RPCError::Unreachable(Unreachable::new(&e))),
-        }
+        Ok(RaftServiceClient::new(channel))
     }
+}
+
+fn map_grpc_status<E: std::error::Error>(status: tonic::Status) -> RPCError<NodeId, Node, E> {
+    if status.code() == tonic::Code::Unavailable {
+        RPCError::Unreachable(Unreachable::new(&status))
+    } else {
+        RPCError::Network(NetworkError::new(&status))
+    }
+}
+
+fn map_grpc_response<T, E: std::error::Error>(
+    resp: Result<tonic::Response<T>, tonic::Status>,
+) -> Result<T, RPCError<NodeId, Node, E>> {
+    resp.map(|resp| resp.into_inner()).map_err(map_grpc_status)
 }
 
 impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
@@ -54,11 +66,10 @@ impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
         req: AppendEntriesRequest<SessionActorMapTypeConfig>,
         _option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
 
         let resp = c.append_entries(req).await;
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 
@@ -73,11 +84,10 @@ impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
         InstallSnapshotResponse<NodeId>,
         RPCError<NodeId, Node, RaftError<NodeId, InstallSnapshotError>>,
     > {
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
         let resp = c.install_snapshot(req).await;
 
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
         Ok(resp)
@@ -88,7 +98,7 @@ impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
         req: VoteRequest<NodeId>,
         _option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, Node, RaftError<NodeId>>> {
-        let mut c = self.c().await?;
+        let mut c = self.c()?;
 
         let data =
             serde_json::to_string(&req).map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
@@ -99,8 +109,7 @@ impl RaftNetwork<SessionActorMapTypeConfig> for NetworkConnection {
         let request = tonic::Request::new(mes);
         let resp = c.vote(request).await;
 
-        let resp = resp.map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
-        let mes = resp.into_inner();
+        let mes = map_grpc_response(resp)?;
         let resp = serde_json::from_str(&mes.data)
             .map_err(|e| RPCError::Network(NetworkError::new(&e)))?;
 

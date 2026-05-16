@@ -30,6 +30,7 @@ impl NodeResolver {
                 (
                     n.id,
                     Node {
+                        node_id: Some(n.id),
                         rpc_addr: n.rpc_address.clone(),
                         api_addr: n.api_address.clone(),
                     },

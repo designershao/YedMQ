@@ -21,6 +21,7 @@ use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::session::session_registry::SessionRegistry;
 use crate::timer_actor::TimerActor;
+use tokio::sync::oneshot;
 
 #[derive(Clone)]
 pub struct ServiceRegistry {
@@ -160,9 +161,21 @@ impl ServiceRegistry {
 
         let settings_clone = settings.clone();
         let payload_store_clone = payload_store.clone();
+        let (rpc_ready_tx, rpc_ready_rx) = oneshot::channel();
         let rpc = pools.start_actor(move || {
-            RpcActor::new(router_actors_clone, settings_clone, payload_store_clone)
+            RpcActor::new(
+                router_actors_clone,
+                settings_clone,
+                payload_store_clone,
+                rpc_ready_tx,
+            )
         });
+        match tokio::time::timeout(Duration::from_secs(5), rpc_ready_rx).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(err))) => panic!("rpc actor failed to start: {}", err),
+            Ok(Err(_)) => panic!("rpc actor stopped before reporting readiness"),
+            Err(_) => panic!("rpc actor did not report readiness within 5 seconds"),
+        }
 
         let router_actors_clone = router_actors.clone();
         session_manager.do_send(SetRouterActors {

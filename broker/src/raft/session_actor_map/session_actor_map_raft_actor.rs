@@ -28,8 +28,9 @@ use crate::{
             raft_network_impl::Network, store::new_storage, types::SessionActorMapTypeConfig,
             SessionActorMapRaft,
         },
-        Node, NodeId,
+        GRPCBusinessError, Node, NodeId,
     },
+    rpc::grpc_status,
     session::session_actor_map_storage::{SessionActorMapStorage, SessionClock, SessionVersion},
 };
 
@@ -43,9 +44,6 @@ pub enum ActorState {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SessionActorMapRaftError {
-    #[error("Invalid topic name: {topic}")]
-    InvalidTopicName { topic: String },
-
     #[error("Not leader, current leader: {leader:?}")]
     NotLeader { leader: Option<Node> },
 
@@ -68,7 +66,16 @@ pub enum SessionActorMapRaftError {
     RaftFatalError(#[from] Fatal<NodeId>),
 
     #[error("gRPC error: {0}")]
-    GRPC(String),
+    GRPC(#[from] tonic::Status),
+
+    #[error("gRPC connect error: {0}")]
+    GRPCConnect(String),
+
+    #[error("gRPC business error: {0}")]
+    GRPCBusiness(GRPCBusinessError),
+
+    #[error("Serialization error: {0}")]
+    Serialize(String),
 
     #[error("Actor not initialized")]
     NotInitialized,
@@ -105,6 +112,116 @@ pub struct SessionActorMapRaftActor {
 }
 
 impl SessionActorMapRaftActor {
+    fn is_transient_remote_leader_error(message: &str) -> bool {
+        message.contains("transport error") || message.contains("Connection refused")
+    }
+
+    fn parse_session_version(value: &str) -> Option<SessionVersion> {
+        let (counter, node_id) = value.trim().split_once('-')?;
+        Some(SessionVersion::new(
+            counter.trim().parse().ok()?,
+            node_id.trim().parse().ok()?,
+        ))
+    }
+
+    fn parse_remote_error(message: &str) -> Option<SessionActorMapRaftError> {
+        let prefix = "Session version rejected, current: ";
+        let rest = message.strip_prefix(prefix)?;
+        let (current, existing) = rest.split_once(", existing: ")?;
+
+        Some(SessionActorMapRaftError::SessionVersionRejected {
+            current_version: Self::parse_session_version(current)?,
+            existing_version: Self::parse_session_version(existing)?,
+        })
+    }
+
+    fn map_session_version_conflict(
+        detail: &crate::protobuf::SessionVersionConflictDetail,
+    ) -> SessionActorMapRaftError {
+        SessionActorMapRaftError::SessionVersionRejected {
+            current_version: SessionVersion::new(detail.current_counter, detail.current_node_id),
+            existing_version: SessionVersion::new(detail.existing_counter, detail.existing_node_id),
+        }
+    }
+
+    fn leader_node_from_status(parsed: &grpc_status::ParsedStatus) -> Option<Node> {
+        parsed.leader_addr.clone().map(|rpc_addr| Node {
+            node_id: parsed.leader_node_id,
+            rpc_addr,
+            api_addr: String::new(),
+        })
+    }
+
+    fn map_remote_business_error(
+        grpc_code: tonic::Code,
+        detail: crate::protobuf::ErrorDetail,
+    ) -> SessionActorMapRaftError {
+        match detail.code() {
+            crate::protobuf::ErrorCode::SessionVersionRejected => {
+                if let Some(conflict) = detail.session_version_conflict.as_ref() {
+                    Self::map_session_version_conflict(conflict)
+                } else {
+                    Self::parse_remote_error(&detail.message).unwrap_or_else(|| {
+                        SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
+                            grpc_code, detail,
+                        ))
+                    })
+                }
+            }
+            crate::protobuf::ErrorCode::SessionTenantNotFound => {
+                let tenant_id = detail
+                    .message
+                    .strip_prefix("tenant not found: ")
+                    .unwrap_or(&detail.message)
+                    .to_string();
+                SessionActorMapRaftError::TenantNotFound { tenant_id }
+            }
+            _ => SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(grpc_code, detail)),
+        }
+    }
+
+    fn map_remote_status(status: tonic::Status) -> SessionActorMapRaftError {
+        let parsed = grpc_status::decode_status(&status);
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_LEADER_REDIRECT) {
+            return SessionActorMapRaftError::NotLeader {
+                leader: Self::leader_node_from_status(&parsed),
+            };
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_BUSINESS) {
+            if let Some(detail) = parsed.detail {
+                return Self::map_remote_business_error(status.code(), detail);
+            }
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_NO_LEADER) {
+            return SessionActorMapRaftError::NoLeaderAvailable;
+        }
+
+        if parsed.error_kind.as_deref() == Some(grpc_status::ERROR_KIND_NOT_READY) {
+            return SessionActorMapRaftError::NotReady(status.message().to_string());
+        }
+
+        let message = status.to_string();
+        if Self::is_transient_remote_leader_error(&message)
+            || status.code() == tonic::Code::Unavailable
+        {
+            SessionActorMapRaftError::ServiceUnavailable(status.message().to_string())
+        } else {
+            SessionActorMapRaftError::GRPC(status)
+        }
+    }
+
+    fn log_remote_leader_error(operation: &str, error: &impl std::fmt::Display) {
+        let message = error.to_string();
+        if Self::is_transient_remote_leader_error(&message) {
+            log::warn!("{}: {}", operation, message);
+        } else {
+            log::error!("{}: {}", operation, message);
+        }
+    }
+
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
         session_clock: Arc<SessionClock>,
@@ -152,6 +269,7 @@ impl SessionActorMapRaftActor {
             cluster_nodes.insert(
                 item.id,
                 Node {
+                    node_id: Some(item.id),
                     rpc_addr: item.rpc_address.to_string(),
                     api_addr: item.api_address.to_string(),
                 },
@@ -170,17 +288,19 @@ impl SessionActorMapRaftActor {
     async fn try_local_linearizable_read(
         raft: &SessionActorMapRaft,
     ) -> Result<(), SessionActorMapRaftError> {
-        raft.ensure_linearizable().await.map_err(|e| {
-            log::error!("Failed to ensure linearizable read: {}", e);
-            if let Some(leader) = e.forward_to_leader() {
-                SessionActorMapRaftError::NotLeader {
-                    leader: leader.leader_node.clone(),
+        match raft.ensure_linearizable().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                if let Some(leader) = e.forward_to_leader() {
+                    Err(SessionActorMapRaftError::NotLeader {
+                        leader: leader.leader_node.clone(),
+                    })
+                } else {
+                    log::error!("Failed to ensure linearizable read: {}", e);
+                    Err(SessionActorMapRaftError::NotLeader { leader: None })
                 }
-            } else {
-                SessionActorMapRaftError::NotLeader { leader: None }
             }
-        })?;
-        Ok(())
+        }
     }
 
     async fn try_local_write(
@@ -244,16 +364,16 @@ impl SessionActorMapRaftActor {
         leader_addr: String,
         msg: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
-        let mut client = RaftServiceClient::connect(format!("http://{}", &leader_addr))
-            .await
+        let mut client = crate::rpc::grpc_client::lazy_channel(&leader_addr)
+            .map(RaftServiceClient::new)
             .map_err(|e| {
-                log::error!("Failed to connect to leader {}", e);
-                SessionActorMapRaftError::GRPC(e.to_string())
+                Self::log_remote_leader_error("Failed to create leader client", &e);
+                SessionActorMapRaftError::GRPCConnect(e.to_string())
             })?;
 
         let data = serde_json::to_string(&msg).map_err(|e| {
             log::error!("Failed to serialize raft write request: {}", e);
-            SessionActorMapRaftError::GRPC(format!("serialize raft request failed: {e}"))
+            SessionActorMapRaftError::Serialize(format!("serialize raft request failed: {e}"))
         })?;
 
         let request = WriteRequest {
@@ -262,27 +382,17 @@ impl SessionActorMapRaftActor {
         };
 
         let res = client.write(request).await.map_err(|e| {
-            log::error!("Failed to send write request to leader: {}", e);
-            SessionActorMapRaftError::GRPC(e.to_string())
+            Self::log_remote_leader_error("Failed to send write request to leader", &e);
+            Self::map_remote_status(e)
         })?;
 
         let inner_res = res.into_inner();
-        if inner_res.success {
-            let res = inner_res.data;
-            serde_json::from_str(&res).map_err(|e| {
-                log::error!("Failed to deserialize remote raft write response: {}", e);
-                SessionActorMapRaftError::UnexpectedResponseType(format!(
-                    "invalid remote raft write response: {e}"
-                ))
-            })
-        } else {
-            Err(SessionActorMapRaftError::GRPC(
-                inner_res
-                    .error
-                    .map(|err| err.message)
-                    .unwrap_or_else(|| "remote raft write failed without error detail".to_string()),
+        serde_json::from_str(&inner_res.data).map_err(|e| {
+            log::error!("Failed to deserialize remote raft write response: {}", e);
+            SessionActorMapRaftError::UnexpectedResponseType(format!(
+                "invalid remote raft write response: {e}"
             ))
-        }
+        })
     }
 
     fn process_pending_messages(&mut self, ctx: &mut Context<Self>) {
@@ -762,67 +872,75 @@ impl Handler<GetSessionActorMapLinearizable> for SessionActorMapRaftActor {
                 let raft = self.raft.clone();
                 let session_actor_map_storage = self.session_actor_map_storage.clone();
                 Box::pin(
-                async move {
-                    if let Some(raft_instance) = raft.get() {
-                        match Self::try_local_linearizable_read(raft_instance).await {
-                            Ok(_) => {
-                                if let Some(session_actor_map_storage) = session_actor_map_storage.get() {
-                                    let storage = session_actor_map_storage.read();
-                                    let entry = storage.get_session_actor_map(&msg.tenant_id, &msg.client_id);
-                                    Ok(entry)
-                                } else {
-                                    Err(SessionActorMapRaftError::NotInitialized)
+                    async move {
+                        if let Some(raft_instance) = raft.get() {
+                            match Self::try_local_linearizable_read(raft_instance).await {
+                                Ok(_) => {
+                                    if let Some(session_actor_map_storage) =
+                                        session_actor_map_storage.get()
+                                    {
+                                        let storage = session_actor_map_storage.read();
+                                        let entry = storage
+                                            .get_session_actor_map(&msg.tenant_id, &msg.client_id);
+                                        Ok(entry)
+                                    } else {
+                                        Err(SessionActorMapRaftError::NotInitialized)
+                                    }
                                 }
-                            }
-                            Err(SessionActorMapRaftError::NotLeader { leader }) => {
-                                log::debug!("Not leader, forwarding request to leader: {:?}", leader);
-                                if let Some(leader_node) = leader {
-                                    let mut client = ClusterServiceClient::connect(format!("http://{}", leader_node.rpc_addr)).await.map_err(|e| {
-                                        log::error!("Failed to connect to leader: {}", e);
-                                        SessionActorMapRaftError::GRPC(e.to_string())
-                                    })?;
-                                    let response = client
-                                        .get_session_actor_map(crate::protobuf::GetSessionActorMapRequest {
-                                            tenant_id: msg.tenant_id.clone(),
-                                            client_id: msg.client_id.clone(),
-                                        })
-                                        .await
+                                Err(SessionActorMapRaftError::NotLeader { leader }) => {
+                                    log::debug!(
+                                        "Not leader, forwarding request to leader: {:?}",
+                                        leader
+                                    );
+                                    if let Some(leader_node) = leader {
+                                        let mut client = crate::rpc::grpc_client::lazy_channel(
+                                            &leader_node.rpc_addr,
+                                        )
+                                        .map(ClusterServiceClient::new)
                                         .map_err(|e| {
-                                            log::error!("Failed to get session actor map from leader: {}", e);
-                                            SessionActorMapRaftError::GRPC(e.to_string())
+                                            Self::log_remote_leader_error(
+                                                "Failed to create leader client",
+                                                &e,
+                                            );
+                                            SessionActorMapRaftError::GRPCConnect(e.to_string())
                                         })?;
-                                    let inner_res = response.into_inner();
-                                    if inner_res.success {
+                                        let response = client
+                                            .get_session_actor_map(
+                                                crate::protobuf::GetSessionActorMapRequest {
+                                                    tenant_id: msg.tenant_id.clone(),
+                                                    client_id: msg.client_id.clone(),
+                                                },
+                                            )
+                                            .await
+                                            .map_err(|e| {
+                                                Self::log_remote_leader_error(
+                                                    "Failed to get session actor map from leader",
+                                                    &e,
+                                                );
+                                                Self::map_remote_status(e)
+                                            })?;
+                                        let inner_res = response.into_inner();
                                         if let Some(payload) = inner_res.payload {
                                             let entry = serde_json::from_str(&payload).map_err(|e| {
-                                                SessionActorMapRaftError::UnexpectedResponseType(
-                                                    format!("invalid session actor map payload: {e}"),
-                                                )
-                                            })?;
+                                            SessionActorMapRaftError::UnexpectedResponseType(
+                                                format!("invalid session actor map payload: {e}"),
+                                            )
+                                        })?;
                                             Ok(Some(entry))
                                         } else {
                                             Ok(None)
                                         }
                                     } else {
-                                        Err(SessionActorMapRaftError::GRPC(
-                                            inner_res
-                                                .error
-                                                .map(|err| err.message)
-                                                .unwrap_or_else(|| {
-                                                    "get session actor map failed without error detail".to_string()
-                                                }),
-                                        ))
+                                        Err(SessionActorMapRaftError::NoLeaderAvailable)
                                     }
-                                } else {
-                                    Err(SessionActorMapRaftError::NoLeaderAvailable)
                                 }
+                                Err(e) => Err(e),
                             }
-                            Err(e) => Err(e),
+                        } else {
+                            Err(SessionActorMapRaftError::NotInitialized)
                         }
-                    } else {
-                        Err(SessionActorMapRaftError::NotInitialized)
                     }
-                }.into_actor(self)
+                    .into_actor(self),
                 )
             }
             ActorState::Failed(e) => {
@@ -991,6 +1109,7 @@ impl Handler<InitRaftClusterMessage> for SessionActorMapRaftActor {
                         cluster_nodes.insert(
                             item.id,
                             Node {
+                                node_id: Some(item.id),
                                 rpc_addr: item.rpc_address.to_string(),
                                 api_addr: item.api_address.to_string(),
                             },
@@ -1426,6 +1545,80 @@ impl Handler<GetClusterNodes> for SessionActorMapRaftActor {
             ActorState::Stopped => Err(SessionActorMapRaftError::NotReady(
                 "Actor is stopped".to_string(),
             )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_remote_status_reads_leader_redirect_metadata() {
+        let status = grpc_status::leader_redirect_status("redirect", "10.0.0.4:9080", Some(4));
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::NotLeader {
+                leader: Some(leader),
+            } => {
+                assert_eq!(leader.node_id, Some(4));
+                assert_eq!(leader.rpc_addr, "10.0.0.4:9080");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_remote_status_distinguishes_no_leader_and_not_ready() {
+        assert!(matches!(
+            SessionActorMapRaftActor::map_remote_status(grpc_status::no_leader_status("no leader")),
+            SessionActorMapRaftError::NoLeaderAvailable
+        ));
+
+        assert!(matches!(
+            SessionActorMapRaftActor::map_remote_status(grpc_status::not_ready_status("not ready")),
+            SessionActorMapRaftError::NotReady(message) if message == "not ready"
+        ));
+    }
+
+    #[test]
+    fn map_remote_status_preserves_business_grpc_code() {
+        let status = grpc_status::business_status(
+            tonic::Code::InvalidArgument,
+            grpc_status::business_detail(
+                crate::protobuf::ErrorCode::InvalidArgument,
+                "bad request",
+                "session_actor_map_raft",
+            ),
+        );
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::GRPCBusiness(err) => {
+                assert_eq!(err.grpc_code(), tonic::Code::InvalidArgument);
+                assert_eq!(err.code(), crate::protobuf::ErrorCode::InvalidArgument);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_remote_status_reads_structured_session_version_conflict() {
+        let mut detail =
+            grpc_status::session_version_rejected_detail(12, 3, 10, 2, "session_actor_map_raft");
+        detail.message = "wording changed but structure remains".to_string();
+        let status = grpc_status::business_status(tonic::Code::FailedPrecondition, detail);
+
+        match SessionActorMapRaftActor::map_remote_status(status) {
+            SessionActorMapRaftError::SessionVersionRejected {
+                current_version,
+                existing_version,
+            } => {
+                assert_eq!(current_version.counter, 12);
+                assert_eq!(current_version.node_id, 3);
+                assert_eq!(existing_version.counter, 10);
+                assert_eq!(existing_version.node_id, 2);
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }

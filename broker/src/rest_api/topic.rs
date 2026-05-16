@@ -64,9 +64,9 @@ pub async fn topic_list(
             (StatusCode::OK, Json(result)).into_response()
         }
         Ok(Err(err)) => {
-            if let topic_raft_actor::TopicRaftError::TopicError(topic_error) = err {
+            if let topic_raft_actor::TopicRaftError::TopicStorageError(topic_error) = err {
                 match topic_error {
-                    crate::topic::TopicError::TenantNotFound(_) => {
+                    crate::topic::TopicStorageError::TenantNotFound(_) => {
                         let error_response = super::ErrorResponse {
                             code: 3,
                             message: format!("tenant {} not existed", tenant_id),

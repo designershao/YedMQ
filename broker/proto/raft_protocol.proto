@@ -1,7 +1,5 @@
 syntax = "proto3";
 
-import "common.proto";
-
 package yedmqpb;
 
 // RaftService defines RPCs for Raft consensus protocol operations.
@@ -36,9 +34,7 @@ message WriteRequest {
 
 // Response message for Write RPC.
 message WriteResponse {
-  bool success = 1;        // Operation success flag
-  ErrorDetail error = 2;   // Error details if any
-  string data = 3;         // Additional response data
+  string data = 1;         // Additional response data
 }
 
 // Request message for appending entries to the Raft log.
@@ -49,9 +45,7 @@ message AppendEntriesRequest {
 
 // Response message for AppendEntries RPC.
 message AppendEntriesResponse {
-  bool success = 1;        // Operation success flag
-  ErrorDetail error = 2;   // Error details if any
-  string data = 3;         // Additional response data
+  string data = 1;         // Additional response data
 }
 
 // Request message for requesting a vote.
@@ -62,9 +56,7 @@ message VoteRequest {
 
 // Response message for Vote RPC.
 message VoteResponse {
-  bool success = 1;        // Operation success flag
-  ErrorDetail error = 2;   // Error details if any
-  string data = 3;         // Additional response data
+  string data = 1;         // Additional response data
 }
 
 // Request message for installing a snapshot.
@@ -75,7 +67,5 @@ message InstallSnapshotRequest {
 
 // Response message for InstallSnapshot RPC.
 message InstallSnapshotResponse {
-  bool success = 1;        // Operation success flag
-  ErrorDetail error = 2;   // Error details if any
-  string data = 3;         // Additional response data
+  string data = 1;         // Additional response data
 }

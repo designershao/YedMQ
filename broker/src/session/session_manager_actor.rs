@@ -3,16 +3,12 @@ use std::{sync::Arc, time::Duration};
 use crate::{
     node_resolver::NodeResolver,
     protobuf::ForceStopSessionActorRequest,
-    raft::{
-        session_actor_map::{
-            session_actor_map_raft_actor::{self, SessionActorMapRaftActor},
-            types::RenewSession,
-        },
-        NodeId,
-    },
+    raft::{session_actor_map::types::RenewSession, NodeId},
     session::{
         session_actor::{SessionActor, SessionActorConfig},
+        session_actor_map_service::SessionActorMapService,
         session_registry::{SessionActorRecipientWrapper, SessionRegistry},
+        session_state_service::SessionStateService,
     },
     settings::Settings,
 };
@@ -34,9 +30,9 @@ use super::{
     WillMessage,
 };
 use crate::connection::ConnectionActorMessage;
-use crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor;
 use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::router_actor::RouterActor;
+use crate::topic::topic_service::TopicService;
 
 #[derive(Error, Debug)]
 pub enum SessionManagerError {
@@ -198,7 +194,7 @@ impl Actor for SessionManagerActor {
         let (session_lifecycle_tx, mut session_lifecycle_rx) = tokio::sync::mpsc::channel(10);
         self.session_lifecycle_tx = Some(session_lifecycle_tx);
         let self_addr = ctx.address();
-        let session_actor_map_actor_addr = SessionActorMapRaftActor::from_registry();
+        let session_actor_map_service = SessionActorMapService::from_registry();
         let future = async move {
             while let Some(msg) = session_lifecycle_rx.recv().await {
                 match msg {
@@ -214,14 +210,14 @@ impl Actor for SessionManagerActor {
                             "Received session lifecycle message SessionStopped session {} stopped",
                             client_id
                         );
-                        let res = session_actor_map_actor_addr.send(
-                            crate::raft::session_actor_map::session_actor_map_raft_actor::UnregisterSessionActorMap {
-                                tenant_id: tenant_id.clone(),
-                                client_id: client_id.clone(),
-                                version: version.clone(),
-                            }
-                        ).await;
-                        if let Err(err) = res {
+                        if let Err(err) = session_actor_map_service
+                            .unregister_session_actor_map(
+                                tenant_id.clone(),
+                                client_id.clone(),
+                                version.clone(),
+                            )
+                            .await
+                        {
                             warn!("failed to unregister session actor map: {}", err);
                         }
                         // Because the session should renew the session lease before it stops,
@@ -295,8 +291,8 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
     type Result = ();
 
     fn handle(&mut self, _msg: CheckExpiredSessions, ctx: &mut Self::Context) -> Self::Result {
-        let session_state_raft_actor_addr = SessionStateRaftActor::from_registry();
-        let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
+        let session_state_service = SessionStateService::from_registry();
+        let session_actor_map_service = SessionActorMapService::from_registry();
         let Some(settings) = self.settings.as_ref().cloned() else {
             warn!("skip CheckExpiredSessions: settings not initialized");
             return;
@@ -320,26 +316,18 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
 
         ctx.spawn(
             async move {
-                let expired_res = session_state_raft_actor_addr
-                    .send(crate::raft::session_state::session_state_raft_actor::ScanExpiredSessions {
-                        now,
-                        ttl,
-                    })
-                    .await;
+                let expired_res = session_state_service.scan_expired_sessions(now, ttl).await;
 
                 match expired_res {
-                    Ok(Ok(expired_list)) => {
+                    Ok(expired_list) => {
                         for (tenant_id, client_id, disconnected_at) in expired_list {
                             info!("cleaning up expired persistent session: {}/{} (disconnected at {})", tenant_id, client_id, disconnected_at);
 
-                            let map_entry_res = session_actor_map_raft_actor_addr.send(
-                                crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMap {
-                                    tenant_id: tenant_id.clone(),
-                                    client_id: client_id.clone(),
-                                }
-                            ).await;
+                            let map_entry_res = session_actor_map_service
+                                .get_session_actor_map(tenant_id.clone(), client_id.clone())
+                                .await;
 
-                            if let Ok(Ok(Some(entry))) = map_entry_res {
+                            if let Ok(Some(entry)) = map_entry_res {
                                 if let Err(e) = call_force_disconnect(
                                     entry.node_id,
                                     node_resolver.clone(),
@@ -351,22 +339,19 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
                                 }
                             }
 
-                            let _ = session_state_raft_actor_addr.send(
-                                crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
-                                    tenant_id: tenant_id.clone(),
-                                    client_id: client_id.clone(),
-                                    expected_disconnected_at: Some(disconnected_at),
-                                }
-                            ).await;
+                            let _ = session_state_service
+                                .delete_session_state(
+                                    tenant_id.clone(),
+                                    client_id.clone(),
+                                    Some(disconnected_at),
+                                )
+                                .await;
                         }
                     }
-                    Ok(Err(crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotLeader { .. })) => {
-                    }
-                    Ok(Err(e)) => {
-                        error!("failed to scan expired sessions: {}", e);
+                    Err(crate::raft::session_state::session_state_raft_actor::SessionStateRaftError::NotLeader { .. }) => {
                     }
                     Err(e) => {
-                        error!("mailbox error when scanning expired sessions: {}", e);
+                        error!("failed to scan expired sessions: {}", e);
                     }
                 }
             }
@@ -395,18 +380,14 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
                         })
                         .collect();
 
-                    let session_actor_map_raft_actor_addr =
-                        SessionActorMapRaftActor::from_registry();
+                    let session_actor_map_service = SessionActorMapService::from_registry();
                     for session in &sessions_keys {
                         debug!(
                             "renew session lease for tenant {} session {}",
                             tenant_id, session.session_id
                         );
-                        let res = session_actor_map_raft_actor_addr
-                            .send(session_actor_map_raft_actor::RenewSession {
-                                tenant_id: session.tenant_id.clone(),
-                                client_id: session.session_id.clone(),
-                            })
+                        let res = session_actor_map_service
+                            .renew_session(session.tenant_id.clone(), session.session_id.clone())
                             .await;
                         if let Err(err) = res {
                             error!("failed to renew session lease: {}", err);
@@ -769,11 +750,9 @@ async fn call_force_disconnect(
         .await
         .ok_or_else(|| SessionManagerError::NodeNotFound(node_id.to_string()))?;
 
-    let addr = format!("http://{}", node.rpc_addr);
-
-    let mut client =
-        crate::protobuf::cluster_service_client::ClusterServiceClient::connect(addr.clone())
-            .await?;
+    let mut client = crate::protobuf::cluster_service_client::ClusterServiceClient::new(
+        crate::rpc::grpc_client::lazy_channel(&node.rpc_addr)?,
+    );
 
     for i in 0..max_retries {
         info!(
@@ -835,13 +814,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 .clone();
 
             // Force previous session to disconnect if exists
-            let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-            let session_actor_map_entry = session_actor_map_raft_actor_addr
-                .send(session_actor_map_raft_actor::GetSessionActorMap {
-                    tenant_id: msg.tenant_id.clone(),
-                    client_id: msg.client_id.clone(),
-                })
-                .await??;
+            let session_actor_map_service = SessionActorMapService::from_registry();
+            let session_actor_map_entry = session_actor_map_service
+                .get_session_actor_map(msg.tenant_id.clone(), msg.client_id.clone())
+                .await?;
 
             if let Some(entry) = &session_actor_map_entry {
                 if entry.node_id != current_node_id {
@@ -884,34 +860,28 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             let session_version = session_clock.next();
 
-            let session_actor_map_raft_actor_addr = SessionActorMapRaftActor::from_registry();
-
-            let res = session_actor_map_raft_actor_addr
-                .send(session_actor_map_raft_actor::RegisterSessionActorMap {
-                    tenant_id: msg.tenant_id.clone(),
-                    client_id: msg.client_id.clone(),
-                    node_id: current_node_id,
-                    version: session_version.clone(),
-                })
-                .await?;
-
-            match res {
-                Ok(_) => {}
-                Err(e) => {
-                    match e {
-                        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
-                            current_version,
-                            existing_version
-                        } => {
-                            info!(
-                                "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
-                                msg.tenant_id, msg.client_id, current_version, existing_version
-                            );
-                            return Err(SessionManagerError::NewerSessionExisted);
-                        }
-                        _ => {
-                            return Err(e.into());
-                        }
+            if let Err(e) = session_actor_map_service
+                .register_session_actor_map(
+                    msg.tenant_id.clone(),
+                    msg.client_id.clone(),
+                    current_node_id,
+                    session_version.clone(),
+                )
+                .await
+            {
+                match e {
+                    crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
+                        current_version,
+                        existing_version,
+                    } => {
+                        info!(
+                            "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
+                            msg.tenant_id, msg.client_id, current_version, existing_version
+                        );
+                        return Err(SessionManagerError::NewerSessionExisted);
+                    }
+                    _ => {
+                        return Err(e.into());
                     }
                 }
             }
@@ -928,7 +898,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 settings.mqtt.inflight_retry_interval_secs,
             ))));
 
-            let session_state_raft_actor_addr = crate::raft::session_state::session_state_raft_actor::SessionStateRaftActor::from_registry();
+            let session_state_service = SessionStateService::from_registry();
 
             let mut session_present = false;
 
@@ -940,14 +910,10 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 // If raft store not existed, create new session state
                 // First check local sessions if exists send reconect
                 // If local sessions not existed, recover from raft store
-                let res = session_state_raft_actor_addr.send(
-                    crate::raft::session_state::session_state_raft_actor::GetSessionStateEnsureLinearizable {
-                        tenant_id: msg.tenant_id.clone(),
-                        client_id: msg.client_id.clone(),
-                    },
-                ).await?;
-
-                if let Ok(res) = res {
+                if let Ok(res) = session_state_service
+                    .get_session_state_linearizable(msg.tenant_id.clone(), msg.client_id.clone())
+                    .await
+                {
                     if let Some(session_state_from_raft) = res {
                         if let Some(session_recipient_wrapper) = sessions_guard.get(&msg.client_id)
                         {
@@ -986,12 +952,9 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                             "session {} not exists in cluster, create new session state",
                             msg.client_id
                         );
-                        session_state_raft_actor_addr.send(
-                            crate::raft::session_state::session_state_raft_actor::CreateSessionState {
-                                tenant_id: msg.tenant_id.clone(),
-                                client_id: msg.client_id.clone(),
-                            },
-                        ).await??;
+                        session_state_service
+                            .create_session_state(msg.tenant_id.clone(), msg.client_id.clone())
+                            .await?;
                     }
 
                     session_present = true;
@@ -1001,14 +964,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     "session {} is clean session, delete previous session state if exists",
                     msg.client_id
                 );
-                let _ = session_state_raft_actor_addr
-                    .send(
-                        crate::raft::session_state::session_state_raft_actor::DeleteSessionState {
-                            tenant_id: msg.tenant_id.clone(),
-                            client_id: msg.client_id.clone(),
-                            expected_disconnected_at: None,
-                        },
-                    )
+                let _ = session_state_service
+                    .delete_session_state(msg.tenant_id.clone(), msg.client_id.clone(), None)
                     .await;
             }
             let plugin_manager_clone = plugin_manager.clone();
@@ -1028,8 +985,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     peer_addr: msg.peer_addr,
                     session_state,
                     session_lifecycle_tx,
-                    session_state_raft_actor: SessionStateRaftActor::from_registry(),
-                    topic_raft_actor: TopicRaftActor::from_registry(),
+                    session_state_service: SessionStateService::from_registry(),
+                    topic_service: TopicService::from_registry(),
                     router_actors,
                     payload_store: payload_store.clone(),
                     timer_actor,
