@@ -533,6 +533,7 @@ impl ClusterService for ClusterServiceImpl {
             client_identifier: inner.client_id.clone(),
             topic: inner.topic.clone(),
             qos: inner.qos as u8,
+            no_local: false,
         };
         let _ = topic_raft_actor_addr
             .send(subscribe_topic_actor)

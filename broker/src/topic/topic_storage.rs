@@ -88,6 +88,8 @@ fn extract_info_from_key(key: &str) -> (String, String) {
 pub struct Subscription {
     pub client_identifier: String,
     pub qos: u8,
+    #[serde(default)]
+    pub no_local: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -391,6 +393,17 @@ impl TopicStorage {
         topic_filter: String,
         qos: u8,
     ) -> Result<(), TopicStorageError> {
+        self.subscribe_with_options(tenant_id, client_identifier, topic_filter, qos, false)
+    }
+
+    pub fn subscribe_with_options(
+        &self,
+        tenant_id: String,
+        client_identifier: String,
+        topic_filter: String,
+        qos: u8,
+        no_local: bool,
+    ) -> Result<(), TopicStorageError> {
         if !test_topic(&topic_filter) {
             return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
         }
@@ -404,6 +417,7 @@ impl TopicStorage {
                 topic_patterns,
                 client_identifier.clone(),
                 qos,
+                no_local,
             );
             if let Err(err) = result {
                 Err(err)
@@ -428,6 +442,7 @@ impl TopicStorage {
         mut topic_partterns: Vec<String>,
         client_identifier: String,
         qos: u8,
+        no_local: bool,
     ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -435,11 +450,18 @@ impl TopicStorage {
                 .write()
                 .find_or_create_leaf(topic_pattern.to_string());
             let topic_patterns_rest = topic_partterns.drain(1..).collect();
-            Self::recursion_subscribe(topic_node_next, topic_patterns_rest, client_identifier, qos)
+            Self::recursion_subscribe(
+                topic_node_next,
+                topic_patterns_rest,
+                client_identifier,
+                qos,
+                no_local,
+            )
         } else {
             topic_node.write().add_subscription(Subscription {
                 client_identifier,
                 qos,
+                no_local,
             });
             Ok(())
         }
@@ -906,14 +928,17 @@ mod tests {
         topic_node.add_subscription(Subscription {
             client_identifier: "1".to_string(),
             qos: 0,
+            no_local: false,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "2".to_string(),
             qos: 0,
+            no_local: false,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "3".to_string(),
             qos: 0,
+            no_local: false,
         });
 
         let subscriptions = topic_node.get_subscriptions();

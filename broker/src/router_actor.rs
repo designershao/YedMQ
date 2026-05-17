@@ -343,6 +343,7 @@ impl RouterActor {
         context: RouteContext,
         tenant_id: &str,
         packet: &Packet,
+        source_client_identifier: Option<&str>,
     ) -> Result<(), RouterActorError> {
         if let Packet::Publish(publish_packet) = packet {
             let topic = &publish_packet.topic_name;
@@ -355,6 +356,7 @@ impl RouterActor {
                     .map(|x| crate::raft::topic::topic_raft_actor::SubscriptionInfo {
                         client_identifier: x.client_identifier.clone(),
                         qos: x.qos,
+                        no_local: x.no_local,
                     })
                     .collect::<Vec<_>>()
             };
@@ -385,6 +387,14 @@ impl RouterActor {
             };
 
             for (item, session_actor_map) in subscriptions.iter().zip(local_results.into_iter()) {
+                if item.no_local
+                    && source_client_identifier
+                        .map(|source| source == item.client_identifier)
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
+
                 let session_actor_map = match session_actor_map {
                     Some(session_actor_map) => Some(session_actor_map),
                     None => {
@@ -911,6 +921,7 @@ impl RouterActor {
 pub struct RoutePacket {
     pub tenant_id: String,
     pub packet: Packet,
+    pub source_client_identifier: Option<String>,
 }
 
 impl Handler<RoutePacket> for RouterActor {
@@ -936,7 +947,13 @@ impl Handler<RoutePacket> for RouterActor {
 
         Box::pin(
             async move {
-                Self::route(context, &msg.tenant_id, &msg.packet).await?;
+                Self::route(
+                    context,
+                    &msg.tenant_id,
+                    &msg.packet,
+                    msg.source_client_identifier.as_deref(),
+                )
+                .await?;
                 Ok(())
             }
             .into_actor(self),

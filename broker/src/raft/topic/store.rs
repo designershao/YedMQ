@@ -250,16 +250,18 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         client_identifier,
                         topic,
                         qos,
+                        no_local,
                     } => {
                         let topic_storage = self.data.state.topic_storage.read();
                         if !topic_storage.contains_tenant(&tenant_id) {
                             topic_storage.create_tenant(&tenant_id);
                         }
-                        let _ = topic_storage.subscribe(
+                        let _ = topic_storage.subscribe_with_options(
                             tenant_id,
                             client_identifier,
                             topic.clone(),
                             qos,
+                            no_local,
                         );
                         replies.push(Response::None);
                     }

@@ -201,6 +201,8 @@ pub enum ReasonCode {
     GrantedQos2,
     NormalDisconnection,
     NoMatchingSubscribers,
+    ContinueAuthentication,
+    ReAuthenticate,
     UnspecifiedError,
     MalformedPacket,
     ProtocolError,
@@ -231,6 +233,8 @@ impl ReasonCode {
             ReasonCode::GrantedQos1 => 0x01,
             ReasonCode::GrantedQos2 => 0x02,
             ReasonCode::NoMatchingSubscribers => 0x10,
+            ReasonCode::ContinueAuthentication => 0x18,
+            ReasonCode::ReAuthenticate => 0x19,
             ReasonCode::UnspecifiedError => 0x80,
             ReasonCode::MalformedPacket => 0x81,
             ReasonCode::ProtocolError => 0x82,
@@ -311,6 +315,24 @@ impl Packet {
         match self {
             Packet::Publish(packet) => Some(packet),
             _ => None,
+        }
+    }
+
+    pub fn set_protocol_version(&mut self, protocol_version: ProtocolVersion) {
+        match self {
+            Packet::Connect(packet) => packet.protocol_version = protocol_version,
+            Packet::Connack(packet) => packet.protocol_version = protocol_version,
+            Packet::Publish(packet) => packet.protocol_version = protocol_version,
+            Packet::Puback(packet)
+            | Packet::Pubrec(packet)
+            | Packet::Pubrel(packet)
+            | Packet::Pubcomp(packet) => packet.protocol_version = protocol_version,
+            Packet::Subscribe(packet) => packet.protocol_version = protocol_version,
+            Packet::Suback(packet) => packet.protocol_version = protocol_version,
+            Packet::Unsubscribe(packet) => packet.protocol_version = protocol_version,
+            Packet::Unsuback(packet) => packet.protocol_version = protocol_version,
+            Packet::Disconnect(packet) => packet.protocol_version = protocol_version,
+            Packet::Pingreq | Packet::Pingresp | Packet::Auth(_) => {}
         }
     }
 }

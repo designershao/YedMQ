@@ -8,6 +8,8 @@ pub fn decode(value: u8) -> Result<ReasonCode, Mqtt5ParseError> {
         0x01 => Ok(ReasonCode::GrantedQos1),
         0x02 => Ok(ReasonCode::GrantedQos2),
         0x10 => Ok(ReasonCode::NoMatchingSubscribers),
+        0x18 => Ok(ReasonCode::ContinueAuthentication),
+        0x19 => Ok(ReasonCode::ReAuthenticate),
         0x80 => Ok(ReasonCode::UnspecifiedError),
         0x81 => Ok(ReasonCode::MalformedPacket),
         0x82 => Ok(ReasonCode::ProtocolError),
@@ -52,6 +54,8 @@ mod tests {
             decode(0xa1).unwrap(),
             ReasonCode::SubscriptionIdentifiersNotSupported
         );
+        assert_eq!(decode(0x18).unwrap(), ReasonCode::ContinueAuthentication);
+        assert_eq!(decode(0x19).unwrap(), ReasonCode::ReAuthenticate);
     }
 
     #[test]

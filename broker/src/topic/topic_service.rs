@@ -72,6 +72,18 @@ impl TopicService {
         topic: String,
         qos: u8,
     ) -> Result<(), TopicServiceError> {
+        self.subscribe_with_options(tenant_id, client_identifier, topic, qos, false)
+            .await
+    }
+
+    pub async fn subscribe_with_options(
+        &self,
+        tenant_id: String,
+        client_identifier: String,
+        topic: String,
+        qos: u8,
+        no_local: bool,
+    ) -> Result<(), TopicServiceError> {
         let result = self
             .topic_raft_actor
             .send(Subscribe {
@@ -79,6 +91,7 @@ impl TopicService {
                 client_identifier: client_identifier.clone(),
                 topic: topic.clone(),
                 qos,
+                no_local,
             })
             .await?;
 
@@ -234,6 +247,7 @@ impl TopicService {
                         |subscriber| crate::raft::topic::topic_raft_actor::SubscriptionInfo {
                             client_identifier: subscriber.client_id,
                             qos: subscriber.qos as u8,
+                            no_local: false,
                         },
                     )
                     .collect();

@@ -200,6 +200,7 @@ pub async fn publish_message(
         .do_send(RoutePacket {
             tenant_id,
             packet: Packet::Publish(publish_packet),
+            source_client_identifier: None,
         });
     StatusCode::OK.into_response()
 }

@@ -7,6 +7,7 @@ pub mod connection;
 pub mod inflight;
 pub mod listener;
 pub mod metric;
+pub mod mqtt_properties;
 pub mod node_resolver;
 pub mod raft;
 pub mod rest_api;

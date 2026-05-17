@@ -13,14 +13,16 @@ use log::{debug, error, info, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use yedmq_mqtt::packet::Packet;
+use yedmq_mqtt::packet::{
+    Connack as NeutralConnack, Connect, Packet, Properties, ProtocolVersion, ReasonCode,
+};
 use yedmq_mqtt::v3::connack::{ConnAckPacketBuilder, ConnackReturnCode};
-use yedmq_mqtt::v3::connect::ConnectPacket;
 use yedmq_mqtt::MqttPacketV3;
 use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
 use yedmq_plugin_host::protocol::plugin_protocol::AuthenticateRequest;
 
 use crate::metric::Metric;
+use crate::mqtt_properties::properties_to_struct;
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
 use crate::session::{session_actor, WillMessage};
@@ -253,6 +255,9 @@ pub enum ConnectionError {
     #[error("connection unauthorized, reason {0}")]
     Unauthenticate(String),
 
+    #[error("unsupported MQTT 5 feature {0}")]
+    UnsupportedMqtt5Feature(&'static str),
+
     #[error("plugin error {0}")]
     PluginError(#[from] yedmq_plugin_host::plugin_manager::PluginManagerError),
 }
@@ -276,6 +281,12 @@ pub enum ConnectionActorMessage {
 #[rtype(result = "()")]
 pub struct UpdateSession {
     pub session: Recipient<SessionActorMessage>,
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct UpdateProtocolVersion {
+    pub protocol_version: ProtocolVersion,
 }
 
 #[derive(Message)]
@@ -304,6 +315,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     pub plugin_service: Arc<PluginManager>,
 
     pub disconnected_normally: bool,
+    protocol_version: ProtocolVersion,
     session: Option<Recipient<SessionActorMessage>>,
 
     read_packet_handle: Option<SpawnHandle>,
@@ -365,9 +377,20 @@ where
                 async move {
                     let mut buffer = BytesMut::with_capacity(buf_size);
 
-                    let first_packet = match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
+                    let (first_packet, protocol_version) = match read_packet(&mut reader, &mut buffer, max_msg_size, None, Some(metric_clone.clone())).await {
                         Ok(packet) => packet,
                         Err(e) => {
+                            if let ConnectionError::UnsupportedProtocolVersion { .. } = &e {
+                                if let Err(send_error) = read_addr
+                                    .send(ConnectionActorMessage::WritePacketToClient(
+                                        error_connack_packet(ProtocolVersion::V3_1_1, &e),
+                                    ))
+                                    .await {
+                                    error!("send unsupported protocol CONNACK error: {}", send_error);
+                                }
+                                read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("unsupported protocol version".to_string())));
+                                return;
+                            }
                             error!("Failed to read first packet: {}", e);
                             read_addr.do_send(NetworkEvent::ReadError(
                                 std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
@@ -377,7 +400,16 @@ where
                     };
 
                     match first_packet {
-                        MqttPacketV3::Connect(packet) => {
+                        Packet::Connect(packet) => {
+                            if read_addr
+                                .send(UpdateProtocolVersion { protocol_version })
+                                .await
+                                .is_err() {
+                                error!("Failed to send UpdateProtocolVersion message to self. The actor is likely shutting down.");
+                                read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("Failed to send UpdateProtocolVersion message to self. The actor is likely shutting down.".to_string())));
+                                return;
+                            }
+
                             match handle_initial_connect(
                                 packet,
                                 plugin_svc,
@@ -387,14 +419,15 @@ where
                                 metric_clone.clone(),
                             ).await {
                                 Ok(result) => {
-                                    let connack = ConnAckPacketBuilder::new()
-                                        .set_return_code(ConnackReturnCode::Accept)
-                                        .set_session_present(result.session_present)
-                                        .build();
+                                    let connack = success_connack_packet(
+                                        protocol_version,
+                                        result.session_present,
+                                        max_msg_size,
+                                    );
 
                                     if let Err(e) = read_addr
                                         .send(ConnectionActorMessage::WritePacketToClient(
-                                            Packet::from(yedmq_mqtt::MqttPacketV3::Connack(connack)),
+                                            connack,
                                         ))
                                         .await {
                                         error!("send connack packet error, connection may be closed: {}", e);
@@ -408,10 +441,10 @@ where
                                         return;
                                     }
                                     loop {
-                                        match read_packet(&mut reader, &mut buffer, max_msg_size, Some(metric_clone.clone())).await {
-                                            Ok(packet) => {
+                                        match read_packet(&mut reader, &mut buffer, max_msg_size, Some(protocol_version), Some(metric_clone.clone())).await {
+                                            Ok((packet, _)) => {
                                                 metric_clone.increase_packets_received();
-                                                if matches!(packet, MqttPacketV3::Disconnect(_)) && read_addr
+                                                if matches!(packet, Packet::Disconnect(_)) && read_addr
                                                     .send(NotifyUpdateDisconnectedNormally {
                                                         disconnected_normally: true,
                                                     })
@@ -420,8 +453,7 @@ where
                                                     error!("Failed to send NotifyUpdateDisconnectedNormally message to self. The actor is likely shutting down.");
                                                 }
 
-                                                let is_publish = matches!(packet, MqttPacketV3::Publish(_));
-                                                let packet = Packet::from(packet);
+                                                let is_publish = matches!(packet, Packet::Publish(_));
                                                 if is_publish {
                                                     if let Some(limiter) = rate_limiter.as_ref() {
                                                         match limiter.check() {
@@ -475,40 +507,10 @@ where
                                     }
                                 }
                                 Err(e) => {
-                                    let connack_packet = match &e {
-                                        ConnectionError::UnsupportedProtocolVersion { .. } => {
-                                            ConnAckPacketBuilder::new()
-                                                .set_return_code(ConnackReturnCode::UnsupportedProtocolVersion)
-                                                .build()
-                                        }
-                                        ConnectionError::Unauthenticate(reason) => {
-                                            error!("connection unauthenticated: {}", reason);
-                                            ConnAckPacketBuilder::new()
-                                                .set_return_code(ConnackReturnCode::UnAuthorized)
-                                                .build()
-                                        }
-                                        ConnectionError::PluginError(e) => {
-                                            error!("handle initial connect error: {}", e);
-                                            ConnAckPacketBuilder::new()
-                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
-                                                .build()
-                                        }
-                                        ConnectionError::SessionManagerServiceUnavailable(e) => {
-                                            log_initial_connect_error(&ConnectionError::SessionManagerServiceUnavailable(e.clone()));
-                                            ConnAckPacketBuilder::new()
-                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
-                                                .build()
-                                        }
-                                        _ => {
-                                            log_initial_connect_error(&e);
-                                            ConnAckPacketBuilder::new()
-                                                .set_return_code(ConnackReturnCode::ServerUnavailable)
-                                                .build()
-                                        }
-                                    };
+                                    let connack_packet = error_connack_packet(protocol_version, &e);
                                     if let Err(e) = read_addr
                                         .send(ConnectionActorMessage::WritePacketToClient(
-                                            Packet::from(yedmq_mqtt::MqttPacketV3::Connack(connack_packet)),
+                                            connack_packet,
                                         ))
                                         .await {
                                         error!("send connack packet error: {}", e);
@@ -560,6 +562,7 @@ where
             event_listener_handle: None,
             max_message_size,
             disconnected_normally: false,
+            protocol_version: ProtocolVersion::V3_1_1,
             buffer_size: default_buffer_size,
             peer_addr,
             plugin_service,
@@ -605,51 +608,165 @@ pub async fn read_packet<T: AsyncRead + Unpin>(
     reader: &mut tokio::io::ReadHalf<T>,
     buffer: &mut BytesMut,
     max_message_size: u32,
+    protocol_version: Option<ProtocolVersion>,
     metric: Option<Arc<Metric>>,
-) -> Result<MqttPacketV3, ConnectionError> {
+) -> Result<(Packet, ProtocolVersion), ConnectionError> {
     loop {
-        let packet_result: std::prelude::v1::Result<
-            (&[u8], (&[u8], MqttPacketV3)),
-            nom::Err<nom::error::Error<&[u8]>>,
-        > = yedmq_mqtt::parse(buffer, max_message_size);
-
-        match packet_result {
-            Ok((_, (consumed_bytes, packet))) => {
-                buffer.advance(consumed_bytes.len());
-                return Ok(packet);
+        match try_parse_packet(buffer, max_message_size, protocol_version)? {
+            Some((consumed_len, packet, protocol_version)) => {
+                buffer.advance(consumed_len);
+                return Ok((packet, protocol_version));
             }
-            Err(err) => match err {
-                nom::Err::Incomplete(_) => {
-                    let n = reader.read_buf(buffer).await?;
-                    if let Some(m) = &metric {
-                        m.increase_bytes_received(n as u64);
-                    }
+            None => {
+                let n = reader.read_buf(buffer).await?;
+                if let Some(m) = &metric {
+                    m.increase_bytes_received(n as u64);
+                }
 
-                    if 0 == n {
-                        return Err(ConnectionError::ConnectionClosed);
-                    }
+                if 0 == n {
+                    return Err(ConnectionError::ConnectionClosed);
                 }
-                nom::Err::Error(err_inner) => {
-                    if err_inner.code == nom::error::ErrorKind::Verify {
-                        warn!("Message size exceeds maximum allowed size of the system.");
-                        return Err(ConnectionError::MaxMessageSizeExceeded(
-                            "Message size exceeds maximum allowed size of the system.".to_string(),
-                        ));
-                    } else {
-                        error!("read packet error: {:?}", err_inner);
-                        return Err(ConnectionError::PacketParseError(
-                            "Invalid MQTT Packet".to_string(),
-                        ));
-                    }
-                }
-                _ => {
-                    error!("read packet error: {:?}", err);
-                    return Err(ConnectionError::PacketParseError(
-                        "Invalid MQTT Packet".to_string(),
-                    ));
-                }
-            },
+            }
         }
+    }
+}
+
+fn try_parse_packet(
+    buffer: &BytesMut,
+    max_message_size: u32,
+    protocol_version: Option<ProtocolVersion>,
+) -> Result<Option<(usize, Packet, ProtocolVersion)>, ConnectionError> {
+    let protocol_version = match protocol_version {
+        Some(protocol_version) => protocol_version,
+        None => match detect_initial_connect_protocol(buffer, max_message_size)? {
+            Some(protocol_version) => protocol_version,
+            None => return Ok(None),
+        },
+    };
+
+    match protocol_version {
+        ProtocolVersion::V3_1_1 => try_parse_v3_packet(buffer, max_message_size),
+        ProtocolVersion::V5_0 => try_parse_v5_packet(buffer, max_message_size),
+    }
+}
+
+fn try_parse_v3_packet(
+    buffer: &BytesMut,
+    max_message_size: u32,
+) -> Result<Option<(usize, Packet, ProtocolVersion)>, ConnectionError> {
+    let packet_result: std::prelude::v1::Result<
+        (&[u8], (&[u8], MqttPacketV3)),
+        nom::Err<nom::error::Error<&[u8]>>,
+    > = yedmq_mqtt::parse(buffer, max_message_size);
+
+    match packet_result {
+        Ok((_, (consumed_bytes, packet))) => Ok(Some((
+            consumed_bytes.len(),
+            Packet::from(packet),
+            ProtocolVersion::V3_1_1,
+        ))),
+        Err(nom::Err::Incomplete(_)) => Ok(None),
+        Err(nom::Err::Error(err_inner)) => {
+            if err_inner.code == nom::error::ErrorKind::Verify {
+                warn!("Message size exceeds maximum allowed size of the system.");
+                Err(ConnectionError::MaxMessageSizeExceeded(
+                    "Message size exceeds maximum allowed size of the system.".to_string(),
+                ))
+            } else {
+                error!("read MQTT v3 packet error: {:?}", err_inner);
+                Err(ConnectionError::PacketParseError(
+                    "Invalid MQTT v3 packet".to_string(),
+                ))
+            }
+        }
+        Err(err) => {
+            error!("read MQTT v3 packet error: {:?}", err);
+            Err(ConnectionError::PacketParseError(
+                "Invalid MQTT v3 packet".to_string(),
+            ))
+        }
+    }
+}
+
+fn try_parse_v5_packet(
+    buffer: &BytesMut,
+    max_message_size: u32,
+) -> Result<Option<(usize, Packet, ProtocolVersion)>, ConnectionError> {
+    match yedmq_mqtt::v5::parse(buffer, max_message_size) {
+        Ok((remaining, packet)) => Ok(Some((
+            buffer.len() - remaining.len(),
+            packet,
+            ProtocolVersion::V5_0,
+        ))),
+        Err(yedmq_mqtt::v5::common::Mqtt5ParseError::Incomplete(_)) => Ok(None),
+        Err(yedmq_mqtt::v5::common::Mqtt5ParseError::RemainingLengthExceeded {
+            remaining_length,
+            max_message_size,
+        }) => {
+            warn!("MQTT 5 message size exceeds maximum allowed size of the system.");
+            Err(ConnectionError::MaxMessageSizeExceeded(format!(
+                "MQTT 5 remaining length {remaining_length} exceeds max message size {max_message_size}"
+            )))
+        }
+        Err(err) => {
+            error!("read MQTT v5 packet error: {}", err);
+            Err(ConnectionError::PacketParseError(format!(
+                "Invalid MQTT v5 packet: {err}"
+            )))
+        }
+    }
+}
+
+fn detect_initial_connect_protocol(
+    buffer: &BytesMut,
+    max_message_size: u32,
+) -> Result<Option<ProtocolVersion>, ConnectionError> {
+    let (body, fixed_header) = match yedmq_mqtt::v5::fixed_header::parse(buffer, max_message_size) {
+        Ok(parsed) => parsed,
+        Err(yedmq_mqtt::v5::common::Mqtt5ParseError::Incomplete(_)) => return Ok(None),
+        Err(yedmq_mqtt::v5::common::Mqtt5ParseError::RemainingLengthExceeded {
+            remaining_length,
+            max_message_size,
+        }) => {
+            return Err(ConnectionError::MaxMessageSizeExceeded(format!(
+                    "MQTT remaining length {remaining_length} exceeds max message size {max_message_size}"
+                )));
+        }
+        Err(err) => {
+            return Err(ConnectionError::PacketParseError(format!(
+                "Invalid first MQTT packet: {err}"
+            )));
+        }
+    };
+
+    if fixed_header.packet_type != yedmq_mqtt::v5::fixed_header::ControlPacketType::Connect {
+        return Err(ConnectionError::PacketParseError(
+            "client first packet is not CONNECT".to_string(),
+        ));
+    }
+
+    let remaining_length = fixed_header.remaining_length as usize;
+    if body.len() < remaining_length {
+        return Ok(None);
+    }
+    let connect_body = &body[..remaining_length];
+    let (input, protocol_name) = yedmq_mqtt::v5::common::parse_utf8_string(connect_body)
+        .map_err(|err| ConnectionError::PacketParseError(err.to_string()))?;
+    if protocol_name != "MQTT" {
+        return Err(ConnectionError::PacketParseError(
+            "invalid mqtt protocol name".to_string(),
+        ));
+    }
+    let (_, protocol_level) = yedmq_mqtt::v5::common::parse_u8(input, "CONNECT protocol level")
+        .map_err(|err| ConnectionError::PacketParseError(err.to_string()))?;
+
+    match protocol_level {
+        4 => Ok(Some(ProtocolVersion::V3_1_1)),
+        5 => Ok(Some(ProtocolVersion::V5_0)),
+        other => Err(ConnectionError::UnsupportedProtocolVersion {
+            supported_versions: vec!["3.1.1".to_string(), "5.0".to_string()],
+            current_version: other.to_string(),
+        }),
     }
 }
 
@@ -658,50 +775,122 @@ pub struct HandleInitialConnectResult {
     pub session_present: bool,
 }
 
+fn success_connack_packet(
+    protocol_version: ProtocolVersion,
+    session_present: bool,
+    max_message_size: u32,
+) -> Packet {
+    match protocol_version {
+        ProtocolVersion::V3_1_1 => {
+            let connack = ConnAckPacketBuilder::new()
+                .set_return_code(ConnackReturnCode::Accept)
+                .set_session_present(session_present)
+                .build();
+            Packet::from(MqttPacketV3::Connack(connack))
+        }
+        ProtocolVersion::V5_0 => Packet::Connack(NeutralConnack {
+            protocol_version: ProtocolVersion::V5_0,
+            session_present,
+            reason_code: ReasonCode::Success,
+            properties: Properties {
+                maximum_packet_size: Some(max_message_size),
+                topic_alias_maximum: Some(0),
+                subscription_identifier_available: Some(false),
+                shared_subscription_available: Some(false),
+                ..Properties::default()
+            },
+        }),
+    }
+}
+
+fn error_connack_packet(protocol_version: ProtocolVersion, error: &ConnectionError) -> Packet {
+    match protocol_version {
+        ProtocolVersion::V3_1_1 => {
+            let return_code = match error {
+                ConnectionError::UnsupportedProtocolVersion { .. } => {
+                    ConnackReturnCode::UnsupportedProtocolVersion
+                }
+                ConnectionError::Unauthenticate(reason) => {
+                    error!("connection unauthenticated: {}", reason);
+                    ConnackReturnCode::UnAuthorized
+                }
+                ConnectionError::PluginError(e) => {
+                    error!("handle initial connect error: {}", e);
+                    ConnackReturnCode::ServerUnavailable
+                }
+                ConnectionError::SessionManagerServiceUnavailable(e) => {
+                    log_initial_connect_error(&ConnectionError::SessionManagerServiceUnavailable(
+                        e.clone(),
+                    ));
+                    ConnackReturnCode::ServerUnavailable
+                }
+                _ => {
+                    log_initial_connect_error(error);
+                    ConnackReturnCode::ServerUnavailable
+                }
+            };
+            Packet::from(MqttPacketV3::Connack(
+                ConnAckPacketBuilder::new()
+                    .set_return_code(return_code)
+                    .build(),
+            ))
+        }
+        ProtocolVersion::V5_0 => {
+            let reason_code = match error {
+                ConnectionError::UnsupportedProtocolVersion { .. } => {
+                    ReasonCode::UnsupportedProtocolVersion
+                }
+                ConnectionError::Unauthenticate(reason) => {
+                    error!("connection unauthenticated: {}", reason);
+                    ReasonCode::NotAuthorized
+                }
+                ConnectionError::UnsupportedMqtt5Feature(feature) => {
+                    warn!("unsupported MQTT 5 feature during connect: {}", feature);
+                    ReasonCode::ImplementationSpecificError
+                }
+                ConnectionError::PluginError(e) => {
+                    error!("handle initial connect error: {}", e);
+                    ReasonCode::ServerUnavailable
+                }
+                ConnectionError::SessionManagerServiceUnavailable(e) => {
+                    log_initial_connect_error(&ConnectionError::SessionManagerServiceUnavailable(
+                        e.clone(),
+                    ));
+                    ReasonCode::ServerUnavailable
+                }
+                _ => {
+                    log_initial_connect_error(error);
+                    ReasonCode::ServerUnavailable
+                }
+            };
+            Packet::Connack(NeutralConnack {
+                protocol_version: ProtocolVersion::V5_0,
+                session_present: false,
+                reason_code,
+                properties: Properties::default(),
+            })
+        }
+    }
+}
+
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    packet: ConnectPacket,
+    packet: Connect,
     plugin_service: Arc<PluginManager>,
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
     client_certificate: Option<Vec<u8>>,
     metric: Arc<Metric>,
 ) -> Result<HandleInitialConnectResult, ConnectionError> {
-    // invalid mqtt protocol name
-    if packet.variable_header.protocol_name != "MQTT" {
-        warn!("invalid mqtt protocol name");
-        return Err(ConnectionError::PacketParseError(
-            "invalid mqtt protocol name".to_string(),
-        ));
-    }
-    //
-
-    // unsupported protocol version
-    if packet.variable_header.protocol_level != 4 {
-        return Err(ConnectionError::UnsupportedProtocolVersion {
-            supported_versions: vec!["3.1.1".to_string()],
-            current_version: packet.variable_header.protocol_level.to_string(),
-        });
-    }
-    //
+    let clean_session = clean_session_for_session_manager(&packet)?;
 
     let authenticate_request = AuthenticateRequest {
-        client_id: packet.payload.client_identifier.clone(),
-        username: packet
-            .payload
-            .username
-            .as_ref()
-            .unwrap_or(&"".to_string())
-            .clone(),
-        password: packet
-            .payload
-            .password
-            .as_ref()
-            .unwrap_or(&"".to_string())
-            .clone(),
+        client_id: packet.client_id.clone(),
+        username: packet.username.as_ref().unwrap_or(&"".to_string()).clone(),
+        password: packet.password.as_ref().unwrap_or(&"".to_string()).clone(),
         client_ip: peer_addr.ip().to_string(),
         client_cert: client_certificate.unwrap_or_default(),
-        protocol_version: "3.1.1".to_string(),
-        properties: None,
+        protocol_version: protocol_version_label(packet.protocol_version).to_string(),
+        properties: properties_to_struct(&packet.properties),
     };
 
     let plugin_authenticate_result = plugin_service
@@ -715,19 +904,12 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 tenant_id,
                 ..
             } => {
-                let will_message = match packet.variable_header.will_flag {
-                    true => Some(WillMessage {
-                        will_topic: packet.payload.will_topic.unwrap_or("".to_string()),
-                        will_message: packet
-                            .payload
-                            .will_message
-                            .unwrap_or("".to_string())
-                            .into_bytes(),
-                        will_qos: packet.variable_header.will_qos,
-                        will_retain: packet.variable_header.will_retain,
-                    }),
-                    false => None,
-                };
+                let will_message = packet.will.as_ref().map(|will| WillMessage {
+                    will_topic: will.topic.clone(),
+                    will_message: will.payload.to_vec(),
+                    will_qos: will.qos,
+                    will_retain: will.retain,
+                });
                 let tenant_id = tenant_id.unwrap_or("public".to_string());
                 let recipient = self_addr.clone().recipient();
                 let session_manager_actor_addr =
@@ -735,13 +917,13 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 let recipient = session_manager_actor_addr
                     .send(CreateSessionMessage {
                         tenant_id,
-                        client_id: packet.payload.client_identifier.clone(),
-                        clean_session: packet.variable_header.clean_session,
+                        client_id: packet.client_id.clone(),
+                        clean_session,
                         connection_addr: recipient.clone(),
-                        keep_alive: packet.variable_header.keep_alive as u64,
+                        keep_alive: packet.keep_alive as u64,
                         will_message,
                         peer_addr,
-                        username: packet.payload.username.clone(),
+                        username: packet.username.clone(),
                     })
                     .await
                     .map_err(|e| match e {
@@ -786,6 +968,31 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
             )),
         },
         Err(e) => Err(ConnectionError::PluginError(e)),
+    }
+}
+
+fn protocol_version_label(protocol_version: ProtocolVersion) -> &'static str {
+    match protocol_version {
+        ProtocolVersion::V3_1_1 => "3.1.1",
+        ProtocolVersion::V5_0 => "5.0",
+    }
+}
+
+fn clean_session_for_session_manager(packet: &Connect) -> Result<bool, ConnectionError> {
+    match packet.protocol_version {
+        ProtocolVersion::V3_1_1 => Ok(packet.clean_start),
+        ProtocolVersion::V5_0 => {
+            let session_expiry_interval = packet
+                .session_expiry_interval
+                .or(packet.properties.session_expiry_interval)
+                .unwrap_or(0);
+            if session_expiry_interval != 0 || !packet.clean_start {
+                return Err(ConnectionError::UnsupportedMqtt5Feature(
+                    "persistent sessions before MQTT 5 session expiry storage",
+                ));
+            }
+            Ok(true)
+        }
     }
 }
 
@@ -847,6 +1054,17 @@ where
     }
 }
 
+impl<T> Handler<UpdateProtocolVersion> for ConnectionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+
+    fn handle(&mut self, msg: UpdateProtocolVersion, _ctx: &mut Self::Context) -> Self::Result {
+        self.protocol_version = msg.protocol_version;
+    }
+}
+
 impl<T> Drop for ConnectionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -864,14 +1082,23 @@ where
 
     fn handle(&mut self, msg: ConnectionActorMessage, ctx: &mut Self::Context) -> Self::Result {
         match msg {
-            ConnectionActorMessage::WritePacketToClient(packet) => {
+            ConnectionActorMessage::WritePacketToClient(mut packet) => {
                 if self.network_sender.is_none() {
                     return Err(ConnectionError::ConnectionClosed);
                 }
 
-                let packet = MqttPacketV3::try_from(packet)
-                    .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
-                packet.encode(&mut self.encode_buffer);
+                match self.protocol_version {
+                    ProtocolVersion::V3_1_1 => {
+                        let packet = MqttPacketV3::try_from(packet)
+                            .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
+                        packet.encode(&mut self.encode_buffer);
+                    }
+                    ProtocolVersion::V5_0 => {
+                        packet.set_protocol_version(ProtocolVersion::V5_0);
+                        yedmq_mqtt::v5::encode(&packet, &mut self.encode_buffer)
+                            .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
+                    }
+                }
                 //let bytes = packet.to_bytes();
                 //self.encode_buffer.extend_from_slice(&bytes);
                 self.pending_count += 1;

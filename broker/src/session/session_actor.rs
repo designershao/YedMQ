@@ -35,6 +35,7 @@ use yedmq_plugin_host::{
 
 use crate::{
     inflight::{InflightError, InflightState},
+    mqtt_properties::{properties_to_struct, subscribe_context},
     raft::payload::PayloadError,
     router_actor::RouterActor,
     session::session_state_service::SessionStateService,
@@ -894,7 +895,7 @@ async fn do_handle_publish(
         action: AuthAction::Publish.into(),
         topic: publish_packet.topic_name.clone(),
         qos: publish_packet.qos as u32,
-        context: None,
+        context: properties_to_struct(&publish_packet.properties),
     };
 
     let publish_authorize_result = context
@@ -931,7 +932,7 @@ async fn do_handle_publish(
                 retain: publish_packet.retain,
                 dup: publish_packet.dup,
                 publish_time: None,
-                properties: None,
+                properties: properties_to_struct(&publish_packet.properties),
                 message_id: None,
             }),
             context: None,
@@ -1052,6 +1053,7 @@ async fn do_handle_publish(
             .send(crate::router_actor::RoutePacket {
                 tenant_id: context.client_info.tenant_id.clone(),
                 packet: Packet::Publish(publish_packet.clone()),
+                source_client_identifier: Some(context.client_info.client_identifier.clone()),
             })
             .await
             .map_err(|e| HandlePublishError::RouteError(e.to_string()))?
@@ -1092,7 +1094,7 @@ async fn do_handle_subscribe(
             action: AuthAction::Subscribe.into(),
             topic: topic.topic_filter.clone(),
             qos: topic.qos.into(),
-            context: None,
+            context: Some(subscribe_context(&topic, &subscribe_packet.properties)),
         };
 
         let topic_authorizate_result = plugin_manager
@@ -1106,11 +1108,12 @@ async fn do_handle_subscribe(
 
         if topic_authorizate_result.authorized {
             match topic_service
-                .subscribe(
+                .subscribe_with_options(
                     tenant_id.clone(),
                     client_id.clone(),
                     topic.topic_filter.clone(),
                     topic.qos,
+                    topic.no_local,
                 )
                 .await
             {
@@ -1935,6 +1938,7 @@ impl SessionActor {
                 router_actor.do_send(crate::router_actor::RoutePacket {
                     tenant_id,
                     packet: Packet::Publish(publish_packet),
+                    source_client_identifier: None,
                 });
             }
         }

@@ -316,6 +316,7 @@ pub struct Subscribe {
     pub client_identifier: String,
     pub topic: String,
     pub qos: u8,
+    pub no_local: bool,
 }
 
 impl Handler<Subscribe> for TopicRaftActor {
@@ -341,6 +342,7 @@ impl Handler<Subscribe> for TopicRaftActor {
                                 client_identifier: msg.client_identifier,
                                 topic: msg.topic,
                                 qos: msg.qos,
+                                no_local: msg.no_local,
                             };
                             Self::handle_raft_write(raft_instance, command).await?;
                             Ok(())
@@ -534,6 +536,7 @@ impl Handler<CleanRetainPublishPacket> for TopicRaftActor {
 pub struct SubscriptionInfo {
     pub client_identifier: String,
     pub qos: u8,
+    pub no_local: bool,
 }
 
 pub struct GetSubscriptionsResponse {
@@ -591,6 +594,7 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                                             .map(move |x| SubscriptionInfo {
                                                 client_identifier: x.client_identifier.clone(),
                                                 qos: x.qos,
+                                                no_local: x.no_local,
                                             })
                                             .collect();
                                         GetSubscriptionsResponse {
@@ -666,6 +670,7 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                                             .client_identifier
                                                             .clone(),
                                                         qos: x.qos,
+                                                        no_local: x.no_local,
                                                     })
                                                     .collect();
                                                 GetSubscriptionsResponse {

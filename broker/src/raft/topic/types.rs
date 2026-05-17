@@ -15,6 +15,8 @@ pub enum Request {
         client_identifier: String,
         topic: String,
         qos: u8,
+        #[serde(default)]
+        no_local: bool,
     },
     // Unsubscribe topic
     UnsubscribeTopic {

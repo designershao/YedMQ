@@ -13,6 +13,13 @@ pub struct Puback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suback {
+    pub packet_id: u16,
+    pub properties: Vec<u8>,
+    pub reason_codes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publish {
     pub dup: bool,
     pub qos: u8,
@@ -38,11 +45,15 @@ pub fn connect_packet(client_id: &str, clean_start: bool, keep_alive_secs: u16) 
 }
 
 pub fn subscribe_packet(packet_id: u16, topic: &str, qos: u8) -> Vec<u8> {
+    subscribe_packet_with_options(packet_id, topic, qos & 0x03)
+}
+
+pub fn subscribe_packet_with_options(packet_id: u16, topic: &str, options: u8) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&packet_id.to_be_bytes());
     body.push(0x00);
     body.extend_from_slice(&utf8_string(topic));
-    body.push(qos & 0x03);
+    body.push(options);
 
     control_packet(0x82, body)
 }
@@ -139,6 +150,38 @@ pub fn parse_puback(packet: &[u8]) -> Result<Puback, String> {
         packet_id,
         reason_code,
         properties: body[property_start..property_end].to_vec(),
+    })
+}
+
+pub fn parse_suback(packet: &[u8]) -> Result<Suback, String> {
+    let (packet_type, flags, body, consumed) = parse_control_packet(packet)?;
+    if consumed != packet.len() {
+        return Err("trailing bytes after SUBACK".to_string());
+    }
+    if packet_type != 0x09 || flags != 0 {
+        return Err(format!(
+            "expected SUBACK, got type={packet_type} flags={flags}"
+        ));
+    }
+    if body.len() < 4 {
+        return Err("SUBACK body is too short".to_string());
+    }
+
+    let packet_id = u16::from_be_bytes([body[0], body[1]]);
+    let (property_len, property_len_bytes) = decode_variable_byte_integer(&body[2..])?;
+    let property_start = 2 + property_len_bytes;
+    let reason_start = property_start + property_len as usize;
+    if reason_start > body.len() {
+        return Err("SUBACK property length exceeds body".to_string());
+    }
+    if reason_start == body.len() {
+        return Err("SUBACK has no reason codes".to_string());
+    }
+
+    Ok(Suback {
+        packet_id,
+        properties: body[property_start..reason_start].to_vec(),
+        reason_codes: body[reason_start..].to_vec(),
     })
 }
 
@@ -330,6 +373,14 @@ mod tests {
         assert_eq!(puback.packet_id, 42);
         assert_eq!(puback.reason_code, 0x00);
         assert!(puback.properties.is_empty());
+    }
+
+    #[test]
+    fn parses_suback_packet() {
+        let suback = parse_suback(&[0x90, 0x04, 0x00, 0x2A, 0x00, 0x01]).expect("parse suback");
+        assert_eq!(suback.packet_id, 42);
+        assert!(suback.properties.is_empty());
+        assert_eq!(suback.reason_codes, vec![0x01]);
     }
 
     #[test]
