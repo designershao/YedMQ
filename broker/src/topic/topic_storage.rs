@@ -90,6 +90,8 @@ pub struct Subscription {
     pub qos: u8,
     #[serde(default)]
     pub no_local: bool,
+    #[serde(default)]
+    pub retain_as_published: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -393,7 +395,14 @@ impl TopicStorage {
         topic_filter: String,
         qos: u8,
     ) -> Result<(), TopicStorageError> {
-        self.subscribe_with_options(tenant_id, client_identifier, topic_filter, qos, false)
+        self.subscribe_with_options(
+            tenant_id,
+            client_identifier,
+            topic_filter,
+            qos,
+            false,
+            false,
+        )
     }
 
     pub fn subscribe_with_options(
@@ -403,6 +412,7 @@ impl TopicStorage {
         topic_filter: String,
         qos: u8,
         no_local: bool,
+        retain_as_published: bool,
     ) -> Result<(), TopicStorageError> {
         if !test_topic(&topic_filter) {
             return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
@@ -418,6 +428,7 @@ impl TopicStorage {
                 client_identifier.clone(),
                 qos,
                 no_local,
+                retain_as_published,
             );
             if let Err(err) = result {
                 Err(err)
@@ -443,6 +454,7 @@ impl TopicStorage {
         client_identifier: String,
         qos: u8,
         no_local: bool,
+        retain_as_published: bool,
     ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -456,12 +468,14 @@ impl TopicStorage {
                 client_identifier,
                 qos,
                 no_local,
+                retain_as_published,
             )
         } else {
             topic_node.write().add_subscription(Subscription {
                 client_identifier,
                 qos,
                 no_local,
+                retain_as_published,
             });
             Ok(())
         }
@@ -929,16 +943,19 @@ mod tests {
             client_identifier: "1".to_string(),
             qos: 0,
             no_local: false,
+            retain_as_published: false,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "2".to_string(),
             qos: 0,
             no_local: false,
+            retain_as_published: false,
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "3".to_string(),
             qos: 0,
             no_local: false,
+            retain_as_published: false,
         });
 
         let subscriptions = topic_node.get_subscriptions();

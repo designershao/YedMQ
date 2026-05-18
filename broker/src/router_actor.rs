@@ -226,7 +226,11 @@ impl RouterActor {
         )
     }
 
-    fn adjust_publish_for_subscriber(publish_packet: &Publish, subscriber_qos: u8) -> Publish {
+    fn adjust_publish_for_subscriber(
+        publish_packet: &Publish,
+        subscriber_qos: u8,
+        retain_as_published: bool,
+    ) -> Publish {
         let mut publish_packet = publish_packet.clone();
         if publish_packet.qos >= subscriber_qos {
             if subscriber_qos == 0 && publish_packet.qos > 0 {
@@ -235,6 +239,9 @@ impl RouterActor {
             } else {
                 publish_packet.qos = subscriber_qos;
             }
+        }
+        if !retain_as_published {
+            publish_packet.retain = false;
         }
         publish_packet
     }
@@ -321,8 +328,11 @@ impl RouterActor {
             match res {
                 Ok(subscriptions) => {
                     for item in subscriptions.subscriptions {
-                        let publish_packet =
-                            Self::adjust_publish_for_subscriber(publish_packet, item.qos);
+                        let publish_packet = Self::adjust_publish_for_subscriber(
+                            publish_packet,
+                            item.qos,
+                            item.retain_as_published,
+                        );
                         Self::route_to_local_session(
                             tenant_id,
                             &item.client_identifier,
@@ -357,6 +367,7 @@ impl RouterActor {
                         client_identifier: x.client_identifier.clone(),
                         qos: x.qos,
                         no_local: x.no_local,
+                        retain_as_published: x.retain_as_published,
                     })
                     .collect::<Vec<_>>()
             };
@@ -416,6 +427,7 @@ impl RouterActor {
                 let adjusted_packet = Packet::Publish(Self::adjust_publish_for_subscriber(
                     publish_packet,
                     item.qos,
+                    item.retain_as_published,
                 ));
 
                 if session_actor_addr.node_id != context.current_node_id {

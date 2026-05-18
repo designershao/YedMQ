@@ -533,7 +533,8 @@ impl ClusterService for ClusterServiceImpl {
             client_identifier: inner.client_id.clone(),
             topic: inner.topic.clone(),
             qos: inner.qos as u8,
-            no_local: false,
+            no_local: inner.no_local,
+            retain_as_published: inner.retain_as_published,
         };
         let _ = topic_raft_actor_addr
             .send(subscribe_topic_actor)
@@ -587,6 +588,8 @@ impl ClusterService for ClusterServiceImpl {
             .map(|sub| crate::protobuf::Subscriber {
                 qos: sub.qos as u32,
                 client_id: sub.client_identifier.clone(),
+                no_local: sub.no_local,
+                retain_as_published: sub.retain_as_published,
             })
             .collect::<Vec<_>>();
 

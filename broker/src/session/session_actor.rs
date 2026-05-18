@@ -9,7 +9,7 @@ use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64},
@@ -23,8 +23,8 @@ use tokio::sync::{
     RwLock,
 };
 use yedmq_mqtt::packet::{
-    Ack, Packet, Properties, ProtocolVersion, Publish, ReasonCode, Suback, Subscribe, Unsuback,
-    Unsubscribe,
+    Ack, Packet, Properties, ProtocolVersion, Publish, ReasonCode, RetainHandling, Suback,
+    Subscribe, Unsuback, Unsubscribe,
 };
 use yedmq_plugin_host::{
     plugin_manager::{AuthorizeResult, PluginManager},
@@ -537,11 +537,18 @@ impl Actor for SessionActor {
 }
 
 struct HandleSubscribeResult {
-    retain_messages: Vec<Arc<Packet>>,
+    retain_messages: Vec<RetainedPublishDelivery>,
 
     suback_packet: Suback,
 
     succeed_subscriptions: Vec<(String, QoS)>,
+}
+
+struct RetainedPublishDelivery {
+    packet: Arc<Packet>,
+    requested_qos: u8,
+    retain_as_published: bool,
+    subscriber_protocol: ProtocolVersion,
 }
 
 struct HandleUnSubscribeResult {
@@ -1068,6 +1075,7 @@ async fn do_handle_subscribe(
     client_info: &Client,
     plugin_manager: Arc<PluginManager>,
     topic_service: TopicService,
+    existing_subscriptions: HashSet<String>,
 ) -> HandleSubscribeResult {
     let tenant_id = client_info.tenant_id.clone();
 
@@ -1075,7 +1083,7 @@ async fn do_handle_subscribe(
 
     let subscriptions = &subscribe_packet.topics;
 
-    let mut retain_messages: Vec<Arc<Packet>> = vec![];
+    let mut retain_messages: Vec<RetainedPublishDelivery> = vec![];
 
     let mut return_code: Vec<ReasonCode> = vec![];
 
@@ -1114,6 +1122,7 @@ async fn do_handle_subscribe(
                     topic.topic_filter.clone(),
                     topic.qos,
                     topic.no_local,
+                    topic.retain_as_published,
                 )
                 .await
             {
@@ -1121,21 +1130,38 @@ async fn do_handle_subscribe(
                     succeed_subscriptions.push((topic.topic_filter.clone(), topic.qos.into()));
                     return_code.push(granted_qos_reason(topic.qos));
 
-                    match topic_service
-                        .get_retain_publish_packets_linearizable(
-                            tenant_id.clone(),
-                            topic.topic_filter.clone(),
-                        )
-                        .await
-                    {
-                        Ok(mut packets) => {
-                            retain_messages.append(&mut packets);
+                    let send_retained = match topic.retain_handling {
+                        RetainHandling::SendAtSubscribe => true,
+                        RetainHandling::SendAtSubscribeIfNew => {
+                            !existing_subscriptions.contains(&topic.topic_filter)
                         }
-                        Err(e) => {
-                            warn!(
-                                "Failed to get retain publish packet for session {} subscribe topic {}, error: {}",
-                                client_id, topic.topic_filter, e
-                            );
+                        RetainHandling::DoNotSend => false,
+                    };
+
+                    if send_retained {
+                        match topic_service
+                            .get_retain_publish_packets_linearizable(
+                                tenant_id.clone(),
+                                topic.topic_filter.clone(),
+                            )
+                            .await
+                        {
+                            Ok(packets) => {
+                                retain_messages.extend(packets.into_iter().map(|packet| {
+                                    RetainedPublishDelivery {
+                                        packet,
+                                        requested_qos: topic.qos,
+                                        retain_as_published: topic.retain_as_published,
+                                        subscriber_protocol: subscribe_packet.protocol_version,
+                                    }
+                                }));
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to get retain publish packet for session {} subscribe topic {}, error: {}",
+                                    client_id, topic.topic_filter, e
+                                );
+                            }
                         }
                     }
                 }
@@ -1481,27 +1507,35 @@ impl SessionActor {
         let session_state_service = self.session_state_service.clone();
 
         async move {
+            let existing_subscriptions = {
+                let session_state_guard = session_state.read().await;
+                session_state_guard
+                    .subscriptions
+                    .keys()
+                    .cloned()
+                    .collect::<HashSet<_>>()
+            };
             let res = do_handle_subscribe(
                 &subscribe_packet,
                 &client_info,
                 plugin_manager,
                 topic_service,
+                existing_subscriptions,
             )
             .await;
-            for (i, packet) in res.retain_messages.into_iter().enumerate() {
-                let packet = (*packet).clone();
+            for retained in res.retain_messages {
+                let packet = (*retained.packet).clone();
                 if let Packet::Publish(mut p) = packet {
                     let retained_msg_qos = p.qos;
-                    let requested_qos = subscribe_packet
-                        .topics
-                        .get(i)
-                        .map(|topic| topic.qos)
-                        .unwrap_or(retained_msg_qos);
-                    let min_qos = cmp::min(retained_msg_qos, requested_qos);
+                    let min_qos = cmp::min(retained_msg_qos, retained.requested_qos);
                     if min_qos == 0 && retained_msg_qos > 0 {
                         p.packet_identifier = None;
                     }
                     p.qos = min_qos;
+                    p.retain = match retained.subscriber_protocol {
+                        ProtocolVersion::V3_1_1 => true,
+                        ProtocolVersion::V5_0 => retained.retain_as_published && p.retain,
+                    };
                     conn.do_send(ConnectionActorMessage::WritePacketToClient(
                         Packet::Publish(p),
                     ));
@@ -1520,7 +1554,7 @@ impl SessionActor {
             }
 
             if !clean_session {
-                for (topic, qos) in res.succeed_subscriptions {
+                for (topic, qos) in &res.succeed_subscriptions {
                     let qos_v = match qos {
                         QoS::AtMostOnce => 0,
                         QoS::AtLeastOnce => 1,
@@ -1530,7 +1564,13 @@ impl SessionActor {
                         .subscribe_topic(tenant_id.clone(), client_id.clone(), topic.clone(), qos_v)
                         .await
                     {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            session_state
+                                .write()
+                                .await
+                                .subscriptions
+                                .insert(topic.clone(), qos.clone());
+                        }
                         Err(e) => {
                             warn!(
                                 "persistent session raft add subscribe topic {} error, {}",
@@ -1541,12 +1581,12 @@ impl SessionActor {
                     }
                 }
             } else {
-                for (topic, qos) in res.succeed_subscriptions {
+                for (topic, qos) in &res.succeed_subscriptions {
                     session_state
                         .write()
                         .await
                         .subscriptions
-                        .insert(topic.clone(), qos);
+                        .insert(topic.clone(), qos.clone());
                 }
             }
         }

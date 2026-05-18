@@ -469,6 +469,147 @@ pub async fn test_tcp_listener_mqtt5_qos2_publish_subscribe_flow() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_retained_message_options() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = format!("test/mqtt5/retain/{}", uuid::Uuid::new_v4());
+    let payload = b"hello retained mqtt5";
+    let content_type_property = [vec![0x03], mqtt_utf8_string("text/plain")].concat();
+
+    let mut publisher = connect_mqtt5_client(broker_addr, "mqtt5-retain-pub").await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet_with_properties(
+            &topic,
+            payload,
+            1,
+            true,
+            Some(91),
+            &content_type_property,
+        ))
+        .await
+        .unwrap();
+    let puback = read_mqtt5_packet(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 91);
+
+    let mut default_subscriber = connect_mqtt5_client(broker_addr, "mqtt5-retain-default").await;
+    default_subscriber
+        .write_all(&common::mqtt5::subscribe_packet(92, &topic, 0))
+        .await
+        .unwrap();
+    let (_, publish) = read_mqtt5_suback_and_publish(&mut default_subscriber).await;
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert!(!publish.retain);
+    assert_eq!(publish.properties, content_type_property);
+
+    let mut rap_subscriber = connect_mqtt5_client(broker_addr, "mqtt5-retain-rap").await;
+    rap_subscriber
+        .write_all(&common::mqtt5::subscribe_packet_with_options(
+            93, &topic, 0x08,
+        ))
+        .await
+        .unwrap();
+    let (_, publish) = read_mqtt5_suback_and_publish(&mut rap_subscriber).await;
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert!(publish.retain);
+
+    let mut suppress_subscriber = connect_mqtt5_client(broker_addr, "mqtt5-retain-rh2").await;
+    suppress_subscriber
+        .write_all(&common::mqtt5::subscribe_packet_with_options(
+            94, &topic, 0x20,
+        ))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut suppress_subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 94);
+    assert_eq!(suback.reason_codes, vec![0x00]);
+    let no_publish = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut suppress_subscriber),
+    )
+    .await;
+    assert!(
+        no_publish.is_err(),
+        "Retain Handling 2 subscription received a retained publish"
+    );
+
+    let mut mqtt3_subscriber = connect_mqtt3_client(broker_addr, "mqtt3-retain-sub").await;
+    mqtt3_subscriber
+        .write_all(&mqtt3_subscribe_packet(95, &topic, 0))
+        .await
+        .unwrap();
+    let (_, publish) = read_mqtt3_suback_and_publish(&mut mqtt3_subscriber, 95).await;
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert!(publish.retain);
+
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    default_subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    rap_subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    suppress_subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    mqtt3_subscriber
+        .write_all(&mqtt3_disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt3_retained_message_reaches_mqtt5_subscriber() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = format!("test/mixed/v3-retain-to-v5/{}", uuid::Uuid::new_v4());
+    let payload = b"from mqtt3 retained publisher";
+
+    let mut publisher = connect_mqtt3_client(broker_addr, "mqtt3-retain-pub").await;
+    publisher
+        .write_all(&mqtt3_publish_packet(&topic, payload, 0, true))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut subscriber = connect_mqtt5_client(broker_addr, "mqtt5-retain-from-v3").await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet_with_options(
+            96, &topic, 0x08,
+        ))
+        .await
+        .unwrap();
+    let (_, publish) = read_mqtt5_suback_and_publish(&mut subscriber).await;
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert!(publish.retain);
+    assert!(publish.properties.is_empty());
+
+    publisher
+        .write_all(&mqtt3_disconnect_packet())
+        .await
+        .unwrap();
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_mqtt5_no_local_skips_self_publish() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -651,10 +792,64 @@ async fn read_mqtt5_packet(stream: &mut TcpStream) -> Vec<u8> {
     panic!("malformed MQTT remaining length");
 }
 
+async fn read_mqtt5_suback_and_publish(
+    stream: &mut TcpStream,
+) -> (common::mqtt5::Suback, common::mqtt5::Publish) {
+    let mut suback = None;
+    let mut publish = None;
+
+    for _ in 0..2 {
+        let packet = read_mqtt5_packet(stream).await;
+        match packet[0] >> 4 {
+            0x03 => {
+                publish = Some(
+                    common::mqtt5::parse_publish(&packet).expect("parse MQTT 5 retained PUBLISH"),
+                );
+            }
+            0x09 => {
+                suback = Some(common::mqtt5::parse_suback(&packet).expect("parse MQTT 5 SUBACK"));
+            }
+            packet_type => panic!("unexpected MQTT 5 packet type {packet_type}"),
+        }
+    }
+
+    (
+        suback.expect("SUBACK should be received"),
+        publish.expect("retained PUBLISH should be received"),
+    )
+}
+
+async fn read_mqtt3_suback_and_publish(
+    stream: &mut TcpStream,
+    packet_id: u16,
+) -> ((), Mqtt3Publish) {
+    let mut suback_seen = false;
+    let mut publish = None;
+
+    for _ in 0..2 {
+        let packet = read_mqtt5_packet(stream).await;
+        match packet[0] >> 4 {
+            0x03 => {
+                publish =
+                    Some(parse_mqtt3_publish(&packet).expect("parse MQTT 3 retained PUBLISH"));
+            }
+            0x09 => {
+                assert_mqtt3_suback(&packet, packet_id, 0);
+                suback_seen = true;
+            }
+            packet_type => panic!("unexpected MQTT 3 packet type {packet_type}"),
+        }
+    }
+
+    assert!(suback_seen, "SUBACK should be received");
+    ((), publish.expect("retained PUBLISH should be received"))
+}
+
 struct Mqtt3Publish {
     topic: String,
     payload: Vec<u8>,
     qos: u8,
+    retain: bool,
 }
 
 async fn connect_mqtt3_client(broker_addr: SocketAddr, client_id: &str) -> TcpStream {
@@ -724,6 +919,7 @@ fn parse_mqtt3_publish(packet: &[u8]) -> Result<Mqtt3Publish, String> {
     if packet[0] >> 4 != 0x03 {
         return Err("expected MQTT 3 PUBLISH packet".to_string());
     }
+    let retain = packet[0] & 0b0001 != 0;
     let qos = (packet[0] & 0b0110) >> 1;
     if qos != 0 {
         return Err("test helper only parses QoS 0 MQTT 3 PUBLISH".to_string());
@@ -740,6 +936,7 @@ fn parse_mqtt3_publish(packet: &[u8]) -> Result<Mqtt3Publish, String> {
         topic,
         payload: packet[body_start + topic_len..body_end].to_vec(),
         qos,
+        retain,
     })
 }
 

@@ -251,6 +251,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                         topic,
                         qos,
                         no_local,
+                        retain_as_published,
                     } => {
                         let topic_storage = self.data.state.topic_storage.read();
                         if !topic_storage.contains_tenant(&tenant_id) {
@@ -262,6 +263,7 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                             topic.clone(),
                             qos,
                             no_local,
+                            retain_as_published,
                         );
                         replies.push(Response::None);
                     }

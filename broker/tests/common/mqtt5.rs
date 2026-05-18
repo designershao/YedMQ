@@ -65,12 +65,24 @@ pub fn publish_packet(
     retain: bool,
     packet_id: Option<u16>,
 ) -> Vec<u8> {
+    publish_packet_with_properties(topic, payload, qos, retain, packet_id, &[])
+}
+
+pub fn publish_packet_with_properties(
+    topic: &str,
+    payload: &[u8],
+    qos: u8,
+    retain: bool,
+    packet_id: Option<u16>,
+    properties: &[u8],
+) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&utf8_string(topic));
     if qos > 0 {
         body.extend_from_slice(&packet_id.unwrap_or(1).to_be_bytes());
     }
-    body.push(0x00);
+    body.extend_from_slice(&encode_variable_byte_integer(properties.len() as u32));
+    body.extend_from_slice(properties);
     body.extend_from_slice(payload);
 
     let flags = ((qos & 0x03) << 1) | u8::from(retain);
