@@ -81,6 +81,18 @@ pub fn disconnect_packet() -> Vec<u8> {
     vec![0xE0, 0x00]
 }
 
+pub fn pubrec_packet(packet_id: u16) -> Vec<u8> {
+    ack_packet(0x50, packet_id)
+}
+
+pub fn pubrel_packet(packet_id: u16) -> Vec<u8> {
+    ack_packet(0x62, packet_id)
+}
+
+pub fn pubcomp_packet(packet_id: u16) -> Vec<u8> {
+    ack_packet(0x70, packet_id)
+}
+
 pub fn pingreq_packet() -> Vec<u8> {
     vec![0xC0, 0x00]
 }
@@ -116,17 +128,38 @@ pub fn parse_connack(packet: &[u8]) -> Result<Connack, String> {
 }
 
 pub fn parse_puback(packet: &[u8]) -> Result<Puback, String> {
+    parse_publish_ack(packet, 0x04, 0x00, "PUBACK")
+}
+
+pub fn parse_pubrec(packet: &[u8]) -> Result<Puback, String> {
+    parse_publish_ack(packet, 0x05, 0x00, "PUBREC")
+}
+
+pub fn parse_pubrel(packet: &[u8]) -> Result<Puback, String> {
+    parse_publish_ack(packet, 0x06, 0x02, "PUBREL")
+}
+
+pub fn parse_pubcomp(packet: &[u8]) -> Result<Puback, String> {
+    parse_publish_ack(packet, 0x07, 0x00, "PUBCOMP")
+}
+
+fn parse_publish_ack(
+    packet: &[u8],
+    expected_packet_type: u8,
+    expected_flags: u8,
+    label: &str,
+) -> Result<Puback, String> {
     let (packet_type, flags, body, consumed) = parse_control_packet(packet)?;
     if consumed != packet.len() {
-        return Err("trailing bytes after PUBACK".to_string());
+        return Err(format!("trailing bytes after {label}"));
     }
-    if packet_type != 0x04 || flags != 0 {
+    if packet_type != expected_packet_type || flags != expected_flags {
         return Err(format!(
-            "expected PUBACK, got type={packet_type} flags={flags}"
+            "expected {label}, got type={packet_type} flags={flags}"
         ));
     }
     if body.len() < 2 {
-        return Err("PUBACK body is too short".to_string());
+        return Err(format!("{label} body is too short"));
     }
 
     let packet_id = u16::from_be_bytes([body[0], body[1]]);
@@ -143,7 +176,7 @@ pub fn parse_puback(packet: &[u8]) -> Result<Puback, String> {
     let property_start = 3 + property_len_bytes;
     let property_end = property_start + property_len as usize;
     if property_end != body.len() {
-        return Err("PUBACK property length does not match body".to_string());
+        return Err(format!("{label} property length does not match body"));
     }
 
     Ok(Puback {
@@ -239,6 +272,10 @@ fn control_packet(first_byte: u8, body: Vec<u8>) -> Vec<u8> {
     packet.extend_from_slice(&encode_variable_byte_integer(body.len() as u32));
     packet.extend_from_slice(&body);
     packet
+}
+
+fn ack_packet(first_byte: u8, packet_id: u16) -> Vec<u8> {
+    control_packet(first_byte, packet_id.to_be_bytes().to_vec())
 }
 
 fn utf8_string(value: &str) -> Vec<u8> {
@@ -373,6 +410,25 @@ mod tests {
         assert_eq!(puback.packet_id, 42);
         assert_eq!(puback.reason_code, 0x00);
         assert!(puback.properties.is_empty());
+    }
+
+    #[test]
+    fn builds_and_parses_qos2_ack_packets() {
+        assert_eq!(pubrec_packet(42), vec![0x50, 0x02, 0x00, 0x2A]);
+        assert_eq!(pubrel_packet(42), vec![0x62, 0x02, 0x00, 0x2A]);
+        assert_eq!(pubcomp_packet(42), vec![0x70, 0x02, 0x00, 0x2A]);
+
+        let pubrec = parse_pubrec(&[0x50, 0x02, 0x00, 0x2A]).expect("parse pubrec");
+        assert_eq!(pubrec.packet_id, 42);
+        assert_eq!(pubrec.reason_code, 0x00);
+
+        let pubrel = parse_pubrel(&[0x62, 0x02, 0x00, 0x2A]).expect("parse pubrel");
+        assert_eq!(pubrel.packet_id, 42);
+        assert_eq!(pubrel.reason_code, 0x00);
+
+        let pubcomp = parse_pubcomp(&[0x70, 0x02, 0x00, 0x2A]).expect("parse pubcomp");
+        assert_eq!(pubcomp.packet_id, 42);
+        assert_eq!(pubcomp.reason_code, 0x00);
     }
 
     #[test]

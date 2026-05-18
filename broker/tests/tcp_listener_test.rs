@@ -391,6 +391,84 @@ pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos1() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_qos2_publish_subscribe_flow() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = format!("test/mqtt5/qos2/{}", uuid::Uuid::new_v4());
+    let payload = b"hello mqtt5 qos2";
+
+    let mut subscriber = connect_mqtt5_client(broker_addr, "mqtt5-sub-qos2").await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(22, &topic, 2))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 22);
+    assert_eq!(suback.reason_codes, vec![0x02]);
+
+    let mut publisher = connect_mqtt5_client(broker_addr, "mqtt5-pub-qos2").await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic,
+            payload,
+            2,
+            false,
+            Some(88),
+        ))
+        .await
+        .unwrap();
+
+    let pubrec = read_mqtt5_packet(&mut publisher).await;
+    let pubrec = common::mqtt5::parse_pubrec(&pubrec).expect("parse MQTT 5 PUBREC");
+    assert_eq!(pubrec.packet_id, 88);
+    assert_eq!(pubrec.reason_code, 0x00);
+
+    publisher
+        .write_all(&common::mqtt5::pubrel_packet(88))
+        .await
+        .unwrap();
+    let pubcomp = read_mqtt5_packet(&mut publisher).await;
+    let pubcomp = common::mqtt5::parse_pubcomp(&pubcomp).expect("parse MQTT 5 PUBCOMP");
+    assert_eq!(pubcomp.packet_id, 88);
+    assert_eq!(pubcomp.reason_code, 0x00);
+
+    let publish = read_mqtt5_packet(&mut subscriber).await;
+    let publish = common::mqtt5::parse_publish(&publish).expect("parse MQTT 5 PUBLISH");
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert_eq!(publish.qos, 2);
+    let subscriber_packet_id = publish
+        .packet_id
+        .expect("broker should assign packet id for QoS 2 delivery");
+
+    subscriber
+        .write_all(&common::mqtt5::pubrec_packet(subscriber_packet_id))
+        .await
+        .unwrap();
+    let pubrel = read_mqtt5_packet(&mut subscriber).await;
+    let pubrel = common::mqtt5::parse_pubrel(&pubrel).expect("parse MQTT 5 PUBREL");
+    assert_eq!(pubrel.packet_id, subscriber_packet_id);
+    assert_eq!(pubrel.reason_code, 0x00);
+
+    subscriber
+        .write_all(&common::mqtt5::pubcomp_packet(subscriber_packet_id))
+        .await
+        .unwrap();
+
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_mqtt5_no_local_skips_self_publish() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
