@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
+use yedmq_mqtt::packet::ProtocolVersion;
 
 use crate::inflight::Inflight;
 
@@ -26,15 +27,86 @@ pub struct SessionState {
     pub subscriptions: HashMap<String, QoS>,
 
     pub disconnected_at: Option<u64>,
+
+    #[serde(default)]
+    pub protocol_version: Option<ProtocolVersion>,
+
+    #[serde(default)]
+    pub session_expiry_interval: Option<u32>,
+
+    #[serde(default)]
+    pub expires_at: Option<u64>,
 }
 
 impl SessionState {
     pub fn new(inflight_duration: Duration) -> Self {
+        Self::new_with_options(inflight_duration, None, None)
+    }
+
+    pub fn new_with_options(
+        inflight_duration: Duration,
+        protocol_version: Option<ProtocolVersion>,
+        session_expiry_interval: Option<u32>,
+    ) -> Self {
         SessionState {
             pending_messages: Vec::new(),
             inflight: Inflight::new(inflight_duration),
             subscriptions: HashMap::new(),
             disconnected_at: None,
+            protocol_version,
+            session_expiry_interval,
+            expires_at: None,
+        }
+    }
+
+    fn expiry_deadline(disconnected_at: u64, session_expiry_interval: u32) -> Option<u64> {
+        if session_expiry_interval == u32::MAX {
+            None
+        } else {
+            Some(disconnected_at.saturating_add(session_expiry_interval as u64))
+        }
+    }
+
+    pub fn update_connection_state(
+        &mut self,
+        disconnected_at: Option<u64>,
+        session_expiry_interval_update: Option<u32>,
+    ) {
+        if let Some(session_expiry_interval) = session_expiry_interval_update {
+            self.protocol_version = Some(ProtocolVersion::V5_0);
+            self.session_expiry_interval = Some(session_expiry_interval);
+        }
+
+        self.disconnected_at = disconnected_at;
+        self.expires_at = match (self.disconnected_at, self.session_expiry_interval) {
+            (Some(disconnected_at), Some(session_expiry_interval)) => {
+                Self::expiry_deadline(disconnected_at, session_expiry_interval)
+            }
+            _ => None,
+        };
+    }
+
+    pub fn expired_disconnected_at(&self, now: u64, legacy_ttl: u64) -> Option<u64> {
+        let disconnected_at = self.disconnected_at?;
+
+        if let Some(session_expiry_interval) = self.session_expiry_interval {
+            if session_expiry_interval == u32::MAX {
+                return None;
+            }
+
+            let expires_at = self
+                .expires_at
+                .unwrap_or_else(|| disconnected_at.saturating_add(session_expiry_interval as u64));
+            if now >= expires_at {
+                return Some(disconnected_at);
+            }
+            return None;
+        }
+
+        if now.saturating_sub(disconnected_at) > legacy_ttl {
+            Some(disconnected_at)
+        } else {
+            None
         }
     }
 }
@@ -82,10 +154,16 @@ impl SessionStateStorage {
         tenant_id: &str,
         session_id: &str,
         inflight_duration: Duration,
+        protocol_version: Option<ProtocolVersion>,
+        session_expiry_interval: Option<u32>,
     ) {
         self.inner.entry(tenant_id.to_owned()).or_default().insert(
             session_id.to_owned(),
-            Arc::new(RwLock::new(SessionState::new(inflight_duration))),
+            Arc::new(RwLock::new(SessionState::new_with_options(
+                inflight_duration,
+                protocol_version,
+                session_expiry_interval,
+            ))),
         );
     }
 
@@ -377,14 +455,8 @@ impl SessionStateStorage {
         for (tenant_id, sessions) in self.inner.iter() {
             for (client_id, session_arc) in sessions.iter() {
                 let session = session_arc.read().await;
-                if let Some(disconnected_at) = session.disconnected_at {
-                    if now.saturating_sub(disconnected_at) > ttl {
-                        expired_sessions.push((
-                            tenant_id.clone(),
-                            client_id.clone(),
-                            disconnected_at,
-                        ));
-                    }
+                if let Some(disconnected_at) = session.expired_disconnected_at(now, ttl) {
+                    expired_sessions.push((tenant_id.clone(), client_id.clone(), disconnected_at));
                 }
             }
         }
@@ -396,11 +468,12 @@ impl SessionStateStorage {
         tenant_id: String,
         client_id: String,
         disconnected_at: Option<u64>,
+        session_expiry_interval_update: Option<u32>,
     ) {
         if let Some(tenant_sessions) = self.inner.get(&tenant_id) {
             if let Some(session_arc) = tenant_sessions.get(&client_id) {
                 let mut session = session_arc.write().await;
-                session.disconnected_at = disconnected_at;
+                session.update_connection_state(disconnected_at, session_expiry_interval_update);
             }
         }
     }
@@ -456,4 +529,78 @@ impl SessionStateStorage {
 pub struct SerializableSessionStateStorage {
     pub inner: HashMap<String, HashMap<String, SessionState>>,
     pub ref_counts: HashMap<String, u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn legacy_session_expiry_uses_global_ttl() {
+        let mut storage = SessionStateStorage::new();
+        storage
+            .create_session_state("tenant", "legacy", Duration::from_secs(1), None, None)
+            .await;
+        storage
+            .update_connection_state("tenant".into(), "legacy".into(), Some(100), None)
+            .await;
+
+        assert!(storage.scan_expired_sessions(110, 20).await.is_empty());
+        assert_eq!(
+            storage.scan_expired_sessions(121, 20).await,
+            vec![("tenant".to_string(), "legacy".to_string(), 100)]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt5_session_expiry_uses_per_session_deadline() {
+        let mut storage = SessionStateStorage::new();
+        storage
+            .create_session_state(
+                "tenant",
+                "mqtt5",
+                Duration::from_secs(1),
+                Some(ProtocolVersion::V5_0),
+                Some(5),
+            )
+            .await;
+        storage
+            .update_connection_state("tenant".into(), "mqtt5".into(), Some(100), None)
+            .await;
+
+        let state = storage
+            .get_session_state("tenant", "mqtt5")
+            .await
+            .expect("session state");
+        assert_eq!(state.read().await.expires_at, Some(105));
+        assert!(storage.scan_expired_sessions(104, 999).await.is_empty());
+        assert_eq!(
+            storage.scan_expired_sessions(105, 999).await,
+            vec![("tenant".to_string(), "mqtt5".to_string(), 100)]
+        );
+    }
+
+    #[tokio::test]
+    async fn mqtt5_never_expiring_session_is_not_scanned() {
+        let mut storage = SessionStateStorage::new();
+        storage
+            .create_session_state(
+                "tenant",
+                "mqtt5-never",
+                Duration::from_secs(1),
+                Some(ProtocolVersion::V5_0),
+                Some(u32::MAX),
+            )
+            .await;
+        storage
+            .update_connection_state("tenant".into(), "mqtt5-never".into(), Some(100), None)
+            .await;
+
+        let state = storage
+            .get_session_state("tenant", "mqtt5-never")
+            .await
+            .expect("session state");
+        assert_eq!(state.read().await.expires_at, None);
+        assert!(storage.scan_expired_sessions(100_000, 1).await.is_empty());
+    }
 }

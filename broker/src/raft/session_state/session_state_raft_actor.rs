@@ -909,6 +909,8 @@ impl Handler<GetSessionStateEnsureLinearizable> for SessionStateRaftActor {
 pub struct CreateSessionState {
     pub tenant_id: String,
     pub client_id: String,
+    pub protocol_version: Option<ProtocolVersion>,
+    pub session_expiry_interval: Option<u32>,
 }
 
 impl Handler<CreateSessionState> for SessionStateRaftActor {
@@ -943,6 +945,8 @@ impl Handler<CreateSessionState> for SessionStateRaftActor {
                                 tenant_id: msg.tenant_id,
                                 client_id: msg.client_id,
                                 inflight_duration_secs: inflight_duration,
+                                protocol_version: msg.protocol_version,
+                                session_expiry_interval: msg.session_expiry_interval,
                             };
                             Self::handle_raft_write(raft_instance, command, payload_store).await?;
                             Ok(())
@@ -986,6 +990,7 @@ pub struct UpdateSessionConnectionState {
     pub tenant_id: String,
     pub client_id: String,
     pub disconnected_at: Option<u64>,
+    pub session_expiry_interval_update: Option<u32>,
 }
 
 #[derive(Message, Clone)]
@@ -1140,6 +1145,7 @@ impl Handler<UpdateSessionConnectionState> for SessionStateRaftActor {
                                 tenant_id: msg.tenant_id,
                                 client_id: msg.client_id,
                                 disconnected_at: msg.disconnected_at,
+                                session_expiry_interval_update: msg.session_expiry_interval_update,
                             };
                             Self::handle_raft_write(raft_instance, command, payload_store).await?;
                             Ok(())

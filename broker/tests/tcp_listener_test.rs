@@ -335,6 +335,7 @@ pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos0() {
         .write_all(&common::mqtt5::disconnect_packet())
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
 #[actix::test]
@@ -384,10 +385,12 @@ pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos1() {
         .write_all(&common::mqtt5::disconnect_packet())
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     subscriber
         .write_all(&common::mqtt5::disconnect_packet())
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
 #[actix::test]
@@ -462,6 +465,7 @@ pub async fn test_tcp_listener_mqtt5_qos2_publish_subscribe_flow() {
         .write_all(&common::mqtt5::disconnect_packet())
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     subscriber
         .write_all(&common::mqtt5::disconnect_packet())
         .await
@@ -653,6 +657,137 @@ pub async fn test_tcp_listener_mqtt5_no_local_skips_self_publish() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_default_session_expiry_drops_session() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let client_id = format!("mqtt5-default-expiry-{suffix}");
+    let publisher_id = format!("mqtt5-default-expiry-pub-{suffix}");
+    let topic = format!("test/mqtt5/default-expiry/{suffix}");
+    let payload = b"default-expiry-message";
+
+    let (mut subscriber, first_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, true, &[]).await;
+    assert!(!first_connack.session_present);
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(501, &topic, 1))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    let mut publisher = connect_mqtt5_client(broker_addr, &publisher_id).await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic,
+            payload,
+            1,
+            false,
+            Some(502),
+        ))
+        .await
+        .unwrap();
+    let puback = read_mqtt5_packet(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 502);
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    let (mut reconnect, reconnect_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, false, &[]).await;
+    assert!(!reconnect_connack.session_present);
+    let no_publish = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut reconnect),
+    )
+    .await;
+    assert!(
+        no_publish.is_err(),
+        "MQTT 5 default session expiry preserved an offline publish"
+    );
+    reconnect
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_nonzero_session_expiry_recovers_offline_message() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let client_id = format!("mqtt5-expiring-session-{suffix}");
+    let publisher_id = format!("mqtt5-expiring-session-pub-{suffix}");
+    let topic = format!("test/mqtt5/session-expiry/{suffix}");
+    let payload = b"persistent-mqtt5-offline-message";
+    let session_expiry = common::mqtt5::session_expiry_interval_property(60);
+
+    let (mut subscriber, first_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, true, &session_expiry).await;
+    assert!(!first_connack.session_present);
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(511, &topic, 1))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    let mut publisher = connect_mqtt5_client(broker_addr, &publisher_id).await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic,
+            payload,
+            1,
+            false,
+            Some(512),
+        ))
+        .await
+        .unwrap();
+    let puback = read_mqtt5_packet(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 512);
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    let (mut reconnect, reconnect_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, false, &session_expiry).await;
+    assert!(reconnect_connack.session_present);
+    let publish = read_mqtt5_packet(&mut reconnect).await;
+    let publish = common::mqtt5::parse_publish(&publish).expect("parse MQTT 5 PUBLISH");
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert_eq!(publish.qos, 1);
+    reconnect
+        .write_all(&common::mqtt5::puback_packet(
+            publish.packet_id.expect("offline publish packet id"),
+        ))
+        .await
+        .unwrap();
+    reconnect
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_mqtt5_publisher_to_mqtt3_subscriber() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -746,16 +881,33 @@ fn tcp_broker_addr(context: &TestContext) -> SocketAddr {
 }
 
 async fn connect_mqtt5_client(broker_addr: SocketAddr, client_id: &str) -> TcpStream {
+    let (stream, connack) =
+        connect_mqtt5_client_with_properties(broker_addr, client_id, true, &[]).await;
+    assert_eq!(connack.reason_code, 0x00);
+    stream
+}
+
+async fn connect_mqtt5_client_with_properties(
+    broker_addr: SocketAddr,
+    client_id: &str,
+    clean_start: bool,
+    properties: &[u8],
+) -> (TcpStream, common::mqtt5::Connack) {
     let mut stream = TcpStream::connect(broker_addr).await.unwrap();
     stream
-        .write_all(&common::mqtt5::connect_packet(client_id, true, 5))
+        .write_all(&common::mqtt5::connect_packet_with_properties(
+            client_id,
+            clean_start,
+            5,
+            properties,
+        ))
         .await
         .unwrap();
 
     let connack = read_mqtt5_packet(&mut stream).await;
     let connack = common::mqtt5::parse_connack(&connack).expect("parse MQTT 5 CONNACK");
     assert_eq!(connack.reason_code, 0x00);
-    stream
+    (stream, connack)
 }
 
 async fn read_mqtt5_packet(stream: &mut TcpStream) -> Vec<u8> {

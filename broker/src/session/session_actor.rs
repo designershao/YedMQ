@@ -336,6 +336,10 @@ pub enum SessionActorMessage {
 
         clean_session: bool,
 
+        protocol_version: ProtocolVersion,
+
+        session_expiry_interval: Option<u32>,
+
         username: Option<String>,
 
         will_message: Option<WillMessage>,
@@ -373,6 +377,10 @@ pub struct SessionActor {
     client_id: String,
 
     clean_session: bool,
+
+    protocol_version: ProtocolVersion,
+
+    session_expiry_interval: Option<u32>,
 
     username: Option<String>,
 
@@ -450,6 +458,7 @@ impl Actor for SessionActor {
                     .update_session_connection_state(
                         tenant_id.clone(),
                         client_id.clone(),
+                        None,
                         None,
                     )
                     .await;
@@ -1196,6 +1205,8 @@ pub struct SessionActorConfig {
     pub tenant_id: String,
     pub client_id: String,
     pub clean_session: bool,
+    pub protocol_version: ProtocolVersion,
+    pub session_expiry_interval: Option<u32>,
     pub plugin_manager: Arc<PluginManager>,
     pub inflight_retry_duration_secs: u64,
     pub will_message: Option<WillMessage>,
@@ -1224,6 +1235,8 @@ impl SessionActor {
             conn_addr: Some(config.peer_addr),
             activity_state: ActivityState::Active,
             clean_session: config.clean_session,
+            protocol_version: config.protocol_version,
+            session_expiry_interval: config.session_expiry_interval,
             keep_alive: config.keep_alive,
             keep_alive_expired: true,
             inflight_retry_interval: config.inflight_retry_duration_secs,
@@ -1314,6 +1327,11 @@ impl SessionActor {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let clean_session = self.clean_session;
+        let session_expiry_interval_update = if self.protocol_version == ProtocolVersion::V5_0 {
+            self.session_expiry_interval
+        } else {
+            None
+        };
 
         match state {
             ActivityState::Inactive => {
@@ -1326,7 +1344,12 @@ impl SessionActor {
                     ctx.spawn(
                         async move {
                             let _ = session_state_service
-                                .update_session_connection_state(tenant_id, client_id, Some(now))
+                                .update_session_connection_state(
+                                    tenant_id,
+                                    client_id,
+                                    Some(now),
+                                    session_expiry_interval_update,
+                                )
                                 .await;
                         }
                         .into_actor(self),
@@ -1338,7 +1361,12 @@ impl SessionActor {
                     ctx.spawn(
                         async move {
                             let _ = session_state_service
-                                .update_session_connection_state(tenant_id, client_id, None)
+                                .update_session_connection_state(
+                                    tenant_id,
+                                    client_id,
+                                    None,
+                                    session_expiry_interval_update,
+                                )
                                 .await;
                         }
                         .into_actor(self),
@@ -1377,6 +1405,41 @@ impl SessionActor {
             ctx.stop();
             fut::ready(())
         });
+    }
+
+    fn should_delete_session_on_disconnect(&self) -> bool {
+        self.protocol_version == ProtocolVersion::V5_0
+            && self.session_expiry_interval == Some(0)
+            && !self.clean_session
+    }
+
+    fn delete_session_state_and_force_stop(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        let session_state_service = self.session_state_service.clone();
+        let tenant_id = self.tenant_id.clone();
+        let client_id = self.client_id.clone();
+        ctx.spawn(
+            async move {
+                let _ = session_state_service
+                    .delete_session_state(tenant_id, client_id, None)
+                    .await;
+            }
+            .into_actor(self)
+            .then(|_, act, ctx| {
+                act.force_stop(ctx);
+                fut::ready(())
+            }),
+        );
+    }
+
+    fn finish_connection_disconnect(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        if self.should_delete_session_on_disconnect() {
+            self.delete_session_state_and_force_stop(ctx);
+        } else if !self.clean_session {
+            self.set_state(ctx, ActivityState::Inactive);
+            self.session_metrics.set_disconnected();
+        } else {
+            self.force_stop(ctx);
+        }
     }
 
     fn notify_session_manager_stopped(
@@ -1893,11 +1956,17 @@ impl SessionActor {
 
     fn handle_disconnect(
         &mut self,
-        _disconnect_packet: yedmq_mqtt::packet::Disconnect,
+        disconnect_packet: yedmq_mqtt::packet::Disconnect,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.clean_will_message();
 
+        if disconnect_packet.protocol_version == ProtocolVersion::V5_0 {
+            self.session_expiry_interval = disconnect_packet
+                .session_expiry_interval
+                .or(disconnect_packet.properties.session_expiry_interval)
+                .or(self.session_expiry_interval);
+        }
         if let Some(recipient) = &self.conn_recipient {
             recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
         }
@@ -1920,12 +1989,7 @@ impl SessionActor {
         .into_actor(self)
         .wait(ctx);
 
-        if !self.clean_session {
-            self.set_state(ctx, ActivityState::Inactive);
-            self.session_metrics.set_disconnected();
-        } else {
-            self.force_stop(ctx);
-        }
+        self.finish_connection_disconnect(ctx);
     }
 
     fn reset_keep_alive_expired_flag(&mut self) {
@@ -2070,12 +2134,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         recipient.do_send(ConnectionActorMessage::Disconnect(
                             DisconnectReason::KeepAliveExpired,
                         ));
-                        if !actor.clean_session {
-                            actor.set_state(ctx, ActivityState::Inactive);
-                            actor.session_metrics.set_disconnected();
-                        } else {
-                            actor.force_stop(ctx);
-                        }
+                        actor.finish_connection_disconnect(ctx);
                     }
                     fut::ready(())
                 });
@@ -2155,12 +2214,7 @@ impl Handler<SessionActorMessage> for SessionActor {
             }
             SessionActorMessage::UnexpectClientDisconnected => {
                 self.send_will_message(ctx, |_, actor, ctx| {
-                    if !actor.clean_session {
-                        actor.set_state(ctx, ActivityState::Inactive);
-                        actor.session_metrics.set_disconnected();
-                    } else {
-                        actor.force_stop(ctx);
-                    }
+                    actor.finish_connection_disconnect(ctx);
                     fut::ready(())
                 });
             }
@@ -2168,10 +2222,14 @@ impl Handler<SessionActorMessage> for SessionActor {
                 conn,
                 keep_alive,
                 clean_session,
+                protocol_version,
+                session_expiry_interval,
                 username,
                 will_message,
                 socket_addr,
             } => {
+                self.protocol_version = protocol_version;
+                self.session_expiry_interval = session_expiry_interval;
                 self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);
                 self.will_message = will_message;
@@ -2243,12 +2301,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 .wait(ctx);
             }
             SessionActorMessage::ClientDisconnected => {
-                if !self.clean_session {
-                    self.set_state(ctx, ActivityState::Inactive);
-                    self.session_metrics.set_disconnected();
-                } else {
-                    self.force_stop(ctx);
-                }
+                self.finish_connection_disconnect(ctx);
             }
             SessionActorMessage::ForceStop => {
                 debug!("receive force stop message for session {}", self.client_id);

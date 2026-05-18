@@ -20,7 +20,7 @@ use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use thiserror::Error;
 use tokio::sync::{mpsc::Sender, RwLock};
-use yedmq_mqtt::packet::Packet;
+use yedmq_mqtt::packet::{Packet, ProtocolVersion};
 use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
@@ -728,11 +728,26 @@ pub struct CreateSessionMessage {
     pub tenant_id: String,
     pub client_id: String,
     pub clean_session: bool,
+    pub clean_start: bool,
+    pub protocol_version: ProtocolVersion,
+    pub session_expiry_interval: Option<u32>,
     pub connection_addr: Recipient<ConnectionActorMessage>,
     pub keep_alive: u64,
     pub will_message: Option<WillMessage>,
     pub username: Option<String>,
     pub peer_addr: std::net::SocketAddr,
+}
+
+fn new_session_state(
+    settings: &Settings,
+    protocol_version: ProtocolVersion,
+    session_expiry_interval: Option<u32>,
+) -> SessionState {
+    SessionState::new_with_options(
+        Duration::from_secs(settings.mqtt.inflight_retry_interval_secs),
+        Some(protocol_version),
+        session_expiry_interval,
+    )
 }
 
 // force disconnect
@@ -894,70 +909,123 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
 
             let sessions_guard = tenant_sessions;
 
-            let mut session_state = Arc::new(RwLock::new(SessionState::new(Duration::from_secs(
-                settings.mqtt.inflight_retry_interval_secs,
-            ))));
+            let mut session_state = Arc::new(RwLock::new(new_session_state(
+                &settings,
+                msg.protocol_version,
+                msg.session_expiry_interval,
+            )));
 
             let session_state_service = SessionStateService::from_registry();
 
             let mut session_present = false;
 
-            if !msg.clean_session {
+            if msg.clean_start {
                 info!(
-                    "session {} not clean session, into state recover or create logic.",
+                    "session {} clean start requested, delete previous session state if exists",
+                    msg.client_id
+                );
+                let _ = session_state_service
+                    .delete_session_state(msg.tenant_id.clone(), msg.client_id.clone(), None)
+                    .await;
+
+                if !msg.clean_session {
+                    session_state_service
+                        .create_session_state(
+                            msg.tenant_id.clone(),
+                            msg.client_id.clone(),
+                            Some(msg.protocol_version),
+                            msg.session_expiry_interval,
+                        )
+                        .await?;
+                }
+            } else if !msg.clean_session {
+                info!(
+                    "session {} persistent session requested, into state recover or create logic.",
                     msg.client_id
                 );
                 // If raft store not existed, create new session state
                 // First check local sessions if exists send reconect
                 // If local sessions not existed, recover from raft store
-                if let Ok(res) = session_state_service
+                let res = session_state_service
                     .get_session_state_linearizable(msg.tenant_id.clone(), msg.client_id.clone())
-                    .await
-                {
-                    if let Some(session_state_from_raft) = res {
-                        if let Some(session_recipient_wrapper) = sessions_guard.get(&msg.client_id)
-                        {
-                            info!(
-                                "session {} exists in current node, start reconnect",
-                                msg.client_id
-                            );
+                    .await?;
 
-                            // Persistent session still run in current node, send reconnect
-                            session_recipient_wrapper
-                                .session_actor_message_recipient
-                                .do_send(SessionActorMessage::Reconnect {
-                                    conn: msg.connection_addr.clone(),
-                                    keep_alive: msg.keep_alive,
-                                    clean_session: msg.clean_session,
-                                    username: msg.username.clone(),
-                                    will_message: msg.will_message.clone(),
-                                    socket_addr: msg.peer_addr,
-                                });
-                            return Ok(CreateSessionMessageResponse {
-                                session_actor_recipient: session_recipient_wrapper
-                                    .session_actor_message_recipient
-                                    .clone(),
-                                session_present: true,
-                            });
-                        } else {
-                            info!(
-                                "session {} not exists in current node, recover from raft",
-                                msg.client_id
-                            );
-                            // not in current node, recover from raft
-                            session_state = Arc::new(RwLock::new(session_state_from_raft));
-                        }
-                    } else {
+                if let Some(session_state_from_raft) = res {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("system time is before unix epoch")
+                        .as_secs();
+                    if let Some(disconnected_at) = session_state_from_raft
+                        .expired_disconnected_at(now, settings.cluster.session_ttl)
+                    {
                         info!(
-                            "session {} not exists in cluster, create new session state",
+                            "session {} state expired before reconnect, create fresh state",
                             msg.client_id
                         );
+                        let _ = session_state_service
+                            .delete_session_state(
+                                msg.tenant_id.clone(),
+                                msg.client_id.clone(),
+                                Some(disconnected_at),
+                            )
+                            .await;
                         session_state_service
-                            .create_session_state(msg.tenant_id.clone(), msg.client_id.clone())
+                            .create_session_state(
+                                msg.tenant_id.clone(),
+                                msg.client_id.clone(),
+                                Some(msg.protocol_version),
+                                msg.session_expiry_interval,
+                            )
                             .await?;
-                    }
+                    } else if let Some(session_recipient_wrapper) =
+                        sessions_guard.get(&msg.client_id)
+                    {
+                        info!(
+                            "session {} exists in current node, start reconnect",
+                            msg.client_id
+                        );
 
-                    session_present = true;
+                        // Persistent session still run in current node, send reconnect
+                        session_recipient_wrapper
+                            .session_actor_message_recipient
+                            .do_send(SessionActorMessage::Reconnect {
+                                conn: msg.connection_addr.clone(),
+                                keep_alive: msg.keep_alive,
+                                clean_session: msg.clean_session,
+                                protocol_version: msg.protocol_version,
+                                session_expiry_interval: msg.session_expiry_interval,
+                                username: msg.username.clone(),
+                                will_message: msg.will_message.clone(),
+                                socket_addr: msg.peer_addr,
+                            });
+                        return Ok(CreateSessionMessageResponse {
+                            session_actor_recipient: session_recipient_wrapper
+                                .session_actor_message_recipient
+                                .clone(),
+                            session_present: true,
+                        });
+                    } else {
+                        info!(
+                            "session {} not exists in current node, recover from raft",
+                            msg.client_id
+                        );
+                        // not in current node, recover from raft
+                        session_state = Arc::new(RwLock::new(session_state_from_raft));
+                        session_present = true;
+                    }
+                } else {
+                    info!(
+                        "session {} not exists in cluster, create new session state",
+                        msg.client_id
+                    );
+                    session_state_service
+                        .create_session_state(
+                            msg.tenant_id.clone(),
+                            msg.client_id.clone(),
+                            Some(msg.protocol_version),
+                            msg.session_expiry_interval,
+                        )
+                        .await?;
                 }
             } else {
                 info!(
@@ -977,6 +1045,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     tenant_id: msg_tenant_id,
                     client_id: msg_client_id,
                     clean_session: msg.clean_session,
+                    protocol_version: msg.protocol_version,
+                    session_expiry_interval: msg.session_expiry_interval,
                     plugin_manager: plugin_manager_clone,
                     inflight_retry_duration_secs: 50,
                     will_message: msg.will_message,

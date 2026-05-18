@@ -500,6 +500,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                         inflight_duration_secs,
+                        protocol_version,
+                        session_expiry_interval,
                     } => {
                         self.data
                             .state
@@ -510,6 +512,8 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 &tenant_id,
                                 &client_id,
                                 Duration::from_secs(inflight_duration_secs),
+                                protocol_version,
+                                session_expiry_interval,
                             )
                             .await;
                         replies.push(SessionStateResponse::None);
@@ -551,13 +555,19 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         tenant_id,
                         client_id,
                         disconnected_at,
+                        session_expiry_interval_update,
                     } => {
                         self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .update_connection_state(tenant_id, client_id, disconnected_at)
+                            .update_connection_state(
+                                tenant_id,
+                                client_id,
+                                disconnected_at,
+                                session_expiry_interval_update,
+                            )
                             .await;
                         replies.push(SessionStateResponse::None);
                     }

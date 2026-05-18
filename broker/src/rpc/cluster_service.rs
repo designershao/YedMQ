@@ -341,6 +341,8 @@ impl ClusterService for ClusterServiceImpl {
         let create_session_state_actor = session_state_raft_actor::CreateSessionState {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
+            protocol_version: None,
+            session_expiry_interval: None,
         };
 
         let r = session_state_raft_actor_addr

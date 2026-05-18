@@ -2,6 +2,7 @@ use crate::{raft::Node, session::session_state_storage::SessionStateStorageError
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
+use yedmq_mqtt::packet::ProtocolVersion;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateRequest {
@@ -9,6 +10,10 @@ pub enum SessionStateRequest {
         tenant_id: String,
         client_id: String,
         inflight_duration_secs: u64,
+        #[serde(default)]
+        protocol_version: Option<ProtocolVersion>,
+        #[serde(default)]
+        session_expiry_interval: Option<u32>,
     },
     DeleteSessionState {
         tenant_id: String,
@@ -67,6 +72,8 @@ pub enum SessionStateRequest {
         tenant_id: String,
         client_id: String,
         disconnected_at: Option<u64>,
+        #[serde(default)]
+        session_expiry_interval_update: Option<u32>,
     },
 }
 

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connack {
     pub session_present: bool,
@@ -31,12 +33,22 @@ pub struct Publish {
 }
 
 pub fn connect_packet(client_id: &str, clean_start: bool, keep_alive_secs: u16) -> Vec<u8> {
+    connect_packet_with_properties(client_id, clean_start, keep_alive_secs, &[])
+}
+
+pub fn connect_packet_with_properties(
+    client_id: &str,
+    clean_start: bool,
+    keep_alive_secs: u16,
+    properties: &[u8],
+) -> Vec<u8> {
     let mut variable_header = Vec::new();
     variable_header.extend_from_slice(&utf8_string("MQTT"));
     variable_header.push(0x05);
     variable_header.push(if clean_start { 0x02 } else { 0x00 });
     variable_header.extend_from_slice(&keep_alive_secs.to_be_bytes());
-    variable_header.push(0x00);
+    variable_header.extend_from_slice(&encode_variable_byte_integer(properties.len() as u32));
+    variable_header.extend_from_slice(properties);
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&utf8_string(client_id));
@@ -93,8 +105,19 @@ pub fn disconnect_packet() -> Vec<u8> {
     vec![0xE0, 0x00]
 }
 
+pub fn session_expiry_interval_property(seconds: u32) -> Vec<u8> {
+    let mut property = Vec::with_capacity(5);
+    property.push(0x11);
+    property.extend_from_slice(&seconds.to_be_bytes());
+    property
+}
+
 pub fn pubrec_packet(packet_id: u16) -> Vec<u8> {
     ack_packet(0x50, packet_id)
+}
+
+pub fn puback_packet(packet_id: u16) -> Vec<u8> {
+    ack_packet(0x40, packet_id)
 }
 
 pub fn pubrel_packet(packet_id: u16) -> Vec<u8> {

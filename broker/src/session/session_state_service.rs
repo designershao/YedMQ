@@ -7,6 +7,7 @@ use crate::raft::session_state::session_state_raft_actor::{
     UnsubscribeTopic, UpdateSessionConnectionState,
 };
 use crate::session::session_state_storage::SessionState;
+use yedmq_mqtt::packet::ProtocolVersion;
 
 #[derive(Clone)]
 pub struct SessionStateService {
@@ -72,12 +73,16 @@ impl SessionStateService {
         &self,
         tenant_id: String,
         client_id: String,
+        protocol_version: Option<ProtocolVersion>,
+        session_expiry_interval: Option<u32>,
     ) -> Result<(), SessionStateRaftError> {
         self.session_state_raft_actor
             .send(
                 crate::raft::session_state::session_state_raft_actor::CreateSessionState {
                     tenant_id,
                     client_id,
+                    protocol_version,
+                    session_expiry_interval,
                 },
             )
             .await
@@ -107,12 +112,14 @@ impl SessionStateService {
         tenant_id: String,
         client_id: String,
         disconnected_at: Option<u64>,
+        session_expiry_interval_update: Option<u32>,
     ) -> Result<(), SessionStateRaftError> {
         self.session_state_raft_actor
             .send(UpdateSessionConnectionState {
                 tenant_id,
                 client_id,
                 disconnected_at,
+                session_expiry_interval_update,
             })
             .await
             .map_err(|e| SessionStateRaftError::ServiceUnavailable(e.to_string()))?

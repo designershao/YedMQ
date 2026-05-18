@@ -881,7 +881,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     client_certificate: Option<Vec<u8>>,
     metric: Arc<Metric>,
 ) -> Result<HandleInitialConnectResult, ConnectionError> {
-    let clean_session = clean_session_for_session_manager(&packet)?;
+    let session_options = session_options_for_session_manager(&packet);
 
     let authenticate_request = AuthenticateRequest {
         client_id: packet.client_id.clone(),
@@ -918,7 +918,10 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     .send(CreateSessionMessage {
                         tenant_id,
                         client_id: packet.client_id.clone(),
-                        clean_session,
+                        clean_session: session_options.clean_session,
+                        clean_start: session_options.clean_start,
+                        protocol_version: session_options.protocol_version,
+                        session_expiry_interval: session_options.session_expiry_interval,
                         connection_addr: recipient.clone(),
                         keep_alive: packet.keep_alive as u64,
                         will_message,
@@ -978,20 +981,33 @@ fn protocol_version_label(protocol_version: ProtocolVersion) -> &'static str {
     }
 }
 
-fn clean_session_for_session_manager(packet: &Connect) -> Result<bool, ConnectionError> {
+#[derive(Debug, Clone, Copy)]
+struct SessionStartOptions {
+    clean_session: bool,
+    clean_start: bool,
+    protocol_version: ProtocolVersion,
+    session_expiry_interval: Option<u32>,
+}
+
+fn session_options_for_session_manager(packet: &Connect) -> SessionStartOptions {
     match packet.protocol_version {
-        ProtocolVersion::V3_1_1 => Ok(packet.clean_start),
+        ProtocolVersion::V3_1_1 => SessionStartOptions {
+            clean_session: packet.clean_start,
+            clean_start: packet.clean_start,
+            protocol_version: ProtocolVersion::V3_1_1,
+            session_expiry_interval: None,
+        },
         ProtocolVersion::V5_0 => {
             let session_expiry_interval = packet
                 .session_expiry_interval
                 .or(packet.properties.session_expiry_interval)
                 .unwrap_or(0);
-            if session_expiry_interval != 0 || !packet.clean_start {
-                return Err(ConnectionError::UnsupportedMqtt5Feature(
-                    "persistent sessions before MQTT 5 session expiry storage",
-                ));
+            SessionStartOptions {
+                clean_session: packet.clean_start && session_expiry_interval == 0,
+                clean_start: packet.clean_start,
+                protocol_version: ProtocolVersion::V5_0,
+                session_expiry_interval: Some(session_expiry_interval),
             }
-            Ok(true)
         }
     }
 }
