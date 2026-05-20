@@ -10,7 +10,8 @@ use tokio_util::codec::Framed;
 use yedmq_plugin_host::local_socket_name::resolve_local_socket_name;
 use yedmq_plugin_host::protocol::{
     plugin_protocol::{
-        AuthenticateResponse, Hook, InitializeResponse, MessageType, Method, ProtocolMessage,
+        AuthenticateRequest, AuthenticateResponse, Hook, InitializeResponse, MessageType, Method,
+        ProtocolMessage,
     },
     protocol_frame::ProtocolFrameCodec,
 };
@@ -294,7 +295,13 @@ async fn handle_authenticate_request(
             .create(true)
             .append(true)
             .open(record_file)?;
-        writeln!(file, "{},{}", auth_code, std::process::id())?;
+        writeln!(
+            file,
+            "{},{},{}",
+            auth_code,
+            std::process::id(),
+            authenticate_request_record(request)
+        )?;
     }
     let response = AuthenticateResponse {
         authenticated: config.authenticate.authenticated,
@@ -319,6 +326,55 @@ async fn handle_authenticate_request(
         error: None,
         metadata: HashMap::new(),
     })
+}
+
+fn authenticate_request_record(request: &ProtocolMessage) -> String {
+    let Some(params) = &request.params else {
+        return "protocol_version=<missing>,client_id=<missing>,property_keys=<missing>"
+            .to_string();
+    };
+
+    if params.type_url != yedmq_plugin_host::protocol::AUTHENTICATE_REQUEST_TYPE_URL {
+        return format!(
+            "protocol_version=<wrong-type>,client_id=<wrong-type>,property_keys={},type_url={}",
+            "<wrong-type>", params.type_url
+        );
+    }
+
+    match AuthenticateRequest::decode(params.value.as_slice()) {
+        Ok(authenticate_request) => {
+            let property_keys = authenticate_request
+                .properties
+                .as_ref()
+                .map(|properties| {
+                    let mut keys = properties.fields.keys().cloned().collect::<Vec<_>>();
+                    keys.sort();
+                    keys.join("|")
+                })
+                .unwrap_or_else(|| "none".to_string());
+            let session_expiry_interval = authenticate_request
+                .properties
+                .as_ref()
+                .and_then(|properties| properties.fields.get("session_expiry_interval"))
+                .and_then(|value| match value.kind.as_ref() {
+                    Some(prost_types::value::Kind::NumberValue(value)) => Some(*value),
+                    _ => None,
+                })
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_string());
+
+            format!(
+                "protocol_version={},client_id={},session_expiry_interval={},property_keys={}",
+                authenticate_request.protocol_version,
+                authenticate_request.client_id,
+                session_expiry_interval,
+                property_keys
+            )
+        }
+        Err(error) => format!(
+            "protocol_version=<decode-error>,client_id=<decode-error>,property_keys=<decode-error>,error={error}"
+        ),
+    }
 }
 
 async fn handle_authorize_request(

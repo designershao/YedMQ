@@ -2,15 +2,20 @@ use reqwest::StatusCode;
 use serde_json::Value;
 use std::{
     env, fs,
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, OnceLock},
     time::Duration,
 };
 use tempfile::TempDir;
+use tokio::net::TcpStream;
 use tokio::sync::{Mutex, OnceCell};
 use yedmq::app::YedMQApp;
 use yedmq::settings::{AuthConfig, Settings, User};
+
+#[allow(dead_code)]
+mod common;
 
 static ASYNC_SETUP: OnceCell<TestContext> = OnceCell::const_new();
 static PLUGIN_API_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -269,6 +274,77 @@ async fn wait_for_cluster_ready(api_addr: &str) -> Value {
         }
 
         tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+fn tcp_broker_addr(context: &TestContext) -> SocketAddr {
+    context
+        .settings
+        .listener
+        .tcp
+        .external
+        .as_str()
+        .parse()
+        .unwrap()
+}
+
+async fn connect_mqtt5_tcp_client(broker_addr: SocketAddr, client_id: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(broker_addr).await.unwrap();
+    common::mqtt5::write_packet_to_writer(
+        &mut stream,
+        &common::mqtt5::connect_packet(client_id, true, 30),
+    )
+    .await;
+
+    let connack = common::mqtt5::read_packet_from_reader(&mut stream).await;
+    let connack = common::mqtt5::parse_connack(&connack).expect("parse MQTT 5 CONNACK");
+    assert_eq!(connack.reason_code, 0x00);
+    stream
+}
+
+async fn broker_stats(api_addr: &str) -> Value {
+    let client = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/broker/stats", api_addr);
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    resp.json().await.unwrap()
+}
+
+fn stat_u64(stats: &Value, key: &str) -> u64 {
+    stats
+        .get(key)
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("broker stats field {key} should be u64"))
+}
+
+async fn read_mqtt5_publish_matching(
+    stream: &mut TcpStream,
+    topic: &str,
+    timeout: Duration,
+) -> common::mqtt5::Publish {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for MQTT 5 PUBLISH on {topic}"
+        );
+
+        let packet = common::mqtt5::read_packet_from_reader_with_timeout(stream, remaining).await;
+        if packet[0] >> 4 != 0x03 {
+            continue;
+        }
+
+        let publish = common::mqtt5::parse_publish(&packet).expect("parse MQTT 5 PUBLISH");
+        if publish.topic == topic {
+            return publish;
+        }
     }
 }
 
@@ -912,6 +988,145 @@ async fn test_api_publish_message_with_base64_payload() {
         .expect("Channel closed");
 
     assert_eq!(received_payload.to_vec(), expected_payload.as_ref());
+}
+
+#[actix::test]
+async fn test_api_publish_message_reaches_mqtt5_subscriber() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+    ensure_cluster_initialized(api_addr).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/api/mqtt5/publish/{suffix}");
+    let expected_payload = b"Hello MQTT5 From API";
+
+    let mut subscriber = connect_mqtt5_tcp_client(broker_addr, "api-mqtt5-subscriber").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::subscribe_packet(1, &topic, 1),
+    )
+    .await;
+    let suback = common::mqtt5::read_packet_from_reader(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+
+    let client_http = reqwest::Client::new();
+    let url = format!("http://{}/api/v1/public/messages", api_addr);
+    let payload = serde_json::json!({
+        "topic": topic,
+        "payload": "Hello MQTT5 From API",
+        "qos": 1,
+        "retain": false,
+        "payloadEncoding": "plain"
+    });
+
+    let resp = client_http
+        .post(&url)
+        .basic_auth("admin", Some("password"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let publish =
+        read_mqtt5_publish_matching(&mut subscriber, &topic, Duration::from_secs(5)).await;
+    assert_eq!(publish.payload, expected_payload);
+    assert_eq!(publish.qos, 1);
+    let packet_id = publish.packet_id.expect("QoS 1 packet id");
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::puback_packet(packet_id),
+    )
+    .await;
+    common::mqtt5::write_packet_to_writer(&mut subscriber, &common::mqtt5::disconnect_packet())
+        .await;
+}
+
+#[actix::test]
+async fn test_api_broker_stats_include_mqtt5_traffic() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+    ensure_cluster_initialized(api_addr).await;
+
+    let before = broker_stats(api_addr).await;
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/api/mqtt5/stats/{suffix}");
+    let payload = b"stats mqtt5 payload";
+
+    let mut subscriber = connect_mqtt5_tcp_client(broker_addr, "stats-mqtt5-sub").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::subscribe_packet(2, &topic, 1),
+    )
+    .await;
+    let suback = common::mqtt5::read_packet_from_reader(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+
+    let mut publisher = connect_mqtt5_tcp_client(broker_addr, "stats-mqtt5-pub").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut publisher,
+        &common::mqtt5::publish_packet(&topic, payload, 1, false, Some(7)),
+    )
+    .await;
+    let puback = common::mqtt5::read_packet_from_reader(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 7);
+
+    let publish =
+        read_mqtt5_publish_matching(&mut subscriber, &topic, Duration::from_secs(5)).await;
+    assert_eq!(publish.payload, payload);
+    let packet_id = publish.packet_id.expect("QoS 1 packet id");
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::puback_packet(packet_id),
+    )
+    .await;
+    common::mqtt5::write_packet_to_writer(&mut subscriber, &common::mqtt5::disconnect_packet())
+        .await;
+    common::mqtt5::write_packet_to_writer(&mut publisher, &common::mqtt5::disconnect_packet())
+        .await;
+
+    let after = broker_stats(api_addr).await;
+    assert!(stat_u64(&after, "bytesReceived") > stat_u64(&before, "bytesReceived"));
+    assert!(stat_u64(&after, "bytesSent") > stat_u64(&before, "bytesSent"));
+    assert!(stat_u64(&after, "packetsReceived") > stat_u64(&before, "packetsReceived"));
+    assert!(stat_u64(&after, "packetsSent") > stat_u64(&before, "packetsSent"));
+    assert!(stat_u64(&after, "messagesReceived") > stat_u64(&before, "messagesReceived"));
+    assert!(stat_u64(&after, "messagesSent") > stat_u64(&before, "messagesSent"));
+}
+
+#[actix::test]
+async fn test_system_topic_reaches_mqtt5_subscriber() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let api_addr = &context.settings.listener.api.external;
+    ensure_cluster_initialized(api_addr).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = "$SYS/broker/uptime";
+    let mut subscriber = connect_mqtt5_tcp_client(broker_addr, "sys-topic-mqtt5-sub").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::subscribe_packet(3, topic, 0),
+    )
+    .await;
+    let suback = common::mqtt5::read_packet_from_reader(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x00]);
+
+    let publish =
+        read_mqtt5_publish_matching(&mut subscriber, topic, Duration::from_secs(12)).await;
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.qos, 0);
+    assert!(!publish.payload.is_empty());
+    common::mqtt5::write_packet_to_writer(&mut subscriber, &common::mqtt5::disconnect_packet())
+        .await;
 }
 
 #[actix::test]

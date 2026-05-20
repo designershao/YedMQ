@@ -2,9 +2,13 @@ use rumqttc::tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use rumqttc::{AsyncClient, Event, LastWill, MqttOptions, Packet, QoS, Transport};
 use rustls_pemfile as pemfile;
 use std::io::BufReader;
-use std::{env, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use tokio::net::TcpStream;
+use tokio_rustls::{client::TlsStream, rustls as direct_rustls, TlsConnector};
 
 mod cluster_setup;
+#[allow(dead_code)]
+mod common;
 use cluster_setup::setup_cluster;
 
 fn configure_tls() -> Transport {
@@ -24,6 +28,50 @@ fn configure_tls() -> Transport {
         .with_no_client_auth();
 
     Transport::tls_with_config(client_config.into())
+}
+
+fn raw_tls_client_config() -> Arc<direct_rustls::ClientConfig> {
+    let crate_root_path = env!("CARGO_MANIFEST_DIR");
+    let certs_path = PathBuf::from(crate_root_path).join("tests").join("certs");
+    let ca_file_path = certs_path.join("ca.crt");
+
+    let mut root_cert_store = direct_rustls::RootCertStore::empty();
+    let ca_file = fs::File::open(ca_file_path).expect("Failed to open CA file");
+    let mut reader = BufReader::new(ca_file);
+    for cert_result in pemfile::certs(&mut reader) {
+        root_cert_store.add(cert_result.unwrap()).unwrap();
+    }
+
+    Arc::new(
+        direct_rustls::ClientConfig::builder()
+            .with_root_certificates(root_cert_store)
+            .with_no_client_auth(),
+    )
+}
+
+async fn connect_mqtt5_tls_client(
+    broker_addr: SocketAddr,
+    client_id: &str,
+) -> TlsStream<TcpStream> {
+    let stream = TcpStream::connect(("127.0.0.1", broker_addr.port()))
+        .await
+        .unwrap();
+    let connector = TlsConnector::from(raw_tls_client_config());
+    let server_name = direct_rustls::pki_types::ServerName::try_from("localhost")
+        .unwrap()
+        .to_owned();
+    let mut stream = connector.connect(server_name, stream).await.unwrap();
+
+    common::mqtt5::write_packet_to_writer(
+        &mut stream,
+        &common::mqtt5::connect_packet(client_id, true, 5),
+    )
+    .await;
+
+    let connack = common::mqtt5::read_packet_from_reader(&mut stream).await;
+    let connack = common::mqtt5::parse_connack(&connack).expect("parse MQTT 5 CONNACK");
+    assert_eq!(connack.reason_code, 0x00);
+    stream
 }
 
 #[actix::test]
@@ -69,6 +117,68 @@ pub async fn test_tls_listener_connect() {
     let connect_result = result.unwrap().unwrap();
     assert!(connect_result.is_ok());
     assert_eq!(connect_result.unwrap(), rumqttc::ConnectReturnCode::Success);
+}
+
+#[actix::test]
+pub async fn test_tls_listener_mqtt5_publish_subscribe_cross_node_smoke() {
+    let context = setup_cluster().await;
+
+    let pub_addr: SocketAddr = context.nodes[0]
+        .listener
+        .tcp_tls
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
+    let sub_addr: SocketAddr = context.nodes[1]
+        .listener
+        .tcp_tls
+        .external
+        .as_str()
+        .parse()
+        .unwrap();
+
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/cluster/mqtt5/tls/{suffix}");
+    let payload = b"hello cluster mqtt5 tls";
+
+    let mut subscriber = connect_mqtt5_tls_client(sub_addr, "cluster-mqtt5-tls-sub").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::subscribe_packet(1, &topic, 1),
+    )
+    .await;
+    let suback = common::mqtt5::read_packet_from_reader(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+
+    let mut publisher = connect_mqtt5_tls_client(pub_addr, "cluster-mqtt5-tls-pub").await;
+    common::mqtt5::write_packet_to_writer(
+        &mut publisher,
+        &common::mqtt5::publish_packet(&topic, payload, 1, false, Some(7)),
+    )
+    .await;
+    let puback = common::mqtt5::read_packet_from_reader(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 7);
+    assert_eq!(puback.reason_code, 0x00);
+
+    let publish = common::mqtt5::read_packet_from_reader(&mut subscriber).await;
+    let publish = common::mqtt5::parse_publish(&publish).expect("parse MQTT 5 PUBLISH");
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    assert_eq!(publish.qos, 1);
+    let subscriber_packet_id = publish.packet_id.expect("QoS 1 packet id");
+    common::mqtt5::write_packet_to_writer(
+        &mut subscriber,
+        &common::mqtt5::puback_packet(subscriber_packet_id),
+    )
+    .await;
+
+    common::mqtt5::write_packet_to_writer(&mut subscriber, &common::mqtt5::disconnect_packet())
+        .await;
+    common::mqtt5::write_packet_to_writer(&mut publisher, &common::mqtt5::disconnect_packet())
+        .await;
 }
 
 async fn test_tls_publish_subscribe_cross_node(qos: QoS) {

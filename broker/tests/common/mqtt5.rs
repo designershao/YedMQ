@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+use std::time::Duration;
+
+use futures::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connack {
     pub session_present: bool,
@@ -234,6 +240,94 @@ pub fn pubcomp_packet(packet_id: u16) -> Vec<u8> {
 
 pub fn pingreq_packet() -> Vec<u8> {
     vec![0xC0, 0x00]
+}
+
+pub async fn write_packet_to_writer<T>(writer: &mut T, packet: &[u8])
+where
+    T: AsyncWrite + Unpin,
+{
+    tokio::time::timeout(Duration::from_secs(5), writer.write_all(packet))
+        .await
+        .expect("timed out writing MQTT packet")
+        .expect("write MQTT packet");
+    tokio::time::timeout(Duration::from_secs(5), writer.flush())
+        .await
+        .expect("timed out flushing MQTT packet")
+        .expect("flush MQTT packet");
+}
+
+pub async fn read_packet_from_reader<T>(reader: &mut T) -> Vec<u8>
+where
+    T: AsyncRead + Unpin,
+{
+    read_packet_from_reader_with_timeout(reader, Duration::from_secs(5)).await
+}
+
+pub async fn read_packet_from_reader_with_timeout<T>(reader: &mut T, timeout: Duration) -> Vec<u8>
+where
+    T: AsyncRead + Unpin,
+{
+    let mut fixed_header = vec![0u8; 1];
+    tokio::time::timeout(timeout, reader.read_exact(&mut fixed_header))
+        .await
+        .expect("timed out reading MQTT packet first byte")
+        .expect("read MQTT packet first byte");
+
+    let mut multiplier = 1usize;
+    let mut remaining_len = 0usize;
+    for _ in 0..4 {
+        let mut byte = [0u8; 1];
+        tokio::time::timeout(timeout, reader.read_exact(&mut byte))
+            .await
+            .expect("timed out reading MQTT remaining length")
+            .expect("read MQTT remaining length");
+        fixed_header.push(byte[0]);
+        remaining_len += ((byte[0] & 0x7F) as usize) * multiplier;
+        if byte[0] & 0x80 == 0 {
+            let mut body = vec![0u8; remaining_len];
+            if remaining_len > 0 {
+                tokio::time::timeout(timeout, reader.read_exact(&mut body))
+                    .await
+                    .expect("timed out reading MQTT packet body")
+                    .expect("read MQTT packet body");
+            }
+            fixed_header.extend_from_slice(&body);
+            return fixed_header;
+        }
+        multiplier *= 128;
+    }
+
+    panic!("malformed MQTT remaining length");
+}
+
+pub async fn write_websocket_packet<S>(stream: &mut WebSocketStream<S>, packet: Vec<u8>)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    tokio::time::timeout(Duration::from_secs(5), stream.send(Message::Binary(packet)))
+        .await
+        .expect("timed out writing MQTT WebSocket packet")
+        .expect("write MQTT WebSocket packet");
+}
+
+pub async fn read_websocket_packet<S>(stream: &mut WebSocketStream<S>) -> Vec<u8>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("timed out reading MQTT WebSocket packet")
+            .expect("WebSocket stream ended")
+            .expect("read MQTT WebSocket packet");
+
+        match message {
+            Message::Binary(packet) => return packet,
+            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Close(frame) => panic!("unexpected WebSocket close frame: {frame:?}"),
+            other => panic!("unexpected non-binary WebSocket message: {other:?}"),
+        }
+    }
 }
 
 pub fn parse_connack(packet: &[u8]) -> Result<Connack, String> {

@@ -22,7 +22,7 @@
 
 ## ✨ Key Features
 
-- **MQTT v3.1.1 Support**: Fully compliant with the MQTT v3.1.1 protocol, including all QoS levels (0, 1, 2), retained messages, last will, and persistent sessions.
+- **MQTT v3.1.1 and MQTT 5.0 Support**: MQTT v3.1.1 remains supported, and MQTT 5.0 clients can use normal CONNECT, publish/subscribe, QoS 0/1/2, retained messages, persistent sessions, session expiry, message expiry, TCP, TLS, WS, and WSS flows.
 - **High Performance**: Leveraging Rust's memory safety and zero-cost abstractions for low latency and high throughput.
 - **Multiple Tenant Support**: Built-in isolation for multiple organizations. Each tenant has its own namespace, sessions, and topics, ensuring data privacy and security.
 - **Clustering & High Availability**: Distributed architecture based on the **Raft** consensus algorithm for reliable state synchronization and fault tolerance.
@@ -179,6 +179,12 @@ default_authorize_result = true
 Use the second option only for local smoke tests. For any shared, staged, or production
 deployment, keep the defaults locked down and use a real authentication plugin.
 
+### MQTT Protocol Support
+
+YedMQ supports MQTT v3.1.1 and a conservative MQTT 5.0 surface. The MQTT 5.0 implementation covers the common broker path: CONNECT/CONNACK, PUBLISH, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE/SUBACK, UNSUBSCRIBE/UNSUBACK, PING, DISCONNECT, QoS 0/1/2, retained messages, session expiry, message expiry, mixed v3/v5 delivery, REST-published messages, `$SYS` topics, and TCP/TLS/WS/WSS listeners.
+
+The first MQTT 5.0 release explicitly rejects unsupported features with MQTT 5 reason codes where possible. Enhanced authentication, Topic Alias, Subscription Identifier, shared subscriptions, and protocol-version-specific metric breakdowns are not implemented yet.
+
 ## CLI Operations
 
 The `yedmq` binary also provides basic operational commands:
@@ -283,9 +289,9 @@ For larger changes, open a GitHub issue or discussion first so the scope is clea
 ## 📊 Roadmap
 
 - [x] MQTT v3.1.1 support
+- [x] MQTT v5.0 support
 - [x] Raft-based clustering
 - [x] Plugin system
-- [ ] MQTT v5.0 support
 - [ ] Shared subscriptions
 - [ ] Message persistence (disk-based)
 - [ ] Prometheus metrics
