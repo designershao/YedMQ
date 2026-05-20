@@ -8,6 +8,7 @@ use tonic::Request;
 use yedmq_mqtt::packet::{Packet, Publish};
 
 use crate::metric::Metric;
+use crate::mqtt_message_expiry;
 use crate::node_resolver::NodeResolver;
 use crate::raft::payload::PayloadStore;
 use crate::route_store::JsonRocksDBStore;
@@ -316,6 +317,10 @@ impl RouterActor {
         topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         session_registry: SessionRegistry,
     ) -> Result<(), RouterActorError> {
+        if mqtt_message_expiry::is_packet_expired(packet, mqtt_message_expiry::now_unix_secs()) {
+            return Ok(());
+        }
+
         if let Packet::Publish(publish_packet) = packet {
             let topic = &publish_packet.topic_name;
             let res = topic_raft_actor_addr
@@ -355,6 +360,11 @@ impl RouterActor {
         packet: &Packet,
         source_client_identifier: Option<&str>,
     ) -> Result<(), RouterActorError> {
+        if mqtt_message_expiry::is_packet_expired(packet, Self::now_secs()) {
+            context.metric.increase_messages_dropped();
+            return Ok(());
+        }
+
         if let Packet::Publish(publish_packet) = packet {
             let topic = &publish_packet.topic_name;
 
@@ -478,7 +488,15 @@ impl RouterActor {
         let route_id = uuid::Uuid::new_v4().to_string();
         let packet_key = Self::build_packet_key("route-outbox", &route_id);
         let now = Self::now_secs();
-        let expiry_at = now + context.retry_config.message_ttl_seconds;
+        let expiry_at = mqtt_message_expiry::route_expiry_at(
+            &packet,
+            context.retry_config.message_ttl_seconds,
+            now,
+        );
+        if expiry_at <= now {
+            context.metric.increase_messages_dropped();
+            return Ok(());
+        }
         let packet_bytes = Self::serialize_packet(&packet).await?;
 
         context
@@ -591,6 +609,12 @@ impl RouterActor {
                 ))
             })?;
         let packet = Self::deserialize_packet(&packet_bytes).await?;
+        if mqtt_message_expiry::is_packet_expired(&packet, now) {
+            metric.increase_messages_dropped();
+            let _ = route_outbox_store.delete(&item.route_id).await;
+            let _ = payload_store.delete(&item.packet_key).await;
+            return Ok(());
+        }
         let request = crate::protobuf::RoutePacketRequest {
             tenant_id: item.tenant_id.clone(),
             payload: serialize_stored_packet_to_string(&packet)
@@ -680,6 +704,11 @@ impl RouterActor {
         retry_config: RouteRetryConfig,
         msg: RouteFromOtherNode,
     ) -> Result<(), RouterActorError> {
+        if mqtt_message_expiry::is_packet_expired(&msg.packet, Self::now_secs()) {
+            metric.increase_messages_dropped();
+            return Ok(());
+        }
+
         if msg.route_id.is_empty() {
             return Self::route_to_local_session_durable(
                 &msg.tenant_id,
@@ -803,6 +832,17 @@ impl RouterActor {
                 ))
             })?;
         let packet = Self::deserialize_packet(&packet_bytes).await?;
+        if mqtt_message_expiry::is_packet_expired(&packet, now) {
+            metric.increase_messages_dropped();
+            item.status = RouteInboxStatus::Completed;
+            item.completed_at = Some(now);
+            route_inbox_store
+                .put(&item.route_id, &item)
+                .await
+                .map_err(|e| RouterActorError::RouteStoreError(e.to_string()))?;
+            let _ = payload_store.delete(&item.packet_key).await;
+            return Ok(());
+        }
 
         match Self::route_to_local_session_durable(
             &item.tenant_id,

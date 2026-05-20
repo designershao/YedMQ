@@ -22,6 +22,12 @@ pub struct Suback {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Disconnect {
+    pub reason_code: u8,
+    pub properties: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Publish {
     pub dup: bool,
     pub qos: u8,
@@ -61,9 +67,19 @@ pub fn subscribe_packet(packet_id: u16, topic: &str, qos: u8) -> Vec<u8> {
 }
 
 pub fn subscribe_packet_with_options(packet_id: u16, topic: &str, options: u8) -> Vec<u8> {
+    subscribe_packet_with_properties_and_options(packet_id, topic, &[], options)
+}
+
+pub fn subscribe_packet_with_properties_and_options(
+    packet_id: u16,
+    topic: &str,
+    properties: &[u8],
+    options: u8,
+) -> Vec<u8> {
     let mut body = Vec::new();
     body.extend_from_slice(&packet_id.to_be_bytes());
-    body.push(0x00);
+    body.extend_from_slice(&encode_variable_byte_integer(properties.len() as u32));
+    body.extend_from_slice(properties);
     body.extend_from_slice(&utf8_string(topic));
     body.push(options);
 
@@ -110,6 +126,94 @@ pub fn session_expiry_interval_property(seconds: u32) -> Vec<u8> {
     property.push(0x11);
     property.extend_from_slice(&seconds.to_be_bytes());
     property
+}
+
+pub fn authentication_method_property(method: &str) -> Vec<u8> {
+    let mut property = Vec::new();
+    property.push(0x15);
+    property.extend_from_slice(&utf8_string(method));
+    property
+}
+
+pub fn message_expiry_interval_property(seconds: u32) -> Vec<u8> {
+    let mut property = Vec::with_capacity(5);
+    property.push(0x02);
+    property.extend_from_slice(&seconds.to_be_bytes());
+    property
+}
+
+pub fn topic_alias_property(alias: u16) -> Vec<u8> {
+    let mut property = Vec::with_capacity(3);
+    property.push(0x23);
+    property.extend_from_slice(&alias.to_be_bytes());
+    property
+}
+
+pub fn subscription_identifier_property(identifier: u32) -> Vec<u8> {
+    let mut property = Vec::new();
+    property.push(0x0b);
+    property.extend_from_slice(&encode_variable_byte_integer(identifier));
+    property
+}
+
+pub fn auth_packet(reason_code: u8, properties: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.push(reason_code);
+    body.extend_from_slice(&encode_variable_byte_integer(properties.len() as u32));
+    body.extend_from_slice(properties);
+    control_packet(0xf0, body)
+}
+
+pub fn find_message_expiry_interval(properties: &[u8]) -> Result<Option<u32>, String> {
+    let mut offset = 0usize;
+    while offset < properties.len() {
+        let (identifier, identifier_len) = decode_variable_byte_integer(&properties[offset..])?;
+        offset += identifier_len;
+        match identifier {
+            0x02 => {
+                if properties.len() < offset + 4 {
+                    return Err("message_expiry_interval property is incomplete".to_string());
+                }
+                let value = u32::from_be_bytes([
+                    properties[offset],
+                    properties[offset + 1],
+                    properties[offset + 2],
+                    properties[offset + 3],
+                ]);
+                return Ok(Some(value));
+            }
+            0x01 => {
+                offset += 1;
+            }
+            0x03 | 0x08 => {
+                let (_, consumed) = parse_utf8_string(&properties[offset..])?;
+                offset += consumed;
+            }
+            0x09 => {
+                if properties.len() < offset + 2 {
+                    return Err("binary property length is incomplete".to_string());
+                }
+                let len = u16::from_be_bytes([properties[offset], properties[offset + 1]]) as usize;
+                offset += 2 + len;
+            }
+            0x0b => {
+                let (_, consumed) = decode_variable_byte_integer(&properties[offset..])?;
+                offset += consumed;
+            }
+            0x26 => {
+                let (_, key_consumed) = parse_utf8_string(&properties[offset..])?;
+                offset += key_consumed;
+                let (_, value_consumed) = parse_utf8_string(&properties[offset..])?;
+                offset += value_consumed;
+            }
+            other => return Err(format!("unsupported PUBLISH property id {other:#x}")),
+        }
+        if offset > properties.len() {
+            return Err("property length exceeds available bytes".to_string());
+        }
+    }
+
+    Ok(None)
 }
 
 pub fn pubrec_packet(packet_id: u16) -> Vec<u8> {
@@ -250,6 +354,42 @@ pub fn parse_suback(packet: &[u8]) -> Result<Suback, String> {
         packet_id,
         properties: body[property_start..reason_start].to_vec(),
         reason_codes: body[reason_start..].to_vec(),
+    })
+}
+
+pub fn parse_disconnect(packet: &[u8]) -> Result<Disconnect, String> {
+    let (packet_type, flags, body, consumed) = parse_control_packet(packet)?;
+    if consumed != packet.len() {
+        return Err("trailing bytes after DISCONNECT".to_string());
+    }
+    if packet_type != 0x0e || flags != 0 {
+        return Err(format!(
+            "expected DISCONNECT, got type={packet_type} flags={flags}"
+        ));
+    }
+    if body.is_empty() {
+        return Ok(Disconnect {
+            reason_code: 0x00,
+            properties: Vec::new(),
+        });
+    }
+    let reason_code = body[0];
+    if body.len() == 1 {
+        return Ok(Disconnect {
+            reason_code,
+            properties: Vec::new(),
+        });
+    }
+    let (property_len, property_len_bytes) = decode_variable_byte_integer(&body[1..])?;
+    let property_start = 1 + property_len_bytes;
+    let property_end = property_start + property_len as usize;
+    if property_end != body.len() {
+        return Err("DISCONNECT property length does not match body".to_string());
+    }
+
+    Ok(Disconnect {
+        reason_code,
+        properties: body[property_start..property_end].to_vec(),
     })
 }
 
@@ -432,6 +572,25 @@ mod tests {
     }
 
     #[test]
+    fn encodes_and_finds_message_expiry_property() {
+        let property = message_expiry_interval_property(30);
+        let packet = publish_packet_with_properties(
+            "test/mqtt5/expiry",
+            b"hello",
+            1,
+            false,
+            Some(10),
+            &property,
+        );
+        let publish = parse_publish(&packet).expect("parse publish");
+
+        assert_eq!(
+            find_message_expiry_interval(&publish.properties).expect("parse properties"),
+            Some(30)
+        );
+    }
+
+    #[test]
     fn parses_connack_success_packet() {
         let connack = parse_connack(&[0x20, 0x03, 0x00, 0x00, 0x00]).expect("parse connack");
         assert!(!connack.session_present);
@@ -445,6 +604,13 @@ mod tests {
         assert_eq!(puback.packet_id, 42);
         assert_eq!(puback.reason_code, 0x00);
         assert!(puback.properties.is_empty());
+    }
+
+    #[test]
+    fn parses_disconnect_packet() {
+        let disconnect = parse_disconnect(&[0xe0, 0x02, 0x82, 0x00]).expect("parse disconnect");
+        assert_eq!(disconnect.reason_code, 0x82);
+        assert!(disconnect.properties.is_empty());
     }
 
     #[test]

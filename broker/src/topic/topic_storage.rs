@@ -7,6 +7,7 @@ use log::warn;
 use serde::{Deserialize, Deserializer, Serialize};
 use yedmq_mqtt::packet::Packet;
 
+use crate::mqtt_message_expiry;
 use crate::stored_packet::deserialize_stored_packet;
 use crate::topic::TopicStorageError;
 
@@ -738,8 +739,10 @@ impl TopicStorage {
         let tenant_topic_root_rwlock = map.read();
         let tenant_topic_root_optional = tenant_topic_root_rwlock.get(&tenant_id);
         if let Some(tenant_topic_root) = tenant_topic_root_optional {
-            let retain_packets =
+            let mut retain_packets =
                 Self::recursion_get_retain_packet(tenant_topic_root.clone(), topic_patterns);
+            let now = mqtt_message_expiry::now_unix_secs();
+            retain_packets.retain(|packet| !mqtt_message_expiry::is_packet_expired(packet, now));
             Ok(retain_packets)
         } else {
             Err(TopicStorageError::TenantNotFound(tenant_id))

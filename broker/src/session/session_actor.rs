@@ -50,6 +50,7 @@ use super::{
 
 use crate::connection::{ConnectionActorMessage, DisconnectReason};
 use crate::metric::Metric;
+use crate::mqtt_message_expiry;
 use crate::raft::payload::PayloadStore;
 use crate::timer_actor::{
     RefreshTimer, RegisterInflight, RegisterKeepAlive, RemoveTimer, TimerActor, TimerType,
@@ -217,6 +218,15 @@ fn success_ack(packet_identifier: u16) -> Ack {
         packet_identifier,
         reason_code: ReasonCode::Success,
         properties: Properties::default(),
+    }
+}
+
+fn inbound_publish_success_ack(publish: &Publish) -> Option<Packet> {
+    let packet_identifier = publish.packet_identifier?;
+    match publish.qos {
+        1 => Some(Packet::Puback(success_ack(packet_identifier))),
+        2 => Some(Packet::Pubrec(success_ack(packet_identifier))),
+        _ => None,
     }
 }
 
@@ -438,6 +448,7 @@ impl Actor for SessionActor {
         let session_state_service = self.session_state_service.clone();
         let payload_store = self.payload_store.clone();
         let clean_session = self.clean_session;
+        let protocol_version = self.protocol_version;
 
         async move {
             if let Err(e) = session_lifecycle_tx.send(SessionLifecycleMessage::SessionStarted).await {
@@ -512,8 +523,14 @@ impl Actor for SessionActor {
                             };
 
                             if let Some(data) = data {
-                                 if let Ok(packet) = deserialize_stored_packet(&data) {
-                                      session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                                 if let Ok(mut packet) = deserialize_stored_packet(&data) {
+                                      if mqtt_message_expiry::prepare_packet_for_delivery(
+                                          &mut packet,
+                                          protocol_version,
+                                          mqtt_message_expiry::now_unix_secs(),
+                                      ) {
+                                          session_actor_addr.do_send(SessionActorMessage::OutboundMessage(packet));
+                                      }
                                  }
                             } else {
                                  warn!("Payload missing during recovery for key: {}", key);
@@ -597,6 +614,7 @@ struct OutboundPublishDeliveryContext {
     tenant_id: String,
     client_id: String,
     clean_session: bool,
+    protocol_version: ProtocolVersion,
     activity_state: ActivityState,
     session_state: Arc<RwLock<SessionState>>,
     session_state_service: SessionStateService,
@@ -608,6 +626,14 @@ async fn deliver_outbound_publish(
     mut publish_packet: Publish,
     context: OutboundPublishDeliveryContext,
 ) -> Result<(), SessionActorError> {
+    if !mqtt_message_expiry::prepare_publish_for_delivery(
+        &mut publish_packet,
+        context.protocol_version,
+        mqtt_message_expiry::now_unix_secs(),
+    ) {
+        return Ok(());
+    }
+
     let qos = publish_packet.qos;
 
     if matches!(context.activity_state, ActivityState::Active) {
@@ -789,6 +815,7 @@ async fn collect_inflight_retry_packets(
     payload_store: Option<Arc<dyn PayloadStore>>,
 ) -> Vec<Packet> {
     let mut retry_packets = Vec::new();
+    let now = mqtt_message_expiry::now_unix_secs();
 
     for (packet_id, key, state) in inflight_entries {
         match state {
@@ -810,6 +837,13 @@ async fn collect_inflight_retry_packets(
                 match store.get(&key).await {
                     Ok(Some(data)) => match deserialize_stored_packet(&data) {
                         Ok(mut packet) => {
+                            if mqtt_message_expiry::is_packet_expired(&packet, now) {
+                                debug!(
+                                    "skip expired inflight publish retry for packet {}",
+                                    packet_id
+                                );
+                                continue;
+                            }
                             packet.set_dup(1);
                             retry_packets.push(packet);
                         }
@@ -899,6 +933,10 @@ async fn do_handle_publish(
     publish_packet: Publish,
     context: HandlePublishContext,
 ) -> Result<HandlePublishResult, HandlePublishError> {
+    let mut result = HandlePublishResult {
+        inflight_packet: None,
+    };
+
     let authorize_request = AuthorizeRequest {
         tenant_id: context.client_info.tenant_id.clone(),
         client_id: context.client_info.client_identifier.clone(),
@@ -920,9 +958,7 @@ async fn do_handle_publish(
         .await;
 
     if publish_authorize_result.is_err() {
-        return Ok(HandlePublishResult {
-            inflight_packet: None,
-        });
+        return Ok(result);
     }
 
     let publish_authorization = publish_authorize_result
@@ -933,11 +969,27 @@ async fn do_handle_publish(
         })
         .authorized;
 
-    let mut result = HandlePublishResult {
-        inflight_packet: None,
-    };
-
     if publish_authorization {
+        if mqtt_message_expiry::is_publish_expired(
+            &publish_packet,
+            mqtt_message_expiry::now_unix_secs(),
+        ) {
+            if publish_packet.retain && publish_packet.payload.is_empty() {
+                if let Err(e) = context
+                    .topic_service
+                    .clean_retain_publish_packet(
+                        context.client_info.tenant_id.clone(),
+                        publish_packet.topic_name.clone(),
+                    )
+                    .await
+                {
+                    error!("clean expired retain tombstone publish packet error: {}", e);
+                }
+            }
+            result.inflight_packet = inbound_publish_success_ack(&publish_packet);
+            return Ok(result);
+        }
+
         let message_publish_request = MessagePublishRequest {
             message: Some(MqttMessage {
                 tenant_id: context.client_info.tenant_id.clone(),
@@ -1097,6 +1149,27 @@ async fn do_handle_subscribe(
     let mut return_code: Vec<ReasonCode> = vec![];
 
     let mut succeed_subscriptions: Vec<(String, QoS)> = vec![];
+
+    if subscribe_packet.protocol_version == ProtocolVersion::V5_0
+        && !subscribe_packet
+            .properties
+            .subscription_identifiers
+            .is_empty()
+    {
+        return HandleSubscribeResult {
+            retain_messages,
+            suback_packet: Suback {
+                protocol_version: subscribe_packet.protocol_version,
+                packet_identifier: subscribe_packet.packet_identifier,
+                reason_codes: vec![
+                    ReasonCode::SubscriptionIdentifiersNotSupported;
+                    subscriptions.len()
+                ],
+                properties: Properties::default(),
+            },
+            succeed_subscriptions,
+        };
+    }
 
     for i in 0..subscriptions.len() {
         let topic = subscribe_packet.topics[i].clone();
@@ -1470,11 +1543,15 @@ impl SessionActor {
 
     fn handle_publish(
         &mut self,
-        publish_packet: Publish,
+        mut publish_packet: Publish,
         ctx: &mut <SessionActor as Actor>::Context,
     ) {
         self.metric.increase_messages_received();
         self.session_metrics.increase_messages_received();
+        mqtt_message_expiry::stamp_publish_expiry(
+            &mut publish_packet,
+            mqtt_message_expiry::now_unix_secs(),
+        );
         let context = HandlePublishContext {
             client_info: self.get_plugin_client_info(),
             plugin_manager: self.plugin_manager.clone(),
@@ -1589,6 +1666,13 @@ impl SessionActor {
             for retained in res.retain_messages {
                 let packet = (*retained.packet).clone();
                 if let Packet::Publish(mut p) = packet {
+                    if !mqtt_message_expiry::prepare_publish_for_delivery(
+                        &mut p,
+                        retained.subscriber_protocol,
+                        mqtt_message_expiry::now_unix_secs(),
+                    ) {
+                        continue;
+                    }
                     let retained_msg_qos = p.qos;
                     let min_qos = cmp::min(retained_msg_qos, retained.requested_qos);
                     if min_qos == 0 && retained_msg_qos > 0 {
@@ -2102,6 +2186,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                         tenant_id: self.tenant_id.clone(),
                         client_id: self.client_id.clone(),
                         clean_session: self.clean_session,
+                        protocol_version: self.protocol_version,
                         activity_state: self.activity_state,
                         session_state: self.state.clone(),
                         session_state_service: self.session_state_service.clone(),
@@ -2248,15 +2333,23 @@ impl Handler<SessionActorMessage> for SessionActor {
                 let client_identifier = self.client_id.clone();
                 let topic_service = self.topic_service.clone();
                 let payload_store = self.payload_store.clone();
+                let protocol_version = self.protocol_version;
                 async move {
                     let mut session_state_guard = session_state.write().await;
                     for key in session_state_guard.pending_messages.drain(..) {
                         if let Some(store) = &payload_store {
                             match store.get(&key).await {
                                 Ok(Some(data)) => {
-                                    if let Ok(packet) = deserialize_stored_packet(&data) {
-                                        session_actor_addr
-                                            .do_send(SessionActorMessage::OutboundMessage(packet));
+                                    if let Ok(mut packet) = deserialize_stored_packet(&data) {
+                                        if mqtt_message_expiry::prepare_packet_for_delivery(
+                                            &mut packet,
+                                            protocol_version,
+                                            mqtt_message_expiry::now_unix_secs(),
+                                        ) {
+                                            session_actor_addr.do_send(
+                                                SessionActorMessage::OutboundMessage(packet),
+                                            );
+                                        }
                                     }
                                 }
                                 _ => {
@@ -2359,6 +2452,7 @@ impl Handler<AcceptRoutedPublish> for SessionActor {
             tenant_id: self.tenant_id.clone(),
             client_id: self.client_id.clone(),
             clean_session: self.clean_session,
+            protocol_version: self.protocol_version,
             activity_state: self.activity_state,
             session_state: self.state.clone(),
             session_state_service: self.session_state_service.clone(),

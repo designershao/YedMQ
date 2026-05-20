@@ -22,6 +22,7 @@ use yedmq_plugin_host::plugin_manager::{AuthenticateResult, PluginManager};
 use yedmq_plugin_host::protocol::plugin_protocol::AuthenticateRequest;
 
 use crate::metric::Metric;
+use crate::mqtt_message_expiry;
 use crate::mqtt_properties::properties_to_struct;
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_manager_actor::CreateSessionMessage;
@@ -258,6 +259,12 @@ pub enum ConnectionError {
     #[error("unsupported MQTT 5 feature {0}")]
     UnsupportedMqtt5Feature(&'static str),
 
+    #[error("MQTT 5 protocol error {reason_code:?}: {message}")]
+    Mqtt5ProtocolError {
+        reason_code: ReasonCode,
+        message: String,
+    },
+
     #[error("plugin error {0}")]
     PluginError(#[from] yedmq_plugin_host::plugin_manager::PluginManagerError),
 }
@@ -391,6 +398,26 @@ where
                                 read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("unsupported protocol version".to_string())));
                                 return;
                             }
+                            if let ConnectionError::UnsupportedMqtt5Feature(_) = &e {
+                                if read_addr
+                                    .send(UpdateProtocolVersion {
+                                        protocol_version: ProtocolVersion::V5_0,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    error!("failed to update protocol version before MQTT 5 error CONNACK");
+                                }
+                                if let Err(send_error) = read_addr
+                                    .send(ConnectionActorMessage::WritePacketToClient(
+                                        error_connack_packet(ProtocolVersion::V5_0, &e),
+                                    ))
+                                    .await {
+                                    error!("send unsupported MQTT 5 feature CONNACK error: {}", send_error);
+                                }
+                                read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("unsupported MQTT 5 feature".to_string())));
+                                return;
+                            }
                             error!("Failed to read first packet: {}", e);
                             read_addr.do_send(NetworkEvent::ReadError(
                                 std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
@@ -444,6 +471,17 @@ where
                                         match read_packet(&mut reader, &mut buffer, max_msg_size, Some(protocol_version), Some(metric_clone.clone())).await {
                                             Ok((packet, _)) => {
                                                 metric_clone.increase_packets_received();
+                                                if matches!(packet, Packet::Auth(_)) {
+                                                    if let Err(e) = read_addr
+                                                        .send(ConnectionActorMessage::WritePacketToClient(
+                                                            server_disconnect_packet(ReasonCode::BadAuthenticationMethod),
+                                                        ))
+                                                        .await {
+                                                        error!("send MQTT 5 AUTH rejection DISCONNECT error: {}", e);
+                                                    }
+                                                    read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("MQTT 5 enhanced authentication is not supported".to_string())));
+                                                    break;
+                                                }
                                                 if matches!(packet, Packet::Disconnect(_)) && read_addr
                                                     .send(NotifyUpdateDisconnectedNormally {
                                                         disconnected_normally: true,
@@ -495,6 +533,20 @@ where
                                             }
                                             Err(e) => {
                                                 error!("Read packet error: {}", e);
+                                                if let ConnectionError::Mqtt5ProtocolError {
+                                                    reason_code,
+                                                    ..
+                                                } = &e
+                                                {
+                                                    if let Err(send_error) = read_addr
+                                                        .send(ConnectionActorMessage::WritePacketToClient(
+                                                            server_disconnect_packet(*reason_code),
+                                                        ))
+                                                        .await
+                                                    {
+                                                        error!("send MQTT 5 protocol-error DISCONNECT error: {}", send_error);
+                                                    }
+                                                }
                                                 read_addr.do_send(NetworkEvent::ReadError(
                                                     std::io::Error::new(
                                                         std::io::ErrorKind::InvalidData,
@@ -708,11 +760,17 @@ fn try_parse_v5_packet(
                 "MQTT 5 remaining length {remaining_length} exceeds max message size {max_message_size}"
             )))
         }
+        Err(yedmq_mqtt::v5::common::Mqtt5ParseError::MalformedPacket(
+            "enhanced authentication is not supported",
+        )) => Err(ConnectionError::UnsupportedMqtt5Feature(
+            "enhanced authentication",
+        )),
         Err(err) => {
             error!("read MQTT v5 packet error: {}", err);
-            Err(ConnectionError::PacketParseError(format!(
-                "Invalid MQTT v5 packet: {err}"
-            )))
+            Err(ConnectionError::Mqtt5ProtocolError {
+                reason_code: ReasonCode::ProtocolError,
+                message: format!("Invalid MQTT v5 packet: {err}"),
+            })
         }
     }
 }
@@ -846,7 +904,10 @@ fn error_connack_packet(protocol_version: ProtocolVersion, error: &ConnectionErr
                 }
                 ConnectionError::UnsupportedMqtt5Feature(feature) => {
                     warn!("unsupported MQTT 5 feature during connect: {}", feature);
-                    ReasonCode::ImplementationSpecificError
+                    match *feature {
+                        "enhanced authentication" => ReasonCode::BadAuthenticationMethod,
+                        _ => ReasonCode::ImplementationSpecificError,
+                    }
                 }
                 ConnectionError::PluginError(e) => {
                     error!("handle initial connect error: {}", e);
@@ -871,6 +932,15 @@ fn error_connack_packet(protocol_version: ProtocolVersion, error: &ConnectionErr
             })
         }
     }
+}
+
+fn server_disconnect_packet(reason_code: ReasonCode) -> Packet {
+    Packet::Disconnect(yedmq_mqtt::packet::Disconnect {
+        protocol_version: ProtocolVersion::V5_0,
+        reason_code,
+        session_expiry_interval: None,
+        properties: Properties::default(),
+    })
 }
 
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
@@ -1101,6 +1171,14 @@ where
             ConnectionActorMessage::WritePacketToClient(mut packet) => {
                 if self.network_sender.is_none() {
                     return Err(ConnectionError::ConnectionClosed);
+                }
+
+                if !mqtt_message_expiry::prepare_packet_for_delivery(
+                    &mut packet,
+                    self.protocol_version,
+                    mqtt_message_expiry::now_unix_secs(),
+                ) {
+                    return Ok(());
                 }
 
                 match self.protocol_version {

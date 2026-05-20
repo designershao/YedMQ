@@ -294,6 +294,106 @@ pub async fn test_tcp_listener_rejects_unsupported_mqtt_protocol_level() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_connect_with_enhanced_auth_is_rejected() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut stream = TcpStream::connect(broker_addr).await.unwrap();
+    let auth_method = common::mqtt5::authentication_method_property("unsupported");
+    stream
+        .write_all(&common::mqtt5::connect_packet_with_properties(
+            "mqtt5-enhanced-auth-connect",
+            true,
+            5,
+            &auth_method,
+        ))
+        .await
+        .unwrap();
+
+    let connack = read_mqtt5_packet(&mut stream).await;
+    let connack = common::mqtt5::parse_connack(&connack).expect("parse MQTT 5 CONNACK");
+    assert_eq!(connack.reason_code, 0x8c);
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_auth_packet_disconnects() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut client = connect_mqtt5_client(broker_addr, "mqtt5-auth-packet").await;
+    client
+        .write_all(&common::mqtt5::auth_packet(0x18, &[]))
+        .await
+        .unwrap();
+
+    let disconnect = read_mqtt5_packet(&mut client).await;
+    let disconnect = common::mqtt5::parse_disconnect(&disconnect).expect("parse MQTT 5 DISCONNECT");
+    assert_eq!(disconnect.reason_code, 0x8c);
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_topic_alias_disconnects() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut client = connect_mqtt5_client(broker_addr, "mqtt5-topic-alias").await;
+    let topic_alias = common::mqtt5::topic_alias_property(1);
+    client
+        .write_all(&common::mqtt5::publish_packet_with_properties(
+            "test/mqtt5/topic-alias",
+            b"alias",
+            0,
+            false,
+            None,
+            &topic_alias,
+        ))
+        .await
+        .unwrap();
+
+    let disconnect = read_mqtt5_packet(&mut client).await;
+    let disconnect = common::mqtt5::parse_disconnect(&disconnect).expect("parse MQTT 5 DISCONNECT");
+    assert_eq!(disconnect.reason_code, 0x82);
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_subscription_identifier_is_rejected() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = format!(
+        "test/mqtt5/subscription-identifier/{}",
+        uuid::Uuid::new_v4()
+    );
+    let mut client = connect_mqtt5_client(broker_addr, "mqtt5-sub-id").await;
+    let subscription_identifier = common::mqtt5::subscription_identifier_property(1);
+    client
+        .write_all(
+            &common::mqtt5::subscribe_packet_with_properties_and_options(
+                601,
+                &topic,
+                &subscription_identifier,
+                1,
+            ),
+        )
+        .await
+        .unwrap();
+
+    let suback = read_mqtt5_packet(&mut client).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 601);
+    assert_eq!(suback.reason_codes, vec![0xa1]);
+
+    client
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos0() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -781,6 +881,180 @@ pub async fn test_tcp_listener_mqtt5_nonzero_session_expiry_recovers_offline_mes
         ))
         .await
         .unwrap();
+    reconnect
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_message_expiry_adjusts_live_publish() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/mqtt5/message-expiry/live/{suffix}");
+    let payload = b"live-message-expiry";
+    let expiry = common::mqtt5::message_expiry_interval_property(60);
+
+    let mut subscriber = connect_mqtt5_client(broker_addr, "mqtt5-expiry-live-sub").await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(521, &topic, 0))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x00]);
+
+    let mut publisher = connect_mqtt5_client(broker_addr, "mqtt5-expiry-live-pub").await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet_with_properties(
+            &topic, payload, 0, false, None, &expiry,
+        ))
+        .await
+        .unwrap();
+
+    let publish = read_mqtt5_packet(&mut subscriber).await;
+    let publish = common::mqtt5::parse_publish(&publish).expect("parse MQTT 5 PUBLISH");
+    assert_eq!(publish.topic, topic);
+    assert_eq!(publish.payload, payload);
+    let remaining = common::mqtt5::find_message_expiry_interval(&publish.properties)
+        .expect("parse publish properties")
+        .expect("message expiry interval should be forwarded");
+    assert!((1..=60).contains(&remaining));
+
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_expired_retained_message_is_not_delivered() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/mqtt5/message-expiry/retain/{suffix}");
+    let payload = b"expired-retained-message";
+    let expiry = common::mqtt5::message_expiry_interval_property(1);
+
+    let mut publisher = connect_mqtt5_client(broker_addr, "mqtt5-expired-retain-pub").await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet_with_properties(
+            &topic,
+            payload,
+            1,
+            true,
+            Some(531),
+            &expiry,
+        ))
+        .await
+        .unwrap();
+    let puback = read_mqtt5_packet(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 531);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut subscriber = connect_mqtt5_client(broker_addr, "mqtt5-expired-retain-sub").await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(532, &topic, 0))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 532);
+
+    let no_publish = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut subscriber),
+    )
+    .await;
+    assert!(
+        no_publish.is_err(),
+        "expired retained MQTT 5 publish was delivered"
+    );
+
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_expired_offline_message_is_not_delivered() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let client_id = format!("mqtt5-expired-offline-{suffix}");
+    let publisher_id = format!("mqtt5-expired-offline-pub-{suffix}");
+    let topic = format!("test/mqtt5/message-expiry/offline/{suffix}");
+    let payload = b"expired-offline-message";
+    let session_expiry = common::mqtt5::session_expiry_interval_property(60);
+    let message_expiry = common::mqtt5::message_expiry_interval_property(1);
+
+    let (mut subscriber, first_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, true, &session_expiry).await;
+    assert!(!first_connack.session_present);
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(541, &topic, 1))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.reason_codes, vec![0x01]);
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    let mut publisher = connect_mqtt5_client(broker_addr, &publisher_id).await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet_with_properties(
+            &topic,
+            payload,
+            1,
+            false,
+            Some(542),
+            &message_expiry,
+        ))
+        .await
+        .unwrap();
+    let puback = read_mqtt5_packet(&mut publisher).await;
+    let puback = common::mqtt5::parse_puback(&puback).expect("parse MQTT 5 PUBACK");
+    assert_eq!(puback.packet_id, 542);
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let (mut reconnect, reconnect_connack) =
+        connect_mqtt5_client_with_properties(broker_addr, &client_id, false, &session_expiry).await;
+    assert!(reconnect_connack.session_present);
+    let no_publish = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut reconnect),
+    )
+    .await;
+    assert!(
+        no_publish.is_err(),
+        "expired offline MQTT 5 publish was delivered"
+    );
     reconnect
         .write_all(&common::mqtt5::disconnect_packet())
         .await
