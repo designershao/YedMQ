@@ -44,8 +44,10 @@ use crate::{
 };
 
 use super::{
-    session_actor_map_storage::SessionVersion, session_manager_actor::SessionLifecycleMessage,
-    session_state_storage::SessionState, WillMessage,
+    session_actor_map_storage::SessionVersion,
+    session_manager_actor::SessionLifecycleMessage,
+    session_state_storage::{SessionState, SubscriptionState},
+    WillMessage,
 };
 
 use crate::connection::{ConnectionActorMessage, DisconnectReason};
@@ -239,10 +241,48 @@ fn granted_qos_reason(qos: u8) -> ReasonCode {
     }
 }
 
+fn subscribe_precheck_reason(
+    protocol_version: ProtocolVersion,
+    topic_filter: &str,
+) -> Option<ReasonCode> {
+    if protocol_version == ProtocolVersion::V5_0 && topic_filter.starts_with("$share/") {
+        Some(ReasonCode::SharedSubscriptionsNotSupported)
+    } else {
+        None
+    }
+}
+
+fn authorization_failure_reason(authorize_result: &AuthorizeResult) -> Option<ReasonCode> {
+    if authorize_result.authorized {
+        None
+    } else {
+        Some(ReasonCode::NotAuthorized)
+    }
+}
+
 fn publish_topic_hash(topic: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(topic, &mut hasher);
     std::hash::Hasher::finish(&hasher)
+}
+
+fn build_will_publish(will_message: &WillMessage, now: u64) -> Publish {
+    let mut properties = will_message.properties.clone();
+    properties.will_delay_interval = None;
+
+    let mut publish_packet = Publish {
+        protocol_version: will_message.protocol_version,
+        topic_name: will_message.will_topic.clone(),
+        payload: Bytes::copy_from_slice(will_message.will_message.as_slice()),
+        qos: will_message.will_qos,
+        retain: will_message.will_retain,
+        dup: false,
+        packet_identifier: None,
+        properties,
+        expires_at_unix_secs: None,
+    };
+    mqtt_message_expiry::stamp_publish_expiry(&mut publish_packet, now);
+    publish_packet
 }
 
 pub struct SessionInfo {
@@ -285,11 +325,21 @@ where
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum QoS {
     AtMostOnce,
     AtLeastOnce,
     ExactlyOnce,
+}
+
+impl QoS {
+    pub fn as_u8(&self) -> u8 {
+        match self {
+            QoS::AtMostOnce => 0,
+            QoS::AtLeastOnce => 1,
+            QoS::ExactlyOnce => 2,
+        }
+    }
 }
 
 impl From<u8> for QoS {
@@ -456,10 +506,10 @@ impl Actor for SessionActor {
                 self_addr.do_send(SessionActorMessage::ForceStop);
                 return;
             }
-            let subscriptions: Vec<(String, QoS)> = {
+            let subscriptions: Vec<(String, SubscriptionState)> = {
                 let session_state_guard = state.read().await;
                 session_state_guard.subscriptions.iter()
-                    .map(|(topic, qos)| (topic.clone(), qos.clone()))
+                    .map(|(topic, subscription)| (topic.clone(), subscription.clone()))
                     .collect()
             };
             // Only recover subscriptions if NOT clean session
@@ -475,19 +525,19 @@ impl Actor for SessionActor {
                     .await;
                 //
 
-                for (topic, qos) in subscriptions {
-                    info!("recover subscribe topic: {}, qos: {:?}", topic, qos);
-                    let qos_v = match qos {
-                        QoS::AtMostOnce => 0,
-                        QoS::AtLeastOnce => 1,
-                        QoS::ExactlyOnce => 2,
-                    };
+                for (topic, subscription) in subscriptions {
+                    info!(
+                        "recover subscribe topic: {}, subscription: {:?}",
+                        topic, subscription
+                    );
                     if let Err(e) = topic_service
-                        .subscribe(
+                        .subscribe_with_options(
                             tenant_id.clone(),
                             client_id.clone(),
                             topic.clone(),
-                            qos_v,
+                            subscription.qos.as_u8(),
+                            subscription.no_local,
+                            subscription.retain_as_published,
                         )
                         .await
                     {
@@ -567,7 +617,7 @@ struct HandleSubscribeResult {
 
     suback_packet: Suback,
 
-    succeed_subscriptions: Vec<(String, QoS)>,
+    succeed_subscriptions: Vec<(String, SubscriptionState)>,
 }
 
 struct RetainedPublishDelivery {
@@ -1148,7 +1198,7 @@ async fn do_handle_subscribe(
 
     let mut return_code: Vec<ReasonCode> = vec![];
 
-    let mut succeed_subscriptions: Vec<(String, QoS)> = vec![];
+    let mut succeed_subscriptions: Vec<(String, SubscriptionState)> = vec![];
 
     if subscribe_packet.protocol_version == ProtocolVersion::V5_0
         && !subscribe_packet
@@ -1173,6 +1223,13 @@ async fn do_handle_subscribe(
 
     for i in 0..subscriptions.len() {
         let topic = subscribe_packet.topics[i].clone();
+        if let Some(reason) =
+            subscribe_precheck_reason(subscribe_packet.protocol_version, &topic.topic_filter)
+        {
+            return_code.push(reason);
+            continue;
+        }
+
         let authorize_request = AuthorizeRequest {
             tenant_id: tenant_id.clone(),
             client_id: client_id.clone(),
@@ -1209,7 +1266,14 @@ async fn do_handle_subscribe(
                 .await
             {
                 Ok(()) => {
-                    succeed_subscriptions.push((topic.topic_filter.clone(), topic.qos.into()));
+                    succeed_subscriptions.push((
+                        topic.topic_filter.clone(),
+                        SubscriptionState::new(
+                            topic.qos.into(),
+                            topic.no_local,
+                            topic.retain_as_published,
+                        ),
+                    ));
                     return_code.push(granted_qos_reason(topic.qos));
 
                     let send_retained = match topic.retain_handling {
@@ -1255,6 +1319,8 @@ async fn do_handle_subscribe(
                     return_code.push(ReasonCode::UnspecifiedError);
                 }
             }
+        } else if let Some(reason) = authorization_failure_reason(&topic_authorizate_result) {
+            return_code.push(reason);
         }
     }
 
@@ -1701,14 +1767,16 @@ impl SessionActor {
             }
 
             if !clean_session {
-                for (topic, qos) in &res.succeed_subscriptions {
-                    let qos_v = match qos {
-                        QoS::AtMostOnce => 0,
-                        QoS::AtLeastOnce => 1,
-                        QoS::ExactlyOnce => 2,
-                    };
+                for (topic, subscription) in &res.succeed_subscriptions {
                     match session_state_service
-                        .subscribe_topic(tenant_id.clone(), client_id.clone(), topic.clone(), qos_v)
+                        .subscribe_topic_with_options(
+                            tenant_id.clone(),
+                            client_id.clone(),
+                            topic.clone(),
+                            subscription.qos.as_u8(),
+                            subscription.no_local,
+                            subscription.retain_as_published,
+                        )
                         .await
                     {
                         Ok(()) => {
@@ -1716,7 +1784,7 @@ impl SessionActor {
                                 .write()
                                 .await
                                 .subscriptions
-                                .insert(topic.clone(), qos.clone());
+                                .insert(topic.clone(), subscription.clone());
                         }
                         Err(e) => {
                             warn!(
@@ -1728,12 +1796,12 @@ impl SessionActor {
                     }
                 }
             } else {
-                for (topic, qos) in &res.succeed_subscriptions {
+                for (topic, subscription) in &res.succeed_subscriptions {
                     session_state
                         .write()
                         .await
                         .subscriptions
-                        .insert(topic.clone(), qos.clone());
+                        .insert(topic.clone(), subscription.clone());
                 }
             }
         }
@@ -2109,17 +2177,8 @@ impl SessionActor {
         let router_actors = self.router_actors.clone();
         async move {
             if let Some(will_message) = will_message {
-                let publish_packet = Publish {
-                    protocol_version: ProtocolVersion::V3_1_1,
-                    topic_name: will_message.will_topic.clone(),
-                    payload: Bytes::copy_from_slice(will_message.will_message.as_slice()),
-                    qos: will_message.will_qos,
-                    retain: will_message.will_retain,
-                    dup: false,
-                    packet_identifier: None,
-                    properties: Properties::default(),
-                    expires_at_unix_secs: None,
-                };
+                let publish_packet =
+                    build_will_publish(&will_message, mqtt_message_expiry::now_unix_secs());
 
                 let hash = publish_topic_hash(&will_message.will_topic);
                 let router_actor = &router_actors[hash as usize % router_actors.len()];
@@ -2363,18 +2422,15 @@ impl Handler<SessionActorMessage> for SessionActor {
                         "start update topic subscribe for session {}",
                         client_identifier
                     );
-                    for (topic, qos) in session_state_guard.subscriptions.iter() {
-                        let qos_v = match qos {
-                            QoS::AtLeastOnce => 1,
-                            QoS::ExactlyOnce => 2,
-                            QoS::AtMostOnce => 0,
-                        };
+                    for (topic, subscription) in session_state_guard.subscriptions.iter() {
                         if let Err(e) = topic_service
-                            .subscribe(
+                            .subscribe_with_options(
                                 tenant_id.clone(),
                                 client_identifier.clone(),
                                 topic.clone(),
-                                qos_v,
+                                subscription.qos.as_u8(),
+                                subscription.no_local,
+                                subscription.retain_as_published,
                             )
                             .await
                         {
@@ -2441,6 +2497,78 @@ impl Handler<GetSessionInfo> for SessionActor {
         };
 
         Box::pin(future)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mqtt5_shared_subscription_filter_is_rejected() {
+        assert_eq!(
+            subscribe_precheck_reason(ProtocolVersion::V5_0, "$share/group/sensors/+"),
+            Some(ReasonCode::SharedSubscriptionsNotSupported)
+        );
+    }
+
+    #[test]
+    fn mqtt3_share_prefixed_filter_is_left_to_existing_topic_validation() {
+        assert_eq!(
+            subscribe_precheck_reason(ProtocolVersion::V3_1_1, "$share/group/sensors/+"),
+            None
+        );
+    }
+
+    #[test]
+    fn unauthorized_subscribe_maps_to_suback_reason() {
+        let authorize_result = AuthorizeResult {
+            authorized: false,
+            reason: Some("denied".to_string()),
+            modified_context: HashMap::new(),
+        };
+
+        assert_eq!(
+            authorization_failure_reason(&authorize_result),
+            Some(ReasonCode::NotAuthorized)
+        );
+    }
+
+    #[test]
+    fn will_publish_preserves_mqtt5_publish_properties() {
+        let will_message = WillMessage {
+            will_topic: "will/topic".to_string(),
+            will_message: b"offline".to_vec(),
+            will_qos: 1,
+            will_retain: true,
+            protocol_version: ProtocolVersion::V5_0,
+            properties: Properties {
+                content_type: Some("text/plain".to_string()),
+                message_expiry_interval: Some(30),
+                will_delay_interval: Some(0),
+                user_properties: vec![("source".to_string(), "will".to_string())],
+                ..Properties::default()
+            },
+        };
+
+        let publish = build_will_publish(&will_message, 100);
+
+        assert_eq!(publish.protocol_version, ProtocolVersion::V5_0);
+        assert_eq!(publish.topic_name, "will/topic");
+        assert_eq!(publish.payload, Bytes::from_static(b"offline"));
+        assert_eq!(publish.qos, 1);
+        assert!(publish.retain);
+        assert_eq!(
+            publish.properties.content_type.as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(publish.properties.message_expiry_interval, Some(30));
+        assert_eq!(
+            publish.properties.user_properties,
+            vec![("source".to_string(), "will".to_string())]
+        );
+        assert_eq!(publish.properties.will_delay_interval, None);
+        assert_eq!(publish.expires_at_unix_secs, Some(130));
     }
 }
 

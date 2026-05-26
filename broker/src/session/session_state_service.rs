@@ -143,12 +143,27 @@ impl SessionStateService {
         topic: String,
         qos: u8,
     ) -> Result<(), SessionStateRaftError> {
+        self.subscribe_topic_with_options(tenant_id, client_id, topic, qos, false, false)
+            .await
+    }
+
+    pub async fn subscribe_topic_with_options(
+        &self,
+        tenant_id: String,
+        client_id: String,
+        topic: String,
+        qos: u8,
+        no_local: bool,
+        retain_as_published: bool,
+    ) -> Result<(), SessionStateRaftError> {
         self.session_state_raft_actor
             .send(SubscribeTopic {
                 tenant_id,
                 client_id,
                 topic,
                 qos,
+                no_local,
+                retain_as_published,
             })
             .await
             .map_err(|e| SessionStateRaftError::ServiceUnavailable(e.to_string()))?

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use yedmq_mqtt::packet::ProtocolVersion;
@@ -18,13 +18,67 @@ pub enum SessionStateStorageError {
     SessionStateNotExisted { client_id: String },
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct SubscriptionState {
+    pub qos: QoS,
+
+    #[serde(default)]
+    pub no_local: bool,
+
+    #[serde(default)]
+    pub retain_as_published: bool,
+}
+
+impl SubscriptionState {
+    pub fn new(qos: QoS, no_local: bool, retain_as_published: bool) -> Self {
+        Self {
+            qos,
+            no_local,
+            retain_as_published,
+        }
+    }
+}
+
+impl From<QoS> for SubscriptionState {
+    fn from(qos: QoS) -> Self {
+        Self::new(qos, false, false)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SubscriptionStateCompat {
+    Current(SubscriptionState),
+    Legacy(QoS),
+}
+
+fn deserialize_subscriptions<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, SubscriptionState>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let subscriptions = HashMap::<String, SubscriptionStateCompat>::deserialize(deserializer)?;
+    Ok(subscriptions
+        .into_iter()
+        .map(|(topic, subscription)| {
+            let subscription = match subscription {
+                SubscriptionStateCompat::Current(subscription) => subscription,
+                SubscriptionStateCompat::Legacy(qos) => SubscriptionState::from(qos),
+            };
+            (topic, subscription)
+        })
+        .collect())
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SessionState {
     pub pending_messages: Vec<String>,
 
     pub inflight: Inflight,
 
-    pub subscriptions: HashMap<String, QoS>,
+    #[serde(default, deserialize_with = "deserialize_subscriptions")]
+    pub subscriptions: HashMap<String, SubscriptionState>,
 
     pub disconnected_at: Option<u64>,
 
@@ -426,17 +480,29 @@ impl SessionStateStorage {
         topic: &str,
         qos: QoS,
     ) {
+        self.subscribe_topic_with_options(tenant_id, client_id, topic, qos, false, false)
+            .await;
+    }
+
+    pub async fn subscribe_topic_with_options(
+        &mut self,
+        tenant_id: &str,
+        client_id: &str,
+        topic: &str,
+        qos: QoS,
+        no_local: bool,
+        retain_as_published: bool,
+    ) {
         if !self.inner.contains_key(tenant_id) {
             self.inner.insert(tenant_id.to_string(), HashMap::new());
         }
 
         if let Some(tenant_sessions) = self.inner.get(tenant_id) {
             if let Some(session_arc) = tenant_sessions.get(client_id) {
-                session_arc
-                    .write()
-                    .await
-                    .subscriptions
-                    .insert(topic.to_string(), qos);
+                session_arc.write().await.subscriptions.insert(
+                    topic.to_string(),
+                    SubscriptionState::new(qos, no_local, retain_as_published),
+                );
             }
         }
     }
@@ -602,5 +668,82 @@ mod tests {
             .expect("session state");
         assert_eq!(state.read().await.expires_at, None);
         assert!(storage.scan_expired_sessions(100_000, 1).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscription_options_are_persisted_in_session_state() {
+        let mut storage = SessionStateStorage::new();
+        storage
+            .create_session_state(
+                "tenant",
+                "mqtt5",
+                Duration::from_secs(1),
+                Some(ProtocolVersion::V5_0),
+                Some(u32::MAX),
+            )
+            .await;
+
+        storage
+            .subscribe_topic_with_options(
+                "tenant",
+                "mqtt5",
+                "sensors/+",
+                QoS::AtLeastOnce,
+                true,
+                true,
+            )
+            .await;
+
+        let state = storage
+            .get_session_state("tenant", "mqtt5")
+            .await
+            .expect("session state");
+        let guard = state.read().await;
+        let subscription = guard
+            .subscriptions
+            .get("sensors/+")
+            .expect("subscription should be stored");
+
+        assert_eq!(subscription.qos, QoS::AtLeastOnce);
+        assert!(subscription.no_local);
+        assert!(subscription.retain_as_published);
+    }
+
+    #[test]
+    fn legacy_subscription_qos_snapshots_are_still_readable() {
+        let snapshot = br#"{
+            "inner": {
+                "tenant": {
+                    "client": {
+                        "pending_messages": [],
+                        "inflight": {
+                            "inner": {},
+                            "expired_duration": { "secs": 1, "nanos": 0 }
+                        },
+                        "subscriptions": {
+                            "legacy/topic": "AtLeastOnce"
+                        },
+                        "disconnected_at": null,
+                        "protocol_version": "V5_0",
+                        "session_expiry_interval": 4294967295,
+                        "expires_at": null
+                    }
+                }
+            },
+            "ref_counts": {}
+        }"#;
+
+        let storage = SessionStateStorage::from_snapshot(snapshot.to_vec())
+            .expect("legacy snapshot should deserialize");
+        let tenant = storage.inner.get("tenant").expect("tenant");
+        let session = tenant.get("client").expect("session").blocking_read();
+        let subscription = session
+            .subscriptions
+            .get("legacy/topic")
+            .expect("subscription");
+
+        assert_eq!(subscription.qos, QoS::AtLeastOnce);
+        assert!(!subscription.no_local);
+        assert!(!subscription.retain_as_published);
     }
 }

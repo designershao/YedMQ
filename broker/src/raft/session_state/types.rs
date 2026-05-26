@@ -62,6 +62,10 @@ pub enum SessionStateRequest {
         client_id: String,
         topic: String,
         qos: u8,
+        #[serde(default)]
+        no_local: bool,
+        #[serde(default)]
+        retain_as_published: bool,
     },
     UnsubscribeTopic {
         tenant_id: String,

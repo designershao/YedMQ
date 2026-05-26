@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use yedmq_mqtt::packet::{
-    Connack as NeutralConnack, Connect, Packet, Properties, ProtocolVersion, ReasonCode,
+    Connack as NeutralConnack, Connect, Packet, Properties, ProtocolVersion, ReasonCode, Will,
 };
 use yedmq_mqtt::v3::connack::{ConnAckPacketBuilder, ConnackReturnCode};
 use yedmq_mqtt::MqttPacketV3;
@@ -943,6 +943,31 @@ fn server_disconnect_packet(reason_code: ReasonCode) -> Packet {
     })
 }
 
+fn will_message_from_connect_will(
+    protocol_version: ProtocolVersion,
+    will: &Will,
+) -> Result<WillMessage, ConnectionError> {
+    if protocol_version == ProtocolVersion::V5_0
+        && will.properties.will_delay_interval.unwrap_or(0) > 0
+    {
+        return Err(ConnectionError::UnsupportedMqtt5Feature(
+            "will delay interval",
+        ));
+    }
+
+    let mut properties = will.properties.clone();
+    properties.will_delay_interval = None;
+
+    Ok(WillMessage {
+        will_topic: will.topic.clone(),
+        will_message: will.payload.to_vec(),
+        will_qos: will.qos,
+        will_retain: will.retain,
+        protocol_version,
+        properties,
+    })
+}
+
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     packet: Connect,
     plugin_service: Arc<PluginManager>,
@@ -952,6 +977,11 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     metric: Arc<Metric>,
 ) -> Result<HandleInitialConnectResult, ConnectionError> {
     let session_options = session_options_for_session_manager(&packet);
+    let will_message = packet
+        .will
+        .as_ref()
+        .map(|will| will_message_from_connect_will(packet.protocol_version, will))
+        .transpose()?;
 
     let authenticate_request = AuthenticateRequest {
         client_id: packet.client_id.clone(),
@@ -974,12 +1004,6 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                 tenant_id,
                 ..
             } => {
-                let will_message = packet.will.as_ref().map(|will| WillMessage {
-                    will_topic: will.topic.clone(),
-                    will_message: will.payload.to_vec(),
-                    will_qos: will.qos,
-                    will_retain: will.retain,
-                });
                 let tenant_id = tenant_id.unwrap_or("public".to_string());
                 let recipient = self_addr.clone().recipient();
                 let session_manager_actor_addr =
@@ -1266,5 +1290,58 @@ where
                 self.handle_disconnection(ctx, "Client closed connection".to_string());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_zero_will_delay_is_rejected() {
+        let will = Will {
+            topic: "will/topic".to_string(),
+            payload: Bytes::from_static(b"offline"),
+            qos: 1,
+            retain: false,
+            properties: Properties {
+                will_delay_interval: Some(1),
+                ..Properties::default()
+            },
+        };
+
+        let result = will_message_from_connect_will(ProtocolVersion::V5_0, &will);
+
+        assert!(matches!(
+            result,
+            Err(ConnectionError::UnsupportedMqtt5Feature(
+                "will delay interval"
+            ))
+        ));
+    }
+
+    #[test]
+    fn zero_will_delay_is_removed_from_stored_will_properties() {
+        let will = Will {
+            topic: "will/topic".to_string(),
+            payload: Bytes::from_static(b"offline"),
+            qos: 1,
+            retain: false,
+            properties: Properties {
+                will_delay_interval: Some(0),
+                content_type: Some("text/plain".to_string()),
+                ..Properties::default()
+            },
+        };
+
+        let will_message =
+            will_message_from_connect_will(ProtocolVersion::V5_0, &will).expect("will message");
+
+        assert_eq!(will_message.protocol_version, ProtocolVersion::V5_0);
+        assert_eq!(
+            will_message.properties.content_type.as_deref(),
+            Some("text/plain")
+        );
+        assert_eq!(will_message.properties.will_delay_interval, None);
     }
 }

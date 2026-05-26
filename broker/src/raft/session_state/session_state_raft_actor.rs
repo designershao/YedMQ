@@ -1007,6 +1007,8 @@ pub struct SubscribeTopic {
     pub client_id: String,
     pub topic: String,
     pub qos: u8,
+    pub no_local: bool,
+    pub retain_as_published: bool,
 }
 
 impl Handler<SubscribeTopic> for SessionStateRaftActor {
@@ -1033,6 +1035,8 @@ impl Handler<SubscribeTopic> for SessionStateRaftActor {
                                 client_id: msg.client_id,
                                 topic: msg.topic,
                                 qos: msg.qos,
+                                no_local: msg.no_local,
+                                retain_as_published: msg.retain_as_published,
                             };
                             Self::handle_raft_write(raft_instance, command, payload_store).await?;
                             Ok(())

@@ -472,13 +472,22 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         client_id,
                         topic,
                         qos,
+                        no_local,
+                        retain_as_published,
                     } => {
                         self.data
                             .state
                             .session_state_storage
                             .write()
                             .await
-                            .subscribe_topic(&tenant_id, &client_id, &topic, qos.into())
+                            .subscribe_topic_with_options(
+                                &tenant_id,
+                                &client_id,
+                                &topic,
+                                qos.into(),
+                                no_local,
+                                retain_as_published,
+                            )
                             .await;
                         replies.push(SessionStateResponse::None);
                     }
