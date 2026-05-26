@@ -854,7 +854,7 @@ fn success_connack_packet(
                 maximum_packet_size: Some(max_message_size),
                 topic_alias_maximum: Some(0),
                 subscription_identifier_available: Some(false),
-                shared_subscription_available: Some(false),
+                shared_subscription_available: Some(true),
                 ..Properties::default()
             },
         }),

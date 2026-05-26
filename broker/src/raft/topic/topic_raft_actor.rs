@@ -540,6 +540,8 @@ pub struct SubscriptionInfo {
     pub qos: u8,
     pub no_local: bool,
     pub retain_as_published: bool,
+    pub shared_group: Option<String>,
+    pub topic_filter: String,
 }
 
 pub struct GetSubscriptionsResponse {
@@ -599,6 +601,8 @@ impl Handler<GetSubscriptions> for TopicRaftActor {
                                                 qos: x.qos,
                                                 no_local: x.no_local,
                                                 retain_as_published: x.retain_as_published,
+                                                shared_group: x.shared_group.clone(),
+                                                topic_filter: x.topic_filter.clone(),
                                             })
                                             .collect();
                                         GetSubscriptionsResponse {
@@ -676,6 +680,8 @@ impl Handler<GetSubscriptionsEnsureLinearizable> for TopicRaftActor {
                                                         qos: x.qos,
                                                         no_local: x.no_local,
                                                         retain_as_published: x.retain_as_published,
+                                                        shared_group: x.shared_group.clone(),
+                                                        topic_filter: x.topic_filter.clone(),
                                                     })
                                                     .collect();
                                                 GetSubscriptionsResponse {

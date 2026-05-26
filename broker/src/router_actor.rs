@@ -14,7 +14,7 @@ use crate::raft::payload::PayloadStore;
 use crate::route_store::JsonRocksDBStore;
 use crate::session::session_actor::{AcceptRoutedPublish, SessionActorMessage};
 use crate::session::session_actor_map_service::SessionActorMapService;
-use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionActorMapStorage};
+use crate::session::session_actor_map_storage::SessionActorMapStorage;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::settings::Settings;
 use crate::stored_packet::{
@@ -118,6 +118,13 @@ struct RouteInboxItem {
     completed_at: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SharedSubscriptionRouteKey {
+    tenant_id: String,
+    share_name: String,
+    topic_filter: String,
+}
+
 pub struct RouterActor {
     pub current_node_id: NodeId,
     pub settings: Arc<Settings>,
@@ -132,6 +139,9 @@ pub struct RouterActor {
     pub route_inbox_store: Arc<JsonRocksDBStore>,
     retry_config: RouteRetryConfig,
     pub metric: Arc<Metric>,
+    shared_subscription_cursors: std::sync::Arc<
+        parking_lot::Mutex<std::collections::HashMap<SharedSubscriptionRouteKey, usize>>,
+    >,
 }
 
 pub struct RouterActorConfig {
@@ -159,6 +169,9 @@ struct RouteContext {
     route_outbox_store: Arc<JsonRocksDBStore>,
     retry_config: RouteRetryConfig,
     metric: Arc<Metric>,
+    shared_subscription_cursors: std::sync::Arc<
+        parking_lot::Mutex<std::collections::HashMap<SharedSubscriptionRouteKey, usize>>,
+    >,
 }
 
 impl Actor for RouterActor {
@@ -206,6 +219,9 @@ impl RouterActor {
             route_inbox_store: config.route_inbox_store,
             retry_config: RouteRetryConfig::default(),
             metric: config.metric,
+            shared_subscription_cursors: std::sync::Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -278,16 +294,17 @@ impl RouterActor {
         client_id: &str,
         packet: Packet,
         session_registry: SessionRegistry,
-    ) -> Result<(), RouterActorError> {
+    ) -> Result<bool, RouterActorError> {
         if let Some(recipient) = session_registry.get_session(tenant_id, client_id) {
             recipient.do_send(SessionActorMessage::OutboundMessage(packet));
+            return Ok(true);
         } else {
             warn!(
                 "session {} not found locally, skip best-effort route",
                 client_id
             );
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn route_to_local_session_durable(
@@ -316,6 +333,9 @@ impl RouterActor {
         packet: &Packet,
         topic_raft_actor_addr: Addr<crate::raft::topic::topic_raft_actor::TopicRaftActor>,
         session_registry: SessionRegistry,
+        shared_subscription_cursors: std::sync::Arc<
+            parking_lot::Mutex<std::collections::HashMap<SharedSubscriptionRouteKey, usize>>,
+        >,
     ) -> Result<(), RouterActorError> {
         if mqtt_message_expiry::is_packet_expired(packet, mqtt_message_expiry::now_unix_secs()) {
             return Ok(());
@@ -332,18 +352,72 @@ impl RouterActor {
 
             match res {
                 Ok(subscriptions) => {
-                    for item in subscriptions.subscriptions {
-                        let publish_packet = Self::adjust_publish_for_subscriber(
+                    // Split into normal and shared
+                    let mut normal_subs = Vec::new();
+                    let mut shared_groups: std::collections::HashMap<
+                        SharedSubscriptionRouteKey,
+                        Vec<crate::raft::topic::topic_raft_actor::SubscriptionInfo>,
+                    > = std::collections::HashMap::new();
+
+                    for sub in subscriptions.subscriptions {
+                        if let Some(ref share_name) = sub.shared_group {
+                            let key = SharedSubscriptionRouteKey {
+                                tenant_id: tenant_id.to_string(),
+                                share_name: share_name.clone(),
+                                topic_filter: sub.topic_filter.clone(),
+                            };
+                            shared_groups.entry(key).or_default().push(sub);
+                        } else {
+                            normal_subs.push(sub);
+                        }
+                    }
+
+                    // Deliver normal subscriptions
+                    for item in normal_subs {
+                        let adjusted = Self::adjust_publish_for_subscriber(
                             publish_packet,
                             item.qos,
                             item.retain_as_published,
                         );
-                        Self::route_to_local_session(
+                        let _ = Self::route_to_local_session(
                             tenant_id,
                             &item.client_identifier,
-                            Packet::Publish(publish_packet),
+                            Packet::Publish(adjusted),
                             session_registry.clone(),
                         )?;
+                    }
+
+                    // Deliver shared subscriptions (one per group)
+                    for (key, candidates) in shared_groups {
+                        let mut sorted = candidates;
+                        sorted.sort_by(|a, b| a.client_identifier.cmp(&b.client_identifier));
+
+                        let start = {
+                            let mut cursors = shared_subscription_cursors.lock();
+                            let entry = cursors.entry(key).or_insert(0);
+                            let idx = *entry % sorted.len();
+                            *entry = idx + 1;
+                            idx
+                        };
+
+                        // Try selected member first, then fall back to next members
+                        for i in 0..sorted.len() {
+                            let idx = (start + i) % sorted.len();
+                            let selected = &sorted[idx];
+                            let adjusted = Self::adjust_publish_for_subscriber(
+                                publish_packet,
+                                selected.qos,
+                                selected.retain_as_published,
+                            );
+                            if Self::route_to_local_session(
+                                tenant_id,
+                                &selected.client_identifier,
+                                Packet::Publish(adjusted),
+                                session_registry.clone(),
+                            )? {
+                                break;
+                            }
+                        }
                     }
                     Ok(())
                 }
@@ -351,6 +425,72 @@ impl RouterActor {
             }
         } else {
             Ok(())
+        }
+    }
+
+    async fn deliver_to_subscriber(
+        context: &RouteContext,
+        tenant_id: &str,
+        publish_packet: &Publish,
+        item: &crate::raft::topic::topic_raft_actor::SubscriptionInfo,
+    ) -> Result<bool, RouterActorError> {
+        let session_actor_map = {
+            let local = context
+                .local_session_actor_map_storage
+                .read()
+                .get_session_actor_map(tenant_id, &item.client_identifier);
+            match local {
+                Some(entry) => Some(entry),
+                None => SessionActorMapService::from_registry()
+                    .get_session_actor_map_linearizable(
+                        tenant_id.to_string(),
+                        item.client_identifier.clone(),
+                    )
+                    .await
+                    .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?,
+            }
+        };
+
+        let Some(session_actor_addr) = session_actor_map else {
+            return Ok(false);
+        };
+
+        let adjusted_packet = Packet::Publish(Self::adjust_publish_for_subscriber(
+            publish_packet,
+            item.qos,
+            item.retain_as_published,
+        ));
+
+        if session_actor_addr.node_id != context.current_node_id {
+            if Self::should_route_durably(&adjusted_packet) {
+                Self::enqueue_durable_remote_route(
+                    context,
+                    tenant_id,
+                    session_actor_addr.node_id,
+                    item.client_identifier.clone(),
+                    item.qos,
+                    adjusted_packet,
+                )
+                .await?;
+            } else {
+                Self::dispatch_best_effort_remote_route(
+                    context.node_resolver.clone(),
+                    context.topic_raft_actor.clone(),
+                    tenant_id.to_string(),
+                    session_actor_addr.node_id,
+                    item.client_identifier.clone(),
+                    item.qos,
+                    adjusted_packet,
+                );
+            }
+            return Ok(true);
+        } else {
+            return Self::route_to_local_session(
+                tenant_id,
+                &item.client_identifier,
+                adjusted_packet,
+                context.session_registry.clone(),
+            );
         }
     }
 
@@ -378,6 +518,8 @@ impl RouterActor {
                         qos: x.qos,
                         no_local: x.no_local,
                         retain_as_published: x.retain_as_published,
+                        shared_group: x.shared_group.clone(),
+                        topic_filter: x.topic_filter.clone(),
                     })
                     .collect::<Vec<_>>()
             };
@@ -395,19 +537,28 @@ impl RouterActor {
                 return Ok(());
             }
 
-            let local_results: Vec<Option<SessionActorMapEntry>> = {
-                let local_session_actor_map_storage =
-                    context.local_session_actor_map_storage.read();
-                subscriptions
-                    .iter()
-                    .map(|item| {
-                        local_session_actor_map_storage
-                            .get_session_actor_map(tenant_id, &item.client_identifier)
-                    })
-                    .collect()
-            };
+            // Split into normal and shared subscriptions
+            let mut normal_subs = Vec::new();
+            let mut shared_groups: std::collections::HashMap<
+                SharedSubscriptionRouteKey,
+                Vec<&crate::raft::topic::topic_raft_actor::SubscriptionInfo>,
+            > = std::collections::HashMap::new();
 
-            for (item, session_actor_map) in subscriptions.iter().zip(local_results.into_iter()) {
+            for sub in &subscriptions {
+                if let Some(ref share_name) = sub.shared_group {
+                    let key = SharedSubscriptionRouteKey {
+                        tenant_id: tenant_id.to_string(),
+                        share_name: share_name.clone(),
+                        topic_filter: sub.topic_filter.clone(),
+                    };
+                    shared_groups.entry(key).or_default().push(sub);
+                } else {
+                    normal_subs.push(sub);
+                }
+            }
+
+            // Deliver normal subscriptions (fan-out)
+            for item in &normal_subs {
                 if item.no_local
                     && source_client_identifier
                         .map(|source| source == item.client_identifier)
@@ -415,62 +566,55 @@ impl RouterActor {
                 {
                     continue;
                 }
+                Self::deliver_to_subscriber(&context, tenant_id, publish_packet, item).await?;
+            }
 
-                let session_actor_map = match session_actor_map {
-                    Some(session_actor_map) => Some(session_actor_map),
-                    None => {
-                        let remote = SessionActorMapService::from_registry()
-                            .get_session_actor_map_linearizable(
-                                tenant_id.to_string(),
-                                item.client_identifier.clone(),
-                            )
-                            .await
-                            .map_err(|e| RouterActorError::SessionActorMapRaftError(Box::new(e)))?;
-                        remote
-                    }
-                };
+            // Deliver shared subscriptions (one per group)
+            for (key, candidates) in shared_groups {
+                // Filter out No Local candidates
+                let eligible: Vec<&&crate::raft::topic::topic_raft_actor::SubscriptionInfo> =
+                    candidates
+                        .iter()
+                        .filter(|item| {
+                            !(item.no_local
+                                && source_client_identifier
+                                    .map(|source| source == item.client_identifier)
+                                    .unwrap_or(false))
+                        })
+                        .collect();
 
-                let Some(session_actor_addr) = session_actor_map else {
-                    continue;
-                };
-
-                let adjusted_packet = Packet::Publish(Self::adjust_publish_for_subscriber(
-                    publish_packet,
-                    item.qos,
-                    item.retain_as_published,
-                ));
-
-                if session_actor_addr.node_id != context.current_node_id {
-                    if Self::should_route_durably(&adjusted_packet) {
-                        Self::enqueue_durable_remote_route(
-                            &context,
-                            tenant_id,
-                            session_actor_addr.node_id,
-                            item.client_identifier.clone(),
-                            item.qos,
-                            adjusted_packet,
-                        )
-                        .await?;
-                    } else {
-                        Self::dispatch_best_effort_remote_route(
-                            context.node_resolver.clone(),
-                            context.topic_raft_actor.clone(),
-                            tenant_id.to_string(),
-                            session_actor_addr.node_id,
-                            item.client_identifier.clone(),
-                            item.qos,
-                            adjusted_packet,
-                        );
-                    }
+                if eligible.is_empty() {
                     continue;
                 }
 
-                Self::route_to_local_session(
-                    tenant_id,
-                    &item.client_identifier,
-                    adjusted_packet,
-                    context.session_registry.clone(),
-                )?;
+                // Sort by client_identifier for deterministic selection
+                let mut sorted: Vec<&&crate::raft::topic::topic_raft_actor::SubscriptionInfo> =
+                    eligible;
+                sorted.sort_by(|a, b| a.client_identifier.cmp(&b.client_identifier));
+
+                // Round-robin selection
+                let start = {
+                    let mut cursors = context.shared_subscription_cursors.lock();
+                    let entry = cursors.entry(key.clone()).or_insert(0);
+                    let idx = *entry % sorted.len();
+                    *entry = idx + 1;
+                    idx
+                };
+
+                // Try selected member first, then fall back to next members
+                let mut delivered = false;
+                for i in 0..sorted.len() {
+                    let idx = (start + i) % sorted.len();
+                    if Self::deliver_to_subscriber(&context, tenant_id, publish_packet, sorted[idx])
+                        .await?
+                    {
+                        delivered = true;
+                        break;
+                    }
+                }
+                if !delivered {
+                    context.metric.increase_messages_dropped();
+                }
             }
         }
 
@@ -995,6 +1139,7 @@ impl Handler<RoutePacket> for RouterActor {
             route_outbox_store: self.route_outbox_store.clone(),
             retry_config: self.retry_config.clone(),
             metric: self.metric.clone(),
+            shared_subscription_cursors: self.shared_subscription_cursors.clone(),
         };
 
         Box::pin(
@@ -1036,6 +1181,7 @@ impl Handler<RouteFromOtherNode> for RouterActor {
                 .expect("topic raft actor not set")
                 .clone();
             let session_registry = self.session_registry.clone();
+            let cursors = self.shared_subscription_cursors.clone();
             return Box::pin(
                 async move {
                     Self::publish_to_local_subscribers(
@@ -1043,6 +1189,7 @@ impl Handler<RouteFromOtherNode> for RouterActor {
                         &msg.packet,
                         topic_raft_actor,
                         session_registry,
+                        cursors,
                     )
                     .await?;
                     Ok(())
@@ -1092,6 +1239,7 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
             .expect("topic raft actor not set")
             .clone();
         let session_registry = self.session_registry.clone();
+        let cursors = self.shared_subscription_cursors.clone();
 
         Box::pin(
             async move {
@@ -1104,6 +1252,7 @@ impl Handler<RoutePacketToAllTenants> for RouterActor {
                         &msg.packet,
                         topic_raft_actor_addr.clone(),
                         session_registry.clone(),
+                        cursors.clone(),
                     )
                     .await?;
                 }
@@ -1130,8 +1279,9 @@ mod tests {
     use crate::session::session_actor::{
         ActivityState, GetSessionInfo, SessionActorError, SessionInfo,
     };
-    use crate::session::session_actor_map_storage::SessionVersion;
+    use crate::session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion};
     use crate::session::session_registry::SessionActorRecipientWrapper;
+    use crate::topic::topic_storage::TopicStorage;
 
     #[derive(Clone, Default)]
     struct DeliveredPackets {
@@ -1168,7 +1318,11 @@ mod tests {
     impl Handler<SessionActorMessage> for TestRouteSessionActor {
         type Result = ();
 
-        fn handle(&mut self, _msg: SessionActorMessage, _ctx: &mut Self::Context) -> Self::Result {}
+        fn handle(&mut self, msg: SessionActorMessage, _ctx: &mut Self::Context) -> Self::Result {
+            if let SessionActorMessage::OutboundMessage(packet) = msg {
+                self.delivered.push(packet);
+            }
+        }
     }
 
     impl Handler<GetSessionInfo> for TestRouteSessionActor {
@@ -1546,6 +1700,371 @@ mod tests {
         assert!(
             RouterActor::should_route_durably(&qos1_packet),
             "QoS 1 should use durable handoff"
+        );
+    }
+
+    /// Helper: register multiple clients in one tenant, each with its own DeliveredPackets.
+    fn build_multi_client_registry(
+        tenant_id: &str,
+        client_ids: &[&str],
+    ) -> (SessionRegistry, Vec<DeliveredPackets>) {
+        let registry = SessionRegistry::new();
+        let tenant_map = Arc::new(DashMap::new());
+        let mut all_delivered = Vec::new();
+
+        for client_id in client_ids {
+            let delivered = DeliveredPackets::default();
+            let actor = TestRouteSessionActor {
+                delivered: delivered.clone(),
+            }
+            .start();
+            tenant_map.insert(
+                client_id.to_string(),
+                SessionActorRecipientWrapper {
+                    session_actor_message_recipient: actor.clone().recipient(),
+                    accept_routed_publish_recipient: actor.clone().recipient(),
+                    get_session_info_recipient: actor.recipient(),
+                    session_version: SessionVersion::new(1, 1001),
+                },
+            );
+            all_delivered.push(delivered);
+        }
+
+        registry
+            .get_inner()
+            .insert(tenant_id.to_string(), tenant_map);
+
+        (registry, all_delivered)
+    }
+
+    /// Helper: build a RouteContext with a pre-populated TopicStorage.
+    /// Registers all client_ids in SessionActorMapStorage as local sessions.
+    fn build_route_context(
+        tenant_id: &str,
+        session_registry: SessionRegistry,
+        topic_storage: Arc<RwLock<TopicStorage>>,
+        client_ids: &[&str],
+    ) -> RouteContext {
+        let temp_dir = TempDir::new().unwrap();
+        let payload_store =
+            Arc::new(RocksDBPayloadStore::new(temp_dir.path().join("payload")).unwrap());
+        let route_outbox_store =
+            Arc::new(JsonRocksDBStore::new(temp_dir.path().join("route_outbox")).unwrap());
+        let settings = build_test_settings(&temp_dir, vec![]);
+        let node_resolver = Arc::new(NodeResolver::new(settings));
+        let topic_raft_actor = TopicRaftActor::from_registry();
+
+        let mut session_map_storage = SessionActorMapStorage::new();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for client_id in client_ids {
+            session_map_storage
+                .register_session_actor(
+                    tenant_id.to_string(),
+                    client_id.to_string(),
+                    1001,
+                    &SessionVersion::new(1, 1001),
+                    now + 3600,
+                )
+                .unwrap();
+        }
+
+        RouteContext {
+            current_node_id: 1001,
+            node_resolver,
+            topic_raft_actor,
+            local_topic_storage: topic_storage,
+            local_session_actor_map_storage: Arc::new(RwLock::new(session_map_storage)),
+            session_registry,
+            payload_store,
+            route_outbox_store,
+            retry_config: RouteRetryConfig::default(),
+            metric: Arc::new(Metric::new()),
+            shared_subscription_cursors: Arc::new(parking_lot::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+        }
+    }
+
+    #[actix::test]
+    async fn test_shared_subscription_exactly_one_delivery() {
+        let (registry, delivered) =
+            build_multi_client_registry("tenant-a", &["client-a", "client-b"]);
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        topic_storage.read().create_tenant(&"tenant-a".to_string());
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-a".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-b".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let context = build_route_context(
+            "tenant-a",
+            registry,
+            topic_storage,
+            &["client-a", "client-b"],
+        );
+        let packet = build_publish_packet("sensors/temp", 1, b"25");
+
+        RouterActor::route(context, "tenant-a", &packet, None)
+            .await
+            .unwrap();
+
+        // Wait for async delivery
+        wait_until(|| delivered.iter().map(|d| d.len()).sum::<usize>() == 1).await;
+
+        let total: usize = delivered.iter().map(|d| d.len()).sum();
+        assert_eq!(
+            total, 1,
+            "shared group should deliver to exactly one subscriber"
+        );
+    }
+
+    #[actix::test]
+    async fn test_shared_subscription_round_robin() {
+        let (registry, delivered) =
+            build_multi_client_registry("tenant-a", &["client-a", "client-b"]);
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        topic_storage.read().create_tenant(&"tenant-a".to_string());
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-a".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-b".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let shared_cursors = Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+        // Send 4 publishes; round-robin should distribute them evenly.
+        for _ in 0..4 {
+            let mut ctx = build_route_context(
+                "tenant-a",
+                registry.clone(),
+                topic_storage.clone(),
+                &["client-a", "client-b"],
+            );
+            ctx.shared_subscription_cursors = shared_cursors.clone();
+            let packet = build_publish_packet("sensors/temp", 1, b"v");
+            RouterActor::route(ctx, "tenant-a", &packet, None)
+                .await
+                .unwrap();
+        }
+
+        // Wait for async delivery
+        wait_until(|| delivered.iter().map(|d| d.len()).sum::<usize>() == 4).await;
+
+        // Sorted by client_identifier: client-a=0, client-b=1.
+        // Cycles: 0,1,0,1 → each receives 2.
+        assert_eq!(delivered[0].len(), 2, "client-a should receive 2");
+        assert_eq!(delivered[1].len(), 2, "client-b should receive 2");
+    }
+
+    #[actix::test]
+    async fn test_shared_and_normal_subscription_coexist() {
+        let (registry, delivered) =
+            build_multi_client_registry("tenant-a", &["normal-client", "shared-a", "shared-b"]);
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        topic_storage.read().create_tenant(&"tenant-a".to_string());
+        // Normal subscription
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "normal-client".to_string(),
+                "sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+        // Shared subscriptions
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "shared-a".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "shared-b".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let context = build_route_context(
+            "tenant-a",
+            registry,
+            topic_storage,
+            &["normal-client", "shared-a", "shared-b"],
+        );
+        let packet = build_publish_packet("sensors/temp", 1, b"25");
+
+        RouterActor::route(context, "tenant-a", &packet, None)
+            .await
+            .unwrap();
+
+        // Wait for async delivery (1 normal + 1 shared = 2 total)
+        wait_until(|| delivered.iter().map(|d| d.len()).sum::<usize>() == 2).await;
+
+        // Normal client always receives (fan-out), shared group delivers to exactly one.
+        assert_eq!(delivered[0].len(), 1, "normal-client should receive 1");
+        let shared_total: usize = delivered[1].len() + delivered[2].len();
+        assert_eq!(
+            shared_total, 1,
+            "shared group should deliver to exactly one of shared-a/shared-b"
+        );
+    }
+
+    #[actix::test]
+    async fn test_shared_subscription_no_local_exclusion() {
+        let (registry, delivered) =
+            build_multi_client_registry("tenant-a", &["publisher", "other-member"]);
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        topic_storage.read().create_tenant(&"tenant-a".to_string());
+        // Both members subscribe with no_local = true
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "publisher".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                true,
+                false,
+            )
+            .unwrap();
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "other-member".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                true,
+                false,
+            )
+            .unwrap();
+
+        let context = build_route_context(
+            "tenant-a",
+            registry,
+            topic_storage,
+            &["publisher", "other-member"],
+        );
+        let packet = build_publish_packet("sensors/temp", 1, b"25");
+
+        // Publish from "publisher" — should be excluded by No Local,
+        // so only "other-member" is eligible.
+        RouterActor::route(context, "tenant-a", &packet, Some("publisher"))
+            .await
+            .unwrap();
+
+        // Wait for async delivery
+        wait_until(|| delivered[1].len() == 1).await;
+
+        assert_eq!(
+            delivered[0].len(),
+            0,
+            "publisher should not receive its own message (No Local)"
+        );
+        assert_eq!(
+            delivered[1].len(),
+            1,
+            "other-member should receive the message"
+        );
+    }
+
+    #[actix::test]
+    async fn test_shared_subscription_falls_back_when_selected_local_session_missing() {
+        let (registry, delivered) = build_multi_client_registry("tenant-a", &["client-b"]);
+        let topic_storage = Arc::new(RwLock::new(TopicStorage::new()));
+        topic_storage.read().create_tenant(&"tenant-a".to_string());
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-a".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+        topic_storage
+            .read()
+            .subscribe_with_options(
+                "tenant-a".to_string(),
+                "client-b".to_string(),
+                "$share/grp/sensors/temp".to_string(),
+                1,
+                false,
+                false,
+            )
+            .unwrap();
+
+        let context = build_route_context(
+            "tenant-a",
+            registry,
+            topic_storage,
+            &["client-a", "client-b"],
+        );
+        let packet = build_publish_packet("sensors/temp", 1, b"25");
+
+        RouterActor::route(context, "tenant-a", &packet, None)
+            .await
+            .unwrap();
+
+        wait_until(|| delivered[0].len() == 1).await;
+
+        assert_eq!(
+            delivered[0].len(),
+            1,
+            "shared delivery should fall back to the next routable member"
         );
     }
 }

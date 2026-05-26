@@ -40,7 +40,7 @@ use crate::{
     router_actor::RouterActor,
     session::session_state_service::SessionStateService,
     stored_packet::{deserialize_stored_packet, serialize_stored_packet},
-    topic::topic_service::TopicService,
+    topic::{shared_subscription::parse_shared_subscription_filter, topic_service::TopicService},
 };
 
 use super::{
@@ -242,11 +242,15 @@ fn granted_qos_reason(qos: u8) -> ReasonCode {
 }
 
 fn subscribe_precheck_reason(
-    protocol_version: ProtocolVersion,
+    _protocol_version: ProtocolVersion,
     topic_filter: &str,
 ) -> Option<ReasonCode> {
-    if protocol_version == ProtocolVersion::V5_0 && topic_filter.starts_with("$share/") {
-        Some(ReasonCode::SharedSubscriptionsNotSupported)
+    if topic_filter.starts_with("$share/") {
+        match parse_shared_subscription_filter(topic_filter) {
+            Ok(Some(_)) => None,
+            Ok(None) => None,
+            Err(_) => Some(ReasonCode::TopicFilterInvalid),
+        }
     } else {
         None
     }
@@ -1285,10 +1289,16 @@ async fn do_handle_subscribe(
                     };
 
                     if send_retained {
+                        // For shared subscriptions, use the normalized inner filter for retained lookup
+                        let retain_filter =
+                            match parse_shared_subscription_filter(&topic.topic_filter) {
+                                Ok(Some(shared)) => shared.topic_filter,
+                                _ => topic.topic_filter.clone(),
+                            };
                         match topic_service
                             .get_retain_publish_packets_linearizable(
                                 tenant_id.clone(),
-                                topic.topic_filter.clone(),
+                                retain_filter,
                             )
                             .await
                         {
@@ -2505,15 +2515,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mqtt5_shared_subscription_filter_is_rejected() {
+    fn mqtt5_shared_subscription_filter_is_accepted() {
         assert_eq!(
             subscribe_precheck_reason(ProtocolVersion::V5_0, "$share/group/sensors/+"),
-            Some(ReasonCode::SharedSubscriptionsNotSupported)
+            None
         );
     }
 
     #[test]
-    fn mqtt3_share_prefixed_filter_is_left_to_existing_topic_validation() {
+    fn mqtt5_invalid_shared_subscription_filter_is_rejected() {
+        assert_eq!(
+            subscribe_precheck_reason(ProtocolVersion::V5_0, "$share//sensors/+"),
+            Some(ReasonCode::TopicFilterInvalid)
+        );
+    }
+
+    #[test]
+    fn mqtt3_shared_subscription_filter_is_accepted() {
         assert_eq!(
             subscribe_precheck_reason(ProtocolVersion::V3_1_1, "$share/group/sensors/+"),
             None

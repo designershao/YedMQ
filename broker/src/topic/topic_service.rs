@@ -253,6 +253,8 @@ impl TopicService {
                             qos: subscriber.qos as u8,
                             no_local: subscriber.no_local,
                             retain_as_published: subscriber.retain_as_published,
+                            shared_group: subscriber.shared_group,
+                            topic_filter: subscriber.topic_filter,
                         },
                     )
                     .collect();

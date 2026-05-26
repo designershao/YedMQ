@@ -1,3 +1,4 @@
+pub mod shared_subscription;
 pub mod topic_service;
 pub mod topic_storage;
 

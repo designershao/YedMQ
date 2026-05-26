@@ -226,6 +226,8 @@ message Subscriber {
     string client_id = 3;
     bool no_local = 4;
     bool retain_as_published = 5;
+    optional string shared_group = 6;
+    string topic_filter = 7;
 }
 
 // Response for getting subscribers by topic.

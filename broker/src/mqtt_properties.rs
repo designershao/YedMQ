@@ -4,6 +4,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use prost_types::{value::Kind, ListValue, Struct, Value};
 use yedmq_mqtt::packet::{Properties, RetainHandling, SubscribeTopic};
 
+use crate::topic::shared_subscription::parse_shared_subscription_filter;
+
 pub fn properties_to_struct(properties: &Properties) -> Option<Struct> {
     if properties == &Properties::default() {
         return None;
@@ -151,6 +153,16 @@ pub fn subscribe_context(topic: &SubscribeTopic, properties: &Properties) -> Str
             RetainHandling::DoNotSend => "do_not_send",
         }),
     );
+
+    if let Ok(Some(shared)) = parse_shared_subscription_filter(&topic.topic_filter) {
+        fields.insert("shared_subscription".to_string(), bool_value(true));
+        fields.insert("share_name".to_string(), string_value(&shared.share_name));
+        fields.insert(
+            "topic_filter".to_string(),
+            string_value(&shared.topic_filter),
+        );
+    }
+
     if let Some(properties) = properties_to_struct(properties) {
         fields.insert(
             "properties".to_string(),

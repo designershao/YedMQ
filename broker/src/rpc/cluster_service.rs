@@ -592,6 +592,8 @@ impl ClusterService for ClusterServiceImpl {
                 client_id: sub.client_identifier.clone(),
                 no_local: sub.no_local,
                 retain_as_published: sub.retain_as_published,
+                shared_group: sub.shared_group.clone(),
+                topic_filter: sub.topic_filter.clone(),
             })
             .collect::<Vec<_>>();
 

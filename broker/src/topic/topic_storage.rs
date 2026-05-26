@@ -9,6 +9,7 @@ use yedmq_mqtt::packet::Packet;
 
 use crate::mqtt_message_expiry;
 use crate::stored_packet::deserialize_stored_packet;
+use crate::topic::shared_subscription::parse_shared_subscription_filter;
 use crate::topic::TopicStorageError;
 
 pub type TopicPaginationResult = (u64, Vec<(String, String, u8)>);
@@ -85,6 +86,21 @@ fn extract_info_from_key(key: &str) -> (String, String) {
     (client_id.to_string(), topic.to_string())
 }
 
+fn normal_subscription_key(client_identifier: &str) -> String {
+    let encoded_client = general_purpose::STANDARD.encode(client_identifier);
+    format!("$normal:{}", encoded_client)
+}
+
+fn legacy_normal_subscription_key(client_identifier: &str) -> String {
+    client_identifier.to_string()
+}
+
+fn shared_subscription_key(client_identifier: &str, share_name: &str) -> String {
+    let encoded_client = general_purpose::STANDARD.encode(client_identifier);
+    let encoded_group = general_purpose::STANDARD.encode(share_name);
+    format!("$shared:{}:{}", encoded_client, encoded_group)
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Subscription {
     pub client_identifier: String,
@@ -93,6 +109,23 @@ pub struct Subscription {
     pub no_local: bool,
     #[serde(default)]
     pub retain_as_published: bool,
+    #[serde(default)]
+    pub shared_group: Option<String>,
+    #[serde(default)]
+    pub topic_filter: String,
+}
+
+impl Subscription {
+    pub fn is_shared(&self) -> bool {
+        self.shared_group.is_some()
+    }
+
+    pub(crate) fn node_key(&self) -> String {
+        match &self.shared_group {
+            Some(group) => shared_subscription_key(&self.client_identifier, group),
+            None => normal_subscription_key(&self.client_identifier),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -132,7 +165,10 @@ impl TopicStorageNode {
             subscriptions: RwLock::new(
                 data.subscriptions
                     .into_iter()
-                    .map(|(k, v)| (k, Arc::new(v)))
+                    .map(|(_, v)| {
+                        let key = v.node_key();
+                        (key, Arc::new(v))
+                    })
                     .collect(),
             ),
             retain_publish_packet: data.retain_publish_packet.map(Arc::new),
@@ -160,10 +196,10 @@ impl TopicStorageNode {
     }
 
     pub fn add_subscription(&self, subscribtion: Subscription) {
-        self.subscriptions.write().insert(
-            subscribtion.client_identifier.clone(),
-            Arc::new(subscribtion),
-        );
+        let key = subscribtion.node_key();
+        self.subscriptions
+            .write()
+            .insert(key, Arc::new(subscribtion));
     }
 
     pub fn get_subscriptions(&self) -> Vec<Arc<Subscription>> {
@@ -182,11 +218,24 @@ impl TopicStorageNode {
         self.retain_publish_packet = None;
     }
 
-    pub fn remove_subscription(&self, client_identifier: &str) {
-        let client_existed = self.subscriptions.read().contains_key(client_identifier);
-
-        if client_existed {
-            self.subscriptions.write().remove(client_identifier);
+    pub fn remove_subscriptions(
+        &self,
+        keys: &[String],
+        client_identifier: &str,
+        shared_group: Option<&str>,
+    ) {
+        let mut subscriptions = self.subscriptions.write();
+        for key in keys {
+            let should_remove = subscriptions
+                .get(key)
+                .map(|subscription| {
+                    subscription.client_identifier == client_identifier
+                        && subscription.shared_group.as_deref() == shared_group
+                })
+                .unwrap_or(false);
+            if should_remove {
+                subscriptions.remove(key);
+            }
         }
     }
 
@@ -228,7 +277,7 @@ pub struct TopicStorage {
     topic_tree: Arc<RwLock<HashMap<String, Arc<RwLock<TopicStorageNode>>>>>,
 }
 
-fn test_topic(topic: &str) -> bool {
+pub(crate) fn test_topic(topic: &str) -> bool {
     let i = topic.split("/");
     let mut index = 0;
     let length = i.clone().count();
@@ -415,11 +464,19 @@ impl TopicStorage {
         no_local: bool,
         retain_as_published: bool,
     ) -> Result<(), TopicStorageError> {
-        if !test_topic(&topic_filter) {
-            return Err(TopicStorageError::InvalidTopicFilter(topic_filter));
+        let shared = parse_shared_subscription_filter(&topic_filter)
+            .map_err(|e| TopicStorageError::InvalidTopicFilter(e.to_string()))?;
+
+        let (store_filter, shared_group) = match shared {
+            Some(ref s) => (s.topic_filter.clone(), Some(s.share_name.clone())),
+            None => (topic_filter.clone(), None),
+        };
+
+        if !test_topic(&store_filter) {
+            return Err(TopicStorageError::InvalidTopicFilter(store_filter));
         }
 
-        let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
+        let topic_patterns: Vec<String> = store_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         if let Some(tenant_topic_root) = tenant_topic_root_rwlock.get(&tenant_id) {
@@ -430,17 +487,18 @@ impl TopicStorage {
                 qos,
                 no_local,
                 retain_as_published,
+                shared_group,
+                store_filter,
             );
             if let Err(err) = result {
                 Err(err)
             } else {
-                // Update the topic_info_recorder
+                // Update the topic_info_recorder with the raw topic filter
                 let mut topic_info_recorder = self.topic_info_recorder.write();
                 if let Some(topic_info_state_item) = topic_info_recorder.get_mut(&tenant_id) {
                     let key = generate_key(&client_identifier, &topic_filter);
                     topic_info_state_item.entry(key).or_insert(qos);
                 }
-                //
 
                 Ok(())
             }
@@ -456,6 +514,8 @@ impl TopicStorage {
         qos: u8,
         no_local: bool,
         retain_as_published: bool,
+        shared_group: Option<String>,
+        topic_filter: String,
     ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -470,6 +530,8 @@ impl TopicStorage {
                 qos,
                 no_local,
                 retain_as_published,
+                shared_group,
+                topic_filter,
             )
         } else {
             topic_node.write().add_subscription(Subscription {
@@ -477,6 +539,8 @@ impl TopicStorage {
                 qos,
                 no_local,
                 retain_as_published,
+                shared_group,
+                topic_filter,
             });
             Ok(())
         }
@@ -488,25 +552,45 @@ impl TopicStorage {
         client_identifier: &str,
         topic_filter: &str,
     ) -> Result<(), TopicStorageError> {
-        let topic_patterns: Vec<String> = topic_filter.split("/").map(String::from).collect();
+        let shared = parse_shared_subscription_filter(topic_filter)
+            .map_err(|e| TopicStorageError::InvalidTopicFilter(e.to_string()))?;
+
+        let (store_filter, node_keys, expected_shared_group) = match shared {
+            Some(ref s) => (
+                s.topic_filter.clone(),
+                vec![shared_subscription_key(client_identifier, &s.share_name)],
+                Some(s.share_name.clone()),
+            ),
+            None => (
+                topic_filter.to_string(),
+                vec![
+                    normal_subscription_key(client_identifier),
+                    legacy_normal_subscription_key(client_identifier),
+                ],
+                None,
+            ),
+        };
+
+        let topic_patterns: Vec<String> = store_filter.split("/").map(String::from).collect();
         let map = self.topic_tree.clone();
         let tenant_topic_root_rwlock = map.read();
         if let Some(tenant_topic_root) = tenant_topic_root_rwlock.get(tenant_id) {
             let result = Self::recursion_unsubscription(
                 tenant_topic_root.clone(),
                 topic_patterns,
+                &node_keys,
                 client_identifier,
+                expected_shared_group.as_deref(),
             );
             if let Err(err) = result {
                 Err(err)
             } else {
-                // Update the topic_info_recorder
+                // Update the topic_info_recorder with the raw topic filter
                 let mut topic_info_recorder = self.topic_info_recorder.write();
                 if let Some(topic_info_state_item) = topic_info_recorder.get_mut(tenant_id) {
                     let key = generate_key(client_identifier, topic_filter);
                     topic_info_state_item.remove(&key);
                 }
-                //
                 Ok(())
             }
         } else {
@@ -517,7 +601,9 @@ impl TopicStorage {
     fn recursion_unsubscription(
         topic_node: Arc<RwLock<TopicStorageNode>>,
         mut topic_partterns: Vec<String>,
+        keys: &[String],
         client_identifier: &str,
+        shared_group: Option<&str>,
     ) -> Result<(), TopicStorageError> {
         if !topic_partterns.is_empty() {
             let topic_pattern = &topic_partterns[0];
@@ -527,13 +613,17 @@ impl TopicStorage {
                 Self::recursion_unsubscription(
                     topic_node_next,
                     topic_patterns_rest,
+                    keys,
                     client_identifier,
+                    shared_group,
                 )
             } else {
                 Err(TopicStorageError::TopicNotFound(topic_pattern.to_string()))
             }
         } else {
-            topic_node.write().remove_subscription(client_identifier);
+            topic_node
+                .write()
+                .remove_subscriptions(keys, client_identifier, shared_group);
             Ok(())
         }
     }
@@ -947,18 +1037,24 @@ mod tests {
             qos: 0,
             no_local: false,
             retain_as_published: false,
+            shared_group: None,
+            topic_filter: "a".to_string(),
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "2".to_string(),
             qos: 0,
             no_local: false,
             retain_as_published: false,
+            shared_group: None,
+            topic_filter: "a".to_string(),
         });
         topic_node.add_subscription(Subscription {
             client_identifier: "3".to_string(),
             qos: 0,
             no_local: false,
             retain_as_published: false,
+            shared_group: None,
+            topic_filter: "a".to_string(),
         });
 
         let subscriptions = topic_node.get_subscriptions();
@@ -1365,5 +1461,267 @@ mod tests {
             .collect::<Vec<String>>();
         topics.sort();
         assert_eq!(topics, vec!["a".to_string(), "a/b".to_string()]);
+    }
+
+    #[test]
+    fn shared_subscription_is_stored_at_normalized_inner_filter() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "worker-a".to_string(),
+                "$share/workers/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].client_identifier, "worker-a");
+        assert_eq!(subs[0].shared_group, Some("workers".to_string()));
+        assert_eq!(subs[0].topic_filter, "sensors/+");
+    }
+
+    #[test]
+    fn normal_and_shared_subscription_coexist_on_same_filter() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/workers/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+        assert_eq!(subs.len(), 2);
+
+        let normal = subs.iter().find(|s| s.shared_group.is_none()).unwrap();
+        assert_eq!(normal.topic_filter, "sensors/+");
+
+        let shared = subs.iter().find(|s| s.shared_group.is_some()).unwrap();
+        assert_eq!(shared.shared_group, Some("workers".to_string()));
+        assert_eq!(shared.topic_filter, "sensors/+");
+    }
+
+    #[test]
+    fn two_shared_groups_for_one_client() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/group1/sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/group2/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+        assert_eq!(subs.len(), 2);
+
+        let g1 = subs
+            .iter()
+            .find(|s| s.shared_group.as_deref() == Some("group1"))
+            .unwrap();
+        assert_eq!(g1.qos, 0);
+
+        let g2 = subs
+            .iter()
+            .find(|s| s.shared_group.as_deref() == Some("group2"))
+            .unwrap();
+        assert_eq!(g2.qos, 1);
+    }
+
+    #[test]
+    fn unsubscribe_shared_does_not_remove_normal() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/workers/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        storage
+            .unsubscribe(&tenant, "client-a", "$share/workers/sensors/+")
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].shared_group, None);
+    }
+
+    #[test]
+    fn unsubscribe_one_shared_group_preserves_other() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/group1/sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                "client-a".to_string(),
+                "$share/group2/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        storage
+            .unsubscribe(&tenant, "client-a", "$share/group1/sensors/+")
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].shared_group, Some("group2".to_string()));
+    }
+
+    #[test]
+    fn normal_client_id_cannot_collide_with_shared_subscription_key() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        let shared_probe = Subscription {
+            client_identifier: "shared-client".to_string(),
+            qos: 1,
+            no_local: false,
+            retain_as_published: false,
+            shared_group: Some("workers".to_string()),
+            topic_filter: "sensors/+".to_string(),
+        };
+        let colliding_normal_client_id = shared_probe.node_key();
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "shared-client".to_string(),
+                "$share/workers/sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                colliding_normal_client_id.clone(),
+                "sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+
+        assert_eq!(subs.len(), 2);
+        assert!(subs.iter().any(|sub| {
+            sub.client_identifier == "shared-client"
+                && sub.shared_group.as_deref() == Some("workers")
+        }));
+        assert!(subs.iter().any(|sub| {
+            sub.client_identifier == colliding_normal_client_id && sub.shared_group.is_none()
+        }));
+    }
+
+    #[test]
+    fn unsubscribe_normal_does_not_remove_client_named_like_another_node_key() {
+        let storage = TopicStorage::new();
+        let tenant = "t".to_string();
+        storage.create_tenant(&tenant);
+
+        let normal_probe = Subscription {
+            client_identifier: "base-client".to_string(),
+            qos: 0,
+            no_local: false,
+            retain_as_published: false,
+            shared_group: None,
+            topic_filter: "sensors/+".to_string(),
+        };
+        let key_like_client_id = normal_probe.node_key();
+
+        storage
+            .subscribe(
+                tenant.clone(),
+                "base-client".to_string(),
+                "sensors/+".to_string(),
+                0,
+            )
+            .unwrap();
+        storage
+            .subscribe(
+                tenant.clone(),
+                key_like_client_id.clone(),
+                "sensors/+".to_string(),
+                1,
+            )
+            .unwrap();
+
+        storage
+            .unsubscribe(&tenant, &key_like_client_id, "sensors/+")
+            .unwrap();
+
+        let subs = storage
+            .get_subscriptions(tenant.clone(), "sensors/1".to_string())
+            .unwrap();
+
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].client_identifier, "base-client");
+        assert_eq!(subs[0].qos, 0);
     }
 }
