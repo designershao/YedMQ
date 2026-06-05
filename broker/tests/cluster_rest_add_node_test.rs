@@ -193,7 +193,7 @@ async fn start_node(
         let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = actix::System::new();
             rt.block_on(async move {
-                let app: Arc<YedMQApp> = Arc::new(YedMQApp::new(settings_clone).await);
+                let app: Arc<YedMQApp> = Arc::new(YedMQApp::new(settings_clone).await.unwrap());
                 YedMQApp::start(app.clone()).await;
 
                 let system = actix::System::current();

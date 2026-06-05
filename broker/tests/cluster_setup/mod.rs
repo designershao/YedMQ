@@ -316,7 +316,7 @@ fn spawn_test_node(settings: Arc<Settings>) -> Result<TestNodeHandle, String> {
     let thread_handle = thread::spawn(move || {
         let system = actix::System::new();
         system.block_on(async move {
-            let app = Arc::new(YedMQApp::new(settings).await);
+            let app = Arc::new(YedMQApp::new(settings).await.unwrap());
             YedMQApp::start(app.clone()).await;
 
             let system = actix::System::current();

@@ -76,7 +76,14 @@ async fn start(args: StartArgs) -> i32 {
 
     print_startup_summary(args.config.as_deref(), &settings);
 
-    let app = Arc::new(YedMQApp::new(settings.clone()).await);
+    let app = match YedMQApp::new(settings.clone()).await {
+        Ok(app) => Arc::new(app),
+        Err(err) => {
+            eprintln!("Error: failed to start broker");
+            eprintln!("Reason: {err:#}");
+            return EXIT_GENERAL;
+        }
+    };
     YedMQApp::start(app.clone()).await;
 
     match signal::ctrl_c().await {

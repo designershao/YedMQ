@@ -82,7 +82,7 @@ async fn setup_instance_for(
         std::thread::spawn(move || {
             let rt = actix::System::new();
             rt.block_on(async {
-                let app = Arc::new(YedMQApp::new(settings_clone).await);
+                let app = Arc::new(YedMQApp::new(settings_clone).await.unwrap());
 
                 YedMQApp::start(app.clone()).await;
             });

@@ -21,6 +21,7 @@ use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use crate::session::session_registry::SessionRegistry;
 use crate::timer_actor::TimerActor;
+use anyhow::anyhow;
 use tokio::sync::oneshot;
 
 #[derive(Clone)]
@@ -41,14 +42,14 @@ impl ServiceRegistry {
         plugin_manager: Arc<PluginManager>,
         session_clock: Arc<SessionClock>,
         metric: Arc<crate::metric::Metric>,
-    ) -> Arc<Self> {
+    ) -> anyhow::Result<Arc<Self>> {
         info!("starting services");
 
         // Initialize PayloadStore
         let payload_store_path = std::path::Path::new(&settings.cluster.store_dir).join("payload");
         let payload_store = Arc::new(
             crate::raft::payload::RocksDBPayloadStore::new(payload_store_path)
-                .expect("failed to initialize payload store"),
+                .map_err(|e| anyhow!("failed to initialize payload store: {e}"))?,
         );
 
         let topic_raft = TopicRaftActor::from_registry();
@@ -94,14 +95,14 @@ impl ServiceRegistry {
         let get_topic_storage_res = topic_raft
             .send(crate::raft::topic::topic_raft_actor::GetTopicStorage {})
             .await
-            .expect("get topic storage mailbox error")
-            .expect("get topic storage actor error");
+            .map_err(|e| anyhow!("get topic storage mailbox error: {e}"))?
+            .map_err(|e| anyhow!("get topic storage actor error: {e}"))?;
 
         let get_session_actor_map_storage_res = session_map_raft
             .send(crate::raft::session_actor_map::session_actor_map_raft_actor::GetSessionActorMapStorage {})
             .await
-            .expect("get session actor map storage mailbox error")
-            .expect("get session actor map storage actor error");
+            .map_err(|e| anyhow!("get session actor map storage mailbox error: {e}"))?
+            .map_err(|e| anyhow!("get session actor map storage actor error: {e}"))?;
 
         let topic_storage = get_topic_storage_res.topic_storage.clone();
         let session_actor_map_storage = get_session_actor_map_storage_res
@@ -129,11 +130,11 @@ impl ServiceRegistry {
                 .join(format!("router_{}", router_index));
             let route_outbox_store = Arc::new(
                 JsonRocksDBStore::new(route_outbox_path)
-                    .expect("failed to initialize route outbox store"),
+                    .map_err(|e| anyhow!("failed to initialize route outbox store: {e}"))?,
             );
             let route_inbox_store = Arc::new(
                 JsonRocksDBStore::new(route_inbox_path)
-                    .expect("failed to initialize route inbox store"),
+                    .map_err(|e| anyhow!("failed to initialize route inbox store: {e}"))?,
             );
             let metric_clone = metric.clone();
 
@@ -172,9 +173,13 @@ impl ServiceRegistry {
         });
         match tokio::time::timeout(Duration::from_secs(5), rpc_ready_rx).await {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(err))) => panic!("rpc actor failed to start: {}", err),
-            Ok(Err(_)) => panic!("rpc actor stopped before reporting readiness"),
-            Err(_) => panic!("rpc actor did not report readiness within 5 seconds"),
+            Ok(Ok(Err(err))) => return Err(anyhow!("rpc actor failed to start: {err}")),
+            Ok(Err(_)) => return Err(anyhow!("rpc actor stopped before reporting readiness")),
+            Err(_) => {
+                return Err(anyhow!(
+                    "rpc actor did not report readiness within 5 seconds"
+                ))
+            }
         }
 
         let router_actors_clone = router_actors.clone();
@@ -182,7 +187,7 @@ impl ServiceRegistry {
             router_actors: router_actors_clone,
         });
 
-        Arc::new(ServiceRegistry {
+        Ok(Arc::new(ServiceRegistry {
             routers: router_actors,
             session_manager,
             rpc,
@@ -190,6 +195,6 @@ impl ServiceRegistry {
             session_map_raft,
             session_state_raft,
             node_resolver,
-        })
+        }))
     }
 }

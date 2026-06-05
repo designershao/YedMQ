@@ -22,7 +22,7 @@
 
 ## ✨ Key Features
 
-- **MQTT v3.1.1 and MQTT 5.0 Support**: MQTT v3.1.1 remains supported, and MQTT 5.0 clients can use normal CONNECT, publish/subscribe, QoS 0/1/2, retained messages, persistent sessions, session expiry, message expiry, TCP, TLS, WS, and WSS flows.
+- **MQTT v3.1.1 and MQTT 5.0 Support**: MQTT v3.1.1 remains supported, and MQTT 5.0 clients can use normal CONNECT, publish/subscribe, QoS 0/1/2, retained messages, persistent sessions, session expiry, message expiry, shared subscriptions, TCP, TLS, WS, and WSS flows.
 - **High Performance**: Leveraging Rust's memory safety and zero-cost abstractions for low latency and high throughput.
 - **Multiple Tenant Support**: Built-in isolation for multiple organizations. Each tenant has its own namespace, sessions, and topics, ensuring data privacy and security.
 - **Clustering & High Availability**: Distributed architecture based on the **Raft** consensus algorithm for reliable state synchronization and fault tolerance.
@@ -181,9 +181,9 @@ deployment, keep the defaults locked down and use a real authentication plugin.
 
 ### MQTT Protocol Support
 
-YedMQ supports MQTT v3.1.1 and a conservative MQTT 5.0 surface. The MQTT 5.0 implementation covers the common broker path: CONNECT/CONNACK, PUBLISH, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE/SUBACK, UNSUBSCRIBE/UNSUBACK, PING, DISCONNECT, QoS 0/1/2, retained messages, session expiry, message expiry, mixed v3/v5 delivery, REST-published messages, `$SYS` topics, and TCP/TLS/WS/WSS listeners.
+YedMQ supports MQTT v3.1.1 and a conservative MQTT 5.0 surface. The MQTT 5.0 implementation covers the common broker path: CONNECT/CONNACK, PUBLISH, PUBACK, PUBREC, PUBREL, PUBCOMP, SUBSCRIBE/SUBACK, UNSUBSCRIBE/UNSUBACK, PING, DISCONNECT, QoS 0/1/2, retained messages, session expiry, message expiry, shared subscriptions, mixed v3/v5 delivery, REST-published messages, `$SYS` topics, and TCP/TLS/WS/WSS listeners.
 
-The first MQTT 5.0 release explicitly rejects unsupported features with MQTT 5 reason codes where possible. Enhanced authentication, Topic Alias, Subscription Identifier, shared subscriptions, and protocol-version-specific metric breakdowns are not implemented yet.
+The first MQTT 5.0 release explicitly rejects unsupported features with MQTT 5 reason codes where possible. Enhanced authentication, Topic Alias, Subscription Identifier, and protocol-version-specific metric breakdowns are not implemented yet.
 
 ## CLI Operations
 
@@ -281,6 +281,22 @@ Typical flow:
 
 See the [Plugin Configuration](https://www.yedmq.com/docs/plugin-configuration) and [Plugin Development Guide](https://www.yedmq.com/docs/plugin-developer-guide/quick-start) for details.
 
+## ✅ Release Gate
+
+Before publishing a release candidate or validating a risky cluster change, run the documented release gate from the repository root:
+
+```bash
+./scripts/run_release_gate.sh
+```
+
+For extended cluster smoke validation, run it with:
+
+```bash
+RUN_CLUSTER_SMOKE=1 ./scripts/run_release_gate.sh
+```
+
+See [Release Gate](doc/release_gate.md) for the fast check set, the optional cluster smoke harness, and how to interpret environmental failures.
+
 ## 🤝 Contributing
 
 Bug reports, feature requests, documentation fixes, and pull requests are welcome.
@@ -292,7 +308,7 @@ For larger changes, open a GitHub issue or discussion first so the scope is clea
 - [x] MQTT v5.0 support
 - [x] Raft-based clustering
 - [x] Plugin system
-- [ ] Shared subscriptions
+- [x] Shared subscriptions
 - [ ] Message persistence (disk-based)
 - [ ] Prometheus metrics
 - [ ] WebUI dashboard

@@ -335,7 +335,7 @@ async fn start_node(
         let boot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let rt = actix::System::new();
             rt.block_on(async {
-                let app = Arc::new(YedMQApp::new(settings_clone).await);
+                let app = Arc::new(YedMQApp::new(settings_clone).await.unwrap());
                 YedMQApp::start(app.clone()).await;
 
                 let app_clone = app.clone();

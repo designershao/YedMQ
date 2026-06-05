@@ -1,3 +1,4 @@
+use anyhow::Context;
 use log::{info, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -196,7 +197,7 @@ impl YedMQApp {
         hn.push(mqtt_wss_listener_join);
     }
 
-    pub async fn new(settings: Arc<Settings>) -> Self {
+    pub async fn new(settings: Arc<Settings>) -> anyhow::Result<Self> {
         // init plugin manager
 
         let plugin_host_config = yedmq_plugin_host::plugin_host_config::PluginHostConfig {
@@ -217,12 +218,13 @@ impl YedMQApp {
 
         let mut plugin_manager = PluginManager::new(plugin_host_config)
             .await
-            .expect("plugin manager init failed");
+            .context("plugin manager init failed")?;
 
-        match plugin_manager.start_listener().await {
-            Ok(_) => info!("plugin manager listener start succeed"),
-            Err(e) => panic!("plugin manager listener start failed: {}", e),
-        }
+        plugin_manager
+            .start_listener()
+            .await
+            .context("plugin manager listener start failed")?;
+        info!("plugin manager listener start succeed");
 
         plugin_manager.start_heartbeat_check_task().await;
 
@@ -230,10 +232,11 @@ impl YedMQApp {
 
         let plugin_manager = Arc::new(plugin_manager);
 
-        match plugin_manager.start_all_plugins().await {
-            Ok(_) => info!("all plugins started succeed"),
-            Err(e) => panic!("start all plugins failed: {}", e),
-        }
+        plugin_manager
+            .start_all_plugins()
+            .await
+            .context("start all plugins failed")?;
+        info!("all plugins started succeed");
 
         let session_clock = SessionClock::new(
             settings.cluster.node_id,
@@ -242,7 +245,7 @@ impl YedMQApp {
         session_clock
             .restore()
             .await
-            .expect("Session clock restore failed");
+            .context("session clock restore failed")?;
 
         let session_clock = Arc::new(session_clock);
 
@@ -259,11 +262,12 @@ impl YedMQApp {
             session_clock.clone(),
             metric.clone(),
         )
-        .await;
+        .await
+        .context("service registry startup failed")?;
         //
 
         // init raft manager
-        YedMQApp {
+        Ok(YedMQApp {
             plugin_manager,
             settings,
             metric,
@@ -271,6 +275,44 @@ impl YedMQApp {
             join_handles,
             service_registry,
             arbiter_pool: arbiter_pool.clone(),
-        }
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use crate::settings::Settings;
+
+    use super::YedMQApp;
+
+    #[actix::test]
+    async fn new_returns_error_when_plugin_listener_cannot_start() {
+        let temp_dir = TempDir::new().unwrap();
+        let plugin_dir = temp_dir.path().join("plugins");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let mut settings = Settings::default();
+        settings.plugin.dir = plugin_dir.to_string_lossy().into_owned();
+        settings.plugin.local_socket_path = temp_dir
+            .path()
+            .join("missing-parent")
+            .join("yedmq_plugin.sock")
+            .to_string_lossy()
+            .into_owned();
+
+        let err = match YedMQApp::new(Arc::new(settings)).await {
+            Ok(_) => panic!("expected app startup to fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("plugin manager listener start failed"),
+            "unexpected error: {err:#}"
+        );
     }
 }
