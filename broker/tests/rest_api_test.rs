@@ -547,6 +547,49 @@ async fn test_api_broker_stats() {
 }
 
 #[actix::test]
+async fn test_api_metrics_is_node_local_openmetrics() {
+    let _guard = plugin_api_lock().lock().await;
+    let context = setup_instance().await;
+    let client = reqwest::Client::new();
+    let api_addr = &context.settings.listener.api.external;
+    let url = format!("http://{}/metrics", api_addr);
+
+    let resp = client
+        .get(&url)
+        .basic_auth("admin", Some("password"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = resp.text().await.unwrap();
+
+    assert!(
+        content_type.starts_with("application/openmetrics-text"),
+        "unexpected content type: {content_type}"
+    );
+    assert!(
+        body.contains("yedmq_node_info{cluster=\"YedMQTest\",node_id=\"1001\"} 1"),
+        "missing node-local identity metric: {body}"
+    );
+    assert!(
+        body.contains("yedmq_clients_connected{cluster=\"YedMQTest\",node_id=\"1001\"}"),
+        "missing node-local clients metric: {body}"
+    );
+    assert!(
+        body.contains("yedmq_messages_received_total{cluster=\"YedMQTest\",node_id=\"1001\"}"),
+        "missing node-local message counter: {body}"
+    );
+    assert!(body.ends_with("# EOF\n"), "missing OpenMetrics EOF: {body}");
+}
+
+#[actix::test]
 async fn test_api_unauthorized() {
     let _guard = plugin_api_lock().lock().await;
     let context = setup_instance().await;

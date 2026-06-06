@@ -158,6 +158,7 @@ pub async fn run_rest_api_task(
         )
         .route("/api/v1/node/status", axum::routing::get(node::status))
         .route("/api/v1/broker/stats", axum::routing::get(broker::stats))
+        .route("/metrics", axum::routing::get(broker::metrics))
         .route(
             "/api/v1/cluster/metrics",
             axum::routing::get(cluster::metrics),

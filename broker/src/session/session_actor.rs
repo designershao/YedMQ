@@ -30,6 +30,7 @@ use yedmq_plugin_host::{
     plugin_manager::{AuthorizeResult, PluginManager},
     protocol::plugin_protocol::{
         AuthAction, AuthorizeRequest, ClientDisconnectedEvent, MessagePublishRequest, MqttMessage,
+        SubscribeRequest, TopicFilter,
     },
 };
 
@@ -987,6 +988,7 @@ async fn do_handle_publish(
     publish_packet: Publish,
     context: HandlePublishContext,
 ) -> Result<HandlePublishResult, HandlePublishError> {
+    let mut publish_packet = publish_packet;
     let mut result = HandlePublishResult {
         inflight_packet: None,
     };
@@ -1044,25 +1046,44 @@ async fn do_handle_publish(
             return Ok(result);
         }
 
-        let message_publish_request = MessagePublishRequest {
-            message: Some(MqttMessage {
-                tenant_id: context.client_info.tenant_id.clone(),
-                client_id: context.client_info.client_identifier.clone(),
-                topic: publish_packet.topic_name.clone(),
-                payload: publish_packet.payload.to_vec(),
-                qos: publish_packet.qos as u32,
-                retain: publish_packet.retain,
-                dup: publish_packet.dup,
-                publish_time: None,
-                properties: properties_to_struct(&publish_packet.properties),
-                message_id: None,
-            }),
-            context: None,
+        let publish_policy_result = context
+            .plugin_manager
+            .call_on_message_publish(MessagePublishRequest {
+                message: Some(mqtt_message_from_publish(
+                    &publish_packet,
+                    &context.client_info,
+                )),
+                context: None,
+            })
+            .await;
+
+        let publish_policy_result = match publish_policy_result {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("on message publish hook failed: {}", e);
+                result.inflight_packet = inbound_publish_success_ack(&publish_packet);
+                return Ok(result);
+            }
         };
+
+        if !publish_policy_result.allow {
+            result.inflight_packet = inbound_publish_success_ack(&publish_packet);
+            return Ok(result);
+        }
+
+        if let Some(modified_message) = publish_policy_result.modified_message {
+            apply_modified_mqtt_message(&mut publish_packet, modified_message);
+        }
 
         context
             .plugin_manager
-            .call_message_published_hook(message_publish_request)
+            .call_message_published_hook(MessagePublishRequest {
+                message: Some(mqtt_message_from_publish(
+                    &publish_packet,
+                    &context.client_info,
+                )),
+                context: None,
+            })
             .await;
 
         let mut session_state_guard = context.session_state.write().await;
@@ -1185,6 +1206,30 @@ async fn do_handle_publish(
     Ok(result)
 }
 
+fn mqtt_message_from_publish(publish_packet: &Publish, client_info: &Client) -> MqttMessage {
+    MqttMessage {
+        tenant_id: client_info.tenant_id.clone(),
+        client_id: client_info.client_identifier.clone(),
+        topic: publish_packet.topic_name.clone(),
+        payload: publish_packet.payload.to_vec(),
+        qos: publish_packet.qos as u32,
+        retain: publish_packet.retain,
+        dup: publish_packet.dup,
+        publish_time: None,
+        properties: properties_to_struct(&publish_packet.properties),
+        message_id: None,
+    }
+}
+
+fn apply_modified_mqtt_message(publish_packet: &mut Publish, modified_message: MqttMessage) {
+    if !modified_message.topic.is_empty() {
+        publish_packet.topic_name = modified_message.topic;
+    }
+    publish_packet.payload = Bytes::from(modified_message.payload);
+    publish_packet.retain = modified_message.retain;
+    publish_packet.dup = modified_message.dup;
+}
+
 async fn do_handle_subscribe(
     subscribe_packet: &Subscribe,
     client_info: &Client,
@@ -1258,12 +1303,47 @@ async fn do_handle_subscribe(
             }); // if plugin call fails, treat it as unauthorized
 
         if topic_authorizate_result.authorized {
+            let subscribe_policy_result = plugin_manager
+                .call_on_message_subscribe(SubscribeRequest {
+                    client_id: client_id.clone(),
+                    subscriptions: vec![TopicFilter {
+                        topic: topic.topic_filter.clone(),
+                        qos: topic.qos as u32,
+                        options: Some(subscribe_context(&topic, &subscribe_packet.properties)),
+                    }],
+                    context: None,
+                })
+                .await;
+
+            let subscribe_policy_item = match subscribe_policy_result {
+                Ok(result) => result
+                    .result
+                    .into_iter()
+                    .find(|item| item.topic == topic.topic_filter),
+                Err(e) => {
+                    warn!("on message subscribe hook failed: {}", e);
+                    None
+                }
+            };
+
+            let Some(subscribe_policy_item) = subscribe_policy_item else {
+                return_code.push(ReasonCode::NotAuthorized);
+                continue;
+            };
+
+            if !subscribe_policy_item.allowed {
+                return_code.push(ReasonCode::NotAuthorized);
+                continue;
+            }
+
+            let granted_qos = cmp::min(cmp::min(subscribe_policy_item.granted_qos, topic.qos), 2);
+
             match topic_service
                 .subscribe_with_options(
                     tenant_id.clone(),
                     client_id.clone(),
                     topic.topic_filter.clone(),
-                    topic.qos,
+                    granted_qos,
                     topic.no_local,
                     topic.retain_as_published,
                 )
@@ -1273,12 +1353,12 @@ async fn do_handle_subscribe(
                     succeed_subscriptions.push((
                         topic.topic_filter.clone(),
                         SubscriptionState::new(
-                            topic.qos.into(),
+                            granted_qos.into(),
                             topic.no_local,
                             topic.retain_as_published,
                         ),
                     ));
-                    return_code.push(granted_qos_reason(topic.qos));
+                    return_code.push(granted_qos_reason(granted_qos));
 
                     let send_retained = match topic.retain_handling {
                         RetainHandling::SendAtSubscribe => true,
@@ -1306,7 +1386,7 @@ async fn do_handle_subscribe(
                                 retain_messages.extend(packets.into_iter().map(|packet| {
                                     RetainedPublishDelivery {
                                         packet,
-                                        requested_qos: topic.qos,
+                                        requested_qos: granted_qos,
                                         retain_as_published: topic.retain_as_published,
                                         subscriber_protocol: subscribe_packet.protocol_version,
                                     }

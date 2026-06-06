@@ -1244,7 +1244,7 @@ impl PluginManager {
     // Called when message publish before, it can be used to modify the message.
     pub async fn call_on_message_publish(
         &self,
-        message_publish_request: MessagePublishRequest,
+        mut message_publish_request: MessagePublishRequest,
     ) -> Result<MessagePublishResult, PluginManagerError> {
         let hook_manager = self.hook_manager.read().await;
         let plugins = hook_manager.get_hooks(&crate::hook::Hook::OnMessagePublish);
@@ -1292,14 +1292,23 @@ impl PluginManager {
                                         continue;
                                     }
                                     std::result::Result::Ok(message_publish_response) => {
-                                        if !message_publish_response.continue_chain() {
-                                            let message_publish_result = MessagePublishResult {
-                                                allow: message_publish_response.allow,
-                                                modified_message: message_publish_response
-                                                    .modified_message,
-                                                error_reason: message_publish_response.error_reason,
-                                            };
-                                            return std::result::Result::Ok(message_publish_result);
+                                        let allow = message_publish_response.allow;
+                                        let continue_chain =
+                                            message_publish_response.continue_chain();
+                                        let error_reason = message_publish_response.error_reason;
+                                        if let Some(modified_message) =
+                                            message_publish_response.modified_message
+                                        {
+                                            message_publish_request.message =
+                                                Some(modified_message);
+                                        }
+
+                                        if !allow || !continue_chain {
+                                            return std::result::Result::Ok(MessagePublishResult {
+                                                allow,
+                                                modified_message: message_publish_request.message,
+                                                error_reason,
+                                            });
                                         }
                                     }
                                 }
@@ -1975,6 +1984,8 @@ impl PluginManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hook::Hook;
+    use crate::loader::{PluginInfo, RuntimeConfig, RuntimeType};
     use tempfile::TempDir;
 
     fn create_test_config(base_dir: &std::path::Path, socket_name: &str) -> PluginHostConfig {
@@ -1998,6 +2009,109 @@ mod tests {
             default_authorize_result: false,
             default_authenticate_result: false,
         }
+    }
+
+    fn test_manifest(name: &str) -> PluginManifest {
+        PluginManifest {
+            plugin: PluginInfo {
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+                description: "test plugin".to_string(),
+                author: "test".to_string(),
+                license: None,
+                homepage: None,
+                repository: None,
+            },
+            runtime: RuntimeConfig {
+                runtime_type: RuntimeType::Process,
+                executable: Some("mock".to_string()),
+                args: None,
+                env: None,
+                working_dir: None,
+                timeout_secs: None,
+            },
+        }
+    }
+
+    fn running_test_plugin(
+        name: &str,
+        auth_code: &str,
+        ipc_sender: tokio::sync::mpsc::Sender<TxCmd>,
+    ) -> RunningPlugin {
+        RunningPlugin {
+            name: name.to_string(),
+            manifest: test_manifest(name),
+            state: PluginState::Running,
+            plugin_abort_tx: None,
+            plugin_log_collector_quit_tx: None,
+            process_wait_handle: None,
+            process_log_handle: None,
+            start_time: Some(std::time::Instant::now()),
+            restart_count: 0,
+            last_health_check: None,
+            ping_response_timeout_count: 0,
+            ipc_sender: Some(ipc_sender),
+            auth_code: auth_code.to_string(),
+            logs: Arc::new(RwLock::new(Vec::new())),
+            initialize_status: Some("ready".to_string()),
+            capabilities: Vec::new(),
+            hooks: vec![PluginHookInfo {
+                name: "OnMessagePublish".to_string(),
+                priority: 0,
+            }],
+            last_error: None,
+        }
+    }
+
+    async fn respond_to_on_message_publish(
+        mut rx_cmd_receiver: tokio::sync::mpsc::Receiver<TxCmd>,
+        inflight_manager: Arc<InflightManager>,
+        observed_payloads: Arc<Mutex<Vec<Vec<u8>>>>,
+        next_payload: &'static [u8],
+        continue_chain: bool,
+    ) {
+        let Some(TxCmd::SendMessage(protocol_message)) = rx_cmd_receiver.recv().await else {
+            return;
+        };
+
+        let request = protocol_message
+            .params
+            .as_ref()
+            .expect("publish request params");
+        let request =
+            MessagePublishRequest::decode(request.value.as_slice()).expect("publish request");
+        let mut message = request.message.expect("publish message");
+
+        observed_payloads
+            .lock()
+            .unwrap()
+            .push(message.payload.clone());
+        message.payload = next_payload.to_vec();
+
+        let response = MessagePublishResponse {
+            allow: true,
+            continue_chain: Some(continue_chain),
+            error_reason: None,
+            modified_message: Some(message),
+        };
+
+        let response_message = ProtocolMessageBuilder::new()
+            .with_type(MessageType::Response)
+            .with_result(prost_types::Any {
+                type_url: crate::protocol::MQTT_MESSAGE_PUBLISH_RESPONSE_TYPE_URL.to_string(),
+                value: response.encode_to_vec(),
+            })
+            .build();
+
+        let response_message = ProtocolMessage {
+            id: protocol_message.id.clone(),
+            ..response_message
+        };
+
+        let response_sender = inflight_manager
+            .remove(&protocol_message.id)
+            .expect("inflight response sender");
+        let _ = response_sender.send(Ok(response_message));
     }
 
     #[tokio::test]
@@ -2052,5 +2166,82 @@ mod tests {
         let mut second_manager = PluginManager::new(config).await.unwrap();
         second_manager.start_listener().await.unwrap();
         second_manager.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn on_message_publish_chain_carries_modified_message_forward() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path(), "plugin_host.sock");
+        let manager = PluginManager::new(config).await.unwrap();
+        let (first_tx, first_rx) = tokio::sync::mpsc::channel::<TxCmd>(1);
+        let (second_tx, second_rx) = tokio::sync::mpsc::channel::<TxCmd>(1);
+
+        manager.running_plugins.insert(
+            "first".to_string(),
+            running_test_plugin("first", "first-auth", first_tx),
+        );
+        manager.running_plugins.insert(
+            "second".to_string(),
+            running_test_plugin("second", "second-auth", second_tx),
+        );
+        {
+            let mut hook_manager = manager.hook_manager.write().await;
+            hook_manager.register_hook(
+                Hook::OnMessagePublish,
+                "first".to_string(),
+                "first-auth".to_string(),
+                1,
+            );
+            hook_manager.register_hook(
+                Hook::OnMessagePublish,
+                "second".to_string(),
+                "second-auth".to_string(),
+                2,
+            );
+        }
+
+        let observed_payloads = Arc::new(Mutex::new(Vec::new()));
+        let first_observed = observed_payloads.clone();
+        let second_observed = observed_payloads.clone();
+        let inflight_manager = manager.inflight_manager.clone();
+        tokio::spawn(respond_to_on_message_publish(
+            first_rx,
+            inflight_manager.clone(),
+            first_observed,
+            b"first",
+            true,
+        ));
+        tokio::spawn(respond_to_on_message_publish(
+            second_rx,
+            inflight_manager,
+            second_observed,
+            b"second",
+            false,
+        ));
+
+        let result = manager
+            .call_on_message_publish(MessagePublishRequest {
+                message: Some(crate::protocol::plugin_protocol::MqttMessage {
+                    tenant_id: "tenant".to_string(),
+                    client_id: "client".to_string(),
+                    topic: "topic".to_string(),
+                    payload: b"original".to_vec(),
+                    qos: 1,
+                    retain: false,
+                    dup: false,
+                    publish_time: None,
+                    properties: None,
+                    message_id: None,
+                }),
+                context: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.modified_message.unwrap().payload, b"second");
+        assert_eq!(
+            *observed_payloads.lock().unwrap(),
+            vec![b"original".to_vec(), b"first".to_vec()]
+        );
     }
 }

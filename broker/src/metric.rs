@@ -37,6 +37,16 @@ impl Default for Metric {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::SysTopicTask;
+
+    #[test]
+    fn sys_metric_payload_is_ascii_decimal() {
+        assert_eq!(SysTopicTask::metric_payload(300).as_ref(), b"300");
+    }
+}
+
 impl Metric {
     pub fn new() -> Metric {
         Metric {
@@ -157,6 +167,10 @@ impl SysTopicTask {
         })
     }
 
+    fn metric_payload(value: u64) -> Bytes {
+        Bytes::from(value.to_string())
+    }
+
     pub async fn run(&self) {
         let clients_connected_topic = "$SYS/broker/clients/connected".to_string();
         let broker_bytes_sent_topic = "$SYS/broker/bytes/sent".to_string();
@@ -202,44 +216,44 @@ impl SysTopicTask {
 
             let clients_connected_packet = Self::sys_publish(
                 clients_connected_topic.clone(),
-                Bytes::copy_from_slice(vec![clients_connected.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(clients_connected),
             );
             let bytes_received_packet = Self::sys_publish(
                 broker_bytes_received_topic.clone(),
-                Bytes::copy_from_slice(vec![bytes_received.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(bytes_received),
             );
             let bytes_sent_packet = Self::sys_publish(
                 broker_bytes_sent_topic.clone(),
-                Bytes::copy_from_slice(vec![bytes_sent.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(bytes_sent),
             );
             let uptime_packet = Self::sys_publish(
                 broker_uptime_topic.clone(),
-                Bytes::copy_from_slice(vec![metric.get_uptime().to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(metric.get_uptime()),
             );
 
             let packets_received_packet = Self::sys_publish(
                 packets_received_topic.clone(),
-                Bytes::copy_from_slice(vec![packets_received.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(packets_received),
             );
             let packets_sent_packet = Self::sys_publish(
                 packets_sent_topic.clone(),
-                Bytes::copy_from_slice(vec![packets_sent.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(packets_sent),
             );
             let messages_received_packet = Self::sys_publish(
                 messages_received_topic.clone(),
-                Bytes::copy_from_slice(vec![messages_received.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(messages_received),
             );
             let messages_sent_packet = Self::sys_publish(
                 messages_sent_topic.clone(),
-                Bytes::copy_from_slice(vec![messages_sent.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(messages_sent),
             );
             let messages_dropped_packet = Self::sys_publish(
                 messages_dropped_topic.clone(),
-                Bytes::copy_from_slice(vec![messages_dropped.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(messages_dropped),
             );
             let subscriptions_count_packet = Self::sys_publish(
                 subscriptions_count_topic.clone(),
-                Bytes::copy_from_slice(vec![subscriptions_count.to_le_bytes()[0]].as_slice()),
+                Self::metric_payload(subscriptions_count),
             );
 
             let router_actor_addr = self

@@ -222,6 +222,7 @@ For detailed guides, please visit our [Official Documentation](https://www.yedmq
 - [Cluster Setup](https://www.yedmq.com/docs/cluster-configuration)
 - [Plugin Development](https://www.yedmq.com/docs/plugin-developer-guide/introduction/)
 - [REST API Reference](https://www.yedmq.com/docs/category/yedmq-management-api)
+- [Observability](doc/observability.md)
 
 ## 🏗️ Architecture
 
@@ -296,6 +297,12 @@ RUN_CLUSTER_SMOKE=1 ./scripts/run_release_gate.sh
 ```
 
 See [Release Gate](doc/release_gate.md) for the fast check set, the optional cluster smoke harness, and how to interpret environmental failures.
+
+## 📈 Observability
+
+`$SYS/broker/*` topics and `GET /metrics` are node-local. Scrape every broker node and aggregate cluster-wide views outside YedMQ with labels such as `cluster` and `node_id`.
+
+See [Observability](doc/observability.md) for the `$SYS` payload format, the OpenMetrics endpoint, and the recommended aggregation model.
 
 ## 🤝 Contributing
 
