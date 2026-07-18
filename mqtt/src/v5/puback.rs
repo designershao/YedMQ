@@ -64,4 +64,17 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn rejects_reason_code_not_allowed_on_puback() {
+        let err = parse(&[0x40, 0x03, 0x00, 0x0a, 0x84], 1024).unwrap_err();
+
+        assert_eq!(
+            err,
+            Mqtt5ParseError::ReasonCodeNotAllowed {
+                reason_code: 0x84,
+                packet_type: "PUBACK",
+            }
+        );
+    }
 }

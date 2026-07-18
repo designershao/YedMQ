@@ -256,6 +256,9 @@ pub enum ConnectionError {
     #[error("connection unauthorized, reason {0}")]
     Unauthenticate(String),
 
+    #[error("invalid client identifier: {0}")]
+    InvalidClientIdentifier(String),
+
     #[error("unsupported MQTT 5 feature {0}")]
     UnsupportedMqtt5Feature(&'static str),
 
@@ -296,6 +299,28 @@ pub struct UpdateProtocolVersion {
     pub protocol_version: ProtocolVersion,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Mqtt5ClientLimits {
+    maximum_packet_size: Option<u32>,
+    receive_maximum: u16,
+}
+
+impl Default for Mqtt5ClientLimits {
+    fn default() -> Self {
+        Self {
+            maximum_packet_size: None,
+            receive_maximum: u16::MAX,
+        }
+    }
+}
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct UpdateMqtt5ClientLimits {
+    maximum_packet_size: Option<u32>,
+    receive_maximum: Option<u16>,
+}
+
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct NotifyUpdateDisconnectedNormally {
@@ -323,6 +348,7 @@ pub struct ConnectionActor<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
 
     pub disconnected_normally: bool,
     protocol_version: ProtocolVersion,
+    mqtt5_client_limits: Mqtt5ClientLimits,
     session: Option<Recipient<SessionActorMessage>>,
 
     read_packet_handle: Option<SpawnHandle>,
@@ -436,6 +462,19 @@ where
                                 read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("Failed to send UpdateProtocolVersion message to self. The actor is likely shutting down.".to_string())));
                                 return;
                             }
+                            if protocol_version == ProtocolVersion::V5_0
+                                && read_addr
+                                    .send(UpdateMqtt5ClientLimits {
+                                        maximum_packet_size: packet.properties.maximum_packet_size,
+                                        receive_maximum: packet.properties.receive_maximum,
+                                    })
+                                    .await
+                                    .is_err()
+                            {
+                                error!("Failed to send UpdateMqtt5ClientLimits message to self. The actor is likely shutting down.");
+                                read_addr.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::InternalError("Failed to send UpdateMqtt5ClientLimits message to self. The actor is likely shutting down.".to_string())));
+                                return;
+                            }
 
                             match handle_initial_connect(
                                 packet,
@@ -450,6 +489,7 @@ where
                                         protocol_version,
                                         result.session_present,
                                         max_msg_size,
+                                        result.assigned_client_identifier.clone(),
                                     );
 
                                     if let Err(e) = read_addr
@@ -615,6 +655,7 @@ where
             max_message_size,
             disconnected_normally: false,
             protocol_version: ProtocolVersion::V3_1_1,
+            mqtt5_client_limits: Mqtt5ClientLimits::default(),
             buffer_size: default_buffer_size,
             peer_addr,
             plugin_service,
@@ -831,12 +872,14 @@ fn detect_initial_connect_protocol(
 pub struct HandleInitialConnectResult {
     pub session_recipient: Recipient<SessionActorMessage>,
     pub session_present: bool,
+    pub assigned_client_identifier: Option<String>,
 }
 
 fn success_connack_packet(
     protocol_version: ProtocolVersion,
     session_present: bool,
     max_message_size: u32,
+    assigned_client_identifier: Option<String>,
 ) -> Packet {
     match protocol_version {
         ProtocolVersion::V3_1_1 => {
@@ -855,6 +898,7 @@ fn success_connack_packet(
                 topic_alias_maximum: Some(0),
                 subscription_identifier_available: Some(false),
                 shared_subscription_available: Some(true),
+                assigned_client_identifier,
                 ..Properties::default()
             },
         }),
@@ -901,6 +945,10 @@ fn error_connack_packet(protocol_version: ProtocolVersion, error: &ConnectionErr
                 ConnectionError::Unauthenticate(reason) => {
                     error!("connection unauthenticated: {}", reason);
                     ReasonCode::NotAuthorized
+                }
+                ConnectionError::InvalidClientIdentifier(reason) => {
+                    warn!("invalid client identifier: {}", reason);
+                    ReasonCode::ClientIdentifierNotValid
                 }
                 ConnectionError::UnsupportedMqtt5Feature(feature) => {
                     warn!("unsupported MQTT 5 feature during connect: {}", feature);
@@ -969,13 +1017,14 @@ fn will_message_from_connect_will(
 }
 
 async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
-    packet: Connect,
+    mut packet: Connect,
     plugin_service: Arc<PluginManager>,
     self_addr: &Addr<ConnectionActor<T>>,
     peer_addr: SocketAddr,
     client_certificate: Option<Vec<u8>>,
     metric: Arc<Metric>,
 ) -> Result<HandleInitialConnectResult, ConnectionError> {
+    let assigned_client_identifier = prepare_client_identifier(&mut packet)?;
     let session_options = session_options_for_session_manager(&packet);
     let will_message = packet
         .will
@@ -1016,6 +1065,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                         clean_start: session_options.clean_start,
                         protocol_version: session_options.protocol_version,
                         session_expiry_interval: session_options.session_expiry_interval,
+                        receive_maximum: session_options.receive_maximum,
                         connection_addr: recipient.clone(),
                         keep_alive: packet.keep_alive as u64,
                         will_message,
@@ -1052,6 +1102,7 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
                     .map(|r| HandleInitialConnectResult {
                         session_recipient: r.session_actor_recipient,
                         session_present: r.session_present,
+                        assigned_client_identifier,
                     });
 
                 metric.increase_clients_connected();
@@ -1068,6 +1119,21 @@ async fn handle_initial_connect<T: AsyncRead + AsyncWrite + Unpin + Send + 'stat
     }
 }
 
+fn prepare_client_identifier(packet: &mut Connect) -> Result<Option<String>, ConnectionError> {
+    if packet.protocol_version != ProtocolVersion::V5_0 || !packet.client_id.is_empty() {
+        return Ok(None);
+    }
+    if !packet.clean_start {
+        return Err(ConnectionError::InvalidClientIdentifier(
+            "an empty MQTT 5 client identifier requires Clean Start".to_string(),
+        ));
+    }
+
+    let assigned = uuid::Uuid::new_v4().to_string();
+    packet.client_id = assigned.clone();
+    Ok(Some(assigned))
+}
+
 fn protocol_version_label(protocol_version: ProtocolVersion) -> &'static str {
     match protocol_version {
         ProtocolVersion::V3_1_1 => "3.1.1",
@@ -1081,6 +1147,7 @@ struct SessionStartOptions {
     clean_start: bool,
     protocol_version: ProtocolVersion,
     session_expiry_interval: Option<u32>,
+    receive_maximum: u16,
 }
 
 fn session_options_for_session_manager(packet: &Connect) -> SessionStartOptions {
@@ -1090,6 +1157,7 @@ fn session_options_for_session_manager(packet: &Connect) -> SessionStartOptions 
             clean_start: packet.clean_start,
             protocol_version: ProtocolVersion::V3_1_1,
             session_expiry_interval: None,
+            receive_maximum: u16::MAX,
         },
         ProtocolVersion::V5_0 => {
             let session_expiry_interval = packet
@@ -1101,6 +1169,7 @@ fn session_options_for_session_manager(packet: &Connect) -> SessionStartOptions 
                 clean_start: packet.clean_start,
                 protocol_version: ProtocolVersion::V5_0,
                 session_expiry_interval: Some(session_expiry_interval),
+                receive_maximum: packet.properties.receive_maximum.unwrap_or(u16::MAX),
             }
         }
     }
@@ -1175,6 +1244,18 @@ where
     }
 }
 
+impl<T> Handler<UpdateMqtt5ClientLimits> for ConnectionActor<T>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Result = ();
+
+    fn handle(&mut self, msg: UpdateMqtt5ClientLimits, _ctx: &mut Self::Context) -> Self::Result {
+        self.mqtt5_client_limits.maximum_packet_size = msg.maximum_packet_size;
+        self.mqtt5_client_limits.receive_maximum = msg.receive_maximum.unwrap_or(u16::MAX);
+    }
+}
+
 impl<T> Drop for ConnectionActor<T>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -1205,20 +1286,49 @@ where
                     return Ok(());
                 }
 
+                let is_publish = matches!(packet, Packet::Publish(_));
+                let mut encoded_packet = BytesMut::new();
                 match self.protocol_version {
                     ProtocolVersion::V3_1_1 => {
                         let packet = MqttPacketV3::try_from(packet)
                             .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
-                        packet.encode(&mut self.encode_buffer);
+                        packet.encode(&mut encoded_packet);
                     }
                     ProtocolVersion::V5_0 => {
                         packet.set_protocol_version(ProtocolVersion::V5_0);
-                        yedmq_mqtt::v5::encode(&packet, &mut self.encode_buffer)
+                        yedmq_mqtt::v5::encode(&packet, &mut encoded_packet)
                             .map_err(|e| ConnectionError::PacketParseError(e.to_string()))?;
                     }
                 }
-                //let bytes = packet.to_bytes();
-                //self.encode_buffer.extend_from_slice(&bytes);
+
+                if self.protocol_version == ProtocolVersion::V5_0 {
+                    if let Some(maximum_packet_size) = self.mqtt5_client_limits.maximum_packet_size
+                    {
+                        if encoded_packet.len() > maximum_packet_size as usize {
+                            if is_publish {
+                                warn!(
+                                    "dropping outbound MQTT 5 PUBLISH to {} because encoded size {} exceeds client Maximum Packet Size {}",
+                                    self.peer_addr,
+                                    encoded_packet.len(),
+                                    maximum_packet_size
+                                );
+                                self.metric.increase_messages_dropped();
+                                return Ok(());
+                            }
+
+                            return Err(ConnectionError::Mqtt5ProtocolError {
+                                reason_code: ReasonCode::PacketTooLarge,
+                                message: format!(
+                                    "encoded outbound packet size {} exceeds client Maximum Packet Size {}",
+                                    encoded_packet.len(),
+                                    maximum_packet_size
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                self.encode_buffer.extend_from_slice(&encoded_packet);
                 self.pending_count += 1;
 
                 // reach the limit, flush now
@@ -1296,6 +1406,42 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mqtt5_connect(client_id: &str, clean_start: bool) -> Connect {
+        Connect {
+            protocol_version: ProtocolVersion::V5_0,
+            client_id: client_id.to_string(),
+            username: None,
+            password: None,
+            keep_alive: 30,
+            clean_start,
+            session_expiry_interval: None,
+            will: None,
+            properties: Properties::default(),
+        }
+    }
+
+    #[test]
+    fn assigns_identifier_to_clean_start_mqtt5_client() {
+        let mut connect = mqtt5_connect("", true);
+
+        let assigned = prepare_client_identifier(&mut connect)
+            .expect("assign client identifier")
+            .expect("identifier should be assigned");
+
+        assert!(!assigned.is_empty());
+        assert_eq!(connect.client_id, assigned);
+    }
+
+    #[test]
+    fn rejects_empty_mqtt5_identifier_without_clean_start() {
+        let mut connect = mqtt5_connect("", false);
+
+        assert!(matches!(
+            prepare_client_identifier(&mut connect),
+            Err(ConnectionError::InvalidClientIdentifier(_))
+        ));
+    }
 
     #[test]
     fn non_zero_will_delay_is_rejected() {

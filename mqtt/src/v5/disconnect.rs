@@ -63,6 +63,7 @@ pub fn encode(packet: &Disconnect, buffer: &mut BytesMut) -> Result<(), Mqtt5Par
             "DISCONNECT packet is not MQTT 5.0",
         ));
     }
+    reason_code::validate_for_packet(packet.reason_code, ControlPacketType::Disconnect)?;
 
     let properties = normalized_disconnect_properties(packet)?;
 
@@ -94,11 +95,13 @@ pub fn to_bytes(packet: &Disconnect) -> Result<BytesMut, Mqtt5ParseError> {
 }
 
 fn decode_disconnect_reason_code(value: u8) -> Result<ReasonCode, Mqtt5ParseError> {
-    if value == 0 {
-        Ok(ReasonCode::NormalDisconnection)
+    let reason_code = if value == 0 {
+        ReasonCode::NormalDisconnection
     } else {
-        reason_code::decode(value)
-    }
+        reason_code::decode(value)?
+    };
+    reason_code::validate_for_packet(reason_code, ControlPacketType::Disconnect)?;
+    Ok(reason_code)
 }
 
 fn normalized_disconnect_properties(packet: &Disconnect) -> Result<Properties, Mqtt5ParseError> {

@@ -41,7 +41,7 @@ fn parse_body(input: &[u8]) -> Result<(&[u8], Unsuback), Mqtt5ParseError> {
     let reason_codes = input
         .iter()
         .copied()
-        .map(reason_code::decode)
+        .map(|value| reason_code::decode_for_packet(value, ControlPacketType::Unsuback))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok((
@@ -70,6 +70,9 @@ pub fn encode(packet: &Unsuback, buffer: &mut BytesMut) -> Result<(), Mqtt5Parse
         return Err(Mqtt5ParseError::MalformedPacket(
             "UNSUBACK must contain at least one reason code",
         ));
+    }
+    for reason_code in &packet.reason_codes {
+        reason_code::validate_for_packet(*reason_code, ControlPacketType::Unsuback)?;
     }
 
     let mut body = BytesMut::new();

@@ -34,7 +34,7 @@ fn parse_body(input: &[u8]) -> Result<(&[u8], Connack), Mqtt5ParseError> {
     }
     let session_present = acknowledge_flags & 0x01 != 0;
     let (input, reason_code) = parse_u8(input, "CONNACK reason code")?;
-    let reason_code = reason_code::decode(reason_code)?;
+    let reason_code = reason_code::decode_for_packet(reason_code, ControlPacketType::Connack)?;
     if reason_code != crate::packet::ReasonCode::Success && session_present {
         return Err(Mqtt5ParseError::MalformedPacket(
             "CONNACK session present requires success reason code",
@@ -69,6 +69,7 @@ pub fn encode(packet: &Connack, buffer: &mut BytesMut) -> Result<(), Mqtt5ParseE
             "CONNACK session present requires success reason code",
         ));
     }
+    reason_code::validate_for_packet(packet.reason_code, ControlPacketType::Connack)?;
 
     let mut body = BytesMut::new();
     body.put_u8(u8::from(packet.session_present));

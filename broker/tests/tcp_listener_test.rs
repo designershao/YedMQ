@@ -265,6 +265,70 @@ pub async fn test_tcp_listener_mqtt5_connect() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_assigns_empty_client_identifier() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut stream = TcpStream::connect(broker_addr).await.unwrap();
+    stream
+        .write_all(&common::mqtt5::connect_packet("", true, 5))
+        .await
+        .unwrap();
+
+    let connack_bytes = read_mqtt5_packet(&mut stream).await;
+    let (_, packet) = yedmq_mqtt::v5::parse(&connack_bytes, 1024).expect("parse MQTT 5 CONNACK");
+    let yedmq_mqtt::packet::Packet::Connack(connack) = packet else {
+        panic!("expected CONNACK");
+    };
+    assert_eq!(connack.reason_code, yedmq_mqtt::packet::ReasonCode::Success);
+    let assigned = connack
+        .properties
+        .assigned_client_identifier
+        .expect("server must return Assigned Client Identifier");
+    assert!(!assigned.is_empty());
+
+    stream
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_rejects_empty_client_identifier_without_clean_start() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut stream = TcpStream::connect(broker_addr).await.unwrap();
+    stream
+        .write_all(&common::mqtt5::connect_packet("", false, 5))
+        .await
+        .unwrap();
+
+    let connack = read_mqtt5_packet(&mut stream).await;
+    let connack = common::mqtt5::parse_connack(&connack).expect("parse MQTT 5 CONNACK");
+    assert_eq!(connack.reason_code, 0x85);
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_disconnect_cannot_increase_session_expiry() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let mut client = connect_mqtt5_client(broker_addr, "mqtt5-invalid-disconnect-expiry").await;
+    client
+        .write_all(&common::mqtt5::disconnect_packet_with_session_expiry(1))
+        .await
+        .unwrap();
+
+    let disconnect = read_mqtt5_packet(&mut client).await;
+    let disconnect = common::mqtt5::parse_disconnect(&disconnect).expect("parse MQTT 5 DISCONNECT");
+    assert_eq!(disconnect.reason_code, 0x82);
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_rejects_unsupported_mqtt_protocol_level() {
     let context = setup_instance().await;
 
@@ -439,6 +503,63 @@ pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos0() {
 }
 
 #[actix::test]
+pub async fn test_tcp_listener_mqtt5_client_maximum_packet_size_drops_oversized_publish() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let topic = format!(
+        "test/mqtt5/client-maximum-packet-size/{}",
+        uuid::Uuid::new_v4()
+    );
+    let payload = vec![b'x'; 96];
+    let maximum_packet_size = common::mqtt5::maximum_packet_size_property(40);
+
+    let (mut subscriber, _) = connect_mqtt5_client_with_properties(
+        broker_addr,
+        "mqtt5-max-packet-subscriber",
+        true,
+        &maximum_packet_size,
+    )
+    .await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(701, &topic, 0))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 701);
+    assert_eq!(suback.reason_codes, vec![0x00]);
+
+    let mut publisher = connect_mqtt5_client(broker_addr, "mqtt5-max-packet-publisher").await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic, &payload, 0, false, None,
+        ))
+        .await
+        .unwrap();
+
+    let no_publish = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut subscriber),
+    )
+    .await;
+    assert!(
+        no_publish.is_err(),
+        "subscriber received an oversized PUBLISH despite Maximum Packet Size"
+    );
+
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+}
+
+#[actix::test]
 pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos1() {
     let context = setup_instance().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -491,6 +612,108 @@ pub async fn test_tcp_listener_mqtt5_publish_subscribe_qos1() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
+}
+
+#[actix::test]
+pub async fn test_tcp_listener_mqtt5_receive_maximum_limits_outbound_qos1_inflight() {
+    let context = setup_instance().await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    let broker_addr = tcp_broker_addr(context);
+    let suffix = uuid::Uuid::new_v4();
+    let topic = format!("test/mqtt5/receive-maximum/{suffix}");
+    let receive_maximum = common::mqtt5::receive_maximum_property(1);
+
+    let (mut subscriber, _) = connect_mqtt5_client_with_properties(
+        broker_addr,
+        &format!("mqtt5-recv-max-sub-{suffix}"),
+        true,
+        &receive_maximum,
+    )
+    .await;
+    subscriber
+        .write_all(&common::mqtt5::subscribe_packet(801, &topic, 1))
+        .await
+        .unwrap();
+    let suback = read_mqtt5_packet(&mut subscriber).await;
+    let suback = common::mqtt5::parse_suback(&suback).expect("parse MQTT 5 SUBACK");
+    assert_eq!(suback.packet_id, 801);
+    assert_eq!(suback.reason_codes, vec![0x01]);
+
+    let mut publisher =
+        connect_mqtt5_client(broker_addr, &format!("mqtt5-recv-max-pub-{suffix}")).await;
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic,
+            b"first",
+            1,
+            false,
+            Some(802),
+        ))
+        .await
+        .unwrap();
+    let first_puback = read_mqtt5_packet(&mut publisher).await;
+    let first_puback =
+        common::mqtt5::parse_puback(&first_puback).expect("parse first publisher PUBACK");
+    assert_eq!(first_puback.packet_id, 802);
+    assert_eq!(first_puback.reason_code, 0x00);
+
+    publisher
+        .write_all(&common::mqtt5::publish_packet(
+            &topic,
+            b"second",
+            1,
+            false,
+            Some(803),
+        ))
+        .await
+        .unwrap();
+    let second_puback = read_mqtt5_packet(&mut publisher).await;
+    let second_puback =
+        common::mqtt5::parse_puback(&second_puback).expect("parse second publisher PUBACK");
+    assert_eq!(second_puback.packet_id, 803);
+    assert_eq!(second_puback.reason_code, 0x00);
+
+    let first_publish = read_mqtt5_packet(&mut subscriber).await;
+    let first_publish =
+        common::mqtt5::parse_publish(&first_publish).expect("parse first subscriber PUBLISH");
+    assert_eq!(first_publish.topic, topic);
+    assert_eq!(first_publish.payload, b"first");
+    assert_eq!(first_publish.qos, 1);
+    let first_packet_id = first_publish
+        .packet_id
+        .expect("first QoS 1 PUBLISH has packet id");
+
+    let second_before_ack = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_mqtt5_packet(&mut subscriber),
+    )
+    .await;
+    assert!(
+        second_before_ack.is_err(),
+        "subscriber received a second QoS 1 PUBLISH before acknowledging the first"
+    );
+
+    subscriber
+        .write_all(&common::mqtt5::puback_packet(first_packet_id))
+        .await
+        .unwrap();
+
+    let second_publish = read_mqtt5_packet(&mut subscriber).await;
+    let second_publish =
+        common::mqtt5::parse_publish(&second_publish).expect("parse second subscriber PUBLISH");
+    assert_eq!(second_publish.topic, topic);
+    assert_eq!(second_publish.payload, b"second");
+    assert_eq!(second_publish.qos, 1);
+
+    publisher
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
+    subscriber
+        .write_all(&common::mqtt5::disconnect_packet())
+        .await
+        .unwrap();
 }
 
 #[actix::test]

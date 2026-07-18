@@ -33,7 +33,7 @@ pub(crate) fn parse(
         return Err(Mqtt5ParseError::Incomplete("publish acknowledgement body"));
     }
     let (body, input) = input.split_at(remaining_length);
-    let (_, ack) = parse_body(body, property_scope)?;
+    let (_, ack) = parse_body(body, expected_packet_type, property_scope)?;
 
     Ok((input, packet_builder(ack)))
 }
@@ -54,6 +54,7 @@ pub(crate) fn encode(
             "publish acknowledgement packet identifier must not be zero",
         ));
     }
+    reason_code::validate_for_packet(packet.reason_code, packet_type)?;
 
     let mut body = BytesMut::new();
     body.put_u16(packet.packet_identifier);
@@ -78,6 +79,7 @@ pub(crate) fn encode(
 
 fn parse_body(
     input: &[u8],
+    packet_type: ControlPacketType,
     property_scope: PropertyScope,
 ) -> Result<(&[u8], Ack), Mqtt5ParseError> {
     let (input, packet_identifier) = parse_u16(input, "publish acknowledgement packet identifier")?;
@@ -100,7 +102,7 @@ fn parse_body(
     }
 
     let (input, reason_code) = parse_u8(input, "publish acknowledgement reason code")?;
-    let reason_code = reason_code::decode(reason_code)?;
+    let reason_code = reason_code::decode_for_packet(reason_code, packet_type)?;
     let (input, properties) = if input.is_empty() {
         (input, Properties::default())
     } else {

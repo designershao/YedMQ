@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, OnceLock},
+    thread,
     time::Duration,
 };
 
@@ -24,10 +25,20 @@ struct TestContext {
     original_dir: PathBuf,
     settings: Arc<Settings>,
     auth_record_file: PathBuf,
+    stop_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for TestContext {
     fn drop(&mut self) {
+        if let Some(stop_tx) = self.stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        if let Some(join_handle) = self.join_handle.take() {
+            if join_handle.join().is_err() {
+                eprintln!("mqtt5 plugin auth test app thread panicked during shutdown");
+            }
+        }
         let _ = env::set_current_dir(self.original_dir.clone());
     }
 }
@@ -61,12 +72,21 @@ async fn setup_instance_with_plugin_config(config: serde_json::Value) -> TestCon
         config,
     ));
     let settings_clone = test_settings.clone();
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
 
-    std::thread::spawn(move || {
+    let join_handle = thread::spawn(move || {
         let rt = actix::System::new();
         rt.block_on(async {
             let app = Arc::new(YedMQApp::new(settings_clone).await.unwrap());
             YedMQApp::start(app.clone()).await;
+            let system = actix::System::current();
+            actix::spawn(async move {
+                let _ = stop_rx.await;
+                if let Err(e) = app.shutdown().await {
+                    log::warn!("mqtt5 plugin auth test app shutdown failed: {}", e);
+                }
+                system.stop();
+            });
         });
         rt.run().unwrap();
     });
@@ -77,6 +97,8 @@ async fn setup_instance_with_plugin_config(config: serde_json::Value) -> TestCon
         settings: test_settings,
         original_dir,
         auth_record_file,
+        stop_tx: Some(stop_tx),
+        join_handle: Some(join_handle),
         _test_dir: temp_dir,
     }
 }
@@ -488,6 +510,28 @@ async fn test_mqtt5_on_message_publish_plugin_rejects_publish() {
         delivered.is_err(),
         "rejected publish was delivered to subscriber"
     );
+}
+
+#[actix::test]
+async fn test_mqtt5_authorize_plugin_rejects_publish_with_not_authorized_puback() {
+    let _guard = plugin_policy_lock().lock().await;
+    let context = setup_instance_with_plugin_config(policy_plugin_config(
+        "Authorize",
+        "authorize",
+        json!({
+            "authorized": false,
+            "reason": "publish denied",
+            "modified_context": null,
+            "delay_secs": null
+        }),
+    ))
+    .await;
+    let broker_addr = tcp_broker_addr(&context);
+    let topic = "test/plugin/authorize/reject-publish";
+
+    let mut publisher = connect_mqtt5_tcp_client(broker_addr, "authorize-reject-pub").await;
+    let puback = publish_qos1(&mut publisher, 10, topic, b"blocked").await;
+    assert_eq!(puback.reason_code, 0x87);
 }
 
 #[actix::test]

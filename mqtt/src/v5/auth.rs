@@ -30,7 +30,7 @@ fn parse_body(input: &[u8]) -> Result<(&[u8], Auth), Mqtt5ParseError> {
         (ReasonCode::Success, Properties::default())
     } else {
         let (input, reason_code) = parse_u8(input, "AUTH reason code")?;
-        let reason_code = reason_code::decode(reason_code)?;
+        let reason_code = reason_code::decode_for_packet(reason_code, ControlPacketType::Auth)?;
         if input.is_empty() {
             (reason_code, Properties::default())
         } else {
@@ -54,6 +54,7 @@ fn parse_body(input: &[u8]) -> Result<(&[u8], Auth), Mqtt5ParseError> {
 }
 
 pub fn encode(packet: &Auth, buffer: &mut BytesMut) -> Result<(), Mqtt5ParseError> {
+    reason_code::validate_for_packet(packet.reason_code, ControlPacketType::Auth)?;
     let mut body = BytesMut::new();
     if packet.reason_code != ReasonCode::Success || packet.properties != Properties::default() {
         body.put_u8(reason_code::encode(packet.reason_code));
@@ -126,5 +127,18 @@ mod tests {
         let (_, decoded) = parse(&encoded, 1024).expect("parse AUTH");
 
         assert_eq!(decoded, Packet::Auth(packet));
+    }
+
+    #[test]
+    fn rejects_reason_code_not_allowed_on_auth() {
+        let err = parse(&[0xf0, 0x02, 0x87, 0x00], 1024).unwrap_err();
+
+        assert_eq!(
+            err,
+            Mqtt5ParseError::ReasonCodeNotAllowed {
+                reason_code: 0x87,
+                packet_type: "AUTH",
+            }
+        );
     }
 }

@@ -25,6 +25,26 @@ impl ControlPacketType {
     pub fn as_u8(self) -> u8 {
         self as u8
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ControlPacketType::Connect => "CONNECT",
+            ControlPacketType::Connack => "CONNACK",
+            ControlPacketType::Publish => "PUBLISH",
+            ControlPacketType::Puback => "PUBACK",
+            ControlPacketType::Pubrec => "PUBREC",
+            ControlPacketType::Pubrel => "PUBREL",
+            ControlPacketType::Pubcomp => "PUBCOMP",
+            ControlPacketType::Subscribe => "SUBSCRIBE",
+            ControlPacketType::Suback => "SUBACK",
+            ControlPacketType::Unsubscribe => "UNSUBSCRIBE",
+            ControlPacketType::Unsuback => "UNSUBACK",
+            ControlPacketType::Pingreq => "PINGREQ",
+            ControlPacketType::Pingresp => "PINGRESP",
+            ControlPacketType::Disconnect => "DISCONNECT",
+            ControlPacketType::Auth => "AUTH",
+        }
+    }
 }
 
 impl TryFrom<u8> for ControlPacketType {

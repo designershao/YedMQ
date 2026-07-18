@@ -30,6 +30,10 @@ pub enum Mqtt5ParseError {
     },
     InvalidPropertyValue(&'static str),
     UnknownReasonCode(u8),
+    ReasonCodeNotAllowed {
+        reason_code: u8,
+        packet_type: &'static str,
+    },
 }
 
 impl fmt::Display for Mqtt5ParseError {
@@ -81,6 +85,13 @@ impl fmt::Display for Mqtt5ParseError {
             Mqtt5ParseError::UnknownReasonCode(reason_code) => {
                 write!(f, "unknown MQTT 5 reason code: {reason_code:#x}")
             }
+            Mqtt5ParseError::ReasonCodeNotAllowed {
+                reason_code,
+                packet_type,
+            } => write!(
+                f,
+                "MQTT 5 reason code {reason_code:#x} is not allowed on {packet_type}"
+            ),
         }
     }
 }

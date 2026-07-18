@@ -1,7 +1,7 @@
 use actix::{
     dev::{ContextFutureSpawner, MessageResponse},
     fut, Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, Handler, MailboxError,
-    Message, Recipient, ResponseActFuture, ResponseFuture, WrapFuture,
+    Message, Recipient, ResponseFuture, WrapFuture,
 };
 use bytes::Bytes;
 use log::{debug, error, info, warn};
@@ -9,7 +9,7 @@ use prost_types::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     sync::{
         atomic::{AtomicBool, AtomicU64},
@@ -215,22 +215,46 @@ fn get_protobuf_now_timestamp() -> Timestamp {
     }
 }
 
-fn success_ack(packet_identifier: u16) -> Ack {
+fn ack_with_reason(packet_identifier: u16, reason_code: ReasonCode) -> Ack {
     Ack {
         protocol_version: ProtocolVersion::V3_1_1,
         packet_identifier,
-        reason_code: ReasonCode::Success,
+        reason_code,
         properties: Properties::default(),
     }
 }
 
-fn inbound_publish_success_ack(publish: &Publish) -> Option<Packet> {
+fn success_ack(packet_identifier: u16) -> Ack {
+    ack_with_reason(packet_identifier, ReasonCode::Success)
+}
+
+fn inbound_publish_ack(publish: &Publish, reason_code: ReasonCode) -> Option<Packet> {
     let packet_identifier = publish.packet_identifier?;
     match publish.qos {
-        1 => Some(Packet::Puback(success_ack(packet_identifier))),
-        2 => Some(Packet::Pubrec(success_ack(packet_identifier))),
+        1 => Some(Packet::Puback(ack_with_reason(
+            packet_identifier,
+            reason_code,
+        ))),
+        2 => Some(Packet::Pubrec(ack_with_reason(
+            packet_identifier,
+            reason_code,
+        ))),
         _ => None,
     }
+}
+
+fn inbound_publish_success_ack(publish: &Publish) -> Option<Packet> {
+    inbound_publish_ack(publish, ReasonCode::Success)
+}
+
+fn updated_session_expiry_interval(
+    current: Option<u32>,
+    requested: Option<u32>,
+) -> Result<Option<u32>, ReasonCode> {
+    if matches!((current, requested), (Some(current), Some(requested)) if requested > current) {
+        return Err(ReasonCode::ProtocolError);
+    }
+    Ok(requested.or(current))
 }
 
 fn granted_qos_reason(qos: u8) -> ReasonCode {
@@ -405,6 +429,8 @@ pub enum SessionActorMessage {
 
         session_expiry_interval: Option<u32>,
 
+        receive_maximum: u16,
+
         username: Option<String>,
 
         will_message: Option<WillMessage>,
@@ -446,6 +472,12 @@ pub struct SessionActor {
     protocol_version: ProtocolVersion,
 
     session_expiry_interval: Option<u32>,
+
+    receive_maximum: u16,
+
+    outbound_receive_slots_in_use: usize,
+
+    deferred_outbound_publishes: VecDeque<Publish>,
 
     username: Option<String>,
 
@@ -677,16 +709,22 @@ struct OutboundPublishDeliveryContext {
     conn: Option<Recipient<ConnectionActorMessage>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutboundPublishDeliveryStatus {
+    Sent,
+    NotSent,
+}
+
 async fn deliver_outbound_publish(
     mut publish_packet: Publish,
     context: OutboundPublishDeliveryContext,
-) -> Result<(), SessionActorError> {
+) -> Result<OutboundPublishDeliveryStatus, SessionActorError> {
     if !mqtt_message_expiry::prepare_publish_for_delivery(
         &mut publish_packet,
         context.protocol_version,
         mqtt_message_expiry::now_unix_secs(),
     ) {
-        return Ok(());
+        return Ok(OutboundPublishDeliveryStatus::NotSent);
     }
 
     let qos = publish_packet.qos;
@@ -699,7 +737,7 @@ async fn deliver_outbound_publish(
             ))
             .await?
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
-            return Ok(());
+            return Ok(OutboundPublishDeliveryStatus::Sent);
         }
 
         if publish_packet.packet_identifier.is_none() {
@@ -802,6 +840,21 @@ async fn deliver_outbound_publish(
                     }
                 }
             }
+
+            let packet_id = publish_packet
+                .packet_identifier
+                .expect("packet id registered in persistent session");
+            let mut session_state_guard = context.session_state.write().await;
+            if session_state_guard
+                .inflight
+                .get_inflight_current_state(packet_id)
+                .is_none()
+            {
+                session_state_guard
+                    .inflight
+                    .register_with_tx_packet(packet_id, qos, key.clone())
+                    .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+            }
         }
 
         if stored_packet_needs_refresh {
@@ -823,11 +876,11 @@ async fn deliver_outbound_publish(
         .await?
         .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
 
-        return Ok(());
+        return Ok(OutboundPublishDeliveryStatus::Sent);
     }
 
     if qos == 0 {
-        return Ok(());
+        return Ok(OutboundPublishDeliveryStatus::NotSent);
     }
 
     let store = context
@@ -862,7 +915,7 @@ async fn deliver_outbound_publish(
             .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
     }
 
-    Ok(())
+    Ok(OutboundPublishDeliveryStatus::NotSent)
 }
 
 async fn collect_inflight_retry_packets(
@@ -1013,19 +1066,17 @@ async fn do_handle_publish(
         .call_authorize_hook(authorize_request)
         .await;
 
-    if publish_authorize_result.is_err() {
-        return Ok(result);
-    }
+    let publish_authorize_result = match publish_authorize_result {
+        Ok(result) => result,
+        Err(e) => {
+            warn!("publish authorize hook failed: {}", e);
+            result.inflight_packet =
+                inbound_publish_ack(&publish_packet, ReasonCode::UnspecifiedError);
+            return Ok(result);
+        }
+    };
 
-    let publish_authorization = publish_authorize_result
-        .unwrap_or(AuthorizeResult {
-            authorized: false,
-            reason: Some("Authorization failed".to_string()),
-            modified_context: HashMap::new(),
-        })
-        .authorized;
-
-    if publish_authorization {
+    if publish_authorize_result.authorized {
         if mqtt_message_expiry::is_publish_expired(
             &publish_packet,
             mqtt_message_expiry::now_unix_secs(),
@@ -1201,6 +1252,9 @@ async fn do_handle_publish(
             .await
             .map_err(|e| HandlePublishError::RouteError(e.to_string()))?
             .map_err(|e| HandlePublishError::RouteError(e.to_string()))?;
+    } else {
+        result.inflight_packet = inbound_publish_ack(&publish_packet, ReasonCode::NotAuthorized);
+        return Ok(result);
     }
 
     Ok(result)
@@ -1436,6 +1490,7 @@ pub struct SessionActorConfig {
     pub clean_session: bool,
     pub protocol_version: ProtocolVersion,
     pub session_expiry_interval: Option<u32>,
+    pub receive_maximum: u16,
     pub plugin_manager: Arc<PluginManager>,
     pub inflight_retry_duration_secs: u64,
     pub will_message: Option<WillMessage>,
@@ -1466,6 +1521,9 @@ impl SessionActor {
             clean_session: config.clean_session,
             protocol_version: config.protocol_version,
             session_expiry_interval: config.session_expiry_interval,
+            receive_maximum: config.receive_maximum,
+            outbound_receive_slots_in_use: 0,
+            deferred_outbound_publishes: VecDeque::new(),
             keep_alive: config.keep_alive,
             keep_alive_expired: true,
             inflight_retry_interval: config.inflight_retry_duration_secs,
@@ -1484,6 +1542,99 @@ impl SessionActor {
             session_version: config.session_version,
             session_metrics: Arc::new(session_metrics),
         }
+    }
+
+    fn receive_maximum_limit(&self) -> usize {
+        usize::from(self.receive_maximum.max(1))
+    }
+
+    fn outbound_publish_uses_receive_slot(&self, publish_packet: &Publish) -> bool {
+        self.protocol_version == ProtocolVersion::V5_0
+            && matches!(self.activity_state, ActivityState::Active)
+            && publish_packet.qos > 0
+    }
+
+    fn can_reserve_receive_slot(&self) -> bool {
+        self.outbound_receive_slots_in_use < self.receive_maximum_limit()
+    }
+
+    fn reserve_receive_slot(&mut self) {
+        self.outbound_receive_slots_in_use += 1;
+    }
+
+    fn release_receive_maximum_slot_and_drain(
+        &mut self,
+        ctx: &mut <SessionActor as Actor>::Context,
+    ) {
+        if self.outbound_receive_slots_in_use > 0 {
+            self.outbound_receive_slots_in_use -= 1;
+        }
+        self.drain_deferred_outbound_publishes(ctx);
+    }
+
+    fn drain_deferred_outbound_publishes(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        loop {
+            let Some(next_publish) = self.deferred_outbound_publishes.front() else {
+                break;
+            };
+            if self.outbound_publish_uses_receive_slot(next_publish)
+                && !self.can_reserve_receive_slot()
+            {
+                break;
+            }
+
+            let publish_packet = self
+                .deferred_outbound_publishes
+                .pop_front()
+                .expect("front item exists");
+            self.start_outbound_publish_delivery(publish_packet, ctx);
+        }
+    }
+
+    fn start_outbound_publish_delivery(
+        &mut self,
+        publish_packet: Publish,
+        ctx: &mut <SessionActor as Actor>::Context,
+    ) {
+        let receive_slot_reserved = self.outbound_publish_uses_receive_slot(&publish_packet);
+        if receive_slot_reserved && !self.can_reserve_receive_slot() {
+            self.deferred_outbound_publishes.push_back(publish_packet);
+            return;
+        }
+        if receive_slot_reserved {
+            self.reserve_receive_slot();
+        }
+
+        let delivery_context = OutboundPublishDeliveryContext {
+            tenant_id: self.tenant_id.clone(),
+            client_id: self.client_id.clone(),
+            clean_session: self.clean_session,
+            protocol_version: self.protocol_version,
+            activity_state: self.activity_state,
+            session_state: self.state.clone(),
+            session_state_service: self.session_state_service.clone(),
+            payload_store: self.payload_store.clone(),
+            conn: self.conn_recipient.clone(),
+        };
+
+        ctx.spawn(
+            async move { deliver_outbound_publish(publish_packet, delivery_context).await }
+                .into_actor(self)
+                .map(move |result, act, ctx| match result {
+                    Ok(OutboundPublishDeliveryStatus::Sent) => {}
+                    Ok(OutboundPublishDeliveryStatus::NotSent) => {
+                        if receive_slot_reserved {
+                            act.release_receive_maximum_slot_and_drain(ctx);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to deliver outbound publish: {}", e);
+                        if receive_slot_reserved {
+                            act.release_receive_maximum_slot_and_drain(ctx);
+                        }
+                    }
+                }),
+        );
     }
 
     fn get_plugin_client_info(&self) -> Client {
@@ -2036,6 +2187,21 @@ impl SessionActor {
 
         async move {
             let packet_id = pubrec_packet.packet_identifier;
+            let is_expected = matches!(
+                session_state
+                    .read()
+                    .await
+                    .inflight
+                    .get_inflight_current_state(packet_id),
+                Some(InflightState::WaitPubrec)
+            );
+            if !is_expected {
+                warn!(
+                    "ignoring PUBREC for unknown packet identifier {}",
+                    packet_id
+                );
+                return false;
+            }
 
             // Generate Pubrel command
             let pubrel = Packet::Pubrel(success_ack(packet_id));
@@ -2063,11 +2229,19 @@ impl SessionActor {
                     }
                     Err(e) => {
                         warn!("handle pubrec raft advance state error {}", e);
+                        return false;
                     }
                 }
             }
+            true
         }
         .into_actor(self)
+        .then(|release_slot, act, ctx| {
+            if release_slot {
+                act.release_receive_maximum_slot_and_drain(ctx);
+            }
+            fut::ready(())
+        })
         .wait(ctx);
     }
 
@@ -2080,6 +2254,21 @@ impl SessionActor {
 
         async move {
             let packet_id = puback_packet.packet_identifier;
+            let is_expected = matches!(
+                session_state
+                    .read()
+                    .await
+                    .inflight
+                    .get_inflight_current_state(packet_id),
+                Some(InflightState::WaitPuback)
+            );
+            if !is_expected {
+                warn!(
+                    "ignoring PUBACK for unknown packet identifier {}",
+                    packet_id
+                );
+                return false;
+            }
 
             if clean_session {
                 let mut session_state_guard = session_state.write().await;
@@ -2122,11 +2311,19 @@ impl SessionActor {
                     }
                     Err(e) => {
                         warn!("handle puback raft advance state error {}", e);
+                        return false;
                     }
                 }
             }
+            true
         }
         .into_actor(self)
+        .then(|release_slot, act, ctx| {
+            if release_slot {
+                act.release_receive_maximum_slot_and_drain(ctx);
+            }
+            fut::ready(())
+        })
         .wait(ctx);
     }
 
@@ -2204,10 +2401,47 @@ impl SessionActor {
         self.clean_will_message();
 
         if disconnect_packet.protocol_version == ProtocolVersion::V5_0 {
-            self.session_expiry_interval = disconnect_packet
+            let requested_expiry = disconnect_packet
                 .session_expiry_interval
-                .or(disconnect_packet.properties.session_expiry_interval)
-                .or(self.session_expiry_interval);
+                .or(disconnect_packet.properties.session_expiry_interval);
+            match updated_session_expiry_interval(self.session_expiry_interval, requested_expiry) {
+                Ok(updated) => self.session_expiry_interval = updated,
+                Err(reason_code) => {
+                    if let Some(recipient) = &self.conn_recipient {
+                        let recipient = recipient.clone();
+                        async move {
+                            recipient
+                                .send(ConnectionActorMessage::WritePacketToClient(
+                                    Packet::Disconnect(yedmq_mqtt::packet::Disconnect {
+                                        protocol_version: ProtocolVersion::V5_0,
+                                        reason_code,
+                                        session_expiry_interval: None,
+                                        properties: Properties::default(),
+                                    }),
+                                ))
+                                .await
+                        }
+                        .into_actor(self)
+                        .then(|result, act, ctx| {
+                            match result {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => {
+                                    warn!("failed to encode MQTT 5 protocol error: {}", error)
+                                }
+                                Err(error) => {
+                                    warn!("failed to send MQTT 5 protocol error: {}", error)
+                                }
+                            }
+                            act.finish_connection_disconnect(ctx);
+                            fut::ready(())
+                        })
+                        .wait(ctx);
+                    } else {
+                        self.finish_connection_disconnect(ctx);
+                    }
+                    return;
+                }
+            }
         }
         if let Some(recipient) = &self.conn_recipient {
             recipient.do_send(ConnectionActorMessage::Disconnect(DisconnectReason::Normal));
@@ -2331,30 +2565,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 if let Packet::Publish(publish_packet) = packet {
                     self.metric.increase_messages_sent();
                     self.session_metrics.increase_messages_sent();
-                    let delivery_context = OutboundPublishDeliveryContext {
-                        tenant_id: self.tenant_id.clone(),
-                        client_id: self.client_id.clone(),
-                        clean_session: self.clean_session,
-                        protocol_version: self.protocol_version,
-                        activity_state: self.activity_state,
-                        session_state: self.state.clone(),
-                        session_state_service: self.session_state_service.clone(),
-                        payload_store: self.payload_store.clone(),
-                        conn: self.conn_recipient.clone(),
-                    };
-
-                    ctx.spawn(
-                        async move { deliver_outbound_publish(publish_packet, delivery_context).await }
-                            .into_actor(self)
-                            .map(|result, act, _| {
-                                if let Err(e) = result {
-                                    error!(
-                                        "failed to deliver outbound publish for session {}: {}",
-                                        act.client_id, e
-                                    );
-                                }
-                            }),
-                    );
+                    self.start_outbound_publish_delivery(publish_packet, ctx);
                 }
             }
             SessionActorMessage::KeepAliveExpired => {
@@ -2458,12 +2669,14 @@ impl Handler<SessionActorMessage> for SessionActor {
                 clean_session,
                 protocol_version,
                 session_expiry_interval,
+                receive_maximum,
                 username,
                 will_message,
                 socket_addr,
             } => {
                 self.protocol_version = protocol_version;
                 self.session_expiry_interval = session_expiry_interval;
+                self.receive_maximum = receive_maximum;
                 self.set_state(ctx, ActivityState::Active);
                 self.conn_recipient = Some(conn);
                 self.will_message = will_message;
@@ -2595,6 +2808,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn disconnect_session_expiry_cannot_exceed_connect_value() {
+        assert_eq!(
+            updated_session_expiry_interval(Some(0), Some(1)),
+            Err(ReasonCode::ProtocolError)
+        );
+        assert_eq!(
+            updated_session_expiry_interval(Some(30), Some(31)),
+            Err(ReasonCode::ProtocolError)
+        );
+        assert_eq!(
+            updated_session_expiry_interval(Some(30), Some(10)),
+            Ok(Some(10))
+        );
+        assert_eq!(
+            updated_session_expiry_interval(Some(30), None),
+            Ok(Some(30))
+        );
+    }
+
+    #[test]
     fn mqtt5_shared_subscription_filter_is_accepted() {
         assert_eq!(
             subscribe_precheck_reason(ProtocolVersion::V5_0, "$share/group/sensors/+"),
@@ -2630,6 +2863,54 @@ mod tests {
             authorization_failure_reason(&authorize_result),
             Some(ReasonCode::NotAuthorized)
         );
+    }
+
+    #[test]
+    fn mqtt5_authorized_publish_denial_maps_qos1_to_not_authorized_puback() {
+        let publish = Publish {
+            protocol_version: ProtocolVersion::V5_0,
+            topic_name: "denied/topic".to_string(),
+            payload: Bytes::from_static(b"payload"),
+            qos: 1,
+            retain: false,
+            dup: false,
+            packet_identifier: Some(42),
+            properties: Properties::default(),
+            expires_at_unix_secs: None,
+        };
+
+        let packet = inbound_publish_ack(&publish, ReasonCode::NotAuthorized).unwrap();
+        match packet {
+            Packet::Puback(ack) => {
+                assert_eq!(ack.packet_identifier, 42);
+                assert_eq!(ack.reason_code, ReasonCode::NotAuthorized);
+            }
+            other => panic!("expected PUBACK, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mqtt5_authorized_publish_denial_maps_qos2_to_not_authorized_pubrec() {
+        let publish = Publish {
+            protocol_version: ProtocolVersion::V5_0,
+            topic_name: "denied/topic".to_string(),
+            payload: Bytes::from_static(b"payload"),
+            qos: 2,
+            retain: false,
+            dup: false,
+            packet_identifier: Some(43),
+            properties: Properties::default(),
+            expires_at_unix_secs: None,
+        };
+
+        let packet = inbound_publish_ack(&publish, ReasonCode::NotAuthorized).unwrap();
+        match packet {
+            Packet::Pubrec(ack) => {
+                assert_eq!(ack.packet_identifier, 43);
+                assert_eq!(ack.reason_code, ReasonCode::NotAuthorized);
+            }
+            other => panic!("expected PUBREC, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2671,35 +2952,19 @@ mod tests {
 }
 
 impl Handler<AcceptRoutedPublish> for SessionActor {
-    type Result = ResponseActFuture<Self, Result<(), SessionActorError>>;
+    type Result = Result<(), SessionActorError>;
 
-    fn handle(&mut self, msg: AcceptRoutedPublish, _ctx: &mut Self::Context) -> Self::Result {
-        let delivery_context = OutboundPublishDeliveryContext {
-            tenant_id: self.tenant_id.clone(),
-            client_id: self.client_id.clone(),
-            clean_session: self.clean_session,
-            protocol_version: self.protocol_version,
-            activity_state: self.activity_state,
-            session_state: self.state.clone(),
-            session_state_service: self.session_state_service.clone(),
-            payload_store: self.payload_store.clone(),
-            conn: self.conn_recipient.clone(),
-        };
-
-        Box::pin(
-            async move {
-                match msg.packet {
-                    Packet::Publish(publish_packet) => {
-                        deliver_outbound_publish(publish_packet, delivery_context).await
-                    }
-                    other => Err(SessionActorError::DeliveryError(format!(
-                        "unsupported routed packet: {:?}",
-                        other
-                    ))),
-                }
+    fn handle(&mut self, msg: AcceptRoutedPublish, ctx: &mut Self::Context) -> Self::Result {
+        match msg.packet {
+            Packet::Publish(publish_packet) => {
+                self.start_outbound_publish_delivery(publish_packet, ctx);
+                Ok(())
             }
-            .into_actor(self),
-        )
+            other => Err(SessionActorError::DeliveryError(format!(
+                "unsupported routed packet: {:?}",
+                other
+            ))),
+        }
     }
 }
 

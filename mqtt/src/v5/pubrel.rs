@@ -49,4 +49,17 @@ mod tests {
 
         assert_eq!(encoded.to_vec(), vec![0x62, 0x02, 0x00, 0x0a]);
     }
+
+    #[test]
+    fn rejects_reason_code_not_allowed_on_pubrel() {
+        let err = parse(&[0x62, 0x03, 0x00, 0x0a, 0x80], 1024).unwrap_err();
+
+        assert_eq!(
+            err,
+            Mqtt5ParseError::ReasonCodeNotAllowed {
+                reason_code: 0x80,
+                packet_type: "PUBREL",
+            }
+        );
+    }
 }

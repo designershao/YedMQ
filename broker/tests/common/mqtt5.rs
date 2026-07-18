@@ -127,6 +127,15 @@ pub fn disconnect_packet() -> Vec<u8> {
     vec![0xE0, 0x00]
 }
 
+pub fn disconnect_packet_with_session_expiry(seconds: u32) -> Vec<u8> {
+    let properties = session_expiry_interval_property(seconds);
+    let mut body = Vec::with_capacity(properties.len() + 2);
+    body.push(0x00);
+    body.extend_from_slice(&encode_variable_byte_integer(properties.len() as u32));
+    body.extend_from_slice(&properties);
+    control_packet(0xe0, body)
+}
+
 pub fn session_expiry_interval_property(seconds: u32) -> Vec<u8> {
     let mut property = Vec::with_capacity(5);
     property.push(0x11);
@@ -145,6 +154,20 @@ pub fn message_expiry_interval_property(seconds: u32) -> Vec<u8> {
     let mut property = Vec::with_capacity(5);
     property.push(0x02);
     property.extend_from_slice(&seconds.to_be_bytes());
+    property
+}
+
+pub fn maximum_packet_size_property(bytes: u32) -> Vec<u8> {
+    let mut property = Vec::with_capacity(5);
+    property.push(0x27);
+    property.extend_from_slice(&bytes.to_be_bytes());
+    property
+}
+
+pub fn receive_maximum_property(count: u16) -> Vec<u8> {
+    let mut property = Vec::with_capacity(3);
+    property.push(0x21);
+    property.extend_from_slice(&count.to_be_bytes());
     property
 }
 
@@ -405,6 +428,14 @@ fn parse_publish_ack(
     }
 
     let reason_code = body[2];
+    if body.len() == 3 {
+        return Ok(Puback {
+            packet_id,
+            reason_code,
+            properties: Vec::new(),
+        });
+    }
+
     let (property_len, property_len_bytes) = decode_variable_byte_integer(&body[3..])?;
     let property_start = 3 + property_len_bytes;
     let property_end = property_start + property_len as usize;
@@ -697,6 +728,14 @@ mod tests {
         let puback = parse_puback(&[0x40, 0x02, 0x00, 0x2A]).expect("parse puback");
         assert_eq!(puback.packet_id, 42);
         assert_eq!(puback.reason_code, 0x00);
+        assert!(puback.properties.is_empty());
+    }
+
+    #[test]
+    fn parses_non_success_puback_with_empty_properties() {
+        let puback = parse_puback(&[0x40, 0x03, 0x00, 0x2A, 0x87]).expect("parse puback");
+        assert_eq!(puback.packet_id, 42);
+        assert_eq!(puback.reason_code, 0x87);
         assert!(puback.properties.is_empty());
     }
 

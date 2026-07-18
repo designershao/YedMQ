@@ -41,7 +41,7 @@ mod tests {
         let packet = Ack {
             protocol_version: ProtocolVersion::V5_0,
             packet_identifier: 10,
-            reason_code: ReasonCode::UnspecifiedError,
+            reason_code: ReasonCode::PacketIdentifierNotFound,
             properties: Properties {
                 reason_string: Some("failed".to_string()),
                 ..Properties::default()

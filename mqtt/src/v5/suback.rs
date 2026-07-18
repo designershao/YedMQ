@@ -72,6 +72,9 @@ pub fn encode(packet: &Suback, buffer: &mut BytesMut) -> Result<(), Mqtt5ParseEr
             "SUBACK must contain at least one reason code",
         ));
     }
+    for reason_code in &packet.reason_codes {
+        reason_code::validate_for_packet(*reason_code, ControlPacketType::Suback)?;
+    }
 
     let mut body = BytesMut::new();
     body.put_u16(packet.packet_identifier);
@@ -99,12 +102,14 @@ pub fn to_bytes(packet: &Suback) -> Result<BytesMut, Mqtt5ParseError> {
 }
 
 fn decode_suback_reason_code(value: u8) -> Result<ReasonCode, Mqtt5ParseError> {
-    match value {
-        0x00 => Ok(ReasonCode::GrantedQos0),
-        0x01 => Ok(ReasonCode::GrantedQos1),
-        0x02 => Ok(ReasonCode::GrantedQos2),
-        other => reason_code::decode(other),
-    }
+    let reason_code = match value {
+        0x00 => ReasonCode::GrantedQos0,
+        0x01 => ReasonCode::GrantedQos1,
+        0x02 => ReasonCode::GrantedQos2,
+        other => reason_code::decode(other)?,
+    };
+    reason_code::validate_for_packet(reason_code, ControlPacketType::Suback)?;
+    Ok(reason_code)
 }
 
 #[cfg(test)]
