@@ -86,6 +86,23 @@ async fn test_persistent_session_takeover() {
     wait_for_disconnect(&mut eventloop1).await;
     println!("Client 1 was disconnected as expected");
 
+    // The old actor's shutdown must not unregister or stop the new owner.
+    let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        client2
+            .publish("takeover/still-connected", QoS::AtLeastOnce, false, "ok")
+            .await
+            .unwrap();
+        loop {
+            match eventloop2.poll().await {
+                Ok(Event::Incoming(Packet::PubAck(_))) => break,
+                Ok(_) => continue,
+                Err(err) => panic!("new session disconnected after takeover: {err:?}"),
+            }
+        }
+    })
+    .await
+    .expect("new session did not acknowledge publish after takeover");
+
     let _ = client1.disconnect().await;
     let _ = client2.disconnect().await;
 }

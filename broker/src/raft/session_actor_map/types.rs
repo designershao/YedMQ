@@ -1,5 +1,5 @@
 use super::NodeId;
-use crate::{raft::Node, session::session_actor_map_storage::SessionVersion};
+use crate::{raft::Node, session::session_actor_map_storage::SessionInstanceId};
 use openraft::raft::{AppendEntriesRequest, InstallSnapshotRequest};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -10,12 +10,11 @@ pub enum SessionActorMapRequest {
         tenant_id: String,
         session_id: String,
         node_id: NodeId,
-        version: SessionVersion,
     },
     UnregisterSession {
         tenant_id: String,
         session_id: String,
-        session_version: SessionVersion,
+        session_instance_id: SessionInstanceId,
     },
     CleanExpiredSessions {
         sessions: Vec<ExpiredSession>,
@@ -30,22 +29,20 @@ pub struct ExpiredSession {
     pub tenant_id: String,
     pub session_id: String,
     pub node_id: NodeId,
-    pub session_version: SessionVersion,
+    pub session_instance_id: SessionInstanceId,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RenewSession {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionActorMapResponse {
     None,
-    Rejected {
-        current_version: SessionVersion,
-        existing_version: SessionVersion,
-    },
+    Registered(SessionInstanceId),
 }
 
 openraft::declare_raft_types!(

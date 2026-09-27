@@ -51,8 +51,7 @@ fn build_rate_limiter(rate_limit: &RateLimit) -> Option<ConnectionRateLimiter> {
 fn is_transient_initial_connect_error(error: &ConnectionError) -> bool {
     match error {
         ConnectionError::SessionManagerServiceUnavailable(message) => {
-            message.contains("newer session has existed")
-                || message.contains("Session version rejected")
+            message.contains("session registration was superseded")
         }
         _ => false,
     }

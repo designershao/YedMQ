@@ -222,7 +222,6 @@ async fn start_node(
     let node_dir = base_dir.join(format!("node_{}", node_id));
     fs::create_dir_all(&node_dir).unwrap();
     let store_dir = node_dir.join("store").to_str().unwrap().to_string();
-    let session_clock = node_dir.join("clock").to_str().unwrap().to_string();
 
     let crate_root_path = env!("CARGO_MANIFEST_DIR");
     let plugin_path = PathBuf::from(crate_root_path).join("tests").join("plugins");
@@ -239,7 +238,6 @@ async fn start_node(
         session: yedmq::settings::Session {
             qos_expired_secs: 2,
             packet_resend_interval_secs: 10,
-            session_clock_path: session_clock,
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {

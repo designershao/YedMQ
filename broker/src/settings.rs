@@ -79,7 +79,6 @@ impl Default for Mqtt {
 pub struct Session {
     pub qos_expired_secs: u64,            // qos context expired seconds
     pub packet_resend_interval_secs: u64, // session packet resend interval seconds
-    pub session_clock_path: String,       // session clock path
 }
 
 impl Default for Session {
@@ -87,7 +86,6 @@ impl Default for Session {
         Self {
             qos_expired_secs: 10,
             packet_resend_interval_secs: 10,
-            session_clock_path: "./clock".to_string(),
         }
     }
 }
@@ -342,7 +340,6 @@ impl Settings {
             .set_default("mqtt.max_message_size", yedmq_mqtt::MQTT_MAX_MESSAGE_SIZE)?
             .set_default("session.qos_expired_secs", 10)?
             .set_default("session.packet_resend_interval_secs", 10)?
-            .set_default("session.session_clock_path", "./clock")?
             .set_default("plugin.dir", "./plugins")?
             .set_default(
                 "plugin.local_socket_path",
@@ -420,7 +417,7 @@ mod tests {
 [cluster]
 node_id = 2002
 nodes = [{{ id = 2002, rpc_address = "127.0.0.1:4457", api_address = "127.0.0.1:4456" }}]
-store_dir = "{store_dir}"
+store_dir = '{store_dir}'
 
 [cluster.rpc]
 external = "127.0.0.1:4457"

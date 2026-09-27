@@ -45,7 +45,7 @@ use crate::{
 };
 
 use super::{
-    session_actor_map_storage::SessionVersion,
+    session_actor_map_storage::SessionInstanceId,
     session_manager_actor::SessionLifecycleMessage,
     session_state_storage::{SessionState, SubscriptionState},
     WillMessage,
@@ -513,7 +513,7 @@ pub struct SessionActor {
 
     metric: Arc<Metric>,
 
-    session_version: SessionVersion,
+    session_instance_id: SessionInstanceId,
 
     session_metrics: Arc<SessionMetrics>,
 }
@@ -1505,7 +1505,7 @@ pub struct SessionActorConfig {
     pub payload_store: Option<Arc<dyn PayloadStore>>,
     pub timer_actor: Addr<TimerActor>,
     pub metric: Arc<Metric>,
-    pub session_version: SessionVersion,
+    pub session_instance_id: SessionInstanceId,
 }
 
 impl SessionActor {
@@ -1539,7 +1539,7 @@ impl SessionActor {
             payload_store: config.payload_store,
             timer_actor: config.timer_actor,
             metric: config.metric,
-            session_version: config.session_version,
+            session_instance_id: config.session_instance_id,
             session_metrics: Arc::new(session_metrics),
         }
     }
@@ -1670,6 +1670,7 @@ impl SessionActor {
         self.timer_actor.do_send(RegisterInflight {
             tenant_id: self.tenant_id.clone(),
             session_id: self.client_id.clone(),
+            session_instance_id: self.session_instance_id,
             inflight_retry_duration,
             addr: ctx.address().recipient(),
         });
@@ -1681,6 +1682,7 @@ impl SessionActor {
         self.timer_actor.do_send(RegisterKeepAlive {
             tenant_id: self.tenant_id.clone(),
             session_id: self.client_id.clone(),
+            session_instance_id: self.session_instance_id,
             keep_alive: keep_alive_duration,
             addr: ctx.address().recipient(),
         });
@@ -1692,11 +1694,13 @@ impl SessionActor {
         self.timer_actor.do_send(RemoveTimer {
             tenant_id: self.tenant_id.clone(),
             session_id: self.client_id.clone(),
+            session_instance_id: self.session_instance_id,
             timer_type: TimerType::Inflight,
         });
         self.timer_actor.do_send(RemoveTimer {
             tenant_id: self.tenant_id.clone(),
             session_id: self.client_id.clone(),
+            session_instance_id: self.session_instance_id,
             timer_type: TimerType::KeepAlive,
         });
     }
@@ -1830,13 +1834,13 @@ impl SessionActor {
         let tenant_id = self.tenant_id.clone();
         let client_id = self.client_id.clone();
         let session_lifecycle_tx = self.session_lifecycle_tx.clone();
-        let version = self.session_version.clone();
+        let session_instance_id = self.session_instance_id;
         async move {
             if let Err(e) = session_lifecycle_tx
                 .send(SessionLifecycleMessage::SessionStopped {
                     tenant_id,
                     client_id,
-                    version,
+                    session_instance_id,
                 })
                 .await
             {
@@ -2528,6 +2532,7 @@ impl Handler<SessionActorMessage> for SessionActor {
                 self.timer_actor.do_send(RefreshTimer {
                     tenant_id: self.tenant_id.clone(),
                     session_id: self.client_id.clone(),
+                    session_instance_id: self.session_instance_id,
                     timer_type: TimerType::KeepAlive,
                 });
                 match packet {

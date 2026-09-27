@@ -32,9 +32,6 @@ qos_expired_secs = 10
 # Packet resend interval for QoS 1/2 (in seconds)
 packet_resend_interval_secs = 10
 
-# Path to session clock file for persistence
-session_clock_path = "./clock"
-
 # ============================================================================
 # Plugin System
 # ============================================================================

@@ -97,7 +97,6 @@ fn get_test_settings(qos_expired_secs: u64, resend_duration_sec: u64, temp_dir: 
         session: yedmq::settings::Session {
             qos_expired_secs,
             packet_resend_interval_secs: resend_duration_sec,
-            session_clock_path: temp_dir.join("clock").to_str().unwrap().to_string(),
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {

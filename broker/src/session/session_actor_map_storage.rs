@@ -1,126 +1,33 @@
-use std::{
-    collections::HashMap,
-    path::Path,
-    sync::atomic::{AtomicU64, Ordering},
-    time::SystemTime,
-};
+use std::{collections::HashMap, time::SystemTime};
 
 use log::debug;
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 
 use crate::raft::{
     session_actor_map::types::{ExpiredSession, RenewSession},
     NodeId,
 };
 
-#[derive(Debug, thiserror::Error)]
-pub enum SessionActorMapError {
-    #[error("session version rejected, current version {current_version} existing version {existing_version}")]
-    SessionVersionRejected {
-        current_version: SessionVersion,
-        existing_version: SessionVersion,
-    },
-}
-
-#[derive(Debug)]
-pub struct SessionClock {
-    counter: AtomicU64,
-    node_id: u64,
-    persist_path: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ClockSnapshot {
-    counter: u64,
-    node_id: u64,
-}
-
-impl SessionClock {
-    pub fn get(&self) -> u64 {
-        self.counter.load(Ordering::SeqCst)
-    }
-
-    /// Save clock to disk as JSON
-    pub async fn persist(&self) -> std::io::Result<()> {
-        let snapshot = ClockSnapshot {
-            counter: self.get(),
-            node_id: self.node_id,
-        };
-
-        let json = serde_json::to_string_pretty(&snapshot)?;
-        fs::write(&self.persist_path, json).await
-    }
-
-    /// Restore from disk if exists, otherwise start fresh
-    pub async fn restore(&self) -> std::io::Result<()> {
-        if Path::new(&self.persist_path).exists() {
-            let content = fs::read_to_string(&self.persist_path).await?;
-            if let Ok(snapshot) = serde_json::from_str::<ClockSnapshot>(&content) {
-                self.counter.store(snapshot.counter, Ordering::SeqCst);
-                // Optional: verify snapshot.node_id == self.node_id
-            }
-        }
-        Ok(())
-    }
-
-    pub fn new(node_id: u64, persist_path: impl Into<String>) -> Self {
-        SessionClock {
-            counter: AtomicU64::new(1),
-            node_id,
-            persist_path: persist_path.into(),
-        }
-    }
-
-    pub fn next(&self) -> SessionVersion {
-        let next = self.counter.fetch_add(1, Ordering::SeqCst);
-        SessionVersion::new(next, self.node_id)
-    }
-
-    pub fn bump(&self, remote: &SessionVersion) -> SessionVersion {
-        let max_counter = self.counter.fetch_max(remote.counter + 1, Ordering::SeqCst);
-        let adjusted = max_counter.max(remote.counter + 1);
-        self.counter.store(adjusted, Ordering::SeqCst);
-        SessionVersion::new(adjusted, self.node_id)
-    }
-}
-
 pub struct ClientListWithPagination {
     pub client_list: Vec<(String, NodeId)>,
     pub total: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SessionVersion {
-    pub counter: u64,
-
-    pub node_id: u64,
+/// The Raft log index of the registration that owns this session.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionInstanceId {
+    pub log_index: u64,
 }
 
-impl std::fmt::Display for SessionVersion {
+impl std::fmt::Display for SessionInstanceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}-{}", self.counter, self.node_id)
+        write!(f, "{}", self.log_index)
     }
 }
 
-impl SessionVersion {
-    pub fn new(counter: u64, node_id: u64) -> Self {
-        SessionVersion { counter, node_id }
-    }
-
-    pub fn bump(&self, remote: &SessionVersion) -> SessionVersion {
-        let max_counter = self.counter.max(remote.counter) + 1;
-        SessionVersion::new(max_counter, self.node_id)
-    }
-
-    pub fn next_local(local_counter: &AtomicU64, node_id: u64) -> Self {
-        let counter = local_counter.fetch_add(1, Ordering::SeqCst);
-        SessionVersion::new(counter, node_id)
-    }
-
-    pub fn is_newer_than(&self, other: &Self) -> bool {
-        self.counter > other.counter
-            || (self.counter == other.counter && self.node_id > other.node_id)
+impl SessionInstanceId {
+    pub fn new(log_index: u64) -> Self {
+        Self { log_index }
     }
 }
 
@@ -128,7 +35,7 @@ impl SessionVersion {
 pub struct SessionActorMapEntry {
     pub node_id: NodeId,
 
-    pub version: SessionVersion,
+    pub instance_id: SessionInstanceId,
 
     pub expiration_timestamp: u64,
 }
@@ -155,6 +62,9 @@ impl SessionActorMapStorage {
         for renew in sessions {
             if let Some(session_tenant) = self.inner.get_mut(&renew.tenant_id) {
                 if let Some(session_entry) = session_tenant.get_mut(&renew.session_id) {
+                    if session_entry.instance_id != renew.session_instance_id {
+                        continue;
+                    }
                     session_entry.expiration_timestamp = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .expect("system time is before unix epoch")
@@ -179,7 +89,7 @@ impl SessionActorMapStorage {
                         tenant_id: tenant_id.clone(),
                         session_id: session_id.clone(),
                         node_id: session.node_id,
-                        session_version: session.version.clone(),
+                        session_instance_id: session.instance_id,
                     });
                 }
             }
@@ -203,53 +113,41 @@ impl SessionActorMapStorage {
         tenant_id: String,
         session_id: String,
         node_id: NodeId,
-        version: &SessionVersion,
+        instance_id: SessionInstanceId,
         session_ttl: u64,
-    ) -> Result<(), SessionActorMapError> {
+    ) -> Option<SessionActorMapEntry> {
         let session_tenant = self.inner.entry(tenant_id.clone()).or_default();
-
-        if let Some(existing_entry) = session_tenant.get(&session_id) {
-            if existing_entry.version.is_newer_than(version) {
-                return Err(SessionActorMapError::SessionVersionRejected {
-                    current_version: version.clone(),
-                    existing_version: existing_entry.version.clone(),
-                });
-            }
-        }
 
         let session_actor_map_entry = SessionActorMapEntry {
             node_id,
-            version: version.clone(),
+            instance_id,
             expiration_timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .expect("system time is before unix epoch")
                 .as_secs()
                 + session_ttl,
         };
-        session_tenant.insert(session_id.clone(), session_actor_map_entry);
-        Ok(())
+        session_tenant.insert(session_id, session_actor_map_entry)
     }
 
     pub fn unregister_session_actor(
         &mut self,
         tenant_id: String,
         session_id: String,
-        version: &SessionVersion,
+        instance_id: SessionInstanceId,
     ) {
         if let Some(tenant_map) = self.inner.get_mut(&tenant_id) {
             if let Some(existing) = tenant_map.get(&session_id) {
-                if existing.version.counter == version.counter
-                    && existing.version.node_id == version.node_id
-                {
+                if existing.instance_id == instance_id {
                     tenant_map.remove(&session_id);
                     debug!(
-                        "session {} unregistered for tenant {} by version {}",
-                        session_id, tenant_id, version
+                        "session {} unregistered for tenant {} by instance {}",
+                        session_id, tenant_id, instance_id
                     );
                 } else {
                     debug!(
-                        "reject stale unregister for {}, current version is {}, request version is {}",
-                        session_id, existing.version, version
+                        "reject stale unregister for {}, current instance is {}, request instance is {}",
+                        session_id, existing.instance_id, instance_id
                     );
                 }
             }
@@ -306,4 +204,64 @@ impl SessionActorMapStorage {
 #[derive(Serialize, Deserialize)]
 struct SerializableSessionActorMapStorage {
     inner: HashMap<String, HashMap<String, SessionActorMapEntry>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raft_registration_order_wins_and_stale_cleanup_is_ignored() {
+        let mut storage = SessionActorMapStorage::new();
+        let old = SessionInstanceId::new(1);
+        let new = SessionInstanceId::new(2);
+
+        assert!(storage
+            .register_session_actor("tenant".into(), "client".into(), 10, old, 60)
+            .is_none());
+        let previous = storage
+            .register_session_actor("tenant".into(), "client".into(), 20, new, 60)
+            .unwrap();
+        assert_eq!(previous.instance_id, old);
+
+        storage.unregister_session_actor("tenant".into(), "client".into(), old);
+        assert_eq!(
+            storage
+                .get_session_actor_map("tenant", "client")
+                .unwrap()
+                .instance_id,
+            new
+        );
+
+        storage.unregister_session_actor("tenant".into(), "client".into(), new);
+        assert!(storage.get_session_actor_map("tenant", "client").is_none());
+    }
+
+    #[test]
+    fn stale_renew_does_not_extend_new_session_lease() {
+        let mut storage = SessionActorMapStorage::new();
+        let old = SessionInstanceId::new(1);
+        let new = SessionInstanceId::new(2);
+        storage.register_session_actor("tenant".into(), "client".into(), 20, new, 60);
+        let before = storage
+            .get_session_actor_map("tenant", "client")
+            .unwrap()
+            .expiration_timestamp;
+
+        storage.session_lease_renew(
+            vec![RenewSession {
+                tenant_id: "tenant".into(),
+                session_id: "client".into(),
+                session_instance_id: old,
+            }],
+            600,
+        );
+        assert_eq!(
+            storage
+                .get_session_actor_map("tenant", "client")
+                .unwrap()
+                .expiration_timestamp,
+            before
+        );
+    }
 }

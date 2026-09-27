@@ -1,5 +1,5 @@
 use crate::session::session_actor::{AcceptRoutedPublish, GetSessionInfo, SessionActorMessage};
-use crate::session::session_actor_map_storage::SessionVersion;
+use crate::session::session_actor_map_storage::SessionInstanceId;
 use actix::Recipient;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ pub struct SessionActorRecipientWrapper {
     pub session_actor_message_recipient: Recipient<SessionActorMessage>,
     pub accept_routed_publish_recipient: Recipient<AcceptRoutedPublish>,
     pub get_session_info_recipient: Recipient<GetSessionInfo>,
-    pub session_version: SessionVersion,
+    pub session_instance_id: SessionInstanceId,
 }
 
 #[derive(Clone)]

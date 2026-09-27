@@ -20,7 +20,7 @@ use crate::raft::session_actor_map::session_actor_map_raft_actor;
 use crate::raft::session_state::session_state_raft_actor::{self, SessionStateRaftActor};
 use crate::router_actor::{RouteFromOtherNode, RouterActor};
 use crate::rpc::grpc_status;
-use crate::session::session_actor_map_storage::SessionVersion;
+use crate::session::session_actor_map_storage::SessionInstanceId;
 use crate::session::session_manager_actor::SessionManagerActor;
 use crate::stored_packet::deserialize_stored_packet_from_str;
 use crate::topic::TopicStorageError;
@@ -208,19 +208,6 @@ fn map_session_actor_map_raft_error(
         | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
-            current_version,
-            existing_version,
-        } => grpc_status::business_status(
-            tonic::Code::FailedPrecondition,
-            grpc_status::session_version_rejected_detail(
-                current_version.counter,
-                current_version.node_id,
-                existing_version.counter,
-                existing_version.node_id,
-                "session_actor_map_raft".to_string(),
-            ),
-        ),
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::TenantNotFound {
             tenant_id,
         } => grpc_status::business_status(
@@ -687,31 +674,22 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
-        let version = match inner.session_version {
-            Some(s) => SessionVersion {
-                counter: s.counter,
-                node_id: s.node_id,
-            },
-            None => {
-                return Err(grpc_status::invalid_argument_status(
-                    "Session version is required for registering session actor map",
-                    "cluster_service",
-                ));
-            }
-        };
         let register_session_actor_map_actor =
             session_actor_map_raft_actor::RegisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
                 node_id: inner.node_id,
-                version,
             };
-        session_actor_map_raft_actor_addr
+        let instance_id = session_actor_map_raft_actor_addr
             .send(register_session_actor_map_actor)
             .await
             .map_err(|e| Status::internal(format!("Failed to register session actor map: {}", e)))?
             .map_err(|e| map_session_actor_map_raft_error("register session actor map", e))?;
-        Ok(Response::new(RegisterSessionActorMapResponse {}))
+        Ok(Response::new(RegisterSessionActorMapResponse {
+            session_instance_id: Some(crate::protobuf::SessionInstanceId {
+                log_index: instance_id.log_index,
+            }),
+        }))
     }
 
     async fn un_register_session_actor_map(
@@ -722,14 +700,11 @@ impl ClusterService for ClusterServiceImpl {
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
 
-        let version = match inner.session_version {
-            Some(s) => SessionVersion {
-                counter: s.counter,
-                node_id: s.node_id,
-            },
+        let instance_id = match inner.session_instance_id {
+            Some(s) => SessionInstanceId::new(s.log_index),
             None => {
                 return Err(grpc_status::invalid_argument_status(
-                    "Session version is required for unregistering session actor map",
+                    "Session instance ID is required for unregistering session actor map",
                     "cluster_service",
                 ));
             }
@@ -739,7 +714,7 @@ impl ClusterService for ClusterServiceImpl {
             session_actor_map_raft_actor::UnregisterSessionActorMap {
                 tenant_id: inner.tenant_id.clone(),
                 client_id: inner.client_id.clone(),
-                version,
+                session_instance_id: instance_id,
             };
         session_actor_map_raft_actor_addr
             .send(unregister_session_actor_map_actor)
@@ -758,9 +733,16 @@ impl ClusterService for ClusterServiceImpl {
         let session_actor_map_raft_actor_addr =
             session_actor_map_raft_actor::SessionActorMapRaftActor::from_registry();
         let inner = request.into_inner();
+        let session_instance_id = inner.session_instance_id.ok_or_else(|| {
+            grpc_status::invalid_argument_status(
+                "Session instance ID is required for renewing session lease",
+                "cluster_service",
+            )
+        })?;
         let renew_session_lease_actor = session_actor_map_raft_actor::RenewSession {
             tenant_id: inner.tenant_id.clone(),
             client_id: inner.client_id.clone(),
+            session_instance_id: SessionInstanceId::new(session_instance_id.log_index),
         };
         session_actor_map_raft_actor_addr
             .send(renew_session_lease_actor)
@@ -842,11 +824,20 @@ impl ClusterService for ClusterServiceImpl {
     ) -> Result<Response<ForceStopSessionActorResponse>, Status> {
         let session_manager_actor_addr = SessionManagerActor::from_registry();
         let inner = request.into_inner();
+        let session_instance_id = inner.session_instance_id.ok_or_else(|| {
+            grpc_status::invalid_argument_status(
+                "Session instance ID is required for force stop",
+                "cluster_service",
+            )
+        })?;
         let force_stop_result = session_manager_actor_addr
-            .send(crate::session::session_manager_actor::ForceStop {
-                tenant_id: inner.tenant_id.clone(),
-                client_id: inner.client_id.clone(),
-            })
+            .send(
+                crate::session::session_manager_actor::ForceStopWithSessionService {
+                    tenant_id: inner.tenant_id.clone(),
+                    client_id: inner.client_id.clone(),
+                    session_instance_id: SessionInstanceId::new(session_instance_id.log_index),
+                },
+            )
             .await
             .map_err(|e| Status::internal(format!("Failed to force stop session actor: {}", e)))?;
         if let Err(e) = force_stop_result {

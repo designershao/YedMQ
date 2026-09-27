@@ -93,7 +93,6 @@ fn build_settings(
     fs::create_dir_all(&node_dir).expect("create node dir failed");
 
     let store_dir = node_dir.join("store").to_string_lossy().to_string();
-    let session_clock = node_dir.join("clock").to_string_lossy().to_string();
 
     let crate_root_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let plugin_path = crate_root_path.join("tests").join("plugins");
@@ -102,7 +101,6 @@ fn build_settings(
         session: yedmq::settings::Session {
             qos_expired_secs: 2,
             packet_resend_interval_secs: 10,
-            session_clock_path: session_clock,
         },
         listener: yedmq::settings::Listener {
             tcp: yedmq::settings::Tcp {

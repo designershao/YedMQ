@@ -8,7 +8,6 @@ max_message_size = 268435456
 [session]
 qos_expired_secs = 10
 packet_resend_interval_secs = 10
-session_clock_path = "./clock"
 
 [plugin]
 dir = "./plugins"

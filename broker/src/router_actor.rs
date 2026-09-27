@@ -1279,7 +1279,7 @@ mod tests {
     use crate::session::session_actor::{
         ActivityState, GetSessionInfo, SessionActorError, SessionInfo,
     };
-    use crate::session::session_actor_map_storage::{SessionActorMapStorage, SessionVersion};
+    use crate::session::session_actor_map_storage::{SessionActorMapStorage, SessionInstanceId};
     use crate::session::session_registry::SessionActorRecipientWrapper;
     use crate::topic::topic_storage::TopicStorage;
 
@@ -1380,7 +1380,7 @@ mod tests {
                 session_actor_message_recipient: actor.clone().recipient(),
                 accept_routed_publish_recipient: actor.clone().recipient(),
                 get_session_info_recipient: actor.recipient(),
-                session_version: SessionVersion::new(1, 1001),
+                session_instance_id: SessionInstanceId::new(1),
             },
         );
         registry
@@ -1724,7 +1724,7 @@ mod tests {
                     session_actor_message_recipient: actor.clone().recipient(),
                     accept_routed_publish_recipient: actor.clone().recipient(),
                     get_session_info_recipient: actor.recipient(),
-                    session_version: SessionVersion::new(1, 1001),
+                    session_instance_id: SessionInstanceId::new(1),
                 },
             );
             all_delivered.push(delivered);
@@ -1760,15 +1760,13 @@ mod tests {
             .unwrap()
             .as_secs();
         for client_id in client_ids {
-            session_map_storage
-                .register_session_actor(
-                    tenant_id.to_string(),
-                    client_id.to_string(),
-                    1001,
-                    &SessionVersion::new(1, 1001),
-                    now + 3600,
-                )
-                .unwrap();
+            session_map_storage.register_session_actor(
+                tenant_id.to_string(),
+                client_id.to_string(),
+                1001,
+                SessionInstanceId::new(1),
+                now + 3600,
+            );
         }
 
         RouteContext {

@@ -15,7 +15,6 @@ use crate::{
         ws_listener::MqttWsListener, wss_listener::MqttWssListener,
     },
     metric, rest_api,
-    session::session_actor_map_storage::SessionClock,
     settings::Settings,
 };
 
@@ -28,8 +27,6 @@ pub struct YedMQApp {
     pub metric: Arc<metric::Metric>,
 
     pub settings: Arc<Settings>,
-
-    pub session_clock: Arc<SessionClock>,
 
     pub join_handles: Mutex<Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>>>,
 
@@ -238,17 +235,6 @@ impl YedMQApp {
             .context("start all plugins failed")?;
         info!("all plugins started succeed");
 
-        let session_clock = SessionClock::new(
-            settings.cluster.node_id,
-            settings.session.session_clock_path.clone(),
-        );
-        session_clock
-            .restore()
-            .await
-            .context("session clock restore failed")?;
-
-        let session_clock = Arc::new(session_clock);
-
         let metric = Arc::new(metric::Metric::new());
 
         let join_handles = Mutex::new(vec![]);
@@ -259,7 +245,6 @@ impl YedMQApp {
             arbiter_pool.clone(),
             settings.clone(),
             plugin_manager.clone(),
-            session_clock.clone(),
             metric.clone(),
         )
         .await
@@ -271,7 +256,6 @@ impl YedMQApp {
             plugin_manager,
             settings,
             metric,
-            session_clock,
             join_handles,
             service_registry,
             arbiter_pool: arbiter_pool.clone(),
@@ -297,12 +281,21 @@ mod tests {
 
         let mut settings = Settings::default();
         settings.plugin.dir = plugin_dir.to_string_lossy().into_owned();
-        settings.plugin.local_socket_path = temp_dir
-            .path()
-            .join("missing-parent")
-            .join("yedmq_plugin.sock")
-            .to_string_lossy()
-            .into_owned();
+        #[cfg(not(windows))]
+        {
+            settings.plugin.local_socket_path = temp_dir
+                .path()
+                .join("missing-parent")
+                .join("yedmq_plugin.sock")
+                .to_string_lossy()
+                .into_owned();
+        }
+        #[cfg(windows)]
+        {
+            // File paths are normalized to named pipes on Windows; use a pipe
+            // path without a name so listener creation fails on that platform.
+            settings.plugin.local_socket_path = r"\\.\pipe\".to_string();
+        }
 
         let err = match YedMQApp::new(Arc::new(settings)).await {
             Ok(_) => panic!("expected app startup to fail"),

@@ -265,10 +265,9 @@ message CleanRetainPublishMessageRequest {
 // Response for cleaning a retained publish message.
 message CleanRetainPublishMessageResponse {}
 
-// Session version information.
-message SessionVersion {
-    uint64 counter = 1; // Version counter
-    uint64 node_id = 2; // Node identifier
+// The log index of the Raft registration that owns this session.
+message SessionInstanceId {
+    uint64 log_index = 1;
 }
 
 // Request to register a session actor mapping.
@@ -276,17 +275,18 @@ message RegisterSessionActorMapRequest {
     string tenant_id = 1;
     string client_id = 2;
     uint64 node_id = 3;
-    SessionVersion session_version = 4;
 }
 
 // Response for registering a session actor mapping.
-message RegisterSessionActorMapResponse {}
+message RegisterSessionActorMapResponse {
+    SessionInstanceId session_instance_id = 1;
+}
 
 // Request to unregister a session actor mapping.
 message UnregisterSessionActorMapRequest {
     string tenant_id = 1;
     string client_id = 2;
-    SessionVersion session_version = 3;
+    SessionInstanceId session_instance_id = 3;
 }
 
 // Response for unregistering a session actor mapping.
@@ -296,6 +296,7 @@ message UnregisterSessionActorMapResponse {}
 message RenewSessionLeaseRequest {
     string tenant_id = 1;
     string client_id = 2;
+    SessionInstanceId session_instance_id = 3;
 }
 
 // Response for renewing a session lease.
@@ -327,6 +328,7 @@ message RoutePacketResponse {}
 message ForceStopSessionActorRequest {
     string tenant_id = 1; // Tenant identifier
     string client_id = 2; // Client identifier
+    SessionInstanceId session_instance_id = 3; // Expected instance ID
 }
 
 message ForceStopSessionActorResponse {}

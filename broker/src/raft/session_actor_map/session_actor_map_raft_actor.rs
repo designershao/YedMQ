@@ -31,7 +31,7 @@ use crate::{
         GRPCBusinessError, Node, NodeId,
     },
     rpc::grpc_status,
-    session::session_actor_map_storage::{SessionActorMapStorage, SessionClock, SessionVersion},
+    session::session_actor_map_storage::{SessionActorMapStorage, SessionInstanceId},
 };
 
 #[derive(Debug, Clone)]
@@ -92,12 +92,6 @@ pub enum SessionActorMapRaftError {
     #[error("Unexpected response type: {0}")]
     UnexpectedResponseType(String),
 
-    #[error("Session version rejected, current: {current_version}, existing: {existing_version}")]
-    SessionVersionRejected {
-        current_version: SessionVersion,
-        existing_version: SessionVersion,
-    },
-
     #[error("Tenant not found: {tenant_id}")]
     TenantNotFound { tenant_id: String },
 }
@@ -108,40 +102,11 @@ pub struct SessionActorMapRaftActor {
     state: ActorState,
     pending_messages: Vec<Box<dyn std::any::Any + Send>>,
     session_actor_map_storage: OnceCell<Arc<RwLock<SessionActorMapStorage>>>,
-    session_clock: Option<Arc<SessionClock>>,
 }
 
 impl SessionActorMapRaftActor {
     fn is_transient_remote_leader_error(message: &str) -> bool {
         message.contains("transport error") || message.contains("Connection refused")
-    }
-
-    fn parse_session_version(value: &str) -> Option<SessionVersion> {
-        let (counter, node_id) = value.trim().split_once('-')?;
-        Some(SessionVersion::new(
-            counter.trim().parse().ok()?,
-            node_id.trim().parse().ok()?,
-        ))
-    }
-
-    fn parse_remote_error(message: &str) -> Option<SessionActorMapRaftError> {
-        let prefix = "Session version rejected, current: ";
-        let rest = message.strip_prefix(prefix)?;
-        let (current, existing) = rest.split_once(", existing: ")?;
-
-        Some(SessionActorMapRaftError::SessionVersionRejected {
-            current_version: Self::parse_session_version(current)?,
-            existing_version: Self::parse_session_version(existing)?,
-        })
-    }
-
-    fn map_session_version_conflict(
-        detail: &crate::protobuf::SessionVersionConflictDetail,
-    ) -> SessionActorMapRaftError {
-        SessionActorMapRaftError::SessionVersionRejected {
-            current_version: SessionVersion::new(detail.current_counter, detail.current_node_id),
-            existing_version: SessionVersion::new(detail.existing_counter, detail.existing_node_id),
-        }
     }
 
     fn leader_node_from_status(parsed: &grpc_status::ParsedStatus) -> Option<Node> {
@@ -157,17 +122,6 @@ impl SessionActorMapRaftActor {
         detail: crate::protobuf::ErrorDetail,
     ) -> SessionActorMapRaftError {
         match detail.code() {
-            crate::protobuf::ErrorCode::SessionVersionRejected => {
-                if let Some(conflict) = detail.session_version_conflict.as_ref() {
-                    Self::map_session_version_conflict(conflict)
-                } else {
-                    Self::parse_remote_error(&detail.message).unwrap_or_else(|| {
-                        SessionActorMapRaftError::GRPCBusiness(GRPCBusinessError::new(
-                            grpc_code, detail,
-                        ))
-                    })
-                }
-            }
             crate::protobuf::ErrorCode::SessionTenantNotFound => {
                 let tenant_id = detail
                     .message
@@ -224,7 +178,6 @@ impl SessionActorMapRaftActor {
 
     async fn initialize_raft(
         settings: Arc<crate::settings::Settings>,
-        session_clock: Arc<SessionClock>,
     ) -> Result<(SessionActorMapRaft, Arc<RwLock<SessionActorMapStorage>>), SessionActorMapRaftError>
     {
         let raft_config = Config {
@@ -246,7 +199,6 @@ impl SessionActorMapRaftActor {
             &dir,
             session_actor_map_storage.clone(),
             settings.cluster.node_id,
-            session_clock.clone(),
             settings.cluster.session_ttl,
         )
         .await
@@ -328,16 +280,7 @@ impl SessionActorMapRaftActor {
         request: crate::raft::session_actor_map::types::SessionActorMapRequest,
     ) -> Result<ClientWriteResponse<SessionActorMapTypeConfig>, SessionActorMapRaftError> {
         match Self::try_local_write(raft, request.clone()).await {
-            Ok(r) => match r.data {
-                super::types::SessionActorMapResponse::None => Ok(r),
-                super::types::SessionActorMapResponse::Rejected {
-                    current_version,
-                    existing_version,
-                } => Err(SessionActorMapRaftError::SessionVersionRejected {
-                    current_version,
-                    existing_version,
-                }),
-            },
+            Ok(r) => Ok(r),
             Err(SessionActorMapRaftError::NotLeader { leader }) => {
                 log::debug!("Not leader, forwarding request to leader: {:?}", leader);
                 if let Some(leader_node) = leader {
@@ -418,7 +361,6 @@ impl Default for SessionActorMapRaftActor {
             state: ActorState::Initializing,
             pending_messages: Vec::new(),
             session_actor_map_storage: OnceCell::new(),
-            session_clock: None,
         }
     }
 }
@@ -427,7 +369,6 @@ impl Default for SessionActorMapRaftActor {
 #[rtype(result = "()")]
 pub struct Initialize {
     pub settings: Arc<crate::settings::Settings>,
-    pub session_clock: Arc<SessionClock>,
 }
 
 impl Handler<Initialize> for SessionActorMapRaftActor {
@@ -435,14 +376,12 @@ impl Handler<Initialize> for SessionActorMapRaftActor {
 
     fn handle(&mut self, msg: Initialize, ctx: &mut Self::Context) -> Self::Result {
         let settings = msg.settings;
-        let session_clock = msg.session_clock;
         self.settings = Some(settings.clone());
-        self.session_clock = Some(session_clock.clone());
 
         let addr = ctx.address();
         ctx.spawn(
             async move {
-                let raft_instance = Self::initialize_raft(settings, session_clock).await;
+                let raft_instance = Self::initialize_raft(settings).await;
                 addr.do_send(InitializationComplete(raft_instance));
             }
             .into_actor(self),
@@ -547,6 +486,7 @@ impl Handler<AppendEntriesRequestMessage> for SessionActorMapRaftActor {
 pub struct RenewSession {
     pub tenant_id: String,
     pub client_id: String,
+    pub session_instance_id: SessionInstanceId,
 }
 
 impl Handler<RenewSession> for SessionActorMapRaftActor {
@@ -576,6 +516,7 @@ impl Handler<RenewSession> for SessionActorMapRaftActor {
                                     sessions: vec![super::types::RenewSession {
                                         tenant_id: msg.tenant_id.clone(),
                                         session_id: msg.client_id.clone(),
+                                        session_instance_id: msg.session_instance_id,
                                     }],
                                 };
                             Self::handle_raft_write(raft_instance, command).await?;
@@ -648,16 +589,15 @@ impl Handler<GetSessionActorMapStorage> for SessionActorMapRaftActor {
 }
 
 #[derive(Message, Clone)]
-#[rtype(result = "Result<(), SessionActorMapRaftError>")]
+#[rtype(result = "Result<SessionInstanceId, SessionActorMapRaftError>")]
 pub struct RegisterSessionActorMap {
     pub tenant_id: String,
     pub client_id: String,
     pub node_id: NodeId,
-    pub version: SessionVersion,
 }
 
 impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
-    type Result = ResponseActFuture<Self, Result<(), SessionActorMapRaftError>>;
+    type Result = ResponseActFuture<Self, Result<SessionInstanceId, SessionActorMapRaftError>>;
 
     fn handle(&mut self, msg: RegisterSessionActorMap, _: &mut Self::Context) -> Self::Result {
         match &self.state {
@@ -682,10 +622,14 @@ impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
                                 tenant_id: msg.tenant_id.clone(),
                                 session_id: msg.client_id.clone(),
                                 node_id: msg.node_id,
-                                version: msg.version,
                             };
-                            Self::handle_raft_write(raft_instance, command).await?;
-                            Ok(())
+                            let response = Self::handle_raft_write(raft_instance, command).await?;
+                            match response.data {
+                                super::types::SessionActorMapResponse::Registered(id) => Ok(id),
+                                _ => Err(SessionActorMapRaftError::UnexpectedResponseType(
+                                    "registration did not return an instance ID".into(),
+                                )),
+                            }
                         } else {
                             Err(SessionActorMapRaftError::NotInitialized)
                         }
@@ -717,7 +661,7 @@ impl Handler<RegisterSessionActorMap> for SessionActorMapRaftActor {
 pub struct UnregisterSessionActorMap {
     pub tenant_id: String,
     pub client_id: String,
-    pub version: SessionVersion,
+    pub session_instance_id: SessionInstanceId,
 }
 
 impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
@@ -745,7 +689,7 @@ impl Handler<UnregisterSessionActorMap> for SessionActorMapRaftActor {
                             let command = super::types::SessionActorMapRequest::UnregisterSession {
                                 tenant_id: msg.tenant_id.clone(),
                                 session_id: msg.client_id.clone(),
-                                session_version: msg.version,
+                                session_instance_id: msg.session_instance_id,
                             };
                             Self::handle_raft_write(raft_instance, command).await?;
                             Ok(())
@@ -1596,27 +1540,6 @@ mod tests {
             SessionActorMapRaftError::GRPCBusiness(err) => {
                 assert_eq!(err.grpc_code(), tonic::Code::InvalidArgument);
                 assert_eq!(err.code(), crate::protobuf::ErrorCode::InvalidArgument);
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn map_remote_status_reads_structured_session_version_conflict() {
-        let mut detail =
-            grpc_status::session_version_rejected_detail(12, 3, 10, 2, "session_actor_map_raft");
-        detail.message = "wording changed but structure remains".to_string();
-        let status = grpc_status::business_status(tonic::Code::FailedPrecondition, detail);
-
-        match SessionActorMapRaftActor::map_remote_status(status) {
-            SessionActorMapRaftError::SessionVersionRejected {
-                current_version,
-                existing_version,
-            } => {
-                assert_eq!(current_version.counter, 12);
-                assert_eq!(current_version.node_id, 3);
-                assert_eq!(existing_version.counter, 10);
-                assert_eq!(existing_version.node_id, 2);
             }
             other => panic!("unexpected error: {other:?}"),
         }

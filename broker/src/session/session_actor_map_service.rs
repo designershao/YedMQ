@@ -4,7 +4,7 @@ use crate::raft::session_actor_map::session_actor_map_raft_actor::{
     GetSessionActorMap, GetSessionActorMapLinearizable, RegisterSessionActorMap, RenewSession,
     SessionActorMapRaftActor, SessionActorMapRaftError, UnregisterSessionActorMap,
 };
-use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionVersion};
+use crate::session::session_actor_map_storage::{SessionActorMapEntry, SessionInstanceId};
 
 #[derive(Clone)]
 pub struct SessionActorMapService {
@@ -26,11 +26,13 @@ impl SessionActorMapService {
         &self,
         tenant_id: String,
         client_id: String,
+        session_instance_id: SessionInstanceId,
     ) -> Result<(), SessionActorMapRaftError> {
         self.session_actor_map_raft_actor
             .send(RenewSession {
                 tenant_id,
                 client_id,
+                session_instance_id,
             })
             .await
             .map_err(|e| SessionActorMapRaftError::ServiceUnavailable(e.to_string()))?
@@ -41,14 +43,12 @@ impl SessionActorMapService {
         tenant_id: String,
         client_id: String,
         node_id: u64,
-        version: SessionVersion,
-    ) -> Result<(), SessionActorMapRaftError> {
+    ) -> Result<SessionInstanceId, SessionActorMapRaftError> {
         self.session_actor_map_raft_actor
             .send(RegisterSessionActorMap {
                 tenant_id,
                 client_id,
                 node_id,
-                version,
             })
             .await
             .map_err(|e| SessionActorMapRaftError::ServiceUnavailable(e.to_string()))?
@@ -58,13 +58,13 @@ impl SessionActorMapService {
         &self,
         tenant_id: String,
         client_id: String,
-        version: SessionVersion,
+        session_instance_id: SessionInstanceId,
     ) -> Result<(), SessionActorMapRaftError> {
         self.session_actor_map_raft_actor
             .send(UnregisterSessionActorMap {
                 tenant_id,
                 client_id,
-                version,
+                session_instance_id,
             })
             .await
             .map_err(|e| SessionActorMapRaftError::ServiceUnavailable(e.to_string()))?

@@ -8,7 +8,6 @@ use crate::raft::topic::topic_raft_actor::TopicRaftActor;
 use crate::route_store::JsonRocksDBStore;
 use crate::router_actor::{RouterActor, RouterActorConfig};
 use crate::rpc::rpc_actor::RpcActor;
-use crate::session::session_actor_map_storage::SessionClock;
 use crate::session::session_manager_actor::{
     Initialize as InitializeSessionManager, SessionManagerActor, SetRouterActors,
 };
@@ -40,7 +39,6 @@ impl ServiceRegistry {
         pools: Arc<ArbiterPool>,
         settings: Arc<Settings>,
         plugin_manager: Arc<PluginManager>,
-        session_clock: Arc<SessionClock>,
         metric: Arc<crate::metric::Metric>,
     ) -> anyhow::Result<Arc<Self>> {
         info!("starting services");
@@ -65,7 +63,6 @@ impl ServiceRegistry {
         session_manager.do_send(InitializeSessionManager {
             settings: settings.clone(),
             plugin_manager,
-            session_clock: session_clock.clone(),
             session_registry: session_registry.clone(),
             payload_store: payload_store.clone(),
             timer_actor,
@@ -76,7 +73,6 @@ impl ServiceRegistry {
 
         session_map_raft.do_send(InitializeSessionActorMapRaft {
             settings: settings.clone(),
-            session_clock,
         });
 
         topic_raft.do_send(crate::raft::topic::topic_raft_actor::Initialize {

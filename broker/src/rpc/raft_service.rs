@@ -81,19 +81,6 @@ fn map_session_actor_map_raft_error(
         | crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::GRPCConnect(message) => {
             Status::unavailable(format!("{} failed: {}", action, message))
         }
-        crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
-            current_version,
-            existing_version,
-        } => grpc_status::business_status(
-            tonic::Code::FailedPrecondition,
-            grpc_status::session_version_rejected_detail(
-                current_version.counter,
-                current_version.node_id,
-                existing_version.counter,
-                existing_version.node_id,
-                "session_actor_map_raft".to_string(),
-            ),
-        ),
         crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::TenantNotFound {
             tenant_id,
         } => grpc_status::business_status(

@@ -1,5 +1,6 @@
 use crate::session::session_actor::SessionActorMessage;
 use crate::session::session_actor::SessionActorMessage::{InflightRetry, KeepAliveExpired};
+use crate::session::session_actor_map_storage::SessionInstanceId;
 use actix::{Actor, AsyncContext, Context, Handler, Message, Recipient};
 use log::{debug, info};
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use tokio_util::time::DelayQueue;
 pub struct RefreshTimer {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
     pub timer_type: TimerType,
 }
 
@@ -21,6 +23,7 @@ pub struct RefreshTimer {
 pub struct RemoveTimer {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
     pub timer_type: TimerType,
 }
 
@@ -31,6 +34,7 @@ impl Handler<RefreshTimer> for TimerActor {
         let session_key = SessionKey {
             tenant_id: msg.tenant_id.clone(),
             session_id: msg.session_id.clone(),
+            session_instance_id: msg.session_instance_id,
             timer_type: msg.timer_type,
         };
         if let Some(wrapper) = self.sessions.get_mut(&session_key) {
@@ -46,6 +50,7 @@ impl Handler<RemoveTimer> for TimerActor {
         let session_key = SessionKey {
             tenant_id: msg.tenant_id.clone(),
             session_id: msg.session_id.clone(),
+            session_instance_id: msg.session_instance_id,
             timer_type: msg.timer_type,
         };
         if let Some(wrapper) = self.sessions.remove(&session_key) {
@@ -59,6 +64,7 @@ impl Handler<RemoveTimer> for TimerActor {
 pub struct RegisterKeepAlive {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
     pub keep_alive: Duration,
     pub addr: Recipient<SessionActorMessage>,
 }
@@ -71,6 +77,7 @@ impl Handler<RegisterKeepAlive> for TimerActor {
         let session_key = SessionKey {
             tenant_id: msg.tenant_id.clone(),
             session_id: msg.session_id.clone(),
+            session_instance_id: msg.session_instance_id,
             timer_type: TimerType::KeepAlive,
         };
         self.register_timer(session_key, timeout, msg.addr, TimerType::KeepAlive);
@@ -82,6 +89,7 @@ impl Handler<RegisterKeepAlive> for TimerActor {
 pub struct RegisterInflight {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
     pub inflight_retry_duration: Duration,
     pub addr: Recipient<SessionActorMessage>,
 }
@@ -94,6 +102,7 @@ impl Handler<RegisterInflight> for TimerActor {
         let session_key = SessionKey {
             tenant_id: msg.tenant_id,
             session_id: msg.session_id,
+            session_instance_id: msg.session_instance_id,
             timer_type: TimerType::Inflight,
         };
         self.register_timer(session_key, timeout, msg.addr, TimerType::Inflight);
@@ -106,10 +115,11 @@ pub enum TimerType {
     KeepAlive,
 }
 
-#[derive(Eq, PartialOrd, PartialEq, Hash, Clone, Debug)]
+#[derive(Eq, PartialEq, Hash, Clone, Debug)]
 pub struct SessionKey {
     pub tenant_id: String,
     pub session_id: String,
+    pub session_instance_id: SessionInstanceId,
     pub timer_type: TimerType,
 }
 
@@ -121,7 +131,7 @@ pub struct SessionTimerWrapper {
 }
 
 pub struct TimerActor {
-    queue: DelayQueue<SessionKey>, // (tenant_id, client_id, timer_type)
+    queue: DelayQueue<SessionKey>,
 
     sessions: HashMap<SessionKey, SessionTimerWrapper>,
 }
@@ -287,6 +297,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -311,6 +322,7 @@ mod tests {
 
         timer
             .send(RegisterInflight {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 inflight_retry_duration: Duration::from_millis(100),
@@ -343,6 +355,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -353,6 +366,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant2".to_string(),
                 session_id: "session2".to_string(),
                 keep_alive: Duration::from_millis(150),
@@ -379,6 +393,7 @@ mod tests {
         // First registration 500ms
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(500),
@@ -392,6 +407,7 @@ mod tests {
         // Second registration overwrites to 100ms
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -434,6 +450,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(300),
@@ -444,6 +461,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant2".to_string(),
                 session_id: "session2".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -454,6 +472,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant3".to_string(),
                 session_id: "session3".to_string(),
                 keep_alive: Duration::from_millis(200),
@@ -489,6 +508,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -499,6 +519,7 @@ mod tests {
 
         timer
             .send(RegisterInflight {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session2".to_string(),
                 inflight_retry_duration: Duration::from_millis(100),
@@ -526,6 +547,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(200),
@@ -539,6 +561,7 @@ mod tests {
         // Refresh the timer
         timer
             .send(RefreshTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 timer_type: TimerType::KeepAlive,
@@ -567,6 +590,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -579,6 +603,7 @@ mod tests {
             sleep(Duration::from_millis(50)).await;
             timer
                 .send(RefreshTimer {
+                    session_instance_id: SessionInstanceId::new(1),
                     tenant_id: "tenant1".to_string(),
                     session_id: "session1".to_string(),
                     timer_type: TimerType::KeepAlive,
@@ -599,6 +624,7 @@ mod tests {
         // Refresh non-existent timer, should not panic
         timer
             .send(RefreshTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "nonexistent".to_string(),
                 session_id: "nonexistent".to_string(),
                 timer_type: TimerType::KeepAlive,
@@ -619,6 +645,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -630,6 +657,7 @@ mod tests {
         // Refresh with wrong timer type
         timer
             .send(RefreshTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 timer_type: TimerType::Inflight,
@@ -656,6 +684,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -668,6 +697,7 @@ mod tests {
 
         timer
             .send(RemoveTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 timer_type: TimerType::KeepAlive,
@@ -680,12 +710,47 @@ mod tests {
     }
 
     #[actix::test]
+    async fn old_session_cannot_remove_new_sessions_timer() {
+        let timer = TimerActor::new().start();
+        let count = Arc::new(Mutex::new(0));
+        let session = TestSessionActor {
+            keep_alive_count: count.clone(),
+            inflight_count: Arc::new(Mutex::new(0)),
+        }
+        .start();
+
+        timer
+            .send(RegisterKeepAlive {
+                tenant_id: "tenant".into(),
+                session_id: "client".into(),
+                session_instance_id: SessionInstanceId::new(2),
+                keep_alive: Duration::from_millis(80),
+                addr: session.recipient(),
+            })
+            .await
+            .unwrap();
+        timer
+            .send(RemoveTimer {
+                tenant_id: "tenant".into(),
+                session_id: "client".into(),
+                session_instance_id: SessionInstanceId::new(1),
+                timer_type: TimerType::KeepAlive,
+            })
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(130)).await;
+        assert_eq!(*count.lock().unwrap(), 1);
+    }
+
+    #[actix::test]
     async fn test_remove_nonexistent_timer() {
         let timer = TimerActor::new().start();
 
         // Remove non-existent timer, should not panic
         timer
             .send(RemoveTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "nonexistent".to_string(),
                 session_id: "nonexistent".to_string(),
                 timer_type: TimerType::KeepAlive,
@@ -707,6 +772,7 @@ mod tests {
         // First registration
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -718,6 +784,7 @@ mod tests {
         // Remove
         timer
             .send(RemoveTimer {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 timer_type: TimerType::KeepAlive,
@@ -731,6 +798,7 @@ mod tests {
         // Re-register
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -757,6 +825,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(1),
@@ -781,6 +850,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::ZERO,
@@ -810,6 +880,7 @@ mod tests {
 
             timer
                 .send(RegisterKeepAlive {
+                    session_instance_id: SessionInstanceId::new(1),
                     tenant_id: format!("tenant{}", i),
                     session_id: format!("session{}", i),
                     keep_alive: Duration::from_millis(100),
@@ -844,6 +915,7 @@ mod tests {
 
                 timer_clone
                     .send(RegisterKeepAlive {
+                        session_instance_id: SessionInstanceId::new(1),
                         tenant_id: format!("tenant{}", i),
                         session_id: format!("session{}", i),
                         keep_alive: Duration::from_millis(200),
@@ -874,6 +946,7 @@ mod tests {
 
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(500),
@@ -888,6 +961,7 @@ mod tests {
             let handle = tokio::spawn(async move {
                 timer_clone
                     .send(RefreshTimer {
+                        session_instance_id: SessionInstanceId::new(1),
                         tenant_id: "tenant1".to_string(),
                         session_id: "session1".to_string(),
                         timer_type: TimerType::KeepAlive,
@@ -921,6 +995,7 @@ mod tests {
         // Register
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),
@@ -934,6 +1009,7 @@ mod tests {
             sleep(Duration::from_millis(50)).await;
             timer
                 .send(RefreshTimer {
+                    session_instance_id: SessionInstanceId::new(1),
                     tenant_id: "tenant1".to_string(),
                     session_id: "session1".to_string(),
                     timer_type: TimerType::KeepAlive,
@@ -949,6 +1025,7 @@ mod tests {
         // Re-register
         timer
             .send(RegisterKeepAlive {
+                session_instance_id: SessionInstanceId::new(1),
                 tenant_id: "tenant1".to_string(),
                 session_id: "session1".to_string(),
                 keep_alive: Duration::from_millis(100),

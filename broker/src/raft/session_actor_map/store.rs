@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     raft::{Node, NodeId},
-    session::session_actor_map_storage::{
-        SessionActorMapError, SessionActorMapStorage, SessionClock,
-    },
+    session::session_actor_map_storage::SessionActorMapStorage,
 };
 
 use super::types::{self, SessionActorMapResponse, SessionActorMapTypeConfig};
@@ -50,8 +48,6 @@ pub struct StateMachineStore {
     pub data: StateMachineData,
 
     snapshot_idx: u64,
-
-    session_clock: Arc<SessionClock>,
 
     session_ttl: u64,
 
@@ -119,7 +115,6 @@ impl StateMachineStore {
         db: Arc<DB>,
         session_actor_map: Arc<RwLock<SessionActorMapStorage>>,
         node_id: NodeId,
-        session_clock: Arc<SessionClock>,
         session_ttl: u64,
     ) -> Result<StateMachineStore, StorageError<NodeId>> {
         let mut sm = Self {
@@ -132,7 +127,6 @@ impl StateMachineStore {
             node_id,
             snapshot_idx: 0,
             db,
-            session_clock,
         };
 
         let snapshot = sm.get_current_snapshot_().map_err(|e| *e)?;
@@ -253,63 +247,41 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                         tenant_id,
                         session_id,
                         node_id,
-                        version,
                     } => {
-                        let register_result = {
+                        let instance_id =
+                            crate::session::session_actor_map_storage::SessionInstanceId::new(
+                                ent.log_id.index,
+                            );
+                        let previous_entry = {
                             let mut session_actor_map_storage =
                                 self.data.state.session_actor_map.write();
                             session_actor_map_storage.register_session_actor(
                                 tenant_id.clone(),
                                 session_id.clone(),
                                 node_id,
-                                &version,
+                                instance_id,
                                 self.session_ttl,
                             )
                         };
-                        match register_result {
-                            Ok(()) => {
-                                // Check local node , force stop the session if the session version is older
-                                if node_id != self.node_id {
-                                    let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
-                                    session_manager_actor_addr
-                                        .send(crate::session::session_manager_actor::RemoveDuplicateSessionsByClock {
-                                            tenant_id,
-                                            client_id: session_id,
-                                            session_version: version.clone(),
-                                        })
-                                        .await
-                                        .map_err(|e| StorageError::IO {
-                                            source: StorageIOError::write_state_machine(&e),
-                                        })?;
-                                }
-                                //
-
-                                // update current node session clock
-                                self.session_clock.bump(&version);
-                                self.session_clock.persist().await.map_err(|e| {
-                                    StorageError::IO {
-                                        source: StorageIOError::write_state_machine(&e),
-                                    }
-                                })?;
-                                replies.push(SessionActorMapResponse::None)
-                            }
-                            Err(e) => match e {
-                                SessionActorMapError::SessionVersionRejected {
-                                    current_version,
-                                    existing_version,
-                                } => {
-                                    replies.push(SessionActorMapResponse::Rejected {
-                                        current_version,
-                                        existing_version,
+                        if let Some(previous) = previous_entry {
+                            if previous.node_id == self.node_id
+                                && previous.instance_id != instance_id
+                            {
+                                let session_manager_actor_addr = crate::session::session_manager_actor::SessionManagerActor::from_registry();
+                                session_manager_actor_addr
+                                    .do_send(crate::session::session_manager_actor::ForceStopWithSessionService {
+                                        tenant_id,
+                                        client_id: session_id,
+                                        session_instance_id: previous.instance_id,
                                     });
-                                }
-                            },
+                            }
                         }
+                        replies.push(SessionActorMapResponse::Registered(instance_id));
                     }
                     types::SessionActorMapRequest::UnregisterSession {
                         tenant_id,
                         session_id,
-                        session_version,
+                        session_instance_id,
                     } => {
                         {
                             let mut session_actor_map_storage =
@@ -317,16 +289,9 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             session_actor_map_storage.unregister_session_actor(
                                 tenant_id.clone(),
                                 session_id.clone(),
-                                &session_version,
+                                session_instance_id,
                             );
-                            self.session_clock.bump(&session_version);
                         }
-                        self.session_clock
-                            .persist()
-                            .await
-                            .map_err(|e| StorageError::IO {
-                                source: StorageIOError::write_state_machine(&e),
-                            })?;
                         replies.push(SessionActorMapResponse::None);
                     }
                     types::SessionActorMapRequest::CleanExpiredSessions { sessions } => {
@@ -336,7 +301,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                             session_actor_map_storage.unregister_session_actor(
                                 session.tenant_id.clone(),
                                 session.session_id.clone(),
-                                &session.session_version,
+                                session.session_instance_id,
                             );
                             // Force stop the session if the session is expired
                             if session.node_id == self.node_id {
@@ -345,6 +310,7 @@ impl RaftStateMachine<SessionActorMapTypeConfig> for StateMachineStore {
                                     crate::session::session_manager_actor::RemoveExpiredSession {
                                         tenant_id: session.tenant_id,
                                         client_id: session.session_id,
+                                        session_instance_id: session.session_instance_id,
                                     },
                                 );
                             }
@@ -725,7 +691,6 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     db_path: P,
     topic_storage: Arc<RwLock<SessionActorMapStorage>>,
     current_node_id: NodeId,
-    session_clock: Arc<SessionClock>,
     session_ttl: u64,
 ) -> StorageResult<(LogStore, StateMachineStore)> {
     let mut db_opts = Options::default();
@@ -744,14 +709,42 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     let db = Arc::new(db);
 
     let log_store = LogStore { db: db.clone() };
-    let sm_store = StateMachineStore::new(
-        db,
-        topic_storage,
-        current_node_id,
-        session_clock,
-        session_ttl,
-    )
-    .await?;
+    let sm_store = StateMachineStore::new(db, topic_storage, current_node_id, session_ttl).await?;
 
     Ok((log_store, sm_store))
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+    use crate::session::session_actor_map_storage::SessionInstanceId;
+    use openraft::{EntryPayload, LeaderId};
+
+    #[actix::test]
+    async fn registration_uses_applied_log_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let map = Arc::new(RwLock::new(SessionActorMapStorage::new()));
+        let (_, mut store) = new_storage(dir.path(), map.clone(), 1, 60).await.unwrap();
+        let entry = Entry {
+            log_id: LogId::new(LeaderId::new(1, 1), 42),
+            payload: EntryPayload::Normal(types::SessionActorMapRequest::RegisterSession {
+                tenant_id: "tenant".into(),
+                session_id: "client".into(),
+                node_id: 1,
+            }),
+        };
+
+        let replies = store.apply(vec![entry]).await.unwrap();
+        let id = SessionInstanceId::new(42);
+        assert!(
+            matches!(replies.as_slice(), [SessionActorMapResponse::Registered(got)] if *got == id)
+        );
+        assert_eq!(
+            map.read()
+                .get_session_actor_map("tenant", "client")
+                .unwrap()
+                .instance_id,
+            id
+        );
+    }
 }

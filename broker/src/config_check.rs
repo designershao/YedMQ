@@ -274,16 +274,6 @@ fn validate_paths(report: &mut CheckReport, settings: &Settings) {
         );
     }
 
-    let session_clock_path = Path::new(&settings.session.session_clock_path);
-    if let Some(parent) = session_clock_path.parent() {
-        if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            report.warn(
-                "session.session_clock_path",
-                format!("parent directory does not exist: {}", parent.display()),
-            );
-        }
-    }
-
     let store_dir = Path::new(&settings.cluster.store_dir);
     if store_dir.is_dir() {
         report.ok("cluster.store_dir", settings.cluster.store_dir.clone());
@@ -325,22 +315,18 @@ mod tests {
 [cluster]
 node_id = 1001
 nodes = [{{ id = 1001, rpc_address = "127.0.0.1:3457", api_address = "127.0.0.1:3456" }}]
-store_dir = "{store_dir}"
+store_dir = '{store_dir}'
 
 [cluster.rpc]
 external = "127.0.0.1:3457"
 
-[session]
-session_clock_path = "{clock_path}"
-
 [plugin]
-dir = "{plugin_dir}"
+dir = '{plugin_dir}'
 
 [listener.api.auth]
 users = [{{ username = "admin", password = "password" }}]
 "#,
             store_dir = temp_dir.path().join("store").display(),
-            clock_path = temp_dir.path().join("clock").display(),
             plugin_dir = temp_dir.path().display()
         )
     }

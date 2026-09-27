@@ -13,8 +13,8 @@ use crate::{
     settings::Settings,
 };
 use actix::{
-    dev::MessageResponse, Actor, Addr, AsyncContext, Context, Handler, Message, Recipient,
-    ResponseFuture, Supervised, SystemService, WrapFuture,
+    Actor, Addr, AsyncContext, Context, Handler, Message, Recipient, ResponseFuture, Supervised,
+    SystemService, WrapFuture,
 };
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
@@ -25,7 +25,7 @@ use yedmq_plugin_host::plugin_manager::PluginManager;
 
 use super::{
     session_actor::{SessionActorMessage, SessionInfo},
-    session_actor_map_storage::{SessionClock, SessionVersion},
+    session_actor_map_storage::SessionInstanceId,
     session_state_storage::SessionState,
     WillMessage,
 };
@@ -48,8 +48,8 @@ pub enum SessionManagerError {
     #[error("session {0} has existed")]
     SessionHasExisted(String),
 
-    #[error("newer session has existed")]
-    NewerSessionExisted,
+    #[error("session registration was superseded")]
+    SessionSuperseded,
 
     #[error("session actor map error {0}")]
     SessionActorMapError(
@@ -84,7 +84,7 @@ pub enum SessionLifecycleMessage {
     SessionStopped {
         tenant_id: String,
         client_id: String,
-        version: SessionVersion,
+        session_instance_id: SessionInstanceId,
     },
 }
 
@@ -131,8 +131,6 @@ pub struct SessionManagerActor {
     settings: Option<Arc<Settings>>,
     node_resolver: Option<Arc<NodeResolver>>,
 
-    session_clock: Option<Arc<SessionClock>>,
-
     current_node_id: NodeId,
 
     router_actors: Option<Vec<Addr<RouterActor>>>,
@@ -162,7 +160,6 @@ pub struct Initialize {
     pub settings: Arc<Settings>,
     pub node_resolver: Arc<NodeResolver>,
     pub plugin_manager: Arc<PluginManager>,
-    pub session_clock: Arc<SessionClock>,
     pub session_registry: SessionRegistry,
     pub timer_actor: Addr<TimerActor>,
     pub payload_store: Arc<dyn PayloadStore>,
@@ -177,7 +174,6 @@ impl Handler<Initialize> for SessionManagerActor {
         self.settings = Some(msg.settings.clone());
         self.node_resolver = Some(msg.node_resolver);
         self.plugin_manager = Some(msg.plugin_manager);
-        self.session_clock = Some(msg.session_clock);
         self.current_node_id = msg.settings.cluster.node_id;
         self.sessions = msg.session_registry;
         self.payload_store = Some(msg.payload_store);
@@ -204,7 +200,7 @@ impl Actor for SessionManagerActor {
                     SessionLifecycleMessage::SessionStopped {
                         tenant_id,
                         client_id,
-                        version,
+                        session_instance_id,
                     } => {
                         info!(
                             "Received session lifecycle message SessionStopped session {} stopped",
@@ -214,7 +210,7 @@ impl Actor for SessionManagerActor {
                             .unregister_session_actor_map(
                                 tenant_id.clone(),
                                 client_id.clone(),
-                                version.clone(),
+                                session_instance_id,
                             )
                             .await
                         {
@@ -227,6 +223,7 @@ impl Actor for SessionManagerActor {
                             .send(RemoveSessionMessage {
                                 tenant_id,
                                 client_id,
+                                session_instance_id,
                             })
                             .await
                         {
@@ -334,6 +331,7 @@ impl Handler<CheckExpiredSessions> for SessionManagerActor {
                                     topic_raft_actor_addr.clone(),
                                     tenant_id.clone(),
                                     client_id.clone(),
+                                    entry.instance_id,
                                 ).await {
                                     warn!("failed to force disconnect expired session {}/{} on node {}: {}", tenant_id, client_id, entry.node_id, e);
                                 }
@@ -377,6 +375,7 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
                         .map(|entry| RenewSession {
                             tenant_id: tenant_id.clone(),
                             session_id: entry.key().clone(),
+                            session_instance_id: entry.value().session_instance_id,
                         })
                         .collect();
 
@@ -387,7 +386,11 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
                             tenant_id, session.session_id
                         );
                         let res = session_actor_map_service
-                            .renew_session(session.tenant_id.clone(), session.session_id.clone())
+                            .renew_session(
+                                session.tenant_id.clone(),
+                                session.session_id.clone(),
+                                session.session_instance_id,
+                            )
                             .await;
                         if let Err(err) = res {
                             error!("failed to renew session lease: {}", err);
@@ -407,6 +410,7 @@ impl Handler<RenewSessionLease> for SessionManagerActor {
 pub struct RemoveExpiredSession {
     pub tenant_id: String,
     pub client_id: String,
+    pub session_instance_id: SessionInstanceId,
 }
 
 impl Handler<RemoveExpiredSession> for SessionManagerActor {
@@ -422,6 +426,9 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
                 Some(tenant_sessions) => {
                     let session = tenant_sessions.get(&msg.client_id);
                     if let Some(session) = session {
+                        if session.session_instance_id != msg.session_instance_id {
+                            return Ok(());
+                        }
                         session
                             .session_actor_message_recipient
                             .do_send(SessionActorMessage::ForceStop);
@@ -429,7 +436,9 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
                             "force stop session {} remove from local node session map",
                             msg.client_id
                         );
-                        tenant_sessions.remove(&msg.client_id);
+                        tenant_sessions.remove_if(&msg.client_id, |_, session| {
+                            session.session_instance_id == msg.session_instance_id
+                        });
                         info!("remove expired session {} succeed", msg.client_id);
                         Ok(())
                     } else {
@@ -439,70 +448,6 @@ impl Handler<RemoveExpiredSession> for SessionManagerActor {
                 }
             }
         })
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "()")]
-pub struct RemoveDuplicateSessionsByClock {
-    pub tenant_id: String,
-    pub client_id: String,
-    pub session_version: SessionVersion,
-}
-
-impl Handler<RemoveDuplicateSessionsByClock> for SessionManagerActor {
-    type Result = ();
-
-    fn handle(
-        &mut self,
-        msg: RemoveDuplicateSessionsByClock,
-        ctx: &mut Self::Context,
-    ) -> Self::Result {
-        info!("remove duplicate session {}", msg.client_id);
-        let sessions = self.sessions.get_inner().clone();
-        let self_addr = ctx.address();
-        ctx.spawn(
-            async move {
-                let should_stop = if let Some(tenant_sessions) = sessions.get(&msg.tenant_id) {
-                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        msg.session_version.is_newer_than(&session.session_version)
-                    } else {
-                        false
-                    }
-                } else {
-                    warn!("tenant {} not found", msg.tenant_id);
-                    false
-                };
-
-                if should_stop {
-                    match self_addr
-                        .send(ForceStop {
-                            tenant_id: msg.tenant_id.clone(),
-                            client_id: msg.client_id.clone(),
-                        })
-                        .await
-                    {
-                        Ok(res) => {
-                            if let Err(e) = res {
-                                error!(
-                                    "force stop duplicate session {} failed: {}",
-                                    msg.client_id, e
-                                );
-                            } else {
-                                info!("remove duplicate session {} succeed", msg.client_id);
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                            "send ForceStop message to self for duplicate session {} failed: {}",
-                            msg.client_id, e
-                        );
-                        }
-                    }
-                }
-            }
-            .into_actor(self),
-        );
     }
 }
 
@@ -611,7 +556,7 @@ impl Handler<GetSessionInfoListWithPagination> for SessionManagerActor {
 pub struct ForceStopWithSessionService {
     pub tenant_id: String,
     pub client_id: String,
-    pub session_version: SessionVersion,
+    pub session_instance_id: SessionInstanceId,
 }
 
 impl Handler<ForceStopWithSessionService> for SessionManagerActor {
@@ -625,10 +570,10 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
         let sessions = self.sessions.get_inner().clone();
         Box::pin(async move {
             match sessions.get(&msg.tenant_id) {
-                None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
+                None => Ok(()),
                 Some(tenant_sessions) => {
                     if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        if msg.session_version.is_newer_than(&session.session_version) {
+                        if msg.session_instance_id == session.session_instance_id {
                             let recipient = session.session_actor_message_recipient.clone();
                             drop(session);
                             let res = recipient.send(SessionActorMessage::ForceStop).await;
@@ -638,48 +583,6 @@ impl Handler<ForceStopWithSessionService> for SessionManagerActor {
                         }
                     }
                     Ok(())
-                }
-            }
-        })
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "Result<(), SessionManagerError>")]
-pub struct ForceStop {
-    pub tenant_id: String,
-    pub client_id: String,
-}
-
-impl Handler<ForceStop> for SessionManagerActor {
-    type Result = ResponseFuture<Result<(), SessionManagerError>>;
-
-    fn handle(&mut self, msg: ForceStop, _ctx: &mut Self::Context) -> Self::Result {
-        info!("force stop session {}", msg.client_id);
-        let sessions = self.sessions.get_inner().clone();
-
-        Box::pin(async move {
-            match sessions.get(&msg.tenant_id) {
-                None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
-                Some(tenant_sessions) => {
-                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        let recipient = session.session_actor_message_recipient.clone();
-                        drop(session);
-                        if let Err(e) = recipient.send(SessionActorMessage::ForceStop).await {
-                            warn!(
-                                "failed to send ForceStop to session actor {}: {}. It might have already stopped.",
-                                msg.client_id, e
-                            );
-                        }
-                        info!(
-                            "force stop session {} remove from local node session map",
-                            msg.client_id
-                        );
-                        tenant_sessions.remove(&msg.client_id);
-                        Ok(())
-                    } else {
-                        Err(SessionManagerError::SessionNotExisted(msg.client_id))
-                    }
                 }
             }
         })
@@ -758,6 +661,7 @@ async fn call_force_disconnect(
     topic_raft_actor_addr: Addr<TopicRaftActor>,
     tenant_id: String,
     client_id: String,
+    session_instance_id: SessionInstanceId,
 ) -> Result<bool, SessionManagerError> {
     let max_retries = 3;
 
@@ -779,6 +683,9 @@ async fn call_force_disconnect(
             .force_stop_session_actor(ForceStopSessionActorRequest {
                 tenant_id: tenant_id.clone(),
                 client_id: client_id.clone(),
+                session_instance_id: Some(crate::protobuf::SessionInstanceId {
+                    log_index: session_instance_id.log_index,
+                }),
             })
             .await;
         if res.is_ok() {
@@ -801,11 +708,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let tenant_id = msg.tenant_id.clone();
         let plugin_manager = require_initialized(&self.plugin_manager, "plugin_manager");
         let settings = require_initialized(&self.settings, "settings");
-        let node_resolver = require_initialized(&self.node_resolver, "node_resolver");
-        let topic_raft_actor_addr = TopicRaftActor::from_registry();
         let session_lifecycle_tx =
             require_initialized(&self.session_lifecycle_tx, "session_lifecycle_tx");
-        let session_clock = require_initialized(&self.session_clock, "session_clock");
         let current_node_id = self.current_node_id;
         let router_actors = require_initialized(&self.router_actors, "router_actors");
         let arbiter_pool = require_initialized(&self.arbiter_pool, "arbiter_pool");
@@ -816,9 +720,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
         let future = async move {
             let plugin_manager = plugin_manager?;
             let settings = settings?;
-            let node_resolver = node_resolver?;
             let session_lifecycle_tx = session_lifecycle_tx?;
-            let session_clock = session_clock?;
             let router_actors = router_actors?;
             let arbiter_pool = arbiter_pool?;
             let timer_actor = timer_actor?;
@@ -829,78 +731,19 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                 .or_insert_with(|| Arc::new(DashMap::new()))
                 .clone();
 
-            // Force previous session to disconnect if exists
             let session_actor_map_service = SessionActorMapService::from_registry();
-            let session_actor_map_entry = session_actor_map_service
-                .get_session_actor_map(msg.tenant_id.clone(), msg.client_id.clone())
-                .await?;
-
-            if let Some(entry) = &session_actor_map_entry {
-                if entry.node_id != current_node_id {
-                    info!("previous session not in current force disconnect previous session actor map node id: {}", entry.node_id);
-                    let res = call_force_disconnect(
-                        entry.node_id,
-                        node_resolver,
-                        topic_raft_actor_addr,
-                        msg.tenant_id.clone(),
-                        msg.client_id.clone(),
-                    )
-                    .await;
-                    if let Err(err) = res {
-                        warn!(
-                            "force disconnect previous session actor map node id: {} failed: {}",
-                            entry.node_id, err
-                        );
-                    }
-                } else {
-                    info!("previous session in current node, force disconnect");
-                    if let Some(session) = tenant_sessions.get(&msg.client_id) {
-                        let recipient = session.session_actor_message_recipient.clone();
-                        drop(session);
-                        let res = recipient.send(SessionActorMessage::ForceDisconnect).await;
-                        if let Err(err) = res {
-                            warn!("force disconnect in current node failed: {}", err);
-                        }
-                    } else {
-                        info!("session map in current not found, maybe node reboot");
-                    }
-                }
-            } else {
-                debug!("previous session actor map node id not found");
-            }
-
             debug!(
                 "start register session actor map tenant_id: {}, client_id: {}, node_id: {}",
                 msg.tenant_id, msg.client_id, current_node_id
             );
 
-            let session_version = session_clock.next();
-
-            if let Err(e) = session_actor_map_service
+            let session_instance_id = session_actor_map_service
                 .register_session_actor_map(
                     msg.tenant_id.clone(),
                     msg.client_id.clone(),
                     current_node_id,
-                    session_version.clone(),
                 )
-                .await
-            {
-                match e {
-                    crate::raft::session_actor_map::session_actor_map_raft_actor::SessionActorMapRaftError::SessionVersionRejected {
-                        current_version,
-                        existing_version,
-                    } => {
-                        info!(
-                            "register session actor map rejected tenant_id: {}, client_id: {}, current_version: {}, existing_version: {}",
-                            msg.tenant_id, msg.client_id, current_version, existing_version
-                        );
-                        return Err(SessionManagerError::NewerSessionExisted);
-                    }
-                    _ => {
-                        return Err(e.into());
-                    }
-                }
-            }
+                .await?;
 
             debug!(
                 "register session actor map succeed tenant_id: {}, client_id: {}, node_id: {}",
@@ -944,9 +787,7 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     "session {} persistent session requested, into state recover or create logic.",
                     msg.client_id
                 );
-                // If raft store not existed, create new session state
-                // First check local sessions if exists send reconect
-                // If local sessions not existed, recover from raft store
+                // Recover persistent state after the previous actor has been replaced.
                 let res = session_state_service
                     .get_session_state_linearizable(msg.tenant_id.clone(), msg.client_id.clone())
                     .await?;
@@ -978,40 +819,8 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                                 msg.session_expiry_interval,
                             )
                             .await?;
-                    } else if let Some(session_recipient_wrapper) =
-                        sessions_guard.get(&msg.client_id)
-                    {
-                        info!(
-                            "session {} exists in current node, start reconnect",
-                            msg.client_id
-                        );
-
-                        // Persistent session still run in current node, send reconnect
-                        session_recipient_wrapper
-                            .session_actor_message_recipient
-                            .do_send(SessionActorMessage::Reconnect {
-                                conn: msg.connection_addr.clone(),
-                                keep_alive: msg.keep_alive,
-                                clean_session: msg.clean_session,
-                                protocol_version: msg.protocol_version,
-                                session_expiry_interval: msg.session_expiry_interval,
-                                receive_maximum: msg.receive_maximum,
-                                username: msg.username.clone(),
-                                will_message: msg.will_message.clone(),
-                                socket_addr: msg.peer_addr,
-                            });
-                        return Ok(CreateSessionMessageResponse {
-                            session_actor_recipient: session_recipient_wrapper
-                                .session_actor_message_recipient
-                                .clone(),
-                            session_present: true,
-                        });
                     } else {
-                        info!(
-                            "session {} not exists in current node, recover from raft",
-                            msg.client_id
-                        );
-                        // not in current node, recover from raft
+                        info!("session {} recover from raft", msg.client_id);
                         session_state = Arc::new(RwLock::new(session_state_from_raft));
                         session_present = true;
                     }
@@ -1038,10 +847,16 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     .delete_session_state(msg.tenant_id.clone(), msg.client_id.clone(), None)
                     .await;
             }
+            let current_entry = session_actor_map_service
+                .get_session_actor_map_linearizable(msg.tenant_id.clone(), msg.client_id.clone())
+                .await?;
+            if current_entry.as_ref().map(|entry| entry.instance_id) != Some(session_instance_id) {
+                return Err(SessionManagerError::SessionSuperseded);
+            }
             let plugin_manager_clone = plugin_manager.clone();
             let msg_client_id = msg.client_id.clone();
             let msg_tenant_id = msg.tenant_id.clone();
-            let session_version_clone = session_version.clone();
+            let session_instance_id_clone = session_instance_id.clone();
             let session_actor_addr = arbiter_pool.start_actor(move || {
                 SessionActor::new(SessionActorConfig {
                     tenant_id: msg_tenant_id,
@@ -1064,22 +879,49 @@ impl Handler<CreateSessionMessage> for SessionManagerActor {
                     payload_store: payload_store.clone(),
                     timer_actor,
                     metric,
-                    session_version: session_version_clone,
+                    session_instance_id: session_instance_id_clone,
                 })
             });
 
             let session_actor_message_recipient = session_actor_addr.clone().recipient();
             let accept_routed_publish_recipient = session_actor_addr.clone().recipient();
             let get_session_info_recipient = session_actor_addr.clone().recipient();
-            sessions_guard.insert(
+            let replaced_session = sessions_guard.insert(
                 msg.client_id.clone(),
                 SessionActorRecipientWrapper {
                     session_actor_message_recipient: session_actor_message_recipient.clone(),
                     accept_routed_publish_recipient,
                     get_session_info_recipient,
-                    session_version,
+                    session_instance_id: session_instance_id.clone(),
                 },
             );
+            // A newer registration may commit between the ownership check and local insertion.
+            let current_entry = session_actor_map_service
+                .get_session_actor_map_linearizable(msg.tenant_id.clone(), msg.client_id.clone())
+                .await;
+            if !matches!(&current_entry, Ok(Some(entry)) if entry.instance_id == session_instance_id)
+            {
+                sessions_guard.remove_if(&msg.client_id, |_, session| {
+                    session.session_instance_id == session_instance_id
+                });
+                if let Some(previous) = replaced_session {
+                    let previous_is_current = current_entry
+                        .as_ref()
+                        .ok()
+                        .and_then(|entry| entry.as_ref())
+                        .is_some_and(|entry| entry.instance_id == previous.session_instance_id);
+                    if previous_is_current {
+                        sessions_guard
+                            .entry(msg.client_id.clone())
+                            .or_insert(previous);
+                    }
+                }
+                session_actor_message_recipient.do_send(SessionActorMessage::ForceStop);
+                return match current_entry {
+                    Err(error) => Err(error.into()),
+                    _ => Err(SessionManagerError::SessionSuperseded),
+                };
+            }
             Ok(CreateSessionMessageResponse {
                 session_actor_recipient: session_actor_message_recipient,
                 session_present,
@@ -1117,6 +959,7 @@ impl Handler<CreateTenantMessage> for SessionManagerActor {
 struct RemoveSessionMessage {
     tenant_id: String,
     client_id: String,
+    session_instance_id: SessionInstanceId,
 }
 
 impl Handler<RemoveSessionMessage> for SessionManagerActor {
@@ -1129,11 +972,9 @@ impl Handler<RemoveSessionMessage> for SessionManagerActor {
             match sessions.get(&tenant_id) {
                 Some(tenant_sessions) => {
                     let tenant_sessions = tenant_sessions.clone();
-                    tenant_sessions.remove(&msg.client_id);
-                    info!(
-                        "received RemoveSessionMessage, remove session {} from tenant {} succeed",
-                        msg.client_id, msg.tenant_id
-                    );
+                    tenant_sessions.remove_if(&msg.client_id, |_, session| {
+                        session.session_instance_id == msg.session_instance_id
+                    });
                     Ok(())
                 }
                 None => Err(SessionManagerError::TenantNotExisted(msg.tenant_id)),
@@ -1153,33 +994,5 @@ impl Handler<GetAllTenantIds> for SessionManagerActor {
     fn handle(&mut self, _msg: GetAllTenantIds, _ctx: &mut Self::Context) -> Self::Result {
         let sessions = self.sessions.get_inner();
         Box::pin(async move { sessions.iter().map(|entry| entry.key().clone()).collect() })
-    }
-}
-
-#[derive(Message)]
-#[rtype(result = "Option<Arc<SessionClock>>")]
-pub struct GetLatestSessionClock {}
-
-impl<A, M> MessageResponse<A, M> for SessionClock
-where
-    A: Actor,
-    M: Message<Result = SessionClock>,
-{
-    fn handle(
-        self,
-        _ctx: &mut <A as Actor>::Context,
-        tx: Option<actix::dev::OneshotSender<<M as Message>::Result>>,
-    ) {
-        if let Some(tx) = tx {
-            let _ = tx.send(self);
-        }
-    }
-}
-
-impl Handler<GetLatestSessionClock> for SessionManagerActor {
-    type Result = Option<Arc<SessionClock>>;
-
-    fn handle(&mut self, _msg: GetLatestSessionClock, _ctx: &mut Self::Context) -> Self::Result {
-        self.session_clock.clone()
     }
 }
