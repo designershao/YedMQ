@@ -2,6 +2,7 @@ pub mod client;
 pub mod rocksdb;
 pub mod service;
 pub mod store;
+mod transfer;
 
 pub use client::PayloadClient;
 pub use rocksdb::RocksDBPayloadStore;

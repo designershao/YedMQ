@@ -2,7 +2,7 @@ use crate::raft::payload::store::{PayloadError, PayloadKey, PayloadStore, Result
 use async_trait::async_trait;
 use bytes::Bytes;
 use log::info;
-use rocksdb::{Options, WriteBatch, DB};
+use rocksdb::{Options, WriteBatch, WriteOptions, DB};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -39,7 +39,9 @@ impl PayloadStore for RocksDBPayloadStore {
         let data = data.to_vec();
 
         tokio::task::spawn_blocking(move || {
-            db.put(key.as_bytes(), data)
+            let mut options = WriteOptions::default();
+            options.set_sync(true);
+            db.put_opt(key.as_bytes(), data, &options)
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
@@ -67,7 +69,9 @@ impl PayloadStore for RocksDBPayloadStore {
         let key = key.clone();
 
         tokio::task::spawn_blocking(move || {
-            db.delete(key.as_bytes())
+            let mut options = WriteOptions::default();
+            options.set_sync(true);
+            db.delete_opt(key.as_bytes(), &options)
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await
@@ -98,7 +102,9 @@ impl PayloadStore for RocksDBPayloadStore {
             for (key, val) in entries {
                 batch.put(key.as_bytes(), val.as_ref());
             }
-            db.write(batch)
+            let mut options = WriteOptions::default();
+            options.set_sync(true);
+            db.write_opt(batch, &options)
                 .map_err(|e| PayloadError::Storage(e.to_string()))
         })
         .await

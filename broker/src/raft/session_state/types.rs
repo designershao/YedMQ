@@ -33,6 +33,20 @@ pub enum SessionStateRequest {
         packet_id: u16,
         qos: u8,
         packet_key: String,
+        #[serde(default)]
+        deferred: bool,
+    },
+    InflightStartDelivery {
+        tenant_id: String,
+        client_id: String,
+        packet_id: u16,
+        packet_key: String,
+    },
+    InflightDiscardUnsent {
+        tenant_id: String,
+        client_id: String,
+        packet_id: u16,
+        packet_key: String,
     },
     InflightGetCurrentPacket {
         tenant_id: String,
@@ -83,6 +97,7 @@ pub enum SessionStateRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SessionStateResponse {
+    InflightStartDeliveryResult(bool),
     InflightGetCurrentPacketResult(Option<String>), // Return Key instead of Packet
     InflightRegisterTxPacketResponse(Result<(), SessionStateStorageError>),
     InflightRegisterRxPacketResponse(Result<(), SessionStateStorageError>),

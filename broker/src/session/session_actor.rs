@@ -462,6 +462,11 @@ pub enum ActivityState {
     Inactive,
 }
 
+struct DeferredOutboundPublish {
+    publish: Publish,
+    registered: bool,
+}
+
 pub struct SessionActor {
     tenant_id: String,
 
@@ -477,7 +482,7 @@ pub struct SessionActor {
 
     outbound_receive_slots_in_use: usize,
 
-    deferred_outbound_publishes: VecDeque<Publish>,
+    deferred_outbound_publishes: VecDeque<DeferredOutboundPublish>,
 
     username: Option<String>,
 
@@ -549,6 +554,9 @@ impl Actor for SessionActor {
                     .map(|(topic, subscription)| (topic.clone(), subscription.clone()))
                     .collect()
             };
+            // Recover inflight publishes before consuming offline messages so their
+            // retransmissions reserve the connection's Receive Maximum slots first.
+            self_addr.do_send(AllInflightRetryImmediate {});
             // Only recover subscriptions if NOT clean session
             if !clean_session {
                 // send update session state message to raft actor
@@ -637,7 +645,6 @@ impl Actor for SessionActor {
             }
             //
 
-            self_addr.do_send(AllInflightRetryImmediate {});
         }
             .into_actor(self)
             .wait(ctx);
@@ -697,6 +704,7 @@ struct HandlePublishContext {
     payload_store: Option<Arc<dyn PayloadStore>>,
 }
 
+#[derive(Clone)]
 struct OutboundPublishDeliveryContext {
     tenant_id: String,
     client_id: String,
@@ -707,12 +715,14 @@ struct OutboundPublishDeliveryContext {
     session_state_service: SessionStateService,
     payload_store: Option<Arc<dyn PayloadStore>>,
     conn: Option<Recipient<ConnectionActorMessage>>,
+    defer_delivery: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum OutboundPublishDeliveryStatus {
     Sent,
     NotSent,
+    Deferred(Box<Publish>),
 }
 
 async fn deliver_outbound_publish(
@@ -805,6 +815,7 @@ async fn deliver_outbound_publish(
                     packet_id,
                     qos,
                     key.clone(),
+                    context.defer_delivery,
                 )
                 .await
             {
@@ -818,7 +829,12 @@ async fn deliver_outbound_publish(
                         if let Some(new_id) = new_id {
                             publish_packet.packet_identifier = Some(new_id);
                             stored_packet = Packet::Publish(publish_packet.clone());
-                            stored_packet_needs_refresh = true;
+                            // Replication happens during registration: all nodes must see
+                            // the reallocated identifier before the Raft entry is written.
+                            let data = serialize_stored_packet(&stored_packet)
+                                .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+                            store.put(&key, Bytes::from(data)).await
+                                .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
                             context
                                 .session_state_service
                                 .register_inflight_tx_packet(
@@ -827,6 +843,7 @@ async fn deliver_outbound_publish(
                                     new_id,
                                     qos,
                                     key.clone(),
+                                    context.defer_delivery,
                                 )
                                 .await
                                 .map_err(|inner| SessionActorError::DeliveryError(inner.to_string()))?;
@@ -868,6 +885,24 @@ async fn deliver_outbound_publish(
                 "session {} outbound publish stored with reallocated packet id",
                 context.client_id
             );
+        }
+
+        // A persistent publish must enter Raft inflight state even when the
+        // connection's quota postpones its first transmission.
+        if context.defer_delivery {
+            if let Some(item) = context
+                .session_state
+                .write()
+                .await
+                .inflight
+                .inner
+                .get_mut(&publish_packet.packet_identifier.unwrap())
+            {
+                item.delivery_started = false;
+            }
+            return Ok(OutboundPublishDeliveryStatus::Deferred(Box::new(
+                publish_packet,
+            )));
         }
 
         conn.send(ConnectionActorMessage::WritePacketToClient(
@@ -916,6 +951,134 @@ async fn deliver_outbound_publish(
     }
 
     Ok(OutboundPublishDeliveryStatus::NotSent)
+}
+
+impl OutboundPublishDeliveryContext {
+    async fn discard_unsent(&self, id: u16, key: &str) -> Result<(), SessionActorError> {
+        if !self.clean_session {
+            self.session_state_service
+                .discard_unsent_inflight(
+                    self.tenant_id.clone(),
+                    self.client_id.clone(),
+                    id,
+                    key.to_string(),
+                )
+                .await
+                .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+        }
+        let removed = self
+            .session_state
+            .write()
+            .await
+            .inflight
+            .discard_unsent(id, key);
+        if self.clean_session {
+            if let (Some(key), Some(store)) = (removed, &self.payload_store) {
+                store
+                    .delete(&key)
+                    .await
+                    .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn cleanup_expired_unsent(&self) -> HashSet<u16> {
+        let entries = self
+            .session_state
+            .read()
+            .await
+            .inflight
+            .inner
+            .values()
+            .filter(|item| !item.delivery_started)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed = HashSet::new();
+        let Some(store) = &self.payload_store else {
+            return removed;
+        };
+        for item in entries {
+            let Some(key) = item.packet_key else {
+                continue;
+            };
+            let expired = match store.get(&key).await {
+                Ok(Some(data)) => deserialize_stored_packet(&data)
+                    .map(|packet| {
+                        mqtt_message_expiry::is_packet_expired(
+                            &packet,
+                            mqtt_message_expiry::now_unix_secs(),
+                        )
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if expired {
+                match self.discard_unsent(item.packet_identifier, &key).await {
+                    Ok(()) => {
+                        removed.insert(item.packet_identifier);
+                    }
+                    Err(e) => warn!("expired inflight cleanup will retry: {e}"),
+                }
+            }
+        }
+        removed
+    }
+
+    async fn prepare_registered_publish(
+        &self,
+        publish: &mut Publish,
+    ) -> Result<bool, SessionActorError> {
+        let Some(id) = publish.packet_identifier else {
+            return Ok(false);
+        };
+        let item = self
+            .session_state
+            .read()
+            .await
+            .inflight
+            .inner
+            .get(&id)
+            .cloned();
+        let Some(item) = item else {
+            return Ok(false);
+        };
+        let Some(key) = item.packet_key else {
+            return Ok(false);
+        };
+        if !mqtt_message_expiry::prepare_publish_for_delivery(
+            publish,
+            self.protocol_version,
+            mqtt_message_expiry::now_unix_secs(),
+        ) {
+            if !item.delivery_started {
+                self.discard_unsent(id, &key).await?;
+            }
+            return Ok(false);
+        }
+        if !item.delivery_started {
+            if !self.clean_session
+                && !self
+                    .session_state_service
+                    .start_inflight_delivery(
+                        self.tenant_id.clone(),
+                        self.client_id.clone(),
+                        id,
+                        key.clone(),
+                    )
+                    .await
+                    .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?
+            {
+                return Ok(false);
+            }
+            self.session_state
+                .write()
+                .await
+                .inflight
+                .mark_delivery_started(id, &key);
+        }
+        Ok(true)
+    }
 }
 
 async fn collect_inflight_retry_packets(
@@ -1544,6 +1707,21 @@ impl SessionActor {
         }
     }
 
+    fn outbound_delivery_context(&self) -> OutboundPublishDeliveryContext {
+        OutboundPublishDeliveryContext {
+            tenant_id: self.tenant_id.clone(),
+            client_id: self.client_id.clone(),
+            clean_session: self.clean_session,
+            protocol_version: self.protocol_version,
+            activity_state: self.activity_state,
+            session_state: self.state.clone(),
+            session_state_service: self.session_state_service.clone(),
+            payload_store: self.payload_store.clone(),
+            conn: self.conn_recipient.clone(),
+            defer_delivery: false,
+        }
+    }
+
     fn receive_maximum_limit(&self) -> usize {
         usize::from(self.receive_maximum.max(1))
     }
@@ -1573,21 +1751,73 @@ impl SessionActor {
     }
 
     fn drain_deferred_outbound_publishes(&mut self, ctx: &mut <SessionActor as Actor>::Context) {
+        if matches!(self.activity_state, ActivityState::Inactive) {
+            return;
+        }
         loop {
             let Some(next_publish) = self.deferred_outbound_publishes.front() else {
                 break;
             };
-            if self.outbound_publish_uses_receive_slot(next_publish)
+            if self.outbound_publish_uses_receive_slot(&next_publish.publish)
                 && !self.can_reserve_receive_slot()
             {
                 break;
             }
 
-            let publish_packet = self
+            let mut deferred = self
                 .deferred_outbound_publishes
                 .pop_front()
                 .expect("front item exists");
-            self.start_outbound_publish_delivery(publish_packet, ctx);
+            if deferred.registered {
+                let context = self.outbound_delivery_context();
+                let reserved = self.outbound_publish_uses_receive_slot(&deferred.publish);
+                if reserved {
+                    self.reserve_receive_slot();
+                }
+                ctx.wait(
+                    async move {
+                        let result: Result<bool, SessionActorError> = async {
+                            if !context
+                                .prepare_registered_publish(&mut deferred.publish)
+                                .await?
+                            {
+                                return Ok(false);
+                            }
+                            let conn = context.conn.ok_or(SessionActorError::ConnectionNotSet)?;
+                            conn.send(ConnectionActorMessage::WritePacketToClient(
+                                Packet::Publish(deferred.publish.clone()),
+                            ))
+                            .await?
+                            .map_err(|e| SessionActorError::DeliveryError(e.to_string()))?;
+                            Ok(true)
+                        }
+                        .await;
+                        (result, deferred)
+                    }
+                    .into_actor(self)
+                    .map(move |(result, deferred), act, ctx| match result {
+                        Ok(true) => act.drain_deferred_outbound_publishes(ctx),
+                        Ok(false) => {
+                            if reserved {
+                                act.outbound_receive_slots_in_use =
+                                    act.outbound_receive_slots_in_use.saturating_sub(1);
+                            }
+                            act.drain_deferred_outbound_publishes(ctx);
+                        }
+                        Err(e) => {
+                            if reserved {
+                                act.outbound_receive_slots_in_use =
+                                    act.outbound_receive_slots_in_use.saturating_sub(1);
+                            }
+                            act.deferred_outbound_publishes.push_front(deferred);
+                            warn!("deferred delivery will retry: {e}");
+                        }
+                    }),
+                );
+                return;
+            } else {
+                self.start_outbound_publish_delivery(deferred.publish, ctx);
+            }
         }
     }
 
@@ -1595,12 +1825,20 @@ impl SessionActor {
         &mut self,
         publish_packet: Publish,
         ctx: &mut <SessionActor as Actor>::Context,
-    ) {
-        let receive_slot_reserved = self.outbound_publish_uses_receive_slot(&publish_packet);
-        if receive_slot_reserved && !self.can_reserve_receive_slot() {
-            self.deferred_outbound_publishes.push_back(publish_packet);
-            return;
+    ) -> tokio::sync::oneshot::Receiver<Result<(), SessionActorError>> {
+        let (completion, receiver) = tokio::sync::oneshot::channel();
+        let uses_receive_slot = self.outbound_publish_uses_receive_slot(&publish_packet);
+        let defer_delivery = uses_receive_slot && !self.can_reserve_receive_slot();
+        if defer_delivery && self.clean_session {
+            self.deferred_outbound_publishes
+                .push_back(DeferredOutboundPublish {
+                    publish: publish_packet,
+                    registered: false,
+                });
+            let _ = completion.send(Ok(()));
+            return receiver;
         }
+        let receive_slot_reserved = uses_receive_slot && !defer_delivery;
         if receive_slot_reserved {
             self.reserve_receive_slot();
         }
@@ -1615,26 +1853,46 @@ impl SessionActor {
             session_state_service: self.session_state_service.clone(),
             payload_store: self.payload_store.clone(),
             conn: self.conn_recipient.clone(),
+            defer_delivery,
         };
 
-        ctx.spawn(
+        let delivery =
             async move { deliver_outbound_publish(publish_packet, delivery_context).await }
                 .into_actor(self)
-                .map(move |result, act, ctx| match result {
-                    Ok(OutboundPublishDeliveryStatus::Sent) => {}
-                    Ok(OutboundPublishDeliveryStatus::NotSent) => {
-                        if receive_slot_reserved {
-                            act.release_receive_maximum_slot_and_drain(ctx);
+                .map(move |result, act, ctx| {
+                    match result {
+                        Ok(OutboundPublishDeliveryStatus::Sent) => {}
+                        Ok(OutboundPublishDeliveryStatus::Deferred(publish)) => {
+                            act.deferred_outbound_publishes
+                                .push_back(DeferredOutboundPublish {
+                                    publish: *publish,
+                                    registered: true,
+                                });
                         }
-                    }
-                    Err(e) => {
-                        error!("Failed to deliver outbound publish: {}", e);
-                        if receive_slot_reserved {
-                            act.release_receive_maximum_slot_and_drain(ctx);
+                        Ok(OutboundPublishDeliveryStatus::NotSent) => {
+                            if receive_slot_reserved {
+                                act.release_receive_maximum_slot_and_drain(ctx);
+                            }
                         }
-                    }
-                }),
-        );
+                        Err(e) => {
+                            error!("Failed to deliver outbound publish: {}", e);
+                            if receive_slot_reserved {
+                                act.release_receive_maximum_slot_and_drain(ctx);
+                            }
+                            let _ = completion.send(Err(e));
+                            return;
+                        }
+                    };
+                    let _ = completion.send(Ok(()));
+                });
+        if !self.clean_session {
+            // Serialize persistent registrations before a stop can cancel them,
+            // and before later deferred publishes allocate a packet identifier.
+            ctx.wait(delivery);
+        } else {
+            ctx.spawn(delivery);
+        }
+        receiver
     }
 
     fn get_plugin_client_info(&self) -> Client {
@@ -2590,12 +2848,20 @@ impl Handler<SessionActorMessage> for SessionActor {
                 });
             }
             SessionActorMessage::InflightRetry => {
+                let cleanup_context = self.outbound_delivery_context();
                 let session_state = self.state.clone();
                 let payload_store = self.payload_store.clone();
                 let conn = self.conn_recipient.clone();
+                let deferred_packet_ids: HashSet<_> = self
+                    .deferred_outbound_publishes
+                    .iter()
+                    .filter(|deferred| deferred.registered)
+                    .filter_map(|deferred| deferred.publish.packet_identifier)
+                    .collect();
                 self.register_inflight_retry_timer(ctx);
-                ctx.spawn(
+                ctx.wait(
                     async move {
+                        let removed = cleanup_context.cleanup_expired_unsent().await;
                         let inflight_entries = {
                             let mut session_state_guard = session_state.write().await;
                             session_state_guard
@@ -2603,6 +2869,9 @@ impl Handler<SessionActorMessage> for SessionActor {
                                 .get_all_expired_packet_keys_and_refresh_expired_time()
                                 .into_iter()
                                 .filter_map(|(packet_id, key)| {
+                                    if deferred_packet_ids.contains(&packet_id) {
+                                        return None;
+                                    }
                                     session_state_guard
                                         .inflight
                                         .get_inflight_current_state(packet_id)
@@ -2616,8 +2885,18 @@ impl Handler<SessionActorMessage> for SessionActor {
                         if let Some(conn) = conn {
                             write_inflight_retry_packets(conn, retry_packets).await;
                         }
+                        removed
                     }
-                    .into_actor(self),
+                    .into_actor(self)
+                    .map(|removed, act, ctx| {
+                        act.deferred_outbound_publishes.retain(|item| {
+                            !item
+                                .publish
+                                .packet_identifier
+                                .is_some_and(|id| removed.contains(&id))
+                        });
+                        act.drain_deferred_outbound_publishes(ctx);
+                    }),
                 );
             }
             SessionActorMessage::ForceDisconnect => {
@@ -2956,19 +3235,30 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+#[path = "delivery_tests.rs"]
+mod delivery_tests;
+
 impl Handler<AcceptRoutedPublish> for SessionActor {
-    type Result = Result<(), SessionActorError>;
+    type Result = ResponseFuture<Result<(), SessionActorError>>;
 
     fn handle(&mut self, msg: AcceptRoutedPublish, ctx: &mut Self::Context) -> Self::Result {
         match msg.packet {
-            Packet::Publish(publish_packet) => {
-                self.start_outbound_publish_delivery(publish_packet, ctx);
-                Ok(())
+            Packet::Publish(publish) => {
+                let completion = self.start_outbound_publish_delivery(publish, ctx);
+                Box::pin(async move {
+                    completion.await.map_err(|_| {
+                        SessionActorError::DeliveryError(
+                            "session stopped before accepting delivery".into(),
+                        )
+                    })?
+                })
             }
-            other => Err(SessionActorError::DeliveryError(format!(
-                "unsupported routed packet: {:?}",
-                other
-            ))),
+            other => Box::pin(async move {
+                Err(SessionActorError::DeliveryError(format!(
+                    "unsupported routed packet: {other:?}"
+                )))
+            }),
         }
     }
 }
@@ -2977,12 +3267,13 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
     type Result = ();
 
     fn handle(&mut self, _msg: AllInflightRetryImmediate, ctx: &mut Self::Context) -> Self::Result {
+        let cleanup_context = self.outbound_delivery_context();
         let session_state = self.state.clone();
         let payload_store = self.payload_store.clone();
-        let conn = self.conn_recipient.clone();
-        ctx.spawn(
+        ctx.wait(
             async move {
-                let inflight_entries = {
+                cleanup_context.cleanup_expired_unsent().await;
+                let mut inflight_entries = {
                     let mut session_state_guard = session_state.write().await;
                     session_state_guard
                         .inflight
@@ -2997,13 +3288,29 @@ impl Handler<AllInflightRetryImmediate> for SessionActor {
                         .collect::<Vec<_>>()
                 };
 
-                let retry_packets =
-                    collect_inflight_retry_packets(inflight_entries, payload_store).await;
-                if let Some(conn) = conn {
-                    write_inflight_retry_packets(conn, retry_packets).await;
-                }
+                inflight_entries.sort_by_key(|(packet_id, _, _)| *packet_id);
+                collect_inflight_retry_packets(inflight_entries, payload_store).await
             }
-            .into_actor(self),
+            .into_actor(self)
+            .map(|retry_packets, act, ctx| {
+                for packet in retry_packets {
+                    match packet {
+                        Packet::Publish(publish) => {
+                            act.deferred_outbound_publishes
+                                .push_back(DeferredOutboundPublish {
+                                    publish,
+                                    registered: true,
+                                });
+                        }
+                        packet => {
+                            if let Some(conn) = act.conn_recipient.clone() {
+                                conn.do_send(ConnectionActorMessage::WritePacketToClient(packet));
+                            }
+                        }
+                    }
+                }
+                act.drain_deferred_outbound_publishes(ctx);
+            }),
         );
     }
 }

@@ -74,8 +74,7 @@ fn map_grpc_response<T, E: std::error::Error>(
     resp.map(|resp| resp.into_inner()).map_err(map_grpc_status)
 }
 
-use crate::protobuf::raft_payload::payload_service_client::PayloadServiceClient;
-use crate::protobuf::raft_payload::{ReplicateBatchRequest, ReplicateRequest};
+use crate::protobuf::raft_payload::ReplicateRequest;
 
 impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
     async fn append_entries(
@@ -138,39 +137,18 @@ impl RaftNetwork<SessionStateTypeConfig> for NetworkConnection {
         // 3. Synchronous Batching: Payload Push First -> Then Log Append
         // This prevents the "Payload missing" race condition at the Follower.
         if !batch_entries.is_empty() {
-            // Connect and Replicate
-            let payload_result = async {
-                let mut client = PayloadServiceClient::new(
-                    crate::rpc::grpc_client::lazy_channel(&self.node.rpc_addr)
-                        .map_err(|e| NetworkError::new(&e))?,
-                );
-
-                log::info!(
-                    "Sending ReplicateBatchRequest with {} entries to {}",
-                    batch_entries.len(),
-                    self.node.rpc_addr
-                );
-
-                let batch_req = ReplicateBatchRequest {
-                    entries: batch_entries,
-                };
-
-                // Dynamic Timeout
-                let size_mb = (total_size as f64) / (1024.0 * 1024.0);
-                let additional_timeout = (size_mb * 100.0) as u64;
-                let timeout_duration = std::time::Duration::from_millis(100 + additional_timeout);
-
-                tokio::time::timeout(timeout_duration, client.replicate_batch(batch_req))
-                    .await
-                    .map_err(|_| {
-                        NetworkError::new(&std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
-                            format!("Payload push timed out (size: {} bytes)", total_size),
-                        ))
-                    })?
-                    .map_err(|status| NetworkError::new(&status))
-            }
-            .await;
+            let timeout_duration =
+                Duration::from_secs(5) + Duration::from_millis((total_size / 1024) as u64);
+            let payload_result = tokio::time::timeout(
+                timeout_duration,
+                crate::raft::payload::PayloadClient::replicate_entries(
+                    &self.node.rpc_addr,
+                    batch_entries,
+                ),
+            )
+            .await
+            .map_err(|e| NetworkError::new(&e))
+            .and_then(|result| result.map_err(|e| NetworkError::new(&e)));
 
             if let Err(e) = payload_result {
                 log::error!(

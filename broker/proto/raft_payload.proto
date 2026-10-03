@@ -7,6 +7,8 @@ service PayloadService {
 
     // Batch Payload replication (Optimization)
     rpc ReplicateBatch (ReplicateBatchRequest) returns (ReplicateBatchResponse);
+    // Large payload upload. The receiver commits only after the complete stream.
+    rpc ReplicateStream (stream BulkSyncChunk) returns (ReplicateResponse);
     
     // Active pulling (Fetch)
     rpc FetchPayload (FetchRequest) returns (FetchResponse);
@@ -72,4 +74,7 @@ message BulkSyncChunk {
     bytes data = 2;
     uint64 offset = 3;
     bool is_last_chunk = 4;
+    // Integrity metadata for the complete payload, supplied on the last chunk.
+    uint64 total_size = 5;
+    uint32 checksum = 6;
 }

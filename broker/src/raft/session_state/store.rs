@@ -116,6 +116,7 @@ impl RaftSnapshotBuilder<SessionStateTypeConfig> for StateMachineStore {
                     .read()
                     .await
                     .to_snapshot()
+                    .await
                     .map_err(|e| StorageIOError::write_state_machine(&e))?,
             };
             serde_json::to_vec(&snapshot_data)
@@ -340,6 +341,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                         packet_id,
                         qos,
                         packet_key,
+                        deferred,
                     } => {
                         let r = self
                             .data
@@ -353,6 +355,7 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 packet_id,
                                 qos,
                                 &packet_key,
+                                deferred,
                             )
                             .await;
 
@@ -371,6 +374,45 @@ impl RaftStateMachine<SessionStateTypeConfig> for StateMachineStore {
                                 );
                             }
                         }
+                    }
+                    types::SessionStateRequest::InflightStartDelivery {
+                        tenant_id,
+                        client_id,
+                        packet_id,
+                        packet_key,
+                    } => {
+                        let storage = self.data.state.session_state_storage.read().await;
+                        let started = if let Some(state) =
+                            storage.get_session_state(&tenant_id, &client_id).await
+                        {
+                            state
+                                .write()
+                                .await
+                                .inflight
+                                .mark_delivery_started(packet_id, &packet_key)
+                        } else {
+                            false
+                        };
+                        replies.push(SessionStateResponse::InflightStartDeliveryResult(started));
+                    }
+                    types::SessionStateRequest::InflightDiscardUnsent {
+                        tenant_id,
+                        client_id,
+                        packet_id,
+                        packet_key,
+                    } => {
+                        let freed = self
+                            .data
+                            .state
+                            .session_state_storage
+                            .write()
+                            .await
+                            .inflight_discard_unsent(&tenant_id, &client_id, packet_id, &packet_key)
+                            .await;
+                        if let Some(key) = freed {
+                            self.schedule_payload_gc(current_log_index, key).await;
+                        }
+                        replies.push(SessionStateResponse::None);
                     }
                     types::SessionStateRequest::InflightGetCurrentPacket {
                         tenant_id,
@@ -1221,4 +1263,152 @@ pub(crate) async fn new_storage<P: AsRef<Path>>(
     let is_ready = sm_store.is_ready.clone();
 
     Ok((log_store, sm_store, is_ready))
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+    use types::SessionStateRequest as Command;
+
+    fn log_id(index: u64) -> LogId<NodeId> {
+        LogId::new(openraft::CommittedLeaderId::new(1, 1), index)
+    }
+
+    async fn apply(sm: &mut StateMachineStore, index: u64, command: Command) {
+        sm.apply(vec![Entry {
+            log_id: log_id(index),
+            payload: openraft::EntryPayload::Normal(command),
+        }])
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unsent_cancellation_survives_snapshot_and_releases_refs_via_gc() {
+        for qos in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            let payload = Arc::new(
+                crate::raft::payload::RocksDBPayloadStore::new(dir.path().join("payload")).unwrap(),
+            );
+            let storage = Arc::new(RwLock::new(SessionStateStorage::new()));
+            let settings = Arc::new(crate::settings::Settings::default());
+            let (mut logs, mut sm, _) =
+                new_storage(dir.path(), storage.clone(), payload.clone(), settings)
+                    .await
+                    .unwrap();
+            apply(
+                &mut sm,
+                1,
+                Command::CreateSessionState {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    inflight_duration_secs: 1,
+                    protocol_version: None,
+                    session_expiry_interval: None,
+                },
+            )
+            .await;
+            for id in [1, 2] {
+                payload
+                    .put(&id.to_string(), bytes::Bytes::from_static(b"value"))
+                    .await
+                    .unwrap();
+                apply(
+                    &mut sm,
+                    id as u64 + 1,
+                    Command::InflightRegisterTxPacket {
+                        tenant_id: "t".into(),
+                        client_id: "c".into(),
+                        packet_id: id,
+                        qos,
+                        packet_key: id.to_string(),
+                        deferred: true,
+                    },
+                )
+                .await;
+            }
+            // First-send metadata must survive snapshot serialization and installation.
+            let snapshot = sm.build_snapshot().await.unwrap();
+            sm.install_snapshot(&snapshot.meta, snapshot.snapshot)
+                .await
+                .unwrap();
+            let state = storage
+                .read()
+                .await
+                .get_session_state("t", "c")
+                .await
+                .unwrap();
+            assert!(!state.read().await.inflight.inner[&1].delivery_started);
+            apply(
+                &mut sm,
+                4,
+                Command::InflightStartDelivery {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    packet_id: 2,
+                    packet_key: "2".into(),
+                },
+            )
+            .await;
+            apply(
+                &mut sm,
+                5,
+                Command::InflightDiscardUnsent {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    packet_id: 2,
+                    packet_key: "2".into(),
+                },
+            )
+            .await;
+            assert!(
+                state.read().await.inflight.inner.contains_key(&2),
+                "never cancel an already started delivery"
+            );
+            apply(
+                &mut sm,
+                6,
+                Command::InflightDiscardUnsent {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    packet_id: 1,
+                    packet_key: "stale-key".into(),
+                },
+            )
+            .await;
+            assert!(state.read().await.inflight.inner.contains_key(&1));
+            apply(
+                &mut sm,
+                7,
+                Command::InflightDiscardUnsent {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    packet_id: 1,
+                    packet_key: "1".into(),
+                },
+            )
+            .await;
+            apply(
+                &mut sm,
+                8,
+                Command::InflightDiscardUnsent {
+                    tenant_id: "t".into(),
+                    client_id: "c".into(),
+                    packet_id: 1,
+                    packet_key: "1".into(),
+                },
+            )
+            .await;
+            assert_eq!(state.write().await.inflight.allocate_packet_id(), Some(1));
+            assert!(!storage.read().await.ref_counts.contains_key("1"));
+            assert_eq!(storage.read().await.ref_counts.get("2"), Some(&1));
+            assert!(
+                payload.contains(&"1".into()).await.unwrap(),
+                "keep data until referring log entries can be purged"
+            );
+            logs.purge(log_id(8)).await.unwrap();
+            assert!(!payload.contains(&"1".into()).await.unwrap());
+            assert!(payload.contains(&"2".into()).await.unwrap());
+        }
+    }
 }

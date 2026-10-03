@@ -259,6 +259,18 @@ impl SessionStateStorage {
             .is_some()
     }
 
+    pub async fn inflight_discard_unsent(
+        &mut self,
+        tenant: &str,
+        client: &str,
+        id: u16,
+        key: &str,
+    ) -> Option<String> {
+        let state = self.get_session_state(tenant, client).await?;
+        let removed = state.write().await.inflight.discard_unsent(id, key);
+        removed.and_then(|key| self.dec_ref(&key))
+    }
+
     pub async fn inflight_register_tx_packet(
         &mut self,
         tenant_id: &str,
@@ -266,6 +278,7 @@ impl SessionStateStorage {
         packet_id: u16,
         qos: u8,
         packet_key: &str,
+        deferred: bool,
     ) -> Result<Option<String>, SessionStateStorageError> {
         if !self.inner.contains_key(tenant_id) {
             self.inner.insert(tenant_id.to_string(), HashMap::new());
@@ -278,13 +291,16 @@ impl SessionStateStorage {
         };
 
         if let Some(state_arc) = state_arc {
-            self.inc_ref(packet_key);
             let mut state = state_arc.write().await;
             let old_key =
                 state
                     .inflight
                     .register_with_tx_packet(packet_id, qos, packet_key.to_string())?;
+            if let Some(item) = state.inflight.inner.get_mut(&packet_id) {
+                item.delivery_started = !deferred;
+            }
             drop(state);
+            self.inc_ref(packet_key);
             let freed_key = old_key.and_then(|k| self.dec_ref(&k));
             Ok(freed_key)
         } else {
@@ -544,20 +560,17 @@ impl SessionStateStorage {
         }
     }
 
-    fn to_serializable(&self) -> SerializableSessionStateStorage {
+    async fn to_serializable(&self) -> SerializableSessionStateStorage {
+        let mut inner = HashMap::new();
+        for (tenant, sessions) in &self.inner {
+            let mut snapshot = HashMap::new();
+            for (client, state) in sessions {
+                snapshot.insert(client.clone(), state.read().await.clone());
+            }
+            inner.insert(tenant.clone(), snapshot);
+        }
         SerializableSessionStateStorage {
-            inner: self
-                .inner
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        v.iter()
-                            .map(|(k, v)| (k.clone(), v.blocking_read().clone()))
-                            .collect(),
-                    )
-                })
-                .collect(),
+            inner,
             ref_counts: self.ref_counts.clone(),
         }
     }
@@ -580,8 +593,8 @@ impl SessionStateStorage {
         }
     }
 
-    pub fn to_snapshot(&self) -> Result<Vec<u8>, serde_json::Error> {
-        let serializable = self.to_serializable();
+    pub async fn to_snapshot(&self) -> Result<Vec<u8>, serde_json::Error> {
+        let serializable = self.to_serializable().await;
         serde_json::to_vec(&serializable)
     }
 

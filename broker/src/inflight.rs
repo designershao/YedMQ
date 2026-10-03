@@ -40,6 +40,7 @@ impl Inflight {
         if qos == 2 {
             let item = InflightItem {
                 packet_identifier,
+                delivery_started: true,
                 state: InflightState::WaitPubrel,
                 packet_key: Some(packet_key.clone()),
                 last_modified: std::time::SystemTime::now()
@@ -54,6 +55,7 @@ impl Inflight {
         if qos == 1 {
             let item = InflightItem {
                 packet_identifier,
+                delivery_started: true,
                 state: InflightState::Finish,
                 packet_key: Some(packet_key),
                 last_modified: std::time::SystemTime::now()
@@ -88,6 +90,7 @@ impl Inflight {
         if qos == 2 {
             let item = InflightItem {
                 packet_identifier,
+                delivery_started: true,
                 state: InflightState::WaitPubrec,
                 packet_key: Some(packet_key.clone()),
                 last_modified: std::time::SystemTime::now()
@@ -102,6 +105,7 @@ impl Inflight {
         if qos == 1 {
             let item = InflightItem {
                 packet_identifier,
+                delivery_started: true,
                 state: InflightState::WaitPuback,
                 packet_key: Some(packet_key),
                 last_modified: std::time::SystemTime::now()
@@ -181,6 +185,30 @@ impl Inflight {
         ctx.map(|ctx_item| ctx_item.state)
     }
 
+    pub fn mark_delivery_started(&mut self, id: u16, key: &str) -> bool {
+        if let Some(item) = self.inner.get_mut(&id) {
+            if item.packet_key.as_deref() == Some(key) {
+                item.delivery_started = true;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn discard_unsent(&mut self, id: u16, key: &str) -> Option<String> {
+        let item = self.inner.get(&id)?;
+        if item.delivery_started
+            || item.packet_key.as_deref() != Some(key)
+            || !matches!(
+                item.state,
+                InflightState::WaitPuback | InflightState::WaitPubrec
+            )
+        {
+            return None;
+        }
+        self.inner.remove(&id).and_then(|item| item.packet_key)
+    }
+
     pub fn next_state(&mut self, packet_identifier: u16) -> Option<String> {
         let ctx = self.inner.get_mut(&packet_identifier);
         if let Some(ctx_item) = ctx {
@@ -224,6 +252,13 @@ pub struct InflightItem {
     pub state: InflightState,
     pub packet_key: Option<String>,
     pub last_modified: u64,
+    /// Older snapshots are conservatively treated as already sent.
+    #[serde(default = "default_delivery_started")]
+    pub delivery_started: bool,
+}
+
+fn default_delivery_started() -> bool {
+    true
 }
 
 impl InflightItem {
@@ -241,5 +276,22 @@ impl InflightItem {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time is before unix epoch")
             .as_secs();
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    #[test]
+    fn old_snapshots_do_not_become_cancellable() {
+        let item: InflightItem = serde_json::from_str(
+            r#"{"packet_identifier":1,"state":"WaitPubrec","packet_key":"key","last_modified":1}"#,
+        )
+        .unwrap();
+        assert!(item.delivery_started);
+        let mut inflight = Inflight::new(Duration::from_secs(1));
+        inflight.inner.insert(1, item);
+        assert_eq!(inflight.discard_unsent(1, "key"), None);
     }
 }

@@ -1,11 +1,12 @@
 use actix::{Addr, SystemService};
 
 use crate::raft::session_state::session_state_raft_actor::{
-    AdvanceInflightState, GetSessionStateEnsureLinearizable, InflightCleanFinishedItems,
-    PopOfflineMessage, RegisterInflightRxPacket, RegisterInflightTxPacket, ScanExpiredSessions,
+    AdvanceInflightState, DirectWriteToRaft, GetSessionStateEnsureLinearizable,
+    InflightCleanFinishedItems, PopOfflineMessage, RegisterInflightRxPacket, ScanExpiredSessions,
     SessionStateRaftActor, SessionStateRaftError, StoreOfflineMessage, SubscribeTopic,
     UnsubscribeTopic, UpdateSessionConnectionState,
 };
+use crate::raft::session_state::types::{SessionStateRequest, SessionStateResponse};
 use crate::session::session_state_storage::SessionState;
 use yedmq_mqtt::packet::ProtocolVersion;
 
@@ -212,17 +213,68 @@ impl SessionStateService {
         packet_id: u16,
         qos: u8,
         packet_key: String,
+        deferred: bool,
     ) -> Result<(), SessionStateRaftError> {
-        self.session_state_raft_actor
-            .send(RegisterInflightTxPacket {
+        self.write_delivery_command(SessionStateRequest::InflightRegisterTxPacket {
+            tenant_id,
+            client_id,
+            packet_id,
+            qos,
+            packet_key,
+            deferred,
+        })
+        .await?;
+        Ok(())
+    }
+
+    async fn write_delivery_command(
+        &self,
+        command: SessionStateRequest,
+    ) -> Result<SessionStateResponse, SessionStateRaftError> {
+        Ok(self
+            .session_state_raft_actor
+            .send(DirectWriteToRaft { command })
+            .await
+            .map_err(|e| SessionStateRaftError::ServiceUnavailable(e.to_string()))??
+            .data)
+    }
+
+    pub async fn start_inflight_delivery(
+        &self,
+        tenant_id: String,
+        client_id: String,
+        packet_id: u16,
+        packet_key: String,
+    ) -> Result<bool, SessionStateRaftError> {
+        let result = self
+            .write_delivery_command(SessionStateRequest::InflightStartDelivery {
                 tenant_id,
                 client_id,
                 packet_id,
-                qos,
                 packet_key,
             })
-            .await
-            .map_err(|e| SessionStateRaftError::ServiceUnavailable(e.to_string()))?
+            .await?;
+        Ok(matches!(
+            result,
+            SessionStateResponse::InflightStartDeliveryResult(true)
+        ))
+    }
+
+    pub async fn discard_unsent_inflight(
+        &self,
+        tenant_id: String,
+        client_id: String,
+        packet_id: u16,
+        packet_key: String,
+    ) -> Result<(), SessionStateRaftError> {
+        self.write_delivery_command(SessionStateRequest::InflightDiscardUnsent {
+            tenant_id,
+            client_id,
+            packet_id,
+            packet_key,
+        })
+        .await?;
+        Ok(())
     }
 
     pub async fn advance_inflight_state(

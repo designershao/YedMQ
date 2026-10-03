@@ -1,11 +1,11 @@
+use super::transfer::{chunks, ChunkAssembler, RPC_SIZE_LIMIT};
 use crate::protobuf::raft_payload::payload_service_client::PayloadServiceClient;
-use crate::protobuf::raft_payload::{
-    BulkSyncDataRequest, BulkSyncStartRequest, FetchRequest, PayloadManifestItem,
-};
+use crate::protobuf::raft_payload::{BulkSyncDataRequest, ReplicateBatchRequest, ReplicateRequest};
 use crate::raft::payload::store::{PayloadKey, PayloadStore};
 use crate::raft::GRPCBusinessError;
 use bytes::Bytes;
-use log::{info, warn};
+use prost::Message;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::StreamExt;
 
@@ -47,23 +47,9 @@ impl PayloadClient {
         addr: &str,
         key: PayloadKey,
     ) -> Result<(), PayloadClientError> {
-        let mut client = crate::rpc::grpc_client::lazy_channel(addr)
-            .map(PayloadServiceClient::new)
-            .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
-        let resp = client
-            .fetch_payload(FetchRequest { key: key.clone() })
-            .await?;
-
-        let inner = resp.into_inner();
-        if inner.found {
-            self.store
-                .put(&key, Bytes::from(inner.data))
-                .await
-                .map_err(|e| PayloadClientError::PayloadError(e.to_string()))?;
-            Ok(())
-        } else {
-            Err(PayloadClientError::PayloadNotFound)
-        }
+        self.bulk_sync(addr, vec![(key, 0, 0)])
+            .await
+            .map_err(|e| PayloadClientError::PayloadError(e.to_string()))
     }
 
     pub async fn replicate(
@@ -80,23 +66,62 @@ impl PayloadClient {
             .ok_or_else(|| {
                 PayloadClientError::PayloadError(format!("Payload not found locally: {}", key))
             })?;
-        let mut client = crate::rpc::grpc_client::lazy_channel(addr)
-            .map(PayloadServiceClient::new)
-            .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?;
-        let resp = client
-            .replicate_payload(crate::protobuf::raft_payload::ReplicateRequest {
+        Self::replicate_entries(
+            addr,
+            vec![ReplicateRequest {
                 key,
                 data: data.to_vec(),
                 term,
-            })
-            .await?;
-        if resp.into_inner().success {
-            Ok(())
-        } else {
-            Err(PayloadClientError::PayloadError(
-                "unexpected error".to_string(),
-            ))
+            }],
+        )
+        .await
+    }
+
+    /// Split by protobuf encoded size. A single oversized value uses bounded chunks.
+    pub async fn replicate_entries(
+        addr: &str,
+        entries: Vec<ReplicateRequest>,
+    ) -> Result<(), PayloadClientError> {
+        let mut client = PayloadServiceClient::new(
+            crate::rpc::grpc_client::lazy_channel(addr)
+                .map_err(|e| PayloadClientError::GRPCConnect(e.to_string()))?,
+        );
+        let mut batch = ReplicateBatchRequest {
+            entries: Vec::new(),
+        };
+        let mut batch_size = 0;
+        for entry in entries {
+            let len = entry.encoded_len();
+            let encoded_size = 1 + prost::length_delimiter_len(len) + len;
+            if batch_size + encoded_size > RPC_SIZE_LIMIT && !batch.entries.is_empty() {
+                let response = client.replicate_batch(std::mem::take(&mut batch)).await?;
+                if !response.into_inner().success {
+                    return Err(PayloadClientError::PayloadError("batch rejected".into()));
+                }
+                batch_size = 0;
+            }
+            if encoded_size > RPC_SIZE_LIMIT {
+                let response = client
+                    .replicate_stream(tokio_stream::iter(chunks(
+                        entry.key,
+                        Bytes::from(entry.data),
+                    )))
+                    .await?;
+                if !response.into_inner().success {
+                    return Err(PayloadClientError::PayloadError("upload rejected".into()));
+                }
+            } else {
+                batch_size += encoded_size;
+                batch.entries.push(entry);
+            }
         }
+        if !batch.entries.is_empty() {
+            let response = client.replicate_batch(batch).await?;
+            if !response.into_inner().success {
+                return Err(PayloadClientError::PayloadError("batch rejected".into()));
+            }
+        }
+        Ok(())
     }
 
     pub async fn bulk_sync(
@@ -104,63 +129,72 @@ impl PayloadClient {
         addr: &str,
         manifest: Vec<(PayloadKey, u64, u32)>,
     ) -> anyhow::Result<()> {
-        let mut client = PayloadServiceClient::new(crate::rpc::grpc_client::lazy_channel(addr)?);
-
-        let proto_manifest = manifest
-            .into_iter()
-            .map(|(key, size, checksum)| PayloadManifestItem {
-                key,
-                size,
-                checksum,
-            })
-            .collect();
-
-        let start_resp = client
-            .start_bulk_sync(BulkSyncStartRequest {
-                session_id: uuid::Uuid::new_v4().to_string(),
-                manifest: proto_manifest,
-            })
-            .await?
-            .into_inner();
-
-        if !start_resp.accepted {
-            anyhow::bail!("BulkSync rejected by remote");
-        }
-
-        if start_resp.missing_keys.is_empty() {
-            return Ok(());
-        }
-
-        info!(
-            "BulkSync: fetching {} missing keys from {}",
-            start_resp.missing_keys.len(),
-            addr
-        );
-
-        let mut stream = client
-            .stream_bulk_data(BulkSyncDataRequest {
-                session_id: uuid::Uuid::new_v4().to_string(),
-                keys_to_fetch: start_resp.missing_keys,
-            })
-            .await?
-            .into_inner();
-
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res?;
-            // NOTE: This simple implementation assumes chunks arrive in order for each key
-            // and we just append or write. For now, since we use RocksDB and put_batch or simple put,
-            // we'll just handle it.
-            // In a more robust version, we'd buffer chunks and verify checksums.
-            if chunk.is_last_chunk {
-                // For now, our proto StreamBulkData is simple.
-                // Let's just store the data.
-                self.store.put(&chunk.key, Bytes::from(chunk.data)).await?;
-            } else {
-                // TODO: Handle multi-chunk payloads if they exceed 1MB
-                warn!("Multi-chunk payloads not fully supported in this sync helper yet");
+        // This is a pull: the requested keys are missing HERE. StartBulkSync is
+        // a receiver-side diff for pushes and must not decide what we fetch.
+        let mut pending = HashMap::new();
+        for (key, size, checksum) in manifest {
+            if !self.store.contains(&key).await? {
+                pending.insert(key, (size, checksum));
             }
         }
-
+        let mut client = PayloadServiceClient::new(crate::rpc::grpc_client::lazy_channel(addr)?);
+        let mut requests = Vec::new();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let mut request = BulkSyncDataRequest {
+            session_id: session_id.clone(),
+            keys_to_fetch: Vec::new(),
+        };
+        let mut request_size = request.encoded_len();
+        for key in pending.keys() {
+            let size = 1 + prost::length_delimiter_len(key.len()) + key.len();
+            anyhow::ensure!(
+                size + session_id.len() + 2 <= RPC_SIZE_LIMIT,
+                "payload key too large"
+            );
+            if request_size + size > RPC_SIZE_LIMIT {
+                requests.push(request);
+                request = BulkSyncDataRequest {
+                    session_id: session_id.clone(),
+                    keys_to_fetch: Vec::new(),
+                };
+                request_size = request.encoded_len();
+            }
+            request.keys_to_fetch.push(key.clone());
+            request_size += size;
+        }
+        if !request.keys_to_fetch.is_empty() {
+            requests.push(request);
+        }
+        for request in requests {
+            let mut stream = client.stream_bulk_data(request).await?.into_inner();
+            let mut assembler = ChunkAssembler::default();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                anyhow::ensure!(
+                    pending.contains_key(&chunk.key),
+                    "unexpected or duplicate payload key"
+                );
+                if let Some((key, data)) = assembler.push(chunk)? {
+                    let (size, checksum) = pending[&key];
+                    anyhow::ensure!(
+                        size == 0 || size == data.len() as u64,
+                        "manifest size mismatch"
+                    );
+                    anyhow::ensure!(
+                        checksum == 0 || checksum == crc32fast::hash(&data),
+                        "manifest checksum mismatch"
+                    );
+                    self.store.put(&key, data).await?;
+                    pending.remove(&key);
+                }
+            }
+            assembler.finish()?;
+        }
+        anyhow::ensure!(
+            pending.is_empty(),
+            "peer omitted {} requested payloads",
+            pending.len()
+        );
         Ok(())
     }
 }

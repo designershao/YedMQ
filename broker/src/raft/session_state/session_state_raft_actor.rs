@@ -344,6 +344,9 @@ impl SessionStateRaftActor {
                     SessionStateStorageError::InflightError(e),
                 )) => Err(SessionStateRaftError::InflightError(e)),
                 SessionStateResponse::InflightRegisterTxPacketResponse(Err(
+                    SessionStateStorageError::InflightError(e),
+                )) => Err(SessionStateRaftError::InflightError(e)),
+                SessionStateResponse::InflightRegisterTxPacketResponse(Err(
                     SessionStateStorageError::SessionStateNotExisted { client_id },
                 )) => Err(SessionStateRaftError::SessionStateNotExisted(format!(
                     "Session state not existed for client_id: {}",
@@ -1398,6 +1401,7 @@ impl Handler<RegisterInflightTxPacket> for SessionStateRaftActor {
                     async move {
                         if let Some(raft_instance) = raft.get() {
                             let command = SessionStateRequest::InflightRegisterTxPacket {
+                                deferred: false,
                                 tenant_id: msg.tenant_id,
                                 client_id: msg.client_id,
                                 packet_id: msg.packet_id,

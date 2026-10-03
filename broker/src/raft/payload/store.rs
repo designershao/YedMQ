@@ -24,7 +24,7 @@ use std::fmt::Debug;
 pub trait PayloadStore: Send + Sync + Debug + 'static {
     /// Write Payload
     ///
-    /// It is recommended to include fsync logic in the implementation to ensure durability
+    /// Persistent implementations must sync the WAL before acknowledging success.
     async fn put(&self, key: &PayloadKey, data: Bytes) -> Result<()>;
 
     /// Read Payload
@@ -37,6 +37,6 @@ pub trait PayloadStore: Send + Sync + Debug + 'static {
     /// Check if payload exists
     async fn contains(&self, key: &PayloadKey) -> Result<bool>;
 
-    /// Batch write (used for BulkSync receiver side optimization)
+    /// Atomically write a batch, syncing the WAL before acknowledging success.
     async fn put_batch(&self, entries: Vec<(PayloadKey, Bytes)>) -> Result<()>;
 }

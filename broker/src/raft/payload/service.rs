@@ -1,3 +1,4 @@
+use super::transfer::{chunks, ChunkAssembler};
 use crate::protobuf::raft_payload::payload_service_server::PayloadService;
 use crate::protobuf::raft_payload::{
     BulkSyncChunk, BulkSyncDataRequest, BulkSyncStartRequest, BulkSyncStartResponse, FetchRequest,
@@ -6,7 +7,7 @@ use crate::protobuf::raft_payload::{
 };
 use crate::raft::payload::store::PayloadStore;
 use bytes::Bytes;
-use log::{debug, error, warn};
+use log::{debug, error};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -63,6 +64,32 @@ impl PayloadService for PayloadServiceImpl {
         }
 
         Ok(Response::new(ReplicateBatchResponse { success: true }))
+    }
+
+    async fn replicate_stream(
+        &self,
+        request: Request<tonic::Streaming<BulkSyncChunk>>,
+    ) -> Result<Response<ReplicateResponse>, Status> {
+        let mut stream = request.into_inner();
+        let mut assembler = ChunkAssembler::default();
+        let mut completed = None;
+        while let Some(chunk) = stream.message().await? {
+            if completed.is_some() {
+                return Err(Status::invalid_argument("expected exactly one payload"));
+            }
+            completed = assembler
+                .push(chunk)
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        }
+        assembler
+            .finish()
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let (key, data) = completed.ok_or_else(|| Status::invalid_argument("empty upload"))?;
+        self.store
+            .put(&key, data)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ReplicateResponse { success: true }))
     }
 
     async fn fetch_payload(
@@ -127,42 +154,17 @@ impl PayloadService for PayloadServiceImpl {
             for key in req.keys_to_fetch {
                 match store.get(&key).await {
                     Ok(Some(data)) => {
-                        let chunk_size = 1024 * 1024; // 1MB
-                        let total_len = data.len();
-                        let mut offset = 0;
-
-                        if total_len == 0 {
-                            let chunk = BulkSyncChunk {
-                                key: key.clone(),
-                                data: Vec::new(),
-                                offset: 0,
-                                is_last_chunk: true,
-                            };
+                        for chunk in chunks(key, data) {
                             if tx.send(Ok(chunk)).await.is_err() {
                                 return;
                             }
-                        }
-
-                        while offset < total_len {
-                            let end = std::cmp::min(offset + chunk_size, total_len);
-                            let chunk_data = data.slice(offset..end);
-                            let is_last = end == total_len;
-
-                            let chunk = BulkSyncChunk {
-                                key: key.clone(),
-                                data: chunk_data.to_vec(),
-                                offset: offset as u64,
-                                is_last_chunk: is_last,
-                            };
-
-                            if tx.send(Ok(chunk)).await.is_err() {
-                                return;
-                            }
-                            offset += chunk_size;
                         }
                     }
                     Ok(None) => {
-                        warn!("BulkSync: Requested key {} not found", key);
+                        let _ = tx
+                            .send(Err(Status::not_found(format!("payload {key} not found"))))
+                            .await;
+                        return;
                     }
                     Err(e) => {
                         error!("BulkSync: Error reading key {}: {}", key, e);
